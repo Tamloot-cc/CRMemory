@@ -554,6 +554,37 @@ describe('retracting an interaction (2.1, rule 2.4)', () => {
     ]);
   });
 
+  it('restores a value another record took through the same interaction', async () => {
+    const earlier = await log({ occurredAt: '2026-09-01T10:00:00Z' });
+    const [first, second] = [
+      await person({}, AGENT, earlier.id),
+      await person({}, AGENT, earlier.id),
+    ];
+    // Alice sorts first: she is recomputed while Bob still holds her old address.
+    const [alice, bob] = first.id < second.id ? [first, second] : [second, first];
+    const aliceOld = (alice.record.fields.emails as { primary: string }).primary;
+    const bobOld = (bob.record.fields.emails as { primary: string }).primary;
+    const call = await log({ occurredAt: '2026-10-01T10:00:00Z' });
+    await patchRecord(app, as(AGENT), alice.id, { values: { emails: email() }, source: call.id });
+    await patchRecord(app, as(AGENT), bob.id, { values: { emails: aliceOld }, source: call.id });
+
+    const result = await retractInteractionFor(app, as(AGENT), call.id);
+    expect(result.recomputedRecordIds).toEqual([alice.id, bob.id]);
+    expect((await readRecord(app, as(AGENT), alice.id)).fields.emails).toMatchObject({
+      primary: aliceOld,
+    });
+    expect((await readRecord(app, as(AGENT), bob.id)).fields.emails).toMatchObject({
+      primary: bobOld,
+    });
+    const review = await reviewQueue(app, as(USER), 500);
+    expect(review.pendingAssertions.filter((a) => [alice.id, bob.id].includes(a.recordId))).toEqual(
+      [],
+    );
+    expect((await log({ participants: [{ handle: aliceOld }] })).participants.matched).toEqual([
+      { handle: aliceOld, role: null, recordId: alice.id },
+    ]);
+  });
+
   it('restores the previous relation link', async () => {
     const acme = await createRecord(app, as(AGENT), 'company', { name: 'Acme' });
     const globex = await createRecord(app, as(AGENT), 'company', { name: 'Globex' });

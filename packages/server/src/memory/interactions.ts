@@ -504,6 +504,20 @@ export async function retractInteraction(
     from target t where a.id = t.id
     returning t.record_id, t.field_id, t.status`;
 
+  // Release every identifier the retracted winners held, across all affected
+  // records, before recomputing any of them. Otherwise a claim from this very
+  // interaction on a record later in the order would block another record's
+  // previous value from coming back.
+  const released = retracted.filter((a) => a.status === 'active');
+  if (released.length > 0) {
+    await tx`
+      delete from record_identifiers ri
+      using unnest(${released.map((a) => a.record_id)}::uuid[],
+        ${released.map((a) => a.field_id)}::uuid[]) as r(record_id, field_id)
+      where ri.workspace_id = ${context.workspaceId}
+        and ri.record_id = r.record_id and ri.field_id = r.field_id`;
+  }
+
   const recomputed: string[] = [];
   for (const record of locked) {
     const fieldIds = [
