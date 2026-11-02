@@ -528,7 +528,7 @@ deterministic and testable.
 | `describe_schema`                   | The workspace (ID, name, applied templates, `initialized`) and a compact list of its objects and fields        |
 | `query_records`                     | Structured filter, sort and pagination over one object                                                         |
 | `get_record`                        | One record with its fields and links                                                                           |
-| `search`                            | Keyword search (Postgres full-text) across records, facts and interactions, with highlighted snippets          |
+| `search`                            | Keyword search (Postgres full-text) across records, facts and interactions                                     |
 | `get_context(record, token_budget)` | A ready-to-use pack: key fields, current facts, open tasks, recent interaction summaries, fitted to the budget |
 
 Every read hides soft-deleted parents/rows and superseded facts by default.
@@ -541,8 +541,9 @@ not summarized by a model; summarizing is the agent's job.
 ### 5.1 Search
 
 Search is Postgres full-text search, plus two standard extensions that ship
-with Postgres and are offered by managed services: `pg_trgm` (fuzzy matching)
-and `btree_gin` (combined indexes). No embeddings, no BM25 extension.
+with Postgres and are offered by managed services: `pg_trgm` (fuzzy name
+matching) and `btree_gin` (combined indexes). No embeddings, no BM25
+extension.
 
 #### What is indexed
 
@@ -553,64 +554,50 @@ and `btree_gin` (combined indexes). No embeddings, no BM25 extension.
 | `facts`        | `content`                                                                             | `search tsvector`, GIN on `(workspace_id, search)`   |
 | `interactions` | `title` (weighted higher) and `summary`                                               | `search tsvector`, GIN on `(workspace_id, search)`   |
 
-The server computes every `search` and `label` value, in the same
+The server computes every `search` and `label` value in the same
 transaction that writes the row (for records, the one that recomputes
-`records.data`). They are not Postgres generated columns: which record fields
-are searchable lives in schema metadata, and indexing and querying must share
-one normalization function. Each fact carries its `record_id` and each
-interaction its matched record IDs (possibly none or several), so a hit on a
-fact or interaction also points to records.
+`records.data`). They are not Postgres generated columns, because which
+record fields are searchable lives in schema metadata. Each fact carries its
+`record_id` and each interaction its matched record IDs (possibly none or
+several), so a hit on a fact or interaction also points to records.
 
 Every index leads with `workspace_id` (`btree_gin`), so a common word is
 matched within one workspace inside the index instead of across every
 tenant and filtered afterwards.
 
-#### Text normalization
-
 All `tsvector` columns use the `simple` configuration: lowercase, split on
-spaces and punctuation, no stemming. It handles mixed Hebrew and English
-text. Two additions cover what stemming would otherwise catch:
-
-- **Hebrew prefixes.** Hebrew attaches prefix letters to words. A Hebrew
-  word that starts with ו, ה, ב, כ, ל, מ or ש is also indexed without that
-  letter when two or more letters remain, so "בפגישה" ("in the meeting") is
-  indexed as both "בפגישה" and "פגישה" ("meeting"). Query terms expand the same
-  way. A word whose first letter is not really a prefix gains a spurious
-  variant; that costs some precision and is accepted.
-- **English plurals and endings.** Query terms of four or more letters are
-  also matched as prefixes (`meeting:*`), so "meeting" finds "meetings".
-
-Changing the configuration or the normalization later requires a background
-job that rebuilds stored search values.
+spaces and punctuation, no stemming and no language-specific rules. It
+behaves the same for every language, at the cost of matching whole words
+only: "meeting" does not find "meetings". Changing the configuration later
+requires a background job that rebuilds stored search values.
 
 #### How a search runs
 
-1. The server parses the query (quoted phrases, `OR`, `-word`) and builds the
-   `tsquery` with the normalization above.
-2. It runs one query each on records, facts and interactions. Workspace and
-   liveness filters (and, for facts, "current, not superseded") apply before
-   ranking and limit.
+1. Postgres parses the query with `websearch_to_tsquery('simple', …)`, which
+   handles quoted phrases, `OR` and `-word`. There is no custom parser.
+2. The server runs one query each on records, facts and interactions.
+   Workspace and liveness filters (and, for facts, "current, not
+   superseded") apply before ranking and limit.
 3. Each list is ranked with `ts_rank_cd`, using length normalization so long
-   texts do not outrank short, precise matches. Hits carry a snippet from
-   `ts_headline`.
-4. If the records query returns few hits, the server also matches
-   `records.label` by trigram similarity, so "Dana Levy" finds "Dana Levi".
-5. Results come back grouped by type, each with its record IDs. Scores from
-   the three lists are not comparable, so a caller that wants one list asks
-   for it merged by reciprocal rank fusion (rank positions, not scores).
+   texts do not outrank short, precise matches.
+4. If the records query finds nothing, the server matches `records.label` by
+   trigram similarity, so "Dana Levy" finds "Dana Levi".
+5. Results come back grouped by type. Each hit carries its record IDs and
+   its text as stored: a record's label, a fact's content, an interaction's
+   title and summary. Scores from the three lists are not comparable and are
+   not merged.
+
+Agents cover other word forms themselves: the `search` tool description
+tells them to add variants with `OR` ("meeting OR meetings").
 
 #### Why not BM25
 
-`ts_rank_cd` scores how often and how close together query words appear, but
-has no inverse document frequency: a word that appears everywhere in a
-workspace counts as much as a rare one. BM25 handles that, but Postgres has it
-only through extensions (for example ParadeDB's `pg_search` or Tiger Data's
-`pg_textsearch`) that many managed Postgres services do not offer, which
-would break "plain Postgres is the only dependency". Within one workspace
-the candidate set is small, and an agent reads the top results anyway.
-
-Search sits behind one internal interface, so a BM25 backend can be added
-later as an option without changing the API.
+`ts_rank_cd` has no inverse document frequency: a word that appears
+everywhere in a workspace counts as much as a rare one. BM25 handles that,
+but Postgres has it only through extensions (for example ParadeDB's
+`pg_search`) that many managed Postgres services do not offer, which would
+break "plain Postgres is the only dependency". Within one workspace the
+candidate set is small, and an agent reads the top results anyway.
 
 There is no `ask` endpoint: answering questions is the agent's job. It
 composes `search`, `query_records` and `get_context` with its own model.
@@ -1006,7 +993,7 @@ model inside it, so every layer except 5 is deterministic.
 
 | Layer                   | What it proves                                                                                                                                                                      | How                                                                                                 | Runs                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
-| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), Hebrew prefix and query parsing (5.1), value validation | Vitest, no database                                                                                 | Every PR               |
+| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                        | Vitest, no database                                                                                 | Every PR               |
 | 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget`        | Vitest against real Postgres; each test gets a fresh database                                       | Every PR               |
 | 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                                  | The Hono app called in-process against a real database                                              | Every PR               |
 | 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context                | A runner starts Postgres and the server, then drives them through the MCP client and REST           | Every PR (from step 2) |

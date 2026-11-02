@@ -161,8 +161,8 @@ export function labelOf(labelField: FieldState | undefined, value: unknown): str
 
 /**
  * The text a record's search vector is built from: the label (weighted
- * highest) and the values of searchable fields. The `simple` configuration
- * keeps mixed Hebrew and English intact (5.1).
+ * highest) and the values of searchable fields, indexed with the `simple`
+ * configuration (5.1).
  */
 export function searchTextOf(
   fields: FieldState[],
