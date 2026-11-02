@@ -21,7 +21,9 @@ export function normalizeEmail(email: string): string {
 }
 
 /** E.164 when the number parses; otherwise its digits, with a leading + kept. */
-export function normalizePhone(number: string, countryCode?: string): string {
+export function normalizePhone(raw: string, countryCode?: string): string {
+  // "00" is the international dialing prefix in most countries.
+  const number = raw.trim().replace(/^00(?=[1-9])/, '+');
   const parsed = parsePhoneNumberFromString(
     number,
     countryCode ? { defaultCountry: countryCode.toUpperCase() as never } : undefined,
