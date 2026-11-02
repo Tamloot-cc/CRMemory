@@ -1,6 +1,6 @@
 import type { Actor, SchemaOwner } from '@retainer/shared';
 import type { ApiKeyScope, SchemaChangeStatus } from '../db/schema.js';
-import { lockSchemaExclusive, type Tx } from '../db/tx.js';
+import { jsonValue, lockSchemaExclusive, type Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { applyOperations } from './apply.js';
 import { diffSchemas, isDestructive } from './diff.js';
@@ -296,7 +296,7 @@ async function insertChange(
     insert into schema_changes (workspace_id, status, request, operations, is_destructive, reason,
       requested_by, decided_by, applied_version, error, decided_at)
     values (${change.workspaceId}, ${change.status}, ${tx.json(change.request)},
-      ${tx.json(change.operations as never)}, ${change.isDestructive}, ${change.reason},
+      ${tx.json(jsonValue(change.operations))}, ${change.isDestructive}, ${change.reason},
       ${tx.json(change.requestedBy)}, ${change.decidedBy ? tx.json(change.decidedBy) : null},
       ${change.appliedVersion ?? null}, ${change.error ?? null},
       ${decided ? tx`now()` : null})
@@ -319,7 +319,7 @@ async function updateChange(
     update schema_changes set status = ${update.status}, decided_by = ${tx.json(update.decidedBy)},
       decided_at = now(), applied_version = ${update.appliedVersion ?? null},
       error = ${update.error ?? null},
-      operations = ${update.operations ? tx.json(update.operations as never) : tx`operations`}
+      operations = ${update.operations ? tx.json(jsonValue(update.operations)) : tx`operations`}
     where id = ${id}
     returning *`;
   return toView(row as ChangeRow);

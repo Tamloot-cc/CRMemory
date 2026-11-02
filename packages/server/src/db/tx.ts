@@ -3,6 +3,9 @@ import type { Sql } from './client.js';
 
 export type Tx = TransactionSql<Record<string, never>>;
 
+/** What `sql.json` accepts. */
+type JSONValue = Parameters<Tx['json']>[0];
+
 /**
  * Runs `fn` in a transaction scoped to one workspace. `app.workspace_id` is
  * set for this transaction only, so row-level security confines every query
@@ -35,4 +38,12 @@ export async function lockSchemaShared(tx: Tx, workspaceId: string): Promise<voi
 /** Schema changes hold the workspace schema lock exclusively. */
 export async function lockSchemaExclusive(tx: Tx, workspaceId: string): Promise<void> {
   await tx`select pg_advisory_xact_lock(${SCHEMA_LOCK_CLASS}::int4, hashtext(${workspaceId}))`;
+}
+
+/**
+ * Values headed for jsonb columns. They come from validated input or from
+ * jsonb itself, so they are JSON; postgres.js types `sql.json` narrowly.
+ */
+export function jsonValue(value: unknown): JSONValue {
+  return value as JSONValue;
 }

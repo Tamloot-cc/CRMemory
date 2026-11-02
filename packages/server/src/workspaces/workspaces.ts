@@ -1,5 +1,5 @@
 import type { Sql } from '../db/client.js';
-import { inWorkspace } from '../db/tx.js';
+import { inWorkspace, type Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { SYSTEM_ACTOR } from '../schema-engine/engine.js';
 import { applyTemplate, seedBaseObjects } from '../templates/apply.js';
@@ -104,6 +104,13 @@ export async function getWorkspace(sql: Sql, idOrSlug: string): Promise<Workspac
   const [row] = await sql<WorkspaceRow[]>`
     select * from workspaces where ${isUuid ? sql`id = ${idOrSlug}` : sql`slug = ${idOrSlug}`}`;
   if (!row) throw new AppError(404, 'not_found', `workspace "${idOrSlug}" not found`);
+  return toWorkspace(row);
+}
+
+/** The workspace of a workspace transaction (RLS shows only that one). */
+export async function readWorkspace(tx: Tx, id: string): Promise<Workspace> {
+  const [row] = await tx<WorkspaceRow[]>`select * from workspaces where id = ${id}`;
+  if (!row) throw new AppError(404, 'not_found', `workspace "${id}" not found`);
   return toWorkspace(row);
 }
 

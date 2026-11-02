@@ -1,6 +1,6 @@
 import type { Actor, ActorType } from '@retainer/shared';
 import type { AssertionStatus, ReviewReason } from '../db/schema.js';
-import type { Tx } from '../db/tx.js';
+import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
@@ -214,7 +214,7 @@ export async function writeFields(
       insert into field_assertions (workspace_id, record_id, field_id, value, actor,
         source_interaction_id, confidence, status, review_reason, observed_at, created_at)
       values (${context.workspaceId}, ${record.id}, ${field.id as string},
-        ${value === null ? null : tx.json(value as never)}, ${tx.json(context.actor)},
+        ${value === null ? null : tx.json(jsonValue(value))}, ${tx.json(context.actor)},
         ${options.sourceInteractionId ?? null}, ${confidence},
         ${reason ? 'pending_review' : 'active'}, ${reason}, ${observedAt}, clock_timestamp())
       returning id, field_id, value, actor, status, observed_at, created_at`;
@@ -264,7 +264,7 @@ export async function writeFields(
 
   const { label, body } = searchTextOf(object.state.fields, object.labelField, data);
   const [updated] = await tx<{ updated_at: Date }[]>`
-    update records set data = ${tx.json(data as never)}, label = ${label},
+    update records set data = ${tx.json(jsonValue(data))}, label = ${label},
       search = ${searchVector(tx, label, body)}, updated_at = clock_timestamp(),
       updated_by = ${tx.json(context.actor)}
     where id = ${record.id}
