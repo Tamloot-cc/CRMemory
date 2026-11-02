@@ -6,7 +6,7 @@ import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.j
 import type { FieldState } from '../schema-engine/types.js';
 import { identifiersFor, searchTextOf } from './derive.js';
 import { searchVector } from './search-sql.js';
-import { pickWinner, type RankedAssertion, reviewReason } from './winner.js';
+import { compareAssertions, pickWinner, type RankedAssertion, reviewReason } from './winner.js';
 
 /** Everything a write needs: who, where, and the schema it validated against. */
 export type WriteContext = {
@@ -291,6 +291,11 @@ async function applyWinners(
  * (rule 2.4): the winner becomes `active`, the rest `superseded`, and the
  * derived data follows. Used after assertions stop counting, e.g. when their
  * source is retracted.
+ *
+ * An older value can no longer be restored when another record has since
+ * claimed it (1.2). Rather than fail, so that a retraction always takes
+ * effect, that candidate waits for review (`unique_conflict`) and the next
+ * one wins; accepting it later fails until the claim is released.
  */
 export async function recomputeFields(
   tx: Tx,
@@ -309,9 +314,20 @@ export async function recomputeFields(
       and status in ('active', 'superseded')`;
   const winners = new Map<FieldState, AssertionRow | undefined>();
   for (const field of fields) {
-    const candidates = rows.filter((r) => r.field_id === field.id);
-    const winnerId = pickWinner(candidates.map(toRanked))?.id;
-    const winner = candidates.find((a) => a.id === winnerId);
+    const ranked = rows
+      .filter((r) => r.field_id === field.id)
+      .sort((a, b) => compareAssertions(toRanked(a), toRanked(b)));
+    let winner: AssertionRow | undefined;
+    for (const candidate of ranked) {
+      if (!(await claimedElsewhere(tx, context.workspaceId, record.id, field, candidate.value))) {
+        winner = candidate;
+        break;
+      }
+      await tx`update field_assertions set status = 'pending_review',
+          review_reason = 'unique_conflict'
+        where id = ${candidate.id}`;
+    }
+    const winnerId = winner?.id;
     if (winnerId) {
       await tx`update field_assertions set status = 'active'
         where id = ${winnerId} and status <> 'active'`;
@@ -322,6 +338,25 @@ export async function recomputeFields(
     winners.set(field, winner);
   }
   await applyWinners(tx, context, object, record, winners);
+}
+
+/** Whether another record holds a unique claim on any identifier of `value`. */
+async function claimedElsewhere(
+  tx: Tx,
+  workspaceId: string,
+  recordId: string,
+  field: FieldState,
+  value: unknown,
+): Promise<boolean> {
+  if (!field.isUnique) return false;
+  const values = identifiersFor(field, value).map((i) => i.value);
+  if (values.length === 0) return false;
+  const [held] = await tx`
+    select 1 from record_identifiers
+    where workspace_id = ${workspaceId} and field_id = ${field.id as string} and is_claim
+      and value = any(${values}::text[]) and record_id <> ${recordId}
+    limit 1`;
+  return held !== undefined;
 }
 
 /**

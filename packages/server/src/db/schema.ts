@@ -429,8 +429,11 @@ export const ASSERTION_STATUSES = [
 ] as const;
 export type AssertionStatus = (typeof ASSERTION_STATUSES)[number];
 
-/** Why an assertion waits for review (rule 2.3). */
-export type ReviewReason = 'outranked' | 'low_confidence';
+/**
+ * Why an assertion waits for review (rule 2.3). `unique_conflict`: a
+ * recomputation would have restored a value another record now claims.
+ */
+export type ReviewReason = 'outranked' | 'low_confidence' | 'unique_conflict';
 
 /** A claimed value for one field of one record. `records.data` is derived from these. */
 export const fieldAssertions = pgTable(

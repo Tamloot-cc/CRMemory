@@ -234,7 +234,8 @@ the old interaction (`DELETE /v1/interactions/:id`).
    months-old CRM sync and vanish into `superseded`.) An older or equal agent
    value is simply `superseded`. An agent assertion below the workspace's
    confidence threshold is also `pending_review`. Accepting a pending
-   assertion re-asserts it with the reviewing user as actor and retaining its source provenance. Acceptance
+   assertion re-asserts it with the reviewing user as actor and retaining its source provenance
+   and `observed_at`, so a value a person set after the source still stands. Acceptance
    requires a `user` actor with write permission, not an agent choosing a
    reviewer identity.
 4. **The value is always recomputable.** For each field, the winner among
@@ -246,7 +247,10 @@ the old interaction (`DELETE /v1/interactions/:id`).
    it cannot let an older `superseded` claim from that source win again.
    Retraction sets every `active`, `superseded` or `pending_review`
    assertion citing the source to `retracted`, which never counts again,
-   and recomputes the fields where one of them was winning.
+   and recomputes the fields where one of them was winning. If the value
+   that would win again is now claimed by another record (1.2), it becomes
+   `pending_review` (reason `unique_conflict`) and the next one wins, so a
+   retraction always takes effect.
 5. **Writes to one record are serialized.** A write locks the record row
    (`SELECT … FOR UPDATE`), inserts its assertions, recomputes only the
    touched keys, and updates `data`, `record_links` and `record_identifiers`
@@ -271,9 +275,9 @@ interactions. Reads exclude deleted parents as well as deleted rows: a
 record's facts are hidden with it. Retracting an interaction also excludes
 the claims that cite it and recomputes field winners. Facts with other live
 sources may remain; a fact with no live source is hidden on read.
-A write citing an interaction locks it in share mode before locking any
-record, and retraction locks it exclusively before locking the affected
-records, so a claim either commits before the retraction (and is retracted
+A write citing an interaction (including accepting a pending claim from it)
+locks it in share mode before locking any record, and retraction locks it
+exclusively before locking the affected records, so a claim either commits before the retraction (and is retracted
 with the rest) or sees the source retracted and fails.
 Restoring a source must revalidate its derived claims before exposing them.
 

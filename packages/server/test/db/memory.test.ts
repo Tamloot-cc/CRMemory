@@ -590,6 +590,77 @@ describe('retracting an interaction (2.1, rule 2.4)', () => {
     expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('Set by a person');
   });
 
+  it('still retracts when another record has since claimed the older value', async () => {
+    const oldEmail = email();
+    const earlier = await log({ occurredAt: '2026-09-01T10:00:00Z' });
+    const dana = await person({ emails: oldEmail }, AGENT, earlier.id);
+    const call = await log({ occurredAt: '2026-10-01T10:00:00Z' });
+    await patchRecord(app, as(AGENT), dana.id, { values: { emails: email() }, source: call.id });
+    // Dana's old address is free again, and another person takes it.
+    const ron = await person({ emails: oldEmail });
+
+    const result = await retractInteractionFor(app, as(AGENT), call.id);
+    expect(result.recomputedRecordIds).toEqual([dana.id]);
+    // The old value cannot come back while Ron holds it: it waits for review.
+    expect((await readRecord(app, as(AGENT), dana.id)).fields.emails).toBeUndefined();
+    await expectDataMatchesAssertions(dana.id);
+    const review = await reviewQueue(app, as(USER), 100);
+    const item = review.pendingAssertions.find((a) => a.recordId === dana.id);
+    expect(item).toMatchObject({ field: 'emails', reason: 'unique_conflict' });
+    await expect(
+      decideAssertion(app, as(USER), item?.id as string, 'accept'),
+    ).rejects.toMatchObject({ code: 'unique_conflict', details: { recordId: ron.id } });
+  });
+
+  it('accepts a pending claim keeping its observed_at, so a later edit by a person stands', async () => {
+    const meeting = await log({ kind: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
+    const dana = await person({ jobTitle: 'From the meeting' }, USER, meeting.id);
+    const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
+    await patchRecord(app, as(AGENT), dana.id, {
+      values: { jobTitle: 'From the call' },
+      source: call.id,
+    });
+    // A person edits the field directly after the call.
+    await patchRecord(app, as(USER), dana.id, { values: { jobTitle: 'Edited today' } });
+    const review = await reviewQueue(app, as(USER), 100);
+    const item = review.pendingAssertions.find((a) => a.recordId === dana.id);
+
+    const accepted = await decideAssertion(app, as(USER), item?.id as string, 'accept');
+    expect(accepted.fields).toEqual({ jobTitle: 'superseded' });
+    expect(accepted.record.fields.jobTitle).toBe('Edited today');
+    const [reasserted] = await db.owner<{ observed_at: Date; source_interaction_id: string }[]>`
+      select observed_at, source_interaction_id from field_assertions
+      where record_id = ${dana.id} and value = '"From the call"' and actor->>'type' = 'user'`;
+    expect(reasserted?.observed_at.toISOString()).toBe('2026-10-30T10:00:00.000Z');
+    expect(reasserted?.source_interaction_id).toBe(call.id);
+  });
+
+  it('does not deadlock when a pending claim is accepted while its source is retracted', async () => {
+    for (let round = 0; round < 5; round++) {
+      const meeting = await log({ kind: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
+      const dana = await person({ jobTitle: 'Person value' }, USER, meeting.id);
+      const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
+      await patchRecord(app, as(AGENT), dana.id, {
+        values: { jobTitle: 'Agent value' },
+        source: call.id,
+      });
+      const review = await reviewQueue(app, as(USER), 500);
+      const item = review.pendingAssertions.find((a) => a.recordId === dana.id);
+
+      const [accept, retract] = await Promise.allSettled([
+        decideAssertion(app, as(USER), item?.id as string, 'accept'),
+        retractInteractionFor(app, as(AGENT), call.id),
+      ]);
+      expect(retract.status).toBe('fulfilled');
+      if (accept.status === 'rejected') {
+        expect(['not_pending', 'source_retracted']).toContain(accept.reason.code);
+      }
+      // Either way the call's claims no longer count.
+      expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('Person value');
+      await expectDataMatchesAssertions(dana.id);
+    }
+  });
+
   it('serializes with writes citing it: every claim from it ends up retracted', async () => {
     const dana = await person();
     const call = await log();
