@@ -252,6 +252,7 @@ async function applyWinners(
   object: CompiledObject,
   record: LockedRecord,
   winners: Map<FieldState, AssertionRow | undefined>,
+  identifiersDone: ReadonlySet<FieldState> = new Set(),
 ): Promise<void> {
   const data = { ...record.data };
   for (const [field, winner] of winners) {
@@ -270,7 +271,7 @@ async function applyWinners(
     if (winner) data[field.key] = winner.value;
     else delete data[field.key];
 
-    if (hasIdentifiers(field)) {
+    if (hasIdentifiers(field) && !identifiersDone.has(field)) {
       await replaceIdentifiers(tx, context.workspaceId, record.id, field, winner?.value ?? null);
     }
   }
@@ -313,19 +314,34 @@ export async function recomputeFields(
     where record_id = ${record.id} and field_id = any(${fields.map((f) => f.id as string)}::uuid[])
       and status in ('active', 'superseded')`;
   const winners = new Map<FieldState, AssertionRow | undefined>();
+  const claimed = new Set<FieldState>();
   for (const field of fields) {
     const ranked = rows
       .filter((r) => r.field_id === field.id)
       .sort((a, b) => compareAssertions(toRanked(a), toRanked(b)));
-    let winner: AssertionRow | undefined;
-    for (const candidate of ranked) {
-      if (!(await claimedElsewhere(tx, context.workspaceId, record.id, field, candidate.value))) {
-        winner = candidate;
-        break;
+    let winner: AssertionRow | undefined = ranked[0];
+    if (field.isUnique) {
+      // The claim attempt itself is the test, so a claim another transaction
+      // has made but not yet committed is waited for, not missed.
+      winner = undefined;
+      for (const candidate of ranked) {
+        const holder = await claimIdentifiers(
+          tx,
+          context.workspaceId,
+          record.id,
+          field,
+          candidate.value,
+        );
+        if (!holder) {
+          winner = candidate;
+          break;
+        }
+        await tx`update field_assertions set status = 'pending_review',
+            review_reason = 'unique_conflict'
+          where id = ${candidate.id}`;
       }
-      await tx`update field_assertions set status = 'pending_review',
-          review_reason = 'unique_conflict'
-        where id = ${candidate.id}`;
+      if (!winner) await claimIdentifiers(tx, context.workspaceId, record.id, field, null);
+      claimed.add(field);
     }
     const winnerId = winner?.id;
     if (winnerId) {
@@ -337,26 +353,7 @@ export async function recomputeFields(
         and status = 'active' and id is distinct from ${winnerId ?? null}::uuid`;
     winners.set(field, winner);
   }
-  await applyWinners(tx, context, object, record, winners);
-}
-
-/** Whether another record holds a unique claim on any identifier of `value`. */
-async function claimedElsewhere(
-  tx: Tx,
-  workspaceId: string,
-  recordId: string,
-  field: FieldState,
-  value: unknown,
-): Promise<boolean> {
-  if (!field.isUnique) return false;
-  const values = identifiersFor(field, value).map((i) => i.value);
-  if (values.length === 0) return false;
-  const [held] = await tx`
-    select 1 from record_identifiers
-    where workspace_id = ${workspaceId} and field_id = ${field.id as string} and is_claim
-      and value = any(${values}::text[]) and record_id <> ${recordId}
-    limit 1`;
-  return held !== undefined;
+  await applyWinners(tx, context, object, record, winners, claimed);
 }
 
 /**
@@ -372,6 +369,23 @@ async function replaceIdentifiers(
   field: FieldState,
   value: unknown,
 ): Promise<void> {
+  const conflict = await claimIdentifiers(tx, workspaceId, recordId, field, value);
+  if (conflict) throw new UniqueConflictError(field, conflict.value, conflict.recordId);
+}
+
+/**
+ * Replaces a field's identifier rows, returning the first claim another
+ * record holds instead of throwing. ON CONFLICT DO NOTHING leaves the
+ * transaction usable, and the next call starts by deleting this field's
+ * rows, so a caller can try another value.
+ */
+async function claimIdentifiers(
+  tx: Tx,
+  workspaceId: string,
+  recordId: string,
+  field: FieldState,
+  value: unknown,
+): Promise<{ value: string; recordId: string } | null> {
   const fieldId = field.id as string;
   await tx`delete from record_identifiers where record_id = ${recordId} and field_id = ${fieldId}`;
   for (const identifier of identifiersFor(field, value)) {
@@ -392,9 +406,10 @@ async function replaceIdentifiers(
         select record_id from record_identifiers
         where workspace_id = ${workspaceId} and field_id = ${fieldId}
           and value = ${identifier.value} and is_claim`;
-      throw new UniqueConflictError(field, identifier.value, holder?.record_id ?? 'unknown');
+      return { value: identifier.value, recordId: holder?.record_id ?? 'unknown' };
     }
   }
+  return null;
 }
 
 /** Inserts an empty record row; the caller writes its values with `writeFields`. */

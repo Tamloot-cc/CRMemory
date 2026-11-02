@@ -612,6 +612,38 @@ describe('retracting an interaction (2.1, rule 2.4)', () => {
     ).rejects.toMatchObject({ code: 'unique_conflict', details: { recordId: ron.id } });
   });
 
+  it('still retracts when another record claims the older value at the same time', async () => {
+    for (let round = 0; round < 8; round++) {
+      const oldEmail = email();
+      const earlier = await log({ occurredAt: '2026-09-01T10:00:00Z' });
+      const dana = await person({ emails: oldEmail }, AGENT, earlier.id);
+      const call = await log({ occurredAt: '2026-10-01T10:00:00Z' });
+      await patchRecord(app, as(AGENT), dana.id, { values: { emails: email() }, source: call.id });
+
+      const [retract, create] = await Promise.allSettled([
+        retractInteractionFor(app, as(AGENT), call.id),
+        createRecord(app, as(AGENT2), 'person', { emails: oldEmail }),
+      ]);
+      expect(retract.status).toBe('fulfilled');
+      const danaEmails = (await readRecord(app, as(AGENT), dana.id)).fields.emails;
+      if (create.status === 'fulfilled') {
+        // The other record took the address: Dana's old value waits for review.
+        expect(danaEmails).toBeUndefined();
+      } else {
+        // Dana got the address back first, so the create lost.
+        expect(create.reason).toMatchObject({
+          code: 'unique_conflict',
+          details: { recordId: dana.id },
+        });
+        expect(danaEmails).toMatchObject({ primary: oldEmail });
+      }
+      await expectDataMatchesAssertions(dana.id);
+      const holders = await db.owner`
+        select record_id from record_identifiers where value = ${oldEmail} and is_claim`;
+      expect(holders).toHaveLength(1);
+    }
+  });
+
   it('accepts a pending claim keeping its observed_at, so a later edit by a person stands', async () => {
     const meeting = await log({ kind: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
     const dana = await person({ jobTitle: 'From the meeting' }, USER, meeting.id);
