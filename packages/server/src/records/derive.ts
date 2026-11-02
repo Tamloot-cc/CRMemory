@@ -5,7 +5,7 @@ import type {
   LinksValue,
   PhonesValue,
 } from '@retainer/shared';
-import { parsePhoneNumberFromString } from 'libphonenumber-js';
+import { type CountryCode, parsePhoneNumberFromString } from 'libphonenumber-js';
 import type { IdentifierKind } from '../db/schema.js';
 import type { FieldState } from '../schema-engine/types.js';
 
@@ -26,7 +26,7 @@ export function normalizePhone(raw: string, countryCode?: string): string {
   const number = raw.trim().replace(/^00(?=[1-9])/, '+');
   const parsed = parsePhoneNumberFromString(
     number,
-    countryCode ? { defaultCountry: countryCode.toUpperCase() as never } : undefined,
+    countryCode ? { defaultCountry: countryCode.toUpperCase() as CountryCode } : undefined,
   );
   if (parsed?.isPossible()) return parsed.number;
   const digits = number.replace(/[^\d]/g, '');

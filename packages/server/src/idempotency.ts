@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Tx } from './db/tx.js';
+import { jsonValue, type Tx } from './db/tx.js';
 import { AppError } from './errors.js';
 import { stableJson } from './records/winner.js';
 
@@ -52,5 +52,5 @@ export async function claimIdempotencyKey(
 }
 
 export async function storeIdempotentResult(tx: Tx, id: string, result: unknown): Promise<void> {
-  await tx`update idempotency_keys set result = ${tx.json(result as never)} where id = ${id}`;
+  await tx`update idempotency_keys set result = ${tx.json(jsonValue(result))} where id = ${id}`;
 }

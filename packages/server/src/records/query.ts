@@ -1,7 +1,7 @@
 import type { FieldType } from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { z } from 'zod';
-import type { Tx } from '../db/tx.js';
+import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
@@ -252,17 +252,17 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
     }
     // Containment per value uses the GIN index on data.
     const alternatives = raw.map(
-      (v) => tx`r.data @> ${tx.json({ [key]: valueFor(field, v) } as never)}`,
+      (v) => tx`r.data @> ${tx.json(jsonValue({ [key]: valueFor(field, v) }))}`,
     );
     return tx`(${alternatives.reduce((a, b) => tx`${a} or ${b}`)})`;
   }
 
   const value = valueFor(field, raw);
   if (op === 'eq' && field.type !== 'date_time') {
-    return tx`r.data @> ${tx.json({ [key]: value } as never)}`;
+    return tx`r.data @> ${tx.json(jsonValue({ [key]: value }))}`;
   }
   if (op === 'neq' && field.type !== 'date_time') {
-    return tx`not (r.data @> ${tx.json({ [key]: value } as never)})`;
+    return tx`not (r.data @> ${tx.json(jsonValue({ [key]: value }))})`;
   }
   const sqlOp = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
   if (!sqlOp) throw invalidFilter(`unsupported operator ${op}`);
