@@ -92,8 +92,9 @@ describe('fact dedupe (4.2)', () => {
 
   it('finds duplicates a later merge brings together, comparing only changed records', async () => {
     const ws = await newWorkspace();
-    const a = await createRecord(app, caller(ws), 'person', { emails: email() });
-    const b = await createRecord(app, caller(ws), 'person', { emails: email() });
+    // Records with facts but no field values: a merge moves facts only.
+    const a = await createRecord(app, caller(ws), 'person', {});
+    const b = await createRecord(app, caller(ws), 'person', {});
     const source = await call(ws);
     await remember(app, caller(ws), a.id, { text: 'Owns the budget', source: source.id });
     await remember(app, caller(ws), b.id, { text: 'Owns the budget', source: source.id });

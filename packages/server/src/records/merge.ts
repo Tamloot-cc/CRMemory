@@ -190,6 +190,11 @@ export async function mergeRecords(
     update field_assertions set record_id = ${a} where record_id = ${b} returning field_id`;
   await tx`update facts set record_id = ${a} where record_id = ${b}`;
   await tx`update interaction_participants set record_id = ${a} where record_id = ${b}`;
+  // The survivor changed even when no field did (it gained B's facts), so
+  // the consolidator's next run compares it again.
+  await tx`
+    update records set updated_at = clock_timestamp(), updated_by = ${tx.json(context.actor)}
+    where id = ${a}`;
 
   const before = survivor.data;
   await recomputeFields(tx, context, object, survivor, [...new Set(moved.map((m) => m.field_id))]);

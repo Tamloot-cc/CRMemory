@@ -4,7 +4,7 @@ import { INTERACTION_KINDS, type InteractionKind, type UnmatchedReason } from '.
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { requestHash } from '../idempotency.js';
-import { isSuppressed, suppressedOf } from '../privacy/suppression.js';
+import { isSuppressed, suppressedOf, suppressionDigest } from '../privacy/suppression.js';
 import { searchVector } from '../records/search-sql.js';
 import {
   lockRecordsForUpdate,
@@ -292,6 +292,17 @@ export async function logInteraction(
     );
   }
 
+  // A handle erased by forget is never stored again (2.1), not even inside
+  // the unkeyed request hash, where the stored fields beside it would let a
+  // database dump confirm guesses. The caller holds the privacy lock in
+  // shared mode, so forget cannot run between this check and the commit.
+  const suppressed = await suppressedOf(
+    tx,
+    context.workspaceId,
+    participants.flatMap((p) => (p.handle ? [p.handle] : [])),
+  );
+  const erased = participants.map((p) => p.handle !== null && isSuppressed(suppressed, p.handle));
+
   const hash = requestHash({
     kind: input.kind,
     channel: input.channel,
@@ -299,8 +310,11 @@ export async function logInteraction(
     occurredAt: occurredAt.toISOString(),
     title: input.title ?? null,
     summary: input.summary ?? null,
-    participants: participants.map((p) => ({
-      handle: p.handle?.value ?? null,
+    participants: participants.map((p, i) => ({
+      handle:
+        p.handle && erased[i]
+          ? `suppressed:${suppressionDigest(context.workspaceId, p.handle)}`
+          : (p.handle?.value ?? null),
       recordId: p.recordId,
       role: p.role,
     })),
@@ -317,15 +331,6 @@ export async function logInteraction(
 
   if (!inserted) return existingInteraction(tx, context.workspaceId, input, hash);
 
-  // A handle erased by forget is never stored again (2.1). The caller holds
-  // the privacy lock in shared mode, so forget cannot run between this
-  // check and the commit.
-  const suppressed = await suppressedOf(
-    tx,
-    context.workspaceId,
-    participants.flatMap((p) => (p.handle ? [p.handle] : [])),
-  );
-  const erased = participants.map((p) => p.handle !== null && isSuppressed(suppressed, p.handle));
   const kept = participants.map((p, i) => (erased[i] ? { ...p, handle: null } : p));
   const resolutions = await resolveParticipants(tx, context.workspaceId, kept);
   const rows = kept.map((p, position) => {

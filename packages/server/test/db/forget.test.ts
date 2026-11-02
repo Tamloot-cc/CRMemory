@@ -1,6 +1,7 @@
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
+import { requestHash } from '../../src/idempotency.js';
 import type { LogInteractionInput } from '../../src/memory/interactions.js';
 import { factsOf, logInteractionFor, readInteraction, remember } from '../../src/memory/service.js';
 import { SUPPRESSION_KEY_ENV } from '../../src/privacy/suppression.js';
@@ -164,9 +165,11 @@ describe('forget (2.1)', () => {
       }),
     ).rejects.toMatchObject({ code: 'suppressed' });
 
-    const logged = await log({
+    const input = {
+      externalId: 'after-forget-1',
       participants: [{ handle: 'gone@forget.test', role: 'customer' }, { recordId: someone.id }],
-    });
+    };
+    const logged = await log(input);
     expect(logged.participants.unmatched).toEqual([
       { handle: null, role: 'customer', reason: 'suppressed' },
     ]);
@@ -175,6 +178,44 @@ describe('forget (2.1)', () => {
         db.owner`select count(*)::int from interaction_participants where handle = 'gone@forget.test'`,
       ),
     ).toBe(0);
+
+    // The stored request hash does not cover the plain handle, so a dump
+    // cannot confirm a guess; a retry with the same input still matches.
+    const [stored] = await db.owner<{ request_hash: string }[]>`
+      select request_hash from interactions where id = ${logged.id}`;
+    const plain = requestHash({
+      kind: 'call',
+      channel: 'zoom',
+      externalId: 'after-forget-1',
+      occurredAt: new Date('2026-10-29T14:00:00+02:00').toISOString(),
+      title: null,
+      summary: null,
+      participants: [
+        { handle: 'gone@forget.test', recordId: null, role: 'customer' },
+        { handle: null, recordId: someone.id, role: null },
+      ],
+    });
+    expect(stored?.request_hash).not.toBe(plain);
+    expect(await log(input)).toMatchObject({ id: logged.id, created: false });
+
+    // Control: for a handle that is not suppressed, the same construction matches.
+    const control = await log({
+      externalId: 'after-forget-2',
+      participants: [{ handle: 'still@forget.test', role: 'customer' }],
+    });
+    const [controlRow] = await db.owner<{ request_hash: string }[]>`
+      select request_hash from interactions where id = ${control.id}`;
+    expect(controlRow?.request_hash).toBe(
+      requestHash({
+        kind: 'call',
+        channel: 'zoom',
+        externalId: 'after-forget-2',
+        occurredAt: new Date('2026-10-29T14:00:00+02:00').toISOString(),
+        title: null,
+        summary: null,
+        participants: [{ handle: 'still@forget.test', recordId: null, role: 'customer' }],
+      }),
+    );
   });
 
   it('forgets every record merged into the person, and soft-deleted records too', async () => {
