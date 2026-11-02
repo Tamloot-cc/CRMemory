@@ -37,9 +37,10 @@ workspace package not marked `private` is published.
    docker build -f docker/Dockerfile .
    ```
 
-4. Optionally run the **Release** workflow by hand from the Actions tab with
-   _dry run_ checked: it runs CI, packs the npm packages and builds the
-   multi-architecture image without publishing anything.
+4. Optionally run the **Release** workflow by hand from the Actions tab. A
+   manual run is always a dry run: it runs CI, packs the npm packages and
+   builds the multi-architecture image without publishing anything. Only a
+   tag push publishes.
 5. Tag `main` and push the tag:
 
    ```sh

@@ -8,19 +8,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A manual run is always a dry run: only a tag push publishes.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Build and pack only; publish nothing
-        type: boolean
-        default: true
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+  DRY_RUN: ${{ github.event_name != 'push' }}
   IMAGE: ghcr.io/${{ github.repository_owner }}/retainer
 
 jobs:

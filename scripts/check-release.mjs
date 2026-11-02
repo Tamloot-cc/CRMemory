@@ -26,7 +26,12 @@ for (const pkg of packages) {
     problems.push(`${pkg.name} would be published but is ${pkg.license}, not MIT`);
   }
 }
-if (!read('CHANGELOG.md').includes(`## ${version}`)) {
+// The whole heading line, as the release workflow extracts the notes by it.
+if (
+  !read('CHANGELOG.md')
+    .split('\n')
+    .some((line) => line.trimEnd() === `## ${version}`)
+) {
   problems.push(`CHANGELOG.md has no "## ${version}" section`);
 }
 
