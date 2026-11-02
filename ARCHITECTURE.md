@@ -806,8 +806,8 @@ A context pack is assembled by fixed rules (5):
   wrote it and when it was observed, so a value is never mistaken for a
   stated fact. The budget applies to the sections after it.
 - The other sections fill in this order until the budget is spent: open
-  tasks (tasks linked to the record whose status is not `done`, earliest due
-  date first, undated last), current facts (not superseded or retracted,
+  tasks (tasks linked to the record through an active relation field whose
+  status is not `done`, earliest due date first, undated last), current facts (not superseded or retracted,
   newest `validFrom` first), then recent interactions (newest first, without
   the notes `remember` created, whose text is already a fact). Items
   are never cut mid-text; a section stops at the last whole item that fits.

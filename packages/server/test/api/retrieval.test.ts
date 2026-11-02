@@ -372,6 +372,35 @@ describe('GET /v1/records/:id/context', () => {
     expect(res.body.omitted.openTasks).toBe(0);
   });
 
+  it('drops open tasks linked only through a deleted relation field, as get_record does', async () => {
+    // Its own workspace: deleting task.person here would change the others' schema.
+    const own = await t.setupWorkspace(
+      { name: `Links ${word()}`, template: 'sales' },
+      {
+        agent: { actor: { type: 'agent', id: 'inbox' }, scopes: ['read', 'write'] },
+        admin: { actor: { type: 'user', id: 'dana' }, scopes: ['admin'] },
+      },
+    );
+    const noa = await create('person', { name: 'Noa Levi' }, own.keys.agent);
+    const task = await create(
+      'task',
+      { title: 'Call', status: 'todo', person: noa },
+      own.keys.agent,
+    );
+    const before = await context(noa, '', own.keys.agent);
+    expect(before.body.openTasks.map((x: { id: string }) => x.id)).toEqual([task]);
+
+    const change = await t.request('/v1/schema/changes', {
+      key: own.keys.admin,
+      body: { operations: [{ op: 'delete_field', object: 'task', field: 'person' }] },
+    });
+    expect(change.body.status).toBe('applied');
+
+    const after = await context(noa, '', own.keys.agent);
+    expect(after.body.openTasks).toEqual([]);
+    expect(after.body.omitted.openTasks).toBe(0);
+  });
+
   it('refuses deleted, unknown and foreign records', async () => {
     const company = await create('company', { name: `Deleted ${word()}` });
     expect(

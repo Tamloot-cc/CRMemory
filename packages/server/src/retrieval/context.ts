@@ -161,8 +161,19 @@ async function currentFields(
 }
 
 /**
- * Live tasks linked to the record in either direction whose status is not
- * `done`: earliest due date first, undated last.
+ * IDs of active fields. A deleted relation field keeps its `record_links`
+ * rows, and `get_record` hides them; links count only through active fields.
+ */
+function activeFieldIds(schema: CompiledSchema): string[] {
+  return [...schema.fieldOwners]
+    .filter(([id, object]) => object.fieldsById.get(id)?.status === 'active')
+    .map(([id]) => id);
+}
+
+/**
+ * Live tasks linked to the record in either direction, through an active
+ * relation field, whose status is not `done`: earliest due date first,
+ * undated last.
  */
 async function openTasks(
   tx: Tx,
@@ -192,8 +203,9 @@ async function openTasks(
       and t.deleted_at is null and t.id <> ${recordId}
       and exists (
         select 1 from record_links l
-        where (l.source_record_id = t.id and l.target_record_id = ${recordId})
-           or (l.source_record_id = ${recordId} and l.target_record_id = t.id))
+        where l.field_id = any(${activeFieldIds(schema)}::uuid[])
+          and ((l.source_record_id = t.id and l.target_record_id = ${recordId})
+            or (l.source_record_id = ${recordId} and l.target_record_id = t.id)))
       ${notDone}
     order by ${dueOrder} t.created_at, t.id
     limit ${limit}`;
