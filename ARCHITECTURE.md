@@ -27,11 +27,11 @@ invariants. Inline schema notes identify changes still needed in
 
 ### 1.1 Schema (metadata)
 
-| Table            | Holds                                                                                                           |
-| ---------------- | --------------------------------------------------------------------------------------------------------------- |
-| `object_types`   | The kinds of things tracked: `person`, `company`, `deal`, `task`, plus custom objects                           |
-| `fields`         | The fields of each object: type, settings, flags (`is_nullable`, `is_unique`, `is_filterable`, `is_searchable`) |
-| `schema_changes` | Every applied, proposed, rejected or failed change, with its operations and actor                               |
+| Table            | Holds                                                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `object_types`   | The kinds of things tracked: `person`, `company`, `task` in every workspace, more from templates (3.1), plus custom objects |
+| `fields`         | The fields of each object: type, settings, flags (`is_nullable`, `is_unique`, `is_filterable`, `is_searchable`)             |
+| `schema_changes` | Every applied, proposed, rejected or failed change, with its operations and actor                                           |
 
 Every schema row carries:
 
@@ -354,6 +354,46 @@ values and human approval; unsupported transformations are rejected.
 Standard objects ship as code (definitions with fixed `universal_id`s) and
 are applied through the same engine when a workspace is created or upgraded.
 
+### 3.1 Base objects and templates
+
+Every workspace is created with three base objects: `person` (name, emails,
+phones, address, job title, company), `company` (name, domain, address,
+people) and `task` (title, status, due date, assignee, related records).
+Nobody builds a workspace from scratch.
+
+Templates add the objects and fields a kind of business needs. They ship
+as code in `packages/server/src/templates/`, with fixed `universal_id`s
+like the base objects, and are applied through the schema engine as owner
+`system`. Every template operation is additive, so applying one never needs
+approval.
+
+| Template      | For                                     | Adds                                                                                                       |
+| ------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `sales`       | B2B sales teams, founders selling       | `deal` (stage, amount, close date, company, point of contact); `company` gets industry and employee count  |
+| `services`    | Agencies, consultants, freelancers      | `project` (status, budget, start and end dates, company, contacts); `proposal` (status, amount, sent date) |
+| `clinic`      | Clinics, therapists, wellness practices | `appointment` (date and time, type, status, person); `person` gets date of birth and preferred channel     |
+| `real_estate` | Agents and brokers                      | `property` (address, type, price, status); `viewing` (date, property, person, feedback)                    |
+| `recruiting`  | Recruiters, hiring teams                | `job` (title, status, company); `application` (person, job, stage, source)                                 |
+| `blank`       | Anything else                           | Nothing; the agent extends the base objects itself                                                         |
+
+**Choosing a template on init.** A new workspace has no template applied,
+and `describe_schema` says so (`initialized: false`). An agent that sees this
+calls `list_templates`, picks the closest one from what it knows about the
+business, or asks its user when it is unsure, and calls
+`apply_template`. Choosing `blank` marks the workspace initialized without
+adding anything. An agent that cannot decide should not guess: base objects
+work without a template, and a template can be applied later.
+
+**Later.** Templates are additive, so a workspace can apply a second one
+later (a consultancy that starts recruiting). If a template's object or field
+name collides with an existing custom one, applying it fails validation and
+the error lists the collisions; nothing is half-applied. Template updates in
+new CRMemory releases reach workspaces through the same upgrade path as base
+objects, matched by `universal_id`.
+
+The workspace records which templates it has applied, with their versions
+(`workspaces.templates`).
+
 ---
 
 ## 4. Runtime
@@ -505,7 +545,7 @@ Compute the external result first, then write in a short transaction.
 
 | Operation                           | What it returns                                                                                          |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `describe_schema`                   | Compact list of objects and fields for an agent's prompt                                                 |
+| `describe_schema`                   | The workspace (ID, name, applied templates, `initialized`) and a compact list of its objects and fields  |
 | `query_records`                     | Structured filter, sort and pagination over one object                                                   |
 | `get_record`                        | One record with its fields, links and card                                                               |
 | `search`                            | Keyword search (Postgres full-text) across records, facts and interactions, with highlighted snippets    |
@@ -610,6 +650,8 @@ handling out of the API server.
 | `GET /v1/schema`                                  | Current schema                                                              |
 | `POST /v1/schema/changes`                         | Request a schema change (applied or proposed)                               |
 | `POST /v1/schema/changes/:id/approve` · `/reject` | Decide a proposed change                                                    |
+| `GET /v1/templates`                               | Templates and what each adds (3.1)                                          |
+| `POST /v1/templates/:name/apply`                  | Apply a template (needs `schema:write`)                                     |
 | `POST /v1/objects/:object/records`                | Create a record                                                             |
 | `POST /v1/objects/:object/query`                  | Filter records                                                              |
 | `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)  |
@@ -636,9 +678,14 @@ small stdio bridge for local clients that only speak stdio.
 Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
 
-`describe_schema`, `query_records`, `get_record`, `search`, `get_context`,
-`upsert_record`, `log_interaction`, `remember`,
-`propose_schema_change`.
+`describe_schema`, `list_templates`, `apply_template`, `query_records`,
+`get_record`, `search`, `get_context`, `upsert_record`, `log_interaction`,
+`remember`, `propose_schema_change`.
+
+One MCP connection is one API key, so one workspace. An agent that works for
+two businesses connects twice, once per workspace's key. `describe_schema`
+returns the workspace's ID and name so the agent can tell its connections
+apart. There is no search or query across workspaces.
 
 Inputs are validated at runtime against the workspace schema, and validation
 errors name the field and the allowed values so the agent can retry.
@@ -729,6 +776,26 @@ write is attributed to the agent that made it; between agents the latest
   printed on first boot. The hosted cloud runs the same image with many
   workspaces. Billing, quotas and SSO live outside this repository.
 
+### 7.1 Managing workspaces and keys
+
+Workspaces and keys are managed by an operator, never by an agent: no
+workspace key can create another workspace. On a self-hosted install, the
+server image includes a CLI that talks to the database directly:
+
+```sh
+docker compose exec crmemory crmemory workspace create --name "Acme Clinic" --template clinic
+docker compose exec crmemory crmemory workspace list
+docker compose exec crmemory crmemory key create --workspace acme-clinic \
+  --name "Front-desk agent" --actor agent:front-desk --scopes read,write,schema:write
+docker compose exec crmemory crmemory key revoke <key-id>
+```
+
+`--template` is optional; without it, the first agent chooses one (3.1).
+`key create` prints the key once and stores only its hash. The hosted cloud
+provisions workspaces and keys through its own service, outside this
+repository, using the same database operations. There is no instance-wide
+admin HTTP API in v1.
+
 ---
 
 ## 8. Repository layout
@@ -749,8 +816,9 @@ provider), and the official MCP TypeScript SDK.
 
 ## 10. Build order
 
-1. Schema engine with standard objects, assertion-backed records CRUD,
-   REST and API keys (including direct-write precedence and review).
+1. Schema engine with base objects and templates, assertion-backed records
+   CRUD, REST, API keys and the workspace/key CLI (including direct-write
+   precedence and review).
 2. MCP endpoint with the read and write tools.
 3. Interactions and the ingest pipeline (participants, extraction, assertions).
 4. Facts, keyword search, context packs.
@@ -788,6 +856,8 @@ step 1.
 
 **New columns**
 
+- [ ] `workspaces.templates jsonb` (applied template names and versions) and
+  `workspaces.initialized_at` (3.1)
 - [ ] `records.merged_into_id` (1.1, 4.2)
 - [ ] `field_assertions.observed_at` (1.3, rule 2.2)
 - [ ] `record_cards.stale_since`, `source_revision`, `withheld` (4.2, 5)
