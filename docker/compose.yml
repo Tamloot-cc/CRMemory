@@ -1,9 +1,9 @@
-# Self-hosted CRMemory: Postgres with pgvector, plus one app container
+# Self-hosted CRMemory: Postgres, plus one app container
 # running both the API and the workers.
 #   docker compose -f docker/compose.yml up --build
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: postgres:17
     environment:
       POSTGRES_USER: crmemory
       POSTGRES_PASSWORD: crmemory
