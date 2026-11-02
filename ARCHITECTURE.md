@@ -755,6 +755,27 @@ provisions workspaces and keys through its own service, outside this
 repository, using the same database operations. There is no instance-wide
 admin HTTP API in v1.
 
+### 7.2 Per-record access (not in v1)
+
+v1 isolates workspaces only: every key sees every record in its workspace.
+Per-record audiences, principals and roles may come later. They would be
+rules stored in tables and enforced by a restrictive RLS policy
+(`AS RESTRICTIVE`, with `USING` and `WITH CHECK`) next to
+`workspace_isolation`, so Postgres applies them to every query. Application
+code would only add clearer errors and pre-checks; it is never the
+enforcement. Until then, new code keeps that path open:
+
+1. Every read and write runs as `retainer_app` under RLS. The API-key lookup
+   is the only `SECURITY DEFINER` function; no read takes a shortcut around
+   RLS, including search and context.
+2. Per-request database context is set in one place (`inWorkspace`).
+3. A response mentions another record (conflict errors, merge candidates,
+   relation labels, review items, context) only through one shared
+   function, so a visibility check can be added there later.
+4. Identifier claims are unique per workspace. If audiences arrive, claims
+   become per audience and promoting a record becomes a merge. That cost is
+   accepted.
+
 ---
 
 ## 8. Repository layout
