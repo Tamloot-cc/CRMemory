@@ -17,7 +17,7 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
-import { AssertionCard } from './record.js';
+import { AssertionCard } from './record-view.js';
 import { QueryError, useView } from './state.js';
 export function InteractionPage() {
   const { id } = useParams({ strict: false }) as { id: string };

@@ -40,10 +40,13 @@ export function DataGrid({
   onResize,
   onReorder,
   onOpenRow,
+  selectedRow,
 }: {
   label: string;
   columns: GridColumn[];
   rows: GridRow[];
+  /** The row whose record is open beside the grid; it stays highlighted. */
+  selectedRow?: string;
   sort?: { column: string; direction: 'asc' | 'desc' };
   onSort?: (column: string) => void;
   onResize?: (column: string, width: number) => void;
@@ -198,13 +201,14 @@ export function DataGrid({
             <th aria-hidden className="sticky top-0 z-10 border-b border-border bg-sidebar" />
           </tr>
         </thead>
-        <GridBody rows={rows} columns={columns} onOpenRow={onOpenRow} />
+        <GridBody rows={rows} columns={columns} onOpenRow={onOpenRow} selectedRow={selectedRow} />
       </table>
     </section>
   );
 }
 
-const CELL = 'border-b border-r border-border bg-background p-0 group-hover:bg-hover';
+const CELL =
+  'border-b border-r border-border bg-background p-0 group-hover:bg-hover group-data-selected:bg-muted';
 const PINNED_CELL = `${CELL} sticky left-0 z-[5]`;
 
 /** Rows re-render only when their data changes, not while a column is resized or dragged. */
@@ -212,13 +216,16 @@ const GridBody = memo(function GridBody({
   rows,
   columns,
   onOpenRow,
+  selectedRow,
 }: {
   rows: GridRow[];
   columns: GridColumn[];
   onOpenRow?: (row: string) => void;
+  selectedRow?: string;
 }) {
   function openRow(e: ReactMouseEvent, id: string) {
-    if (!onOpenRow || (e.target as HTMLElement).closest('a,button,input,[role="button"]')) return;
+    // Tooltip triggers (role="button") wrap most values; a click on them still opens the row.
+    if (!onOpenRow || (e.target as HTMLElement).closest('a,button,input,select,textarea')) return;
     if (window.getSelection()?.toString()) return;
     onOpenRow(id);
   }
@@ -228,6 +235,7 @@ const GridBody = memo(function GridBody({
         <tr
           key={r.id}
           onClick={(e) => openRow(e, r.id)}
+          data-selected={r.id === selectedRow || undefined}
           className={onOpenRow ? 'group cursor-pointer' : 'group'}
         >
           {r.cells.map((cell, i) => (
@@ -237,7 +245,10 @@ const GridBody = memo(function GridBody({
               </div>
             </td>
           ))}
-          <td aria-hidden className="border-b border-border bg-background group-hover:bg-hover" />
+          <td
+            aria-hidden
+            className="border-b border-border bg-background group-hover:bg-hover group-data-selected:bg-muted"
+          />
         </tr>
       ))}
     </tbody>

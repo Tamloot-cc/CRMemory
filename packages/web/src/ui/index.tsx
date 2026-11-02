@@ -4,7 +4,7 @@ import { Link } from '@tanstack/react-router';
 import { cva } from 'class-variance-authority';
 import { ArrowUpRight, ChevronRight, Database, Inbox, Menu, X } from 'lucide-react';
 import {
-  type ButtonHTMLAttributes,
+  type ComponentProps,
   type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
@@ -28,24 +28,33 @@ const buttonVariants = cva(
         default: 'h-8 px-3',
         small: 'h-7 px-2 text-xs',
         icon: 'h-8 w-8 px-0',
+        iconSmall: 'h-7 w-7 px-0',
       },
     },
     defaultVariants: { variant: 'outline', size: 'default' },
   },
 );
+/** Defaults to `type="button"`, so only an explicit submit button submits a form. */
 export function Button({
   variant = 'outline',
   size = 'default',
   asChild,
   className,
+  type,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
+}: ComponentProps<'button'> & {
   variant?: 'primary' | 'destructive' | 'outline' | 'ghost';
-  size?: 'default' | 'small' | 'icon';
+  size?: 'default' | 'small' | 'icon' | 'iconSmall';
   asChild?: boolean;
 }) {
   const C = asChild ? Slot : 'button';
-  return <C className={cn(buttonVariants({ variant, size }), className)} {...props} />;
+  return (
+    <C
+      className={cn(buttonVariants({ variant, size }), className)}
+      type={asChild ? type : (type ?? 'button')}
+      {...props}
+    />
+  );
 }
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return (
@@ -268,9 +277,22 @@ export function Tabs({
     </nav>
   );
 }
+const RECORD_LINK = 'truncate font-medium hover:underline';
 export function RecordLink({ id, children }: { id: string; children: ReactNode }) {
   return (
-    <Link to="/r/$id" params={{ id }} className="truncate font-medium hover:underline">
+    <Link to="/r/$id" params={{ id }} className={RECORD_LINK}>
+      {children}
+    </Link>
+  );
+}
+/** Opens a record in the side sheet over the current list (`?record=`). */
+export function SheetRecordLink({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <Link
+      to="."
+      search={(prev: Record<string, unknown>) => ({ ...prev, record: id })}
+      className={RECORD_LINK}
+    >
       {children}
     </Link>
   );
@@ -422,16 +444,16 @@ export function Td({ children, first = false }: { children: ReactNode; first?: b
     </td>
   );
 }
-export function FieldRow({ label, children }: { label: ReactNode; children: ReactNode }) {
-  return (
-    <div className="grid gap-1 border-b border-border py-2.5 last:border-0 sm:grid-cols-[160px_1fr] sm:gap-3">
-      <div className="text-sm text-muted-foreground">{label}</div>
-      <div className="min-w-0 text-sm">{children}</div>
-    </div>
-  );
-}
 export { DataGrid, FilterChip, GridFooter, Toolbar } from './data-grid.js';
 export { MenuHeader, MenuItem, MenuList, Popover, PopoverForm } from './popover.js';
+export {
+  Property,
+  PropertyEditor,
+  PropertyList,
+  Section,
+  useReturnFocus,
+} from './property.js';
+export { Sheet } from './sheet.js';
 export { Shell } from './shell.js';
 export function SignInFrame({ children }: { children: ReactNode }) {
   return (

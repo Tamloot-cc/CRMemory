@@ -6,6 +6,8 @@ export type ViewSearch = {
   filter?: string;
   sort?: string;
   assertion?: string;
+  /** A record open in the side sheet over an object list. */
+  record?: string;
 };
 export function useView() {
   const search = useSearch({ strict: false }) as ViewSearch;

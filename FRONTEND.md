@@ -234,7 +234,13 @@ One route for every object. Source: `POST /v1/objects/:object/query`.
 - Cursor pagination with `limit` 50. A footer shows the row range and
   Previous/Next; Previous is remembered for pages reached in this visit,
   otherwise it returns to the first page.
-- Rows open the record page.
+- Clicking a row, or its label link, opens the record in a side sheet that
+  slides in over the list (5.4 content). The open record is the `record`
+  search parameter, so Back closes the sheet and a copied address reopens
+  it; the row stays highlighted. The sheet is non-modal: clicking another
+  row swaps the record without closing it. Escape or the close button
+  closes it, and "Open full page" goes to `/app/r/:id`. Its memory tab and
+  page are local to the sheet, since the list owns `cursor`.
 
 ### 5.3a Shell
 
@@ -257,8 +263,11 @@ Three areas:
 - **Fields.** Every field with its type's display. Each value carries its
   provenance (7): who wrote it, when it was observed, and the source
   interaction. A field with a pending assertion shows a marker that links to
-  that row in the review inbox. Clicking a field edits it with the type's
-  input; saving sends `PATCH /v1/records/:id` with the record's
+  that row in the review inbox. Clicking a field's value (or its Edit
+  button) edits it in place with the type's input, here and in the list's
+  side sheet; Enter or Save writes and Escape cancels (inside the sheet,
+  Escape cancels the edit before it closes the sheet). Saving sends
+  `PATCH /v1/records/:id` with the record's
   `updatedAt` as `expectedUpdatedAt` (rule 2.5). A `412 stale_write` shows
   the new value instead of overwriting it, preserving the unsaved draft so
   the person can compare, discard it, or explicitly retry against the latest

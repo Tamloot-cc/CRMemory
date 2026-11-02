@@ -24,8 +24,8 @@ import {
   Page,
   Popover,
   PopoverForm,
-  RecordLink,
   Select,
+  SheetRecordLink,
   Toolbar,
 } from '../ui/index.js';
 import {
@@ -53,7 +53,8 @@ import {
   setColumnVisible,
   shiftColumn,
 } from './list-state.js';
-import { QueryError, useView } from './state.js';
+import { RecordSheet } from './record-view.js';
+import { QueryError, useView, type ViewSearch } from './state.js';
 
 const PAGE_SIZE = 50;
 const BUILT_IN_SORTS = [
@@ -139,9 +140,9 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
             />
           );
           return i === 0 ? (
-            <RecordLink key={f.name} id={r.id}>
+            <SheetRecordLink key={f.name} id={r.id}>
               {r.label ? cell : 'Untitled record'}
-            </RecordLink>
+            </SheetRecordLink>
           ) : (
             cell
           );
@@ -149,8 +150,10 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       })),
     [records, columns, references],
   );
+  // Keep the current path; only the open record changes.
   const openRow = useCallback(
-    (id: string) => void navigate({ to: '/r/$id', params: { id } }),
+    (id: string) =>
+      void navigate({ search: ((prev: ViewSearch) => ({ ...prev, record: id })) as never }),
     [navigate],
   );
 
@@ -247,6 +250,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           }
           onReorder={(column, target) => saveOrder(moveColumn(order, column, target))}
           onOpenRow={openRow}
+          selectedRow={search.record}
           rows={rows}
         />
       ) : query.data ? (
@@ -296,6 +300,9 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           {pageRange(pages, search.cursor, rows.length, PAGE_SIZE)}
           {nextCursor ? ' · more available' : ''}
         </GridFooter>
+      ) : null}
+      {search.record ? (
+        <RecordSheet id={search.record} onClose={() => void setSearch({ record: undefined })} />
       ) : null}
     </Page>
   );

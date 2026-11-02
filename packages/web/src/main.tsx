@@ -172,7 +172,7 @@ function Layout() {
 }
 function validateSearch(raw: Record<string, unknown>): ViewSearch {
   const result: ViewSearch = {};
-  for (const key of ['tab', 'cursor', 'filter', 'sort', 'assertion'] as const)
+  for (const key of ['tab', 'cursor', 'filter', 'sort', 'assertion', 'record'] as const)
     if (typeof raw[key] === 'string') result[key] = raw[key];
   return result;
 }
