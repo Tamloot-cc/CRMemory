@@ -16,21 +16,17 @@ function Editor({ onSave = vi.fn(), onCancel = vi.fn(), onAdd = vi.fn() }) {
   );
 }
 function Harness({ onClose }: { onClose: () => void }) {
-  const [editing, setEditing] = useState(true);
+  const [editing, setEditing] = useState(false);
   return (
-    <Sheet
-      open
-      title="Dana Levi"
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-    >
+    <Sheet title="Dana Levi" description="Record details" onClose={onClose}>
       {editing ? (
         <PropertyEditor onSave={() => setEditing(false)} onCancel={() => setEditing(false)}>
           <input aria-label="Job title" defaultValue="CTO" />
         </PropertyEditor>
       ) : (
-        <span>Not editing</span>
+        <button type="button" onClick={() => setEditing(true)}>
+          Edit
+        </button>
       )}
     </Sheet>
   );
@@ -88,9 +84,12 @@ describe('Sheet', () => {
     const onClose = vi.fn();
     render(<Harness onClose={onClose} />);
     expect(screen.getByRole('heading', { name: 'Dana Levi' })).toBeTruthy();
-    screen.getByRole('textbox', { name: 'Job title' }).focus();
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Job title' }));
+    // Even with focus moved off the editor to the sheet itself, Escape is the editor's first.
+    screen.getByRole('dialog').focus();
     await userEvent.keyboard('{Escape}');
-    expect(screen.getByText('Not editing')).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'Job title' })).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     await userEvent.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
@@ -100,13 +99,7 @@ describe('Sheet', () => {
     render(
       <>
         <button type="button">Another row</button>
-        <Sheet
-          open
-          title="Dana Levi"
-          onOpenChange={(open) => {
-            if (!open) onClose();
-          }}
-        >
+        <Sheet title="Dana Levi" description="Record details" onClose={onClose}>
           <span>Body</span>
         </Sheet>
       </>,

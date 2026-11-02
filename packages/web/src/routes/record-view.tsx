@@ -4,7 +4,8 @@ import { validateFieldValue } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { History, Maximize2, Pencil } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge, AssertionSource, SourcedValue } from '../provenance/index.js';
@@ -27,7 +28,6 @@ import {
   Sheet,
   Stack,
   Tabs,
-  useReturnFocus,
 } from '../ui/index.js';
 import { QueryError } from './state.js';
 
@@ -71,8 +71,8 @@ export function useRecord(id: string) {
 }
 
 /** Where the memory tabs keep their tab and page: the URL on the record page, local state in the sheet. */
-export type MemoryNav = {
-  tab: string;
+type MemoryNav = {
+  tab?: string;
   cursor?: string;
   set: (change: { tab?: string; cursor?: string }) => void;
 };
@@ -81,24 +81,24 @@ const TABS = [
   { value: 'interactions', label: 'Interactions' },
   { value: 'tasks', label: 'Open tasks' },
 ];
-export const memoryTab = (raw: string | undefined) =>
+const memoryTab = (raw: string | undefined) =>
   TABS.some((t) => t.value === raw) ? (raw as string) : 'facts';
 
 /** A record opened from a list, in a sheet over it. */
 export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }) {
   const { schema } = useWorkspace();
   const record = useRecord(id);
-  const [memory, setMemory] = useState<{ tab: string; cursor?: string }>({ tab: 'facts' });
+  // Tab and page belong to one record; opening another row starts it fresh.
+  const [memory, setMemory] = useState<{ id: string; tab?: string; cursor?: string }>({ id });
+  const nav = memory.id === id ? memory : { id };
   const r = record.data;
   const object = schema.objects.find((o) => o.nameSingular === r?.object);
   return (
     <Sheet
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
+      onClose={onClose}
       eyebrow={object?.labelSingular}
       title={r ? r.label || 'Untitled record' : 'Record'}
+      description="Record details. Click a value to edit it."
       actions={
         <Button asChild variant="ghost" size="icon">
           <Link
@@ -117,10 +117,7 @@ export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }
           key={r.id}
           record={r}
           requestedId={id}
-          nav={{
-            ...memory,
-            set: (change) => setMemory((m) => ({ ...m, ...change })),
-          }}
+          nav={{ ...nav, set: (change) => setMemory({ ...nav, ...change }) }}
         />
       ) : record.error ? (
         <QueryError error={record.error} retry={() => void record.refetch()} />
@@ -424,13 +421,18 @@ function FieldProperty({
 }) {
   const { session } = useWorkspace();
   const [editing, setEditing] = useState(false);
-  const editButton = useReturnFocus(editing);
+  const editButton = useRef<HTMLButtonElement>(null);
   const Display = fields[field.type].Display;
+  function done() {
+    // Commit the close first, so the Edit button exists to take focus back.
+    flushSync(() => setEditing(false));
+    editButton.current?.focus();
+  }
   return (
     <Property
       label={field.label}
-      editing={editing}
       onEdit={editable ? () => setEditing(true) : undefined}
+      editor={editing ? <InlineEditor record={record} field={field} onDone={done} /> : null}
       actions={
         <>
           {editable ? (
@@ -457,21 +459,17 @@ function FieldProperty({
         </>
       }
     >
-      {editing ? (
-        <InlineEditor record={record} field={field} onDone={() => setEditing(false)} />
-      ) : (
-        <SourcedValue
+      <SourcedValue
+        field={field}
+        provenance={record.provenance?.[field.name]}
+        viewer={session.actor}
+      >
+        <Display
           field={field}
-          provenance={record.provenance?.[field.name]}
-          viewer={session.actor}
-        >
-          <Display
-            field={field}
-            value={record.fields[field.name]}
-            references={record.relationReferences}
-          />
-        </SourcedValue>
-      )}
+          value={record.fields[field.name]}
+          references={record.relationReferences}
+        />
+      </SourcedValue>
     </Property>
   );
 }
@@ -497,6 +495,15 @@ function InlineEditor({
     [stale, setStale] = useState(false);
   const Input = fields[field.type].Input,
     Display = fields[field.type].Display;
+  // Wait only for the record (the next save's precondition); the rest of the
+  // workspace, including the list behind a sheet, refreshes in the background.
+  async function refresh() {
+    void client.invalidateQueries({
+      queryKey: [session.workspace.id],
+      predicate: (q) => q.queryKey[1] !== 'record',
+    });
+    await client.invalidateQueries({ queryKey: [session.workspace.id, 'record'] });
+  }
   async function save() {
     if (busy) return;
     setBusy(true);
@@ -506,7 +513,7 @@ function InlineEditor({
         values: { [field.name]: value },
         expectedUpdatedAt: record.updatedAt,
       });
-      await client.invalidateQueries({ queryKey: [session.workspace.id] });
+      await refresh();
       if (result.fields[field.name] !== 'applied') {
         setError('Saved to history; the current value was not replaced.');
       } else onDone();
@@ -516,7 +523,7 @@ function InlineEditor({
         setError(
           'This record changed. Your draft is preserved below. Compare it with the current value before retrying.',
         );
-        await client.invalidateQueries({ queryKey: [session.workspace.id] });
+        await refresh();
       } else setError((e as Error).message);
     } finally {
       setBusy(false);

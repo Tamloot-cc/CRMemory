@@ -40,7 +40,6 @@ export function Button({
   size = 'default',
   asChild,
   className,
-  type,
   ...props
 }: ComponentProps<'button'> & {
   variant?: 'primary' | 'destructive' | 'outline' | 'ghost';
@@ -50,8 +49,8 @@ export function Button({
   const C = asChild ? Slot : 'button';
   return (
     <C
+      type={asChild ? undefined : 'button'}
       className={cn(buttonVariants({ variant, size }), className)}
-      type={asChild ? type : (type ?? 'button')}
       {...props}
     />
   );
@@ -277,22 +276,27 @@ export function Tabs({
     </nav>
   );
 }
-const RECORD_LINK = 'truncate font-medium hover:underline';
-export function RecordLink({ id, children }: { id: string; children: ReactNode }) {
-  return (
-    <Link to="/r/$id" params={{ id }} className={RECORD_LINK}>
-      {children}
-    </Link>
-  );
-}
-/** Opens a record in the side sheet over the current list (`?record=`). */
-export function SheetRecordLink({ id, children }: { id: string; children: ReactNode }) {
-  return (
+/** Links to the record page, or with `inSheet` opens it in the current list's sheet (`?record=`). */
+export function RecordLink({
+  id,
+  inSheet = false,
+  children,
+}: {
+  id: string;
+  inSheet?: boolean;
+  children: ReactNode;
+}) {
+  const className = 'truncate font-medium hover:underline';
+  return inSheet ? (
     <Link
       to="."
       search={(prev: Record<string, unknown>) => ({ ...prev, record: id })}
-      className={RECORD_LINK}
+      className={className}
     >
+      {children}
+    </Link>
+  ) : (
+    <Link to="/r/$id" params={{ id }} className={className}>
       {children}
     </Link>
   );
@@ -446,13 +450,7 @@ export function Td({ children, first = false }: { children: ReactNode; first?: b
 }
 export { DataGrid, FilterChip, GridFooter, Toolbar } from './data-grid.js';
 export { MenuHeader, MenuItem, MenuList, Popover, PopoverForm } from './popover.js';
-export {
-  Property,
-  PropertyEditor,
-  PropertyList,
-  Section,
-  useReturnFocus,
-} from './property.js';
+export { Property, PropertyEditor, PropertyList, Section } from './property.js';
 export { Sheet } from './sheet.js';
 export { Shell } from './shell.js';
 export function SignInFrame({ children }: { children: ReactNode }) {

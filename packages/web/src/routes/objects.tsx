@@ -1,6 +1,6 @@
 import type { FieldView, ObjectView, QueryInput } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useParams } from '@tanstack/react-router';
+import { useParams } from '@tanstack/react-router';
 import { ArrowUpDown, ChevronLeft, ChevronRight, Columns3, ListFilter } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
@@ -24,8 +24,8 @@ import {
   Page,
   Popover,
   PopoverForm,
+  RecordLink,
   Select,
-  SheetRecordLink,
   Toolbar,
 } from '../ui/index.js';
 import {
@@ -54,7 +54,7 @@ import {
   shiftColumn,
 } from './list-state.js';
 import { RecordSheet } from './record-view.js';
-import { QueryError, useView, type ViewSearch } from './state.js';
+import { QueryError, useView } from './state.js';
 
 const PAGE_SIZE = 50;
 const BUILT_IN_SORTS = [
@@ -79,7 +79,6 @@ export function ObjectPage() {
 function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const { session } = useWorkspace();
   const { search, setSearch } = useView();
-  const navigate = useNavigate();
   const workspace = session.workspace.id;
   const [error, setError] = useState('');
   const [prefs, setPrefs] = useState(() => loadColumnPrefs(() => localStorage, workspace, name));
@@ -140,9 +139,9 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
             />
           );
           return i === 0 ? (
-            <SheetRecordLink key={f.name} id={r.id}>
+            <RecordLink key={f.name} id={r.id} inSheet>
               {r.label ? cell : 'Untitled record'}
-            </SheetRecordLink>
+            </RecordLink>
           ) : (
             cell
           );
@@ -150,12 +149,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       })),
     [records, columns, references],
   );
-  // Keep the current path; only the open record changes.
-  const openRow = useCallback(
-    (id: string) =>
-      void navigate({ search: ((prev: ViewSearch) => ({ ...prev, record: id })) as never }),
-    [navigate],
-  );
+  const openRow = useCallback((id: string) => void setSearch({ record: id }), [setSearch]);
 
   function savePrefs(next: ColumnPrefs) {
     setPrefs(next);

@@ -32,7 +32,7 @@ export function RecordPage() {
         record={r}
         requestedId={id}
         nav={{
-          tab: search.tab ?? 'facts',
+          tab: search.tab,
           cursor: search.cursor,
           set: (change) => void setSearch(change),
         }}

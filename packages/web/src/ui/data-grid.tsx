@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { cn } from './core.js';
+import { cn, isPlainClick } from './core.js';
 
 export type GridColumn = {
   id: string;
@@ -207,8 +207,8 @@ export function DataGrid({
   );
 }
 
-const CELL =
-  'border-b border-r border-border bg-background p-0 group-hover:bg-hover group-data-selected:bg-muted';
+const ROW_BG = 'bg-background group-hover:bg-hover group-data-selected:bg-muted';
+const CELL = `border-b border-r border-border p-0 ${ROW_BG}`;
 const PINNED_CELL = `${CELL} sticky left-0 z-[5]`;
 
 /** Rows re-render only when their data changes, not while a column is resized or dragged. */
@@ -224,10 +224,7 @@ const GridBody = memo(function GridBody({
   selectedRow?: string;
 }) {
   function openRow(e: ReactMouseEvent, id: string) {
-    // Tooltip triggers (role="button") wrap most values; a click on them still opens the row.
-    if (!onOpenRow || (e.target as HTMLElement).closest('a,button,input,select,textarea')) return;
-    if (window.getSelection()?.toString()) return;
-    onOpenRow(id);
+    if (onOpenRow && isPlainClick(e)) onOpenRow(id);
   }
   return (
     <tbody>
@@ -245,10 +242,7 @@ const GridBody = memo(function GridBody({
               </div>
             </td>
           ))}
-          <td
-            aria-hidden
-            className="border-b border-border bg-background group-hover:bg-hover group-data-selected:bg-muted"
-          />
+          <td aria-hidden className={`border-b border-border ${ROW_BG}`} />
         </tr>
       ))}
     </tbody>

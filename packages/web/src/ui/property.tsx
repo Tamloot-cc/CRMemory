@@ -1,12 +1,6 @@
-import {
-  type MouseEvent as ReactMouseEvent,
-  type ReactNode,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-} from 'react';
-import { cn } from './core.js';
-import { OWNS_ESCAPE } from './sheet.js';
+import { DismissableLayer } from '@radix-ui/react-dismissable-layer';
+import { type MouseEvent as ReactMouseEvent, type ReactNode, useLayoutEffect, useRef } from 'react';
+import { cn, isPlainClick } from './core.js';
 
 /** A titled group on a record: fields, relations. */
 export function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -22,48 +16,40 @@ export function PropertyList({ children }: { children: ReactNode }) {
   return <dl className="-mx-2 flex flex-col">{children}</dl>;
 }
 
-const INTERACTIVE = 'a,button,input,select,textarea,label';
-
 /**
- * One field of a record: label, then value. With `onEdit`, clicking the value
- * starts editing it in place; `actions` (edit, history) appear on hover or
- * focus. While `editing`, the editor takes the row's full width.
+ * One field of a record: label, then value (`children`). With `onEdit`,
+ * clicking the value starts editing; `actions` (edit, history) appear on
+ * hover or focus. When `editor` is given it replaces the value and takes the
+ * row's full width.
  */
 export function Property({
   label,
   actions,
   onEdit,
-  editing = false,
+  editor,
   children,
 }: {
   label: string;
   actions?: ReactNode;
   onEdit?: () => void;
-  editing?: boolean;
-  children: ReactNode;
+  editor?: ReactNode;
+  children?: ReactNode;
 }) {
   function click(e: ReactMouseEvent) {
-    if (!onEdit || (e.target as Element).closest(INTERACTIVE)) return;
-    if (window.getSelection()?.toString()) return;
-    onEdit();
+    if (onEdit && isPlainClick(e)) onEdit();
   }
   return (
     <div
       className={cn(
         'group/property grid items-start gap-x-3 rounded-md px-2 py-1',
-        editing ? 'grid-cols-1 gap-y-1.5 py-2' : 'grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)]',
+        editor ? 'grid-cols-1 gap-y-1.5 py-2' : 'grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)]',
       )}
     >
-      <dt className={cn('truncate text-sm text-muted-foreground', !editing && 'py-1.5')}>
-        {label}
-      </dt>
+      <dt className={cn('truncate text-sm text-muted-foreground', !editor && 'py-1.5')}>{label}</dt>
       <dd className="m-0 min-w-0">
-        {editing ? (
-          children
-        ) : (
+        {editor ?? (
           <div className="flex min-h-8 items-start gap-1">
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: a pointer shortcut; the Edit button is the keyboard path. */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: as above. */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a pointer shortcut; the Edit button is the keyboard path. */}
             <div
               onClick={click}
               className={cn(
@@ -87,7 +73,9 @@ export function Property({
 
 /**
  * The editing state of a `Property`: a small form that focuses its first
- * control, saves on Enter or submit, and cancels on Escape.
+ * control, saves on Enter or submit, and cancels on Escape. It is its own
+ * dismissable layer, so Escape reaches it before an enclosing sheet or
+ * dialog, wherever focus is inside it.
  */
 export function PropertyEditor({
   onSave,
@@ -107,33 +95,17 @@ export function PropertyEditor({
     if (first instanceof HTMLInputElement && first.type === 'text') first.select();
   }, []);
   return (
-    <form
-      ref={form}
-      {...{ [OWNS_ESCAPE]: '' }}
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSave();
-      }}
-      onKeyDown={(e) => {
-        // Not checking defaultPrevented: the sheet prevents Escape to stay open for us.
-        if (e.key !== 'Escape') return;
-        e.preventDefault();
-        onCancel();
-      }}
-      className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 shadow-sm ring-2 ring-ring/25"
-    >
-      {children}
-    </form>
+    <DismissableLayer asChild onEscapeKeyDown={onCancel}>
+      <form
+        ref={form}
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSave();
+        }}
+        className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 shadow-sm ring-2 ring-ring/25"
+      >
+        {children}
+      </form>
+    </DismissableLayer>
   );
-}
-
-/** Puts focus back on `target` after `active` turns false (an editor closed). */
-export function useReturnFocus(active: boolean) {
-  const target = useRef<HTMLButtonElement>(null);
-  const was = useRef(active);
-  useEffect(() => {
-    if (was.current && !active) target.current?.focus();
-    was.current = active;
-  }, [active]);
-  return target;
 }
