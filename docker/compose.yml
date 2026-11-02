@@ -1,0 +1,36 @@
+# Self-hosted CRMemory: Postgres with pgvector, plus one app container
+# running both the API and the workers.
+#   docker compose -f docker/compose.yml up --build
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: crmemory
+      POSTGRES_PASSWORD: crmemory
+      POSTGRES_DB: crmemory
+    ports:
+      - "${CRMEMORY_PG_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crmemory"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  crmemory:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://crmemory:crmemory@postgres:5432/crmemory
+      CRMEMORY_ROLE: all
+      PORT: "8787"
+    ports:
+      - "8787:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
