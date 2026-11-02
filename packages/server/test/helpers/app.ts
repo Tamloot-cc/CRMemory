@@ -1,3 +1,4 @@
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { Actor } from '@retainer/shared';
 import { createApp } from '../../src/api/app.js';
 import { createApiKey } from '../../src/auth/keys.js';
@@ -72,7 +73,43 @@ export function startTestApp(db: TestDatabase) {
     return { workspace, keys: issued };
   }
 
-  return { app, sql, request, setupWorkspace };
+  /**
+   * An MCP client connected to `/mcp` with `key`, speaking Streamable HTTP
+   * to the in-process app. Close it with `client.close()`.
+   */
+  async function mcpClient(key: string): Promise<McpTestClient> {
+    const client = new Client({ name: 'retainer-test', version: '0.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL('http://retainer.test/mcp'), {
+      fetch: (url, init) => Promise.resolve(app.request(url.toString(), init)),
+      requestInit: { headers: { authorization: `Bearer ${key}` } },
+    });
+    await client.connect(transport);
+
+    /** Calls a tool and parses its JSON text, keeping `isError`. */
+    async function call<T = any>(name: string, args: Record<string, unknown> = {}) {
+      const result = await client.callTool({ name, arguments: args });
+      const [first] = result.content as { type: string; text?: string }[];
+      const text = first?.type === 'text' ? (first.text ?? '') : '';
+      let body: T;
+      try {
+        body = JSON.parse(text) as T;
+      } catch {
+        body = text as T;
+      }
+      return { isError: result.isError === true, body, raw: result };
+    }
+
+    return Object.assign(client, { call });
+  }
+
+  return { app, sql, request, setupWorkspace, mcpClient };
 }
+
+export type McpTestClient = Client & {
+  call: <T = any>(
+    name: string,
+    args?: Record<string, unknown>,
+  ) => Promise<{ isError: boolean; body: T; raw: unknown }>;
+};
 
 export type TestApp = ReturnType<typeof startTestApp>;

@@ -39,6 +39,21 @@ docker compose -f docker/compose.yml exec retainer retainer key create --workspa
 
 Send the key as `Authorization: Bearer <key>` to the REST API under `/v1`.
 
+## Connect an agent
+
+Agents connect over MCP (Streamable HTTP) at `/mcp`, with the same key as a
+bearer token. The key decides the workspace and who the agent's writes are
+attributed to, so give each agent its own key. For example, in Claude Code:
+
+```sh
+claude mcp add --transport http retainer http://localhost:8787/mcp \
+  --header "Authorization: Bearer <key>"
+```
+
+Tools: `describe_schema`, `list_templates`, `apply_template`,
+`query_records`, `get_record`, `upsert_record` and `propose_schema_change`.
+Interactions, facts and search come in later build steps.
+
 ## Develop
 
 Requires Node 22 and pnpm 10.
