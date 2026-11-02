@@ -1,11 +1,23 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './api/app.js';
 import { loadConfig } from './config.js';
-import { createDb } from './db/client.js';
+import { createSql, RUNTIME_ROLE } from './db/client.js';
+import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
 import { startWorker } from './worker/index.js';
 
 const config = loadConfig();
-const { sql } = createDb(config.DATABASE_URL);
+
+// First boot runs as the migration role: only it can create workspaces and keys.
+const owner = createSql(config.DATABASE_URL, { max: 1 });
+try {
+  const firstBoot = await bootstrap(owner);
+  if (firstBoot) console.log(firstBootBanner(firstBoot));
+} finally {
+  await owner.end({ timeout: 5 });
+}
+
+// Everything else runs as the runtime role, so row-level security applies.
+const sql = createSql(config.DATABASE_URL, { role: RUNTIME_ROLE });
 const stops: Array<() => Promise<void>> = [];
 
 if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {
