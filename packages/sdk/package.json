@@ -1,7 +1,7 @@
 {
-  "name": "@crmemory/sdk",
+  "name": "@retainer/sdk",
   "version": "0.0.0",
-  "description": "TypeScript client for the CRMemory API.",
+  "description": "TypeScript client for the Retainer API.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

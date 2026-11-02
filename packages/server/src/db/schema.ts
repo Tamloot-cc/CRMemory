@@ -1,4 +1,4 @@
-import type { Actor, FieldSettings, FieldType } from '@crmemory/shared';
+import type { Actor, FieldSettings, FieldType } from '@retainer/shared';
 import { sql } from 'drizzle-orm';
 import {
   boolean,

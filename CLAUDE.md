@@ -1,4 +1,4 @@
-# CRMemory
+# Retainer
 
 Open-source memory for AI agents that work with CRM data. No UI: REST API,
 MCP endpoint and background workers on Postgres. Read
@@ -9,10 +9,10 @@ rules.
 
 - `pnpm install`, `pnpm build`, `pnpm typecheck`, `pnpm test`, `pnpm lint`
 - Postgres for dev: `docker compose -f docker/compose.yml up -d postgres`
-  (set `CRMEMORY_PG_PORT` if 5432 is taken, and match `DATABASE_URL`)
+  (set `RETAINER_PG_PORT` if 5432 is taken, and match `DATABASE_URL`)
 - `pnpm db:generate --name <name>` after editing `packages/server/src/db/schema.ts`;
   `pnpm db:migrate` to apply. Never hand-edit generated migrations.
-- `pnpm dev` runs the server with `CRMEMORY_ROLE=all` from `.env`.
+- `pnpm dev` runs the server with `RETAINER_ROLE=all` from `.env`.
 
 ## Rules
 

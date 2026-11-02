@@ -1,11 +1,11 @@
 {
-  "name": "@crmemory/mcp",
+  "name": "@retainer/mcp",
   "version": "0.0.0",
-  "description": "stdio bridge to a CRMemory server's MCP endpoint, for MCP clients that only speak stdio.",
+  "description": "stdio bridge to a Retainer server's MCP endpoint, for MCP clients that only speak stdio.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "crmemory-mcp": "./dist/index.js"
+    "retainer-mcp": "./dist/index.js"
   },
   "files": [
     "dist"

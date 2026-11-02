@@ -1,7 +1,7 @@
 {
-  "name": "@crmemory/shared",
+  "name": "@retainer/shared",
   "version": "0.0.0",
-  "description": "Shared types for CRMemory: field types, composite value shapes, actors and schema definitions.",
+  "description": "Shared types for Retainer: field types, composite value shapes, actors and schema definitions.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const configSchema = z.object({
   DATABASE_URL: z.string().url(),
-  CRMEMORY_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
+  RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
   PORT: z.coerce.number().int().positive().default(8787),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
