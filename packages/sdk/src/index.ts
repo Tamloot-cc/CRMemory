@@ -1,4 +1,4 @@
-export type CRMemoryClientOptions = {
+export type RetainerClientOptions = {
   /** e.g. "http://localhost:8787" */
   baseUrl: string;
   apiKey?: string;
@@ -11,12 +11,12 @@ export type HealthResponse = {
   database: 'ok' | 'unreachable';
 };
 
-export class CRMemoryClient {
+export class RetainerClient {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly fetchImpl: typeof fetch;
 
-  constructor(options: CRMemoryClientOptions) {
+  constructor(options: RetainerClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetch ?? fetch;

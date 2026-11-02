@@ -5,6 +5,6 @@ export default defineConfig({
   schema: './src/db/schema.ts',
   out: './drizzle',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgres://crmemory:crmemory@localhost:5432/crmemory',
+    url: process.env.DATABASE_URL ?? 'postgres://retainer:retainer@localhost:5432/retainer',
   },
 });

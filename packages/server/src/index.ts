@@ -8,10 +8,10 @@ const config = loadConfig();
 const { sql } = createDb(config.DATABASE_URL);
 const stops: Array<() => Promise<void>> = [];
 
-if (config.CRMEMORY_ROLE === 'api' || config.CRMEMORY_ROLE === 'all') {
+if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {
   const app = createApp({ sql });
   const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
-    console.log(`CRMemory API listening on http://localhost:${info.port}`);
+    console.log(`Retainer API listening on http://localhost:${info.port}`);
   });
   stops.push(
     () =>
@@ -21,7 +21,7 @@ if (config.CRMEMORY_ROLE === 'api' || config.CRMEMORY_ROLE === 'all') {
   );
 }
 
-if (config.CRMEMORY_ROLE === 'worker' || config.CRMEMORY_ROLE === 'all') {
+if (config.RETAINER_ROLE === 'worker' || config.RETAINER_ROLE === 'all') {
   const worker = await startWorker();
   stops.push(worker.stop);
 }
