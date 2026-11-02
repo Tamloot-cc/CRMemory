@@ -1,0 +1,242 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+jobs:
+  claude-review:
+    # Fork PRs get no secrets, so the review could not authenticate; skip them.
+    if: >
+      github.event_name == 'pull_request' &&
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Allow editing files and creating commits
+      pull-requests: write # Allow commenting and modifying PRs
+      issues: write # Allow commenting and modifying issues
+      id-token: write # Required for Claude authentication
+      actions: read # Allow reading CI results on PRs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are reviewing this pull request for real correctness bugs only. Work
+            through the phases below in order; the verdict comes from Phase 3's
+            verification, so reach it only after that phase. The PR branch is already
+            checked out.
+
+            ## Phase 1 — Understand
+
+            - `gh pr view ${{ github.event.pull_request.number }}` for the title/description/intent.
+            - `gh pr diff ${{ github.event.pull_request.number }}` for the full diff.
+            - For each modified file, read enough surrounding code (not just the hunk) to
+              understand how the changed lines are actually called and used.
+            - Read the root `CLAUDE.md` and any `CLAUDE.md` in the directories the PR touches.
+              Treat these as the project's rules. (CLAUDE.md is guidance written for authoring
+              code, so not every line is a review rule — only flag clear, explicit violations.)
+
+            ## Phase 2 — Find candidate issues (cast a wide net here)
+
+            Scan ONLY the lines this PR added or changed. List every plausible problem in
+            these categories — be liberal at this stage; filtering happens in Phase 3:
+
+            - **Logic / correctness bugs** — wrong condition, inverted boolean, off-by-one,
+              wrong variable or field, incorrect operator, broken control flow, a `case` that
+              falls through, business logic that produces a wrong (not just ugly) result.
+            - **Async / concurrency** — missing `await`, unhandled promise rejection, fire-and-
+              forget that should be awaited, race conditions, state mutated from two paths.
+            - **Crashes** — null/undefined dereference, unchecked array/object access, or an
+              unhandled throw on a path that will actually execute in production.
+            - **Data loss / corruption** — code that can delete, overwrite, or corrupt user or
+              DB data; a migration that drops/changes columns destructively.
+            - **Security** — injection (SQL/command), authz/RLS bypass, missing signature
+              verification, leaked secrets/PII, SSRF, unsafe deserialization.
+            - **Contract breaks** — a change that breaks an API/DB/webhook contract a caller or
+              consumer in this repo relies on.
+
+            **Do NOT collect (these are out of scope entirely):**
+            - Style, naming, formatting, import order, "could be cleaner", readability.
+            - Missing tests or documentation.
+            - Performance, unless it will cause an actual outage or DB meltdown.
+            - Theoretical/defensive edge cases that cannot occur given how the code is called.
+            - Anything phrased as "consider…", "you might want to…", "it would be better to…".
+            - Issues a linter, type checker, or the compiler/CI would catch on its own
+              (type errors, unused vars, missing imports, broken formatting). Assume CI runs.
+
+            ## Phase 3 — Verify each candidate adversarially
+
+            For EACH candidate from Phase 2, try hard to REFUTE it before you believe it:
+            - Re-read the exact code and construct the concrete input or call path that would
+              trigger the bug in production. If you cannot construct one, it is a false positive.
+            - Confirm the problem is on a line THIS PR changed — not pre-existing code.
+            - Confirm it isn't already handled elsewhere (a guard, a caller, a wrapper, a type).
+            - Confirm it isn't intentional / clearly part of the change's purpose.
+
+            Keep a candidate only if all four checks above hold; discard anything you
+            can't verify to that bar.
+
+            ## Phase 4 — Look for a shared design cause
+
+            Sometimes the individual bugs are symptoms: a PR keeps spiralling into new issues
+            because the underlying design doesn't fit the problem, and fixing each finding
+            only moves the problem. Before reporting, check the PR's history with
+            `gh pr view ${{ github.event.pull_request.number }} --json commits,comments`
+            (earlier "Claude PR Review" comments and follow-up fix commits) alongside this
+            review's findings. Signs of a design cause:
+            - Several findings — in this review or earlier ones on this PR — trace back to the
+              same abstraction, data model, state ownership, or boundary between components.
+            - Follow-up commits fix one instance of a pattern and the next review finds another.
+            - The fixes need special cases or duplicated guards where a change to the shared
+              cause would remove the whole class of bug.
+
+            Raise a design concern only when you can name the shared cause and show which
+            findings or commits it explains. A high bug count alone is not a design concern.
+
+            ## Phase 5 — Report
+
+            - If no candidate survives Phase 3 and Phase 4 found no design concern: post
+              exactly `✅ No correctness issues found.` via `gh pr comment` and stop.
+            - Otherwise post ONE top-level comment via `gh pr comment` listing the surviving
+              issues, ordered most-to-least severe. For each: `file:line`, what concretely
+              breaks and the input/path that triggers it, and a one-line suggested fix.
+              Keep it tight: open with the first finding, and give each one a leading
+              severity marker as its only emoji.
+              When it lists issues, end the comment with: "Reply `@claude fix it` to have me
+              apply these fixes."
+            - If Phase 4 found a design concern, add a `🏗️ Design concern` section to that
+              same comment (post the comment even when no individual issue survived): the
+              shared cause, the findings and commits it explains, and the direction you
+              would change. Then email the same summary to maayan@tamloot.cc — the only
+              recipient — with the Resend `send-email` tool: subject
+              `[Design concern] PR #${{ github.event.pull_request.number }}: <PR title>`, a
+              plain-text body that starts with the PR URL, and idempotency key
+              `pr-${{ github.event.pull_request.number }}-design-concern`. Email once per PR:
+              if an earlier Claude PR Review comment on this PR already has a Design concern
+              section for the same cause, skip the email and say so in the comment.
+
+            Use `gh pr comment` for the single top-level comment. Do NOT use inline comments.
+            Deliver the review only through that comment (and, for a design concern, the
+            email) — not as a chat message. Do NOT edit any files or push commits in this
+            job — reporting only.
+
+          claude_args: |
+            --model claude-opus-5-5
+            --fallback-model claude-sonnet-5
+            --effort high
+            --max-turns 40
+            --mcp-config .github/claude/mcp-config.resend.json
+            --allowedTools "Read,Grep,Glob,Skill,WebSearch,WebFetch,Bash,mcp__resend__send-email"
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+
+  claude-fix:
+    # Gate to trusted commenters only — this job edits files and pushes to the PR branch.
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '@claude fix it') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Get PR head branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} \
+            --json headRefName,isCrossRepository \
+            -q '"ref=" + .headRefName, "is_fork=" + (.isCrossRepository | tostring)' >> "$GITHUB_OUTPUT"
+
+      - name: Reject fork PRs
+        if: steps.pr.outputs.is_fork == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body \
+            "Automatic fixes only support branches in this repository — this PR's branch lives in a fork, so I can't check it out or push to it. Apply the findings manually, or open the PR from a same-repo branch."
+          exit 1
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run Claude Code Fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.issue.number }}
+
+            A trusted maintainer commented "@claude fix it" on this PR. The PR branch
+            (${{ steps.pr.outputs.ref }}) is already checked out with write access — you can
+            edit files, commit, and push directly to it.
+
+            ## Phase 1 — Find the confirmed issues
+
+            - Look for the most recent automated review comment on this PR (from the
+              "Claude PR Review" bot) via `gh pr view ${{ github.event.issue.number }} --json comments`.
+              It lists confirmed correctness issues as `file:line` with what breaks and a
+              suggested fix.
+            - If no such comment exists, or it's stale relative to the current diff, do a fresh
+              pass yourself: `gh pr diff ${{ github.event.issue.number }}`, read the changed
+              files in context, and identify only issues you are highly confident are real bugs
+              (concrete triggering input, not theoretical).
+
+            ## Phase 2 — Apply minimal fixes
+
+            - Fix ONLY the confirmed issues. Do not refactor, rename, reformat, or touch
+              unrelated code — the diff should be as small as it can be while fixing the bug.
+            - If a fix is not clearly correct or you're not confident, skip it and say why in
+              the final comment instead of guessing.
+            - A `🏗️ Design concern` section in the review is for the maintainer to decide on;
+              leave it alone and list it as not fixed.
+            - If tests exist for the touched area and can run quickly, run them.
+
+            ## Phase 3 — Commit, push, report
+
+            - Commit with a clear, specific message (what bug, not "fix review comments").
+            - Push to the current branch (`git push origin HEAD:${{ steps.pr.outputs.ref }}`).
+            - Post ONE `gh pr comment` summarizing exactly what changed (`file:line` → what was
+              wrong → what you changed) and listing anything you deliberately did NOT fix and why.
+            - If you made no changes (nothing confirmed, or nothing safe to fix), say so plainly
+              in a comment instead of pushing an empty commit.
+
+          claude_args: |
+            --model claude-opus-5-5
+            --fallback-model claude-sonnet-5
+            --effort high
+            --max-turns 60
+            --allowedTools "Read,Edit,Write,Grep,Glob,Skill,WebSearch,WebFetch,Bash"
