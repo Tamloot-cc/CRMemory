@@ -827,6 +827,10 @@ provider), and the official MCP TypeScript SDK.
    queue, `forget`.
 6. SDK, stdio bridge, docs, first release.
 
+Each step lands with its tests (12). Step 1 also sets up the test harness:
+fresh database per test, a helper that starts the server, and the CI
+workflow.
+
 Not planned: embeddings and semantic search. Search is Postgres full-text
 only, so no vector extension or embedding provider is needed. A BM25 backend
 may come later as an option (5.1).
@@ -894,3 +898,41 @@ step 1.
 - [ ] Separate migration and runtime roles; the runtime role does not own
   tables and has no `BYPASSRLS` (7)
 - [ ] The `SECURITY DEFINER` function for API-key lookup (7)
+
+## 12. Testing
+
+Every build step lands with its tests. Nothing is "done" until the layers
+below that apply to it pass locally and in CI.
+
+| Layer                   | What it proves                                                                                                                                                                      | How                                                                                                     | Runs                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------- |
+| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), Hebrew prefix and query parsing (5.1), value validation | Vitest, no database                                                                                     | Every PR               |
+| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget`        | Vitest against real Postgres; each test gets a fresh database                                           | Every PR               |
+| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                                  | The Hono app called in-process against a real database                                                  | Every PR               |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction, review a conflict, search, get context                            | A runner starts Postgres and the server, then drives them through the MCP client and REST               | Every PR (from step 2) |
+| 5. Live agent           | Whether a real agent understands the tools: names, descriptions, error messages                                                                                                     | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks     | By hand, per milestone |
+| 6. Extraction quality   | Whether the LLM extracts the right fields and facts from real conversations                                                                                                         | A small set of sample transcripts in Hebrew and English with expected outputs, run against a real model | On demand, not in CI   |
+
+### Rules
+
+- **Fresh database per test.** Migrations run once into a template
+  database; each test file clones it (`CREATE DATABASE … TEMPLATE …`) and
+  drops it after. Tests never share rows, so they run in parallel without
+  flaking.
+- **Real Postgres, never a mock,** for anything that touches the database.
+  Locking, row-level security and unique constraints are the point of
+  layers 2 and 3.
+- **No real LLM calls in CI.** Ingest tests use a mock model (the AI SDK's
+  mock provider) that returns fixed structured output, so they are
+  deterministic and free. Layer 6 is the only place a real model runs.
+- **Concurrency is tested, not assumed.** Every rule in 2 that says
+  "serialized", "atomic" or "idempotent" gets a test that runs the
+  competing operations at the same time.
+- **Scenarios follow the docs.** Each scenario in layer 4 matches a flow
+  described here, so a change to the design shows up as a failing scenario.
+
+### CI
+
+A GitHub Actions workflow runs on every PR and on `main`: lint, typecheck,
+then layers 1–4, with Postgres as a service container. Layer 6 is a manual
+workflow that needs a model API key.

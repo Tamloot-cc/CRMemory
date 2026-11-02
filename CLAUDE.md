@@ -14,6 +14,19 @@ rules.
   `pnpm db:migrate` to apply. Never hand-edit generated migrations.
 - `pnpm dev` runs the server with `RETAINER_ROLE=all` from `.env`.
 
+## Testing
+
+See `ARCHITECTURE.md` section 12 for the six test layers.
+
+- Every feature lands with unit tests and, if it touches the database,
+  integration tests against real Postgres. Never mock the database.
+- Each test gets its own fresh database cloned from a migrated template;
+  never share rows between tests.
+- No real LLM calls in tests; use the AI SDK mock provider. Real-model
+  extraction evals are manual (layer 6).
+- Rules described as serialized, atomic or idempotent need a test that runs
+  the competing operations concurrently.
+
 ## Rules
 
 - Every write carries an `Actor`, taken from the API key, never from the payload.
