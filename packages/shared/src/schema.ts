@@ -35,7 +35,7 @@ export type FieldSettings = {
   relationCardinality?: RelationCardinality;
   /** `relation`, many_to_one side: what happens when the target is deleted. */
   onDelete?: OnDeleteBehavior;
-  /** `emails`, `phones`, `links`: cap on additional values. */
+  /** `emails`, `phones`, `links`: cap on total primary plus additional values. */
   maxValues?: number;
 };
 

@@ -1,32 +1,8 @@
-import type { FieldSettings, FieldType, SchemaOwner } from '@retainer/shared';
+import type { FieldSettings, ObjectView } from '@retainer/shared';
 import type { CompiledSchema } from './compiled.js';
 import type { FieldState } from './types.js';
 
-export type FieldView = {
-  name: string;
-  label: string;
-  description: string | null;
-  type: FieldType;
-  settings: FieldSettings;
-  isNullable: boolean;
-  isUnique: boolean;
-  isFilterable: boolean;
-  isSearchable: boolean;
-  /** The inverse side of a relation: computed from the other side, not writable. */
-  readOnly: boolean;
-  owner: SchemaOwner;
-};
-
-export type ObjectView = {
-  nameSingular: string;
-  namePlural: string;
-  labelSingular: string;
-  labelPlural: string;
-  description: string | null;
-  labelField: string | null;
-  owner: SchemaOwner;
-  fields: FieldView[];
-};
+export type { FieldView, ObjectView } from '@retainer/shared';
 
 /** Field settings with universal IDs turned back into API names. */
 function presentSettings(schema: CompiledSchema, field: FieldState): FieldSettings {

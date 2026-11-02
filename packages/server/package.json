@@ -16,7 +16,8 @@
     "db:migrate": "tsx --env-file-if-exists=../../.env src/db/migrate.ts",
     "db:viewer": "tsx --env-file-if-exists=../../.env src/db/viewer.ts",
     "db:studio": "drizzle-kit studio",
-    "cli": "tsx --env-file-if-exists=../../.env src/cli.ts"
+    "cli": "tsx --env-file-if-exists=../../.env src/cli.ts",
+    "test:web": "playwright test"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.6",
@@ -31,7 +32,8 @@
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
     "drizzle-kit": "^0.31.11",
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "@playwright/test": "^1.56.0"
   },
   "bin": {
     "retainer": "./dist/cli.js"

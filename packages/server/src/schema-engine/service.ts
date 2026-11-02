@@ -1,19 +1,15 @@
+import type { SchemaDescription } from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
 import { inWorkspace } from '../db/tx.js';
 import type { Caller } from '../records/service.js';
-import { readWorkspace, type Workspace } from '../workspaces/workspaces.js';
+import { readWorkspace } from '../workspaces/workspaces.js';
 import { getSchema } from './compiled.js';
 import { runSchemaChange, type SchemaChangeResult } from './engine.js';
 import { schemaOperationSchema, stripUniversalIds } from './operations.js';
-import { type ObjectView, presentSchema } from './present.js';
+import { presentSchema } from './present.js';
 
-export type SchemaDescription = {
-  workspace: Pick<Workspace, 'id' | 'name' | 'slug' | 'templates' | 'schemaVersion'> & {
-    initialized: boolean;
-  };
-  objects: ObjectView[];
-};
+export type { SchemaDescription } from '@retainer/shared';
 
 /** describe_schema and GET /v1/schema: the workspace and its objects and fields (5). */
 export async function describeSchema(sql: Sql, caller: Caller): Promise<SchemaDescription> {

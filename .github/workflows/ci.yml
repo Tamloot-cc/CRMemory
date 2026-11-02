@@ -42,5 +42,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm --filter @retainer/server exec playwright install --with-deps chromium
+      - run: pnpm test:web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: web-browser-traces
+          path: packages/server/test-results
+          retention-days: 7

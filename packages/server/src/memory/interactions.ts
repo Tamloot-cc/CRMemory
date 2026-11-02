@@ -1,4 +1,4 @@
-import type { Actor } from '@retainer/shared';
+import type { Actor, PresentedInteraction } from '@retainer/shared';
 import { z } from 'zod';
 import { INTERACTION_KINDS, type InteractionKind, type UnmatchedReason } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
@@ -50,18 +50,7 @@ export type Participants = { matched: MatchedParticipant[]; unmatched: Unmatched
 /** What `log_interaction` returns (6.2). */
 export type LogInteractionResult = { id: string; created: boolean; participants: Participants };
 
-export type PresentedInteraction = {
-  id: string;
-  kind: InteractionKind;
-  channel: string;
-  externalId: string | null;
-  occurredAt: string;
-  title: string | null;
-  summary: string | null;
-  participants: Participants;
-  createdBy: Actor;
-  createdAt: string;
-};
+export type { PresentedInteraction } from '@retainer/shared';
 
 type NormalizedParticipant = {
   handle: Handle | null;

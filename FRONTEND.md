@@ -1,7 +1,8 @@
 # Retainer web app
 
-Status: draft spec, not built. Read `ARCHITECTURE.md` first; this document
-uses its section numbers.
+Status: web steps 1–4 are implemented and verified locally. Conditional step 5
+and the product questions in section 13 remain deferred. Read
+`ARCHITECTURE.md` first; this document uses its section numbers.
 
 Retainer is used by agents through REST and MCP. The web app is for the
 people those agents work for. It does the jobs only a person can do and lets
@@ -332,7 +333,7 @@ complete value, not a diff.
 ### 6.3 Schema cache
 
 `GET /v1/schema` returns `workspace.schemaVersion`. The schema is cached in
-TanStack Query under `['schema', workspaceId, schemaVersion]` and re-read on
+TanStack Query under `[workspaceId, 'schema', schemaVersion]` and re-read on
 window focus and after any schema approval. A `404` for an object or field
 that the cached schema still has triggers one refetch before showing an
 error.
@@ -421,7 +422,7 @@ this:
 | Review enrichment                               | Source interaction summary and current conflicting record reference, as below                                                   | 5.2       |
 | Relation references on record reads and queries | Optional resolved labels alongside existing relation ID values, as below                                                        | 5.3, 5.4  |
 
-The following are prerequisites, not descriptions of today's response shapes:
+The v1 read contracts are:
 
 - **Review pages.** Preserve the existing arrays on `GET /v1/review` and add
   `totals` and `nextCursors`, each keyed by `pendingAssertions`,
@@ -436,8 +437,15 @@ The following are prerequisites, not descriptions of today's response shapes:
   `conflictingRecord: { id, object, label }`. A missing, retracted or no-longer
   conflicting reference is represented as null. Conflict links describe the
   current claim, which the server rechecks on acceptance.
+- **Object-scoped keyword lookup.** `POST /v1/objects/:object/query`
+  accepts optional `search` text, ANDed with structured filters. Use Postgres
+  full-text matching over the existing record search vector, under the same
+  workspace/object restrictions. This supports relation pickers and the
+  current-object command palette even when the label field is not filterable.
+  Global search, ranking and context packs remain in architecture step 4.
 - **Relation labels.** Record reads and queries support
-  `include=relationReferences`, returning a separate map keyed by target ID
+  `include=relationReferences` (an `include` array on query requests), returning
+  one separate response-level map keyed by target ID
   with `{ id, object, label }`, leaving field values as IDs. Resolve targets
   in batches through the shared record-reference presentation path under RLS;
   the UI must not fetch each relation separately. Omit unavailable targets
@@ -459,11 +467,11 @@ and `GET /v1/records/:id/context` (step 4), merges and `forget` (step 5).
 
 ### 9.2 SDK (MIT)
 
-`@retainer/sdk` has only `health()` today. Before the app, it gets one typed
-method per REST route, with request and response types in
-`@retainer/shared`. The app uses the SDK with `credentials: 'include'` and
-the CSRF header instead of a bearer key. This is part of build step 6 moved
-earlier.
+`@retainer/sdk` exposes a typed method per REST route, with public response
+and schema-operation types in `@retainer/shared`. It supports abort signals
+and typed API errors. The app uses it with `credentials: 'include'` and the
+CSRF header instead of a bearer key. This part of architecture step 6 moved
+earlier; the stdio bridge and release preparation remain separate work.
 
 ### 9.3 Shared value validation (MIT)
 
@@ -473,8 +481,7 @@ Do not import server code into MIT packages. Cover all field types, nullability,
 select options, text limits, real dates and time zones, phone syntax, HTTP(S)
 links, nonempty full names, deduplication and multi-value limits. Match current
 server behavior: `maxValues` caps the total primary plus additional values.
-Correct the shared setting's comment, which currently describes an additional-
-values-only cap. Keep tenant, uniqueness, relation-target and write-precondition
+The shared setting's comment describes the same total-value cap. Keep tenant, uniqueness, relation-target and write-precondition
 checks in the server. Preserve existing normalization and API error behavior
 when switching the server to the shared helpers.
 

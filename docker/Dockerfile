@@ -5,13 +5,15 @@ WORKDIR /app
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY packages ./packages
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @retainer/shared build && pnpm --filter @retainer/server build
+RUN pnpm --filter @retainer/shared build && pnpm --filter @retainer/sdk build && pnpm --filter @retainer/web build && pnpm --filter @retainer/server build
 RUN pnpm --filter @retainer/server deploy --legacy --prod /out
 
 FROM node:22-slim
 ENV NODE_ENV=production
+ENV RETAINER_WEB_DIR=/app/web
 WORKDIR /app
 COPY --from=build /out ./
+COPY --from=build /app/packages/web/dist ./web
 # The operator CLI (ARCHITECTURE.md 7.1):
 #   docker compose exec retainer retainer workspace create --name "Acme"
 RUN printf '#!/bin/sh\nexec node /app/dist/cli.js "$@"\n' > /usr/local/bin/retainer \

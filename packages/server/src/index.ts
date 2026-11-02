@@ -21,7 +21,7 @@ const sql = createSql(config.DATABASE_URL, { role: RUNTIME_ROLE });
 const stops: Array<() => Promise<void>> = [];
 
 if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {
-  const app = createApp({ sql });
+  const app = createApp({ sql, webDir: config.RETAINER_WEB_DIR });
   const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
     console.log(`Retainer API listening on http://localhost:${info.port}`);
   });

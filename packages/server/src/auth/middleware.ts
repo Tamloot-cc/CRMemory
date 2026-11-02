@@ -1,11 +1,11 @@
-import type { Actor } from '@retainer/shared';
 import type { MiddlewareHandler } from 'hono';
+import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
 import { type AppEnv, errorResponse } from '../api/http.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
-import { hashApiKey } from './keys.js';
+import { lookupKey, requireWebHeader, SESSION_COOKIE } from './session.js';
 
 const BEARER = /^Bearer\s+(\S+)$/i;
 
@@ -17,25 +17,32 @@ const BEARER = /^Bearer\s+(\S+)$/i;
  */
 export function authenticate(sql: Sql): MiddlewareHandler<AppEnv> {
   return createMiddleware<AppEnv>(async (c, next) => {
-    const match = BEARER.exec(c.req.header('authorization') ?? '');
-    if (!match?.[1]) {
+    const authorization = c.req.header('authorization');
+    const match = BEARER.exec(authorization ?? '');
+    const cookie = getCookie(c, SESSION_COOKIE);
+    // An explicitly supplied invalid header must not fall back to a cookie.
+    const raw = authorization !== undefined ? match?.[1] : cookie;
+    if (!raw) {
       c.header('www-authenticate', 'Bearer');
       return errorResponse(
         c,
-        new AppError(401, 'unauthorized', 'send an API key as "Authorization: Bearer <key>"'),
+        new AppError(
+          401,
+          'unauthorized',
+          'send an API key as "Authorization: Bearer <key>" or sign in',
+        ),
       );
     }
-    const [key] = await sql<
-      { key_id: string; workspace_id: string; scopes: ApiKeyScope[]; actor: Actor }[]
-    >`select * from retainer_lookup_api_key(${hashApiKey(match[1])})`;
-    if (!key) {
-      c.header('www-authenticate', 'Bearer error="invalid_token"');
-      return errorResponse(
-        c,
-        new AppError(401, 'unauthorized', 'the API key is unknown or revoked'),
-      );
+    try {
+      if (authorization === undefined && !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method))
+        requireWebHeader(c);
+      c.set('caller', await lookupKey(sql, raw));
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      if (error.status === 401) c.header('www-authenticate', 'Bearer error="invalid_token"');
+      return errorResponse(c, error);
     }
-    c.set('caller', { workspaceId: key.workspace_id, actor: key.actor, scopes: key.scopes });
+    c.header('Cache-Control', 'no-store');
     await next();
   });
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const configSchema = z.object({
+  RETAINER_WEB_DIR: z.string().optional(),
   DATABASE_URL: z.string().url(),
   RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
   PORT: z.coerce.number().int().positive().default(8787),
