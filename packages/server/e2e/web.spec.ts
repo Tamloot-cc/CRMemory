@@ -270,11 +270,13 @@ test('searches the current object with the command palette and keeps list filter
   await r.request('/objects/person/records', { values: { name: 'Other person', jobTitle: 'CEO' } });
   await signIn(page, r.url, r.keys.user);
   await page.getByRole('link', { name: 'People', exact: true }).click();
+  await page.getByRole('button', { name: 'Filter', exact: true }).click();
   await page.getByLabel('Filter field').selectOption('jobTitle');
   await page.getByLabel('Job title', { exact: true }).fill('CTO');
   await page.getByRole('button', { name: 'Apply filter' }).click();
   await expect(page.getByRole('link', { name: 'Dana Levi' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Other person' })).not.toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remove filter Job title' })).toBeVisible();
   expect(page.url()).toContain('filter=');
   await page.reload();
   await expect(page.getByRole('link', { name: 'Dana Levi' })).toBeVisible();
@@ -282,6 +284,54 @@ test('searches the current object with the command palette and keeps list filter
   await page.getByLabel('Find objects or records').fill('Other');
   await page.getByRole('dialog').getByRole('button', { name: 'Other person', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Other person' })).toBeVisible();
+});
+
+test('sorts from column headers, resizes columns, and collapses the sidebar', async ({
+  page,
+  retainer: r,
+}) => {
+  for (const [name, jobTitle] of [
+    ['Bravo person', 'B title'],
+    ['Alpha person', 'C title'],
+    ['Charlie person', 'A title'],
+  ])
+    await r.request('/objects/person/records', { values: { name, jobTitle } });
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('link', { name: 'People', exact: true }).click();
+  const grid = page.getByRole('region', { name: 'People' });
+  const header = grid.getByRole('columnheader', { name: 'Job title' });
+  await header.getByRole('button').click();
+  await expect(header).toHaveAttribute('aria-sort', 'ascending');
+  await expect(grid.getByRole('link', { name: / person$/ })).toHaveText([
+    'Charlie person',
+    'Bravo person',
+    'Alpha person',
+  ]);
+  await header.getByRole('button').click();
+  await expect(header).toHaveAttribute('aria-sort', 'descending');
+  await expect(grid.getByRole('link', { name: / person$/ }).first()).toHaveText('Alpha person');
+  await header.getByRole('button').click();
+  await expect(header).not.toHaveAttribute('aria-sort', /.+/);
+  expect(page.url()).not.toContain('sort=');
+
+  const resize = grid.getByRole('separator', { name: 'Resize Job title' });
+  const before = Number(await resize.getAttribute('aria-valuenow'));
+  await resize.focus();
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await expect(resize).toHaveAttribute('aria-valuenow', String(before + 32));
+  await page.reload();
+  await expect(page.getByRole('separator', { name: 'Resize Job title' })).toHaveAttribute(
+    'aria-valuenow',
+    String(before + 32),
+  );
+
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
+  await page.getByRole('link', { name: 'Review inbox' }).click();
+  await expect(page.getByRole('heading', { name: 'Review inbox' })).toBeVisible();
 });
 
 test('edits schema-driven scalar and composite fields through the real API', async ({

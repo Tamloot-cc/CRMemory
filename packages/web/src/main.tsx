@@ -39,6 +39,13 @@ function Layout() {
       return result;
     },
   });
+  const inbox = useQuery({
+    queryKey: [session.workspace.id, 'review', 'sidebar-count'],
+    queryFn: ({ signal }) => api.review({ limit: 1, signal }),
+    retry: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+  });
   const params = useParams({ strict: false }) as { object?: string };
   const currentObject = schema.data?.objects.find(
     (o) => o.nameSingular === params.object || o.namePlural === params.object,
@@ -95,6 +102,11 @@ function Layout() {
     <WorkspaceContext.Provider value={{ session, schema: schema.data }}>
       <Shell
         workspace={session.workspace.name}
+        user={{
+          name: session.actor.name || session.actor.id,
+          type: session.actor.type,
+        }}
+        inboxCount={inbox.data?.totals.pendingAssertions}
         objects={objects.map((o) => ({ name: o.nameSingular, label: o.labelPlural }))}
         onSignOut={signOut}
         onSearch={() => setCommand(true)}
