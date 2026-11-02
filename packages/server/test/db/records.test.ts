@@ -163,11 +163,13 @@ describe('creating records', () => {
   it('replays a create with the same idempotency key, even concurrently', async () => {
     const values = { name: 'Idem Potent', emails: email() };
     const results = await Promise.all(
-      Array.from({ length: 5 }, () => createRecord(app, as(AGENT), 'person', values, 'key-1')),
+      Array.from({ length: 5 }, () =>
+        createRecord(app, as(AGENT), 'person', values, { idempotencyKey: 'key-1' }),
+      ),
     );
     expect(new Set(results.map((r) => r.id)).size).toBe(1);
     await expect(
-      createRecord(app, as(AGENT), 'person', { name: 'Someone else' }, 'key-1'),
+      createRecord(app, as(AGENT), 'person', { name: 'Someone else' }, { idempotencyKey: 'key-1' }),
     ).rejects.toMatchObject({ code: 'idempotency_key_reused' });
   });
 });

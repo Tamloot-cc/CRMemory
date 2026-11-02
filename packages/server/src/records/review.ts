@@ -2,6 +2,7 @@ import type { Actor } from '@retainer/shared';
 import type { AssertionStatus, ReviewReason } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
+import { listUnresolvedParticipants, type UnresolvedParticipant } from '../memory/interactions.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { getRecord, type PresentedRecord } from './read.js';
 import { normalizeFieldValue } from './values.js';
@@ -40,14 +41,14 @@ export type MergeSuggestionView = {
 export type ReviewQueue = {
   pendingAssertions: PendingAssertion[];
   mergeSuggestions: MergeSuggestionView[];
-  /**
-   * Participants matching deleted records (1.2). Interactions arrive in
-   * build step 3; until then this list is always empty.
-   */
-  unresolvedParticipants: unknown[];
+  /** Participants whose handle belongs only to deleted, unmerged records (1.2). */
+  unresolvedParticipants: UnresolvedParticipant[];
 };
 
-/** What waits for a person: pending assertions and suggested merges (6.1). */
+/**
+ * What waits for a person (6.1): pending assertions, suggested merges and
+ * participants matching deleted records.
+ */
 export async function listReview(
   tx: Tx,
   workspaceId: string,
@@ -119,7 +120,7 @@ export async function listReview(
       reason: s.reason,
       createdAt: s.created_at.toISOString(),
     })),
-    unresolvedParticipants: [],
+    unresolvedParticipants: await listUnresolvedParticipants(tx, workspaceId, limit),
   };
 }
 

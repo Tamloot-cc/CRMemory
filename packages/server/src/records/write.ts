@@ -237,9 +237,22 @@ export async function writeFields(
     winners.set(field, winner);
   }
 
-  if (winners.size === 0) return statuses;
+  if (winners.size > 0) await applyWinners(tx, context, object, record, winners);
+  return statuses;
+}
 
-  // records.data, record_links and record_identifiers follow the winners.
+/**
+ * Makes `records.data`, `record_links`, `record_identifiers`, the label and
+ * the search text follow the given fields' winners (rule 2.4). The record
+ * must be locked.
+ */
+async function applyWinners(
+  tx: Tx,
+  context: WriteContext,
+  object: CompiledObject,
+  record: LockedRecord,
+  winners: Map<FieldState, AssertionRow | undefined>,
+): Promise<void> {
   const data = { ...record.data };
   for (const [field, winner] of winners) {
     if (field.type === 'relation') {
@@ -250,7 +263,7 @@ export async function writeFields(
           insert into record_links (workspace_id, field_id, source_record_id, target_record_id,
             created_by)
           values (${context.workspaceId}, ${field.id as string}, ${record.id},
-            ${winner.value as string}, ${tx.json(context.actor)})`;
+            ${winner.value as string}, ${tx.json(winner.actor)})`;
       }
       continue;
     }
@@ -271,7 +284,44 @@ export async function writeFields(
     returning updated_at`;
   record.data = data;
   record.updated_at = updated?.updated_at ?? record.updated_at;
-  return statuses;
+}
+
+/**
+ * Recomputes fields of a locked record from their eligible assertions alone
+ * (rule 2.4): the winner becomes `active`, the rest `superseded`, and the
+ * derived data follows. Used after assertions stop counting, e.g. when their
+ * source is retracted.
+ */
+export async function recomputeFields(
+  tx: Tx,
+  context: WriteContext,
+  object: CompiledObject,
+  record: LockedRecord,
+  fieldIds: readonly string[],
+): Promise<void> {
+  const fields = fieldIds
+    .map((id) => object.fieldsById.get(id))
+    .filter((f): f is FieldState => f !== undefined);
+  if (fields.length === 0) return;
+  const rows = await tx<AssertionRow[]>`
+    select id, field_id, value, actor, status, observed_at, created_at from field_assertions
+    where record_id = ${record.id} and field_id = any(${fields.map((f) => f.id as string)}::uuid[])
+      and status in ('active', 'superseded')`;
+  const winners = new Map<FieldState, AssertionRow | undefined>();
+  for (const field of fields) {
+    const candidates = rows.filter((r) => r.field_id === field.id);
+    const winnerId = pickWinner(candidates.map(toRanked))?.id;
+    const winner = candidates.find((a) => a.id === winnerId);
+    if (winnerId) {
+      await tx`update field_assertions set status = 'active'
+        where id = ${winnerId} and status <> 'active'`;
+    }
+    await tx`update field_assertions set status = 'superseded'
+      where record_id = ${record.id} and field_id = ${field.id as string}
+        and status = 'active' and id is distinct from ${winnerId ?? null}::uuid`;
+    winners.set(field, winner);
+  }
+  await applyWinners(tx, context, object, record, winners);
 }
 
 /**

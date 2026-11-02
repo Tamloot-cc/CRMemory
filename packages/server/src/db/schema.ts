@@ -351,6 +351,12 @@ export const interactions = pgTable(
     /** The agent's short summary of the interaction. */
     summary: text('summary'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * Hash of the normalized input. Logging the same `(channel, external_id)`
+     * again with the same hash returns this row; a different hash is a
+     * conflict (1.3).
+     */
+    requestHash: text('request_hash').notNull(),
     /** Server-computed from title (weighted higher) and summary (5.1). */
     search: tsvector('search'),
     createdBy: jsonb('created_by').$type<Actor>().notNull(),
@@ -367,18 +373,30 @@ export const interactions = pgTable(
   ],
 );
 
+/**
+ * Why a participant was not matched to a record (4.1, 6.2). `ambiguous`:
+ * the handle is claimed by more than one live record (1.2).
+ */
+export const UNMATCHED_REASONS = ['no_match', 'phone_only', 'deleted_record', 'ambiguous'] as const;
+export type UnmatchedReason = (typeof UNMATCHED_REASONS)[number];
+
 export const interactionParticipants = pgTable(
   'interaction_participants',
   {
     id: id(),
     workspaceId: workspaceId(),
     interactionId: uuid('interaction_id').notNull(),
-    /** Email address or E.164 phone number. */
+    /** The participant's place in the logged list, so reads keep the agent's order. */
+    position: integer('position').notNull(),
+    /** Normalized email address or E.164 phone number. */
     handle: text('handle'),
     displayName: text('display_name'),
-    role: text('role').$type<'from' | 'to' | 'cc' | 'attendee' | 'speaker' | 'mentioned'>(),
+    /** The agent's own word for the part they played, e.g. "customer" or "from". */
+    role: text('role'),
     /** Set once the participant is matched to a record. FK in 0001_security. */
     recordId: uuid('record_id'),
+    /** Set when `record_id` is null: why the participant stayed unresolved. */
+    unmatchedReason: text('unmatched_reason').$type<UnmatchedReason>(),
   },
   (t) => [
     tenantFk(
@@ -388,10 +406,27 @@ export const interactionParticipants = pgTable(
     ),
     index('interaction_participants_interaction_idx').on(t.interactionId),
     index('interaction_participants_record_idx').on(t.recordId),
+    index('interaction_participants_deleted_record_idx')
+      .on(t.workspaceId)
+      .where(sql`${t.unmatchedReason} = 'deleted_record'`),
+    check(
+      'interaction_participants_unmatched_reason',
+      sql`${t.unmatchedReason} in ('no_match', 'phone_only', 'deleted_record', 'ambiguous')`,
+    ),
   ],
 );
 
-export const ASSERTION_STATUSES = ['active', 'superseded', 'pending_review', 'rejected'] as const;
+/**
+ * `retracted`: the source interaction was retracted, so the assertion no
+ * longer counts and can never win again (rules 2.1, 2.4).
+ */
+export const ASSERTION_STATUSES = [
+  'active',
+  'superseded',
+  'pending_review',
+  'rejected',
+  'retracted',
+] as const;
 export type AssertionStatus = (typeof ASSERTION_STATUSES)[number];
 
 /** Why an assertion waits for review (rule 2.3). */
@@ -434,6 +469,9 @@ export const fieldAssertions = pgTable(
       [fields.workspaceId, fields.id],
     ),
     index('field_assertions_record_field_idx').on(t.recordId, t.fieldId, t.status),
+    index('field_assertions_source_idx')
+      .on(t.sourceInteractionId)
+      .where(sql`${t.sourceInteractionId} is not null`),
     index('field_assertions_review_idx')
       .on(t.workspaceId, t.createdAt)
       .where(sql`${t.status} = 'pending_review'`),

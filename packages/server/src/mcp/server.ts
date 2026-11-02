@@ -5,6 +5,13 @@ import { missingScope } from '../auth/middleware.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
+import { rememberInputSchema } from '../memory/facts.js';
+import {
+  logInteractionInputSchema,
+  MAX_PARTICIPANTS,
+  participantInputSchema,
+} from '../memory/interactions.js';
+import { logInteractionFor, remember } from '../memory/service.js';
 import { queryInputSchema } from '../records/query.js';
 import {
   type Caller,
@@ -42,6 +49,20 @@ with upsert_record. Write the values you learned; Retainer keeps every claim's
 history and decides which value wins. A value a person set outranks yours, so
 your write may come back as pending_review: tell your user it is waiting for
 approval rather than saying it is done.
+
+After a meeting, call, email thread or chat, write what you learned in order:
+1. log_interaction: kind, channel, when it happened, a title, your own short
+   summary, the source's external ID, and the participants' emails or phones
+   (or record IDs). Keep the id it returns. Unmatched participants come back
+   with a reason; create the people worth keeping with upsert_record, or leave
+   them. Retainer never creates records on its own.
+2. upsert_record with source set to that interaction id, so the values carry
+   its date and an older email cannot overwrite a newer claim.
+3. remember, citing the same source (with a short quote if useful), for
+   plain-language facts that do not fit a field.
+4. upsert_record for tasks someone committed to, as task records.
+Each call is its own write, so you can stop and resume; logging the same
+externalId again returns the same interaction.
 
 When a field you need does not exist, use propose_schema_change. Adding is
 applied at once; removing or renaming waits for a person to approve.
@@ -127,6 +148,11 @@ const upsertRecordInput = z.strictObject({
   expectedUpdatedAt: upsertInputSchema.shape.expectedUpdatedAt.describe(
     'Reject the write if the record changed since this updatedAt.',
   ),
+  source: upsertInputSchema.shape.source.describe(
+    'The interaction id (from log_interaction) these values come from. Values then carry ' +
+      "the interaction's date, so an older email cannot overwrite a newer claim. Omit only " +
+      'for values that come from no conversation.',
+  ),
   idempotencyKey: z
     .string()
     .min(1)
@@ -136,6 +162,64 @@ const upsertRecordInput = z.strictObject({
       'Only for creates without id or match: retrying with the same key returns the first ' +
         'result instead of creating a second record.',
     ),
+});
+
+const logInteractionInput = z.strictObject({
+  ...logInteractionInputSchema.shape,
+  kind: logInteractionInputSchema.shape.kind.describe('meeting, call, email, message or note.'),
+  channel: logInteractionInputSchema.shape.channel.describe(
+    'Where it happened, e.g. "gmail", "zoom", "whatsapp". Use a distinct channel per source ' +
+      'account when their external IDs could overlap.',
+  ),
+  externalId: logInteractionInputSchema.shape.externalId.describe(
+    "The source's own ID (message, thread, meeting or call ID). Logging it again with the " +
+      'same input returns the same interaction; without it, retries log duplicates.',
+  ),
+  occurredAt: logInteractionInputSchema.shape.occurredAt.describe(
+    'When it happened, ISO 8601 with a UTC offset, e.g. "2026-10-29T14:00:00+02:00".',
+  ),
+  title: logInteractionInputSchema.shape.title.describe('A short title.'),
+  summary: logInteractionInputSchema.shape.summary.describe(
+    'Your own short summary. Not a transcript or message body: store only what the ' +
+      'workspace should keep.',
+  ),
+  participants: z
+    .array(
+      z.strictObject({
+        handle: participantInputSchema.shape.handle.describe('An email address or phone number.'),
+        recordId: participantInputSchema.shape.recordId.describe(
+          'The record of this participant, when you know it. Needed to link a participant ' +
+            'known only by phone.',
+        ),
+        role: participantInputSchema.shape.role.describe(
+          'The part they played, in your words, e.g. "customer", "from", "attendee".',
+        ),
+      }),
+    )
+    .max(MAX_PARTICIPANTS)
+    .default([])
+    .describe('Who took part; each needs a handle, a recordId, or both.'),
+});
+
+const rememberInput = z.strictObject({
+  record: z.uuid().describe('The record the fact is about.'),
+  ...rememberInputSchema.shape,
+  text: rememberInputSchema.shape.text.describe(
+    'One plain-language fact, e.g. "Legal review at Acme usually takes two weeks."',
+  ),
+  source: rememberInputSchema.shape.source.describe(
+    'The interaction id (from log_interaction) the fact comes from; the fact is valid from ' +
+      "that interaction's date. Without it, a note interaction is created for the fact.",
+  ),
+  quote: rememberInputSchema.shape.quote.describe(
+    'Optional short quote from the source that supports the fact. Needs source.',
+  ),
+  idempotencyKey: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('Retrying with the same key returns the first result instead of a second fact.'),
 });
 
 const applyTemplateInput = z.strictObject({
@@ -232,6 +316,8 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         '(e.g. emails). With neither, a new record is created. If id or match finds nothing ' +
         'the call fails, unless ifMissing is "create"; so "update Dana\'s address" can never ' +
         'create a second Dana by mistake.\n\n' +
+        'Values learned from a conversation should cite it: log it with log_interaction ' +
+        'first and pass its id as source.\n\n' +
         'The response reports each field: "applied" (it is now the value), "pending_review" ' +
         '(a person set a different value; yours waits for their approval, so say so) or ' +
         '"superseded" (kept in history; a newer or higher-precedence value stands). ' +
@@ -242,7 +328,10 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
     ({ object, idempotencyKey, ...input }) =>
       run(caller, 'write', () => {
         if (!input.id && !input.match) {
-          return createRecord(sql, caller, object, input.values, idempotencyKey);
+          return createRecord(sql, caller, object, input.values, {
+            ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+            ...(input.source !== undefined ? { source: input.source } : {}),
+          });
         }
         if (idempotencyKey !== undefined) {
           throw new AppError(
@@ -254,6 +343,47 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         }
         return upsertRecord(sql, caller, object, input);
       }),
+  );
+
+  server.registerTool(
+    'log_interaction',
+    {
+      title: 'Log an interaction',
+      description:
+        'Logs a meeting, call, email, message or note: when it happened, a title, your own ' +
+        'short summary and who took part. Do this first after a conversation, then pass the ' +
+        'returned id as source to upsert_record and remember.\n\n' +
+        'Participants are matched by email to existing records. The response lists matched ' +
+        'participants with their recordId, and unmatched ones with a reason: "no_match" (no ' +
+        'record has this email; create the person with upsert_record if worth keeping), ' +
+        '"phone_only" (phones never match on their own; pass recordId if you know it), ' +
+        '"deleted_record" (the email belongs to a deleted record; a person will review it) or ' +
+        '"ambiguous" (several records claim it; candidates lists them). Retainer never ' +
+        'creates records for you.\n\n' +
+        'Logging the same channel and externalId again with the same input returns the same ' +
+        'interaction with created: false; different input is a conflict.',
+      inputSchema: logInteractionInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    (input) => run(caller, 'write', () => logInteractionFor(sql, caller, input)),
+  );
+
+  server.registerTool(
+    'remember',
+    {
+      title: 'Remember a fact',
+      description:
+        'Stores one plain-language fact about a record that does not fit a field, e.g. ' +
+        '"Legal review at Acme usually takes two weeks." Cite the interaction it came from ' +
+        'as source (from log_interaction), with an optional short quote; the fact is then ' +
+        "valid from that interaction's date. Without source, a note interaction is created " +
+        'for it and returned as noteInteraction. One fact per call; field values belong in ' +
+        'upsert_record.',
+      inputSchema: rememberInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    ({ record, idempotencyKey, ...input }) =>
+      run(caller, 'write', () => remember(sql, caller, record, input, idempotencyKey)),
   );
 
   server.registerTool(

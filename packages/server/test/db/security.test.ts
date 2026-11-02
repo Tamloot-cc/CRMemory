@@ -119,13 +119,15 @@ describe('row-level security', () => {
 describe('tenant foreign keys', () => {
   it('rejects a reference to a row in another workspace', async () => {
     const [interaction] = await db.owner<{ id: string }[]>`
-      insert into interactions (workspace_id, kind, channel, occurred_at, summary, created_by)
-      values (${workspaceB}, 'note', 'api', now(), 'hello', ${db.owner.json({ type: 'system', id: 'test' })})
+      insert into interactions (workspace_id, kind, channel, occurred_at, summary, request_hash,
+        created_by)
+      values (${workspaceB}, 'note', 'api', now(), 'hello', 'test',
+        ${db.owner.json({ type: 'system', id: 'test' })})
       returning id`;
     await expect(
       db.owner`
-        insert into interaction_participants (workspace_id, interaction_id, handle)
-        values (${workspaceA}, ${interaction?.id ?? ''}, 'dana@acme.com')`,
+        insert into interaction_participants (workspace_id, interaction_id, position, handle)
+        values (${workspaceA}, ${interaction?.id ?? ''}, 0, 'dana@acme.com')`,
     ).rejects.toMatchObject({ code: '23503' });
   });
 });

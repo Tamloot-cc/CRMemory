@@ -178,8 +178,8 @@ install can add them later as an opt-in.
 | Table                      | Holds                                                                                                                                                                                                                                                                                      |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `interactions`             | A log of what happened, written by the agent: `kind` (meeting, call, email, message, note), `channel`, `occurred_at`, `title`, an agent-written `summary`, `external_id` (unique per workspace and channel, so logging the same source twice is a no-op). No transcripts or message bodies |
-| `interaction_participants` | Who took part: a `handle` (email or phone) and/or a `record_id` the agent supplies, and a `role`                                                                                                                                                                                           |
-| `field_assertions`         | A claimed value for one field of one record: value, actor, source interaction, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`)                                                                          |
+| `interaction_participants` | Who took part, in the order logged: a normalized `handle` (email or phone) and/or a `record_id`, a free-text `role`, and an `unmatched_reason` when no record was matched                                                                                                                  |
+| `field_assertions`         | A claimed value for one field of one record: value, actor, source interaction, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`)                                                             |
 | `facts`                    | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                   |
 | `fact_sources`             | What a fact rests on: an interaction (with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                              |
 
@@ -192,9 +192,13 @@ A summary or quote is stored like any other value, so an agent should not put
 in it what the workspace should not keep.
 
 Logging an interaction again with the same `(workspace_id, channel,
-external_id)` and identical input returns the existing one. A different
-payload for that identity returns a conflict;
-it is never silently ignored. `channel` must distinguish source accounts
+external_id)` and identical input returns the existing one. Input is compared
+after normalization (handles, the `occurred_at` instant), through a hash of it
+stored on the interaction. A different payload for that identity returns a
+conflict (`interaction_conflict`); it is never silently ignored. Logging the
+identity of a retracted interaction again is also a conflict
+(`interaction_retracted`): the unique index still holds the retracted row,
+and restoring a source is not in v1. `channel` must distinguish source accounts
 when their external IDs can overlap. Without `external_id`, callers do not
 get deduplication. An edited source needs a new `external_id` in v1;
 creating it does not retract the old source's claims; the caller retracts
@@ -240,6 +244,9 @@ the old interaction (`DELETE /v1/interactions/:id`).
    `pending_review` and `rejected` assertions never count. Source retraction
    makes its derived assertions ineligible and recomputes affected fields;
    it cannot let an older `superseded` claim from that source win again.
+   Retraction sets every `active`, `superseded` or `pending_review`
+   assertion citing the source to `retracted`, which never counts again,
+   and recomputes the fields where one of them was winning.
 5. **Writes to one record are serialized.** A write locks the record row
    (`SELECT … FOR UPDATE`), inserts its assertions, recomputes only the
    touched keys, and updates `data`, `record_links` and `record_identifiers`
@@ -263,7 +270,11 @@ Soft delete (`deleted_at`) is the default for records, facts and
 interactions. Reads exclude deleted parents as well as deleted rows: a
 record's facts are hidden with it. Retracting an interaction also excludes
 the claims that cite it and recomputes field winners. Facts with other live
-sources may remain.
+sources may remain; a fact with no live source is hidden on read.
+A write citing an interaction locks it in share mode before locking any
+record, and retraction locks it exclusively before locking the affected
+records, so a claim either commits before the retraction (and is retracted
+with the rest) or sees the source retracted and fails.
 Restoring a source must revalidate its derived claims before exposing them.
 
 `forget` (admin scope) is the hard delete for privacy requests. First collect
@@ -439,6 +450,14 @@ itself or leave them. Retainer never creates records on its own. Phones are
 not unique (numbers are shared and reassigned), so a participant known only
 by phone stays unresolved unless the agent passes its record ID. Matching a
 phone held by exactly one live record is a later option.
+
+A record ID the agent passes is used as given, after following merges; an
+unknown or deleted one fails the call, since the agent named it explicitly.
+An email claimed by several live records (two unique email fields on
+different objects) is not matched to any of them: it comes back `ambiguous`
+with the candidates (1.2). `occurred_at` must carry a UTC offset and may not
+be in the future (beyond a few minutes of clock skew): it decides precedence
+(rule 2.2), so a time-zone slip would otherwise let a claim win for hours.
 
 Each write is its own short transaction, and each follows the write rules,
 so an agent that stops halfway leaves consistent data; it can resume, and
@@ -723,10 +742,17 @@ and `get_context` return the following.
 ```
 
 `created` is `false` when the same `(channel, externalId)` was already
-logged with the same input (1.3). An unmatched participant's `reason` is
-`no_match`, `phone_only` (phones never resolve a participant on their own,
-4.1) or `deleted_record` (the handle belongs to a soft-deleted record that
-was not merged; it is also listed in `GET /v1/review`, 1.2).
+logged with the same input (1.3). Handles come back normalized, in the order
+logged; `handle` or `role` is `null` when not given. An unmatched
+participant's `reason` is `no_match`, `phone_only` (phones never resolve a
+participant on their own, 4.1), `deleted_record` (the handle belongs to a
+soft-deleted record that was not merged; it is also listed in
+`GET /v1/review`, 1.2) or `ambiguous` (several live records claim the
+handle; `candidates` lists their IDs, 1.2).
+
+`DELETE /v1/interactions/:id` returns how far the retraction reached:
+`{ id, deleted: true, retractedAssertions, recomputedRecordIds,
+hiddenFactIds }`, the last being facts whose only live source it was.
 
 ```
 → remember {
@@ -743,8 +769,12 @@ was not merged; it is also listed in `GET /v1/review`, 1.2).
 
 `validFrom` is the cited interaction's `occurred_at` (rule 2.6). Without
 `source`, `noteInteraction` is the ID of the `note` interaction created for
-the fact to cite, and `validFrom` is the write time. A retry with the same
-idempotency key returns the same response.
+the fact to cite, and `validFrom` is the write time. The note has channel
+`retainer`, the fact's text as its summary, and the record as its one
+participant with role `subject`. A `quote` needs a `source`. A retry with the
+same idempotency key returns the same response.
+`GET /v1/records/:id/facts` returns `{ record, facts }` with facts in this
+shape, newest `validFrom` first, listing only live sources.
 
 ```
 → get_context { "record": "rec_5a1…", "tokenBudget": 1500 }
