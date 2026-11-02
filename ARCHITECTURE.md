@@ -704,6 +704,81 @@ Several agents can share a workspace. Each uses its own API key, so every
 write is attributed to the agent that made it; between agents the latest
 `observed_at` wins and the full history stays in `field_assertions`.
 
+#### Responses of the memory tools
+
+Record writes return the shape shown above. `log_interaction`, `remember`
+and `get_context` return the following.
+
+```
+→ log_interaction {
+    "kind": "call", "channel": "zoom", "externalId": "zoom-8812-3390",
+    "occurredAt": "2026-10-29T14:00:00+02:00", "title": "Acme renewal call",
+    "summary": "…",
+    "participants": [ { "handle": "dana@acme.com", "role": "customer" },
+                      { "handle": "ron.peretz@acme.com", "role": "customer" } ] }
+← { "id": "int_51b…", "created": true,
+    "participants": {
+      "matched":   [ { "handle": "dana@acme.com", "role": "customer", "recordId": "rec_9f2…" } ],
+      "unmatched": [ { "handle": "ron.peretz@acme.com", "role": "customer", "reason": "no_match" } ] } }
+```
+
+`created` is `false` when the same `(channel, externalId)` was already
+logged with the same input (1.3). An unmatched participant's `reason` is
+`no_match`, `phone_only` (phones never resolve a participant on their own,
+4.1) or `deleted_record` (the handle belongs to a soft-deleted record that
+was not merged; it is also listed in `GET /v1/review`, 1.2).
+
+```
+→ remember {
+    "record": "rec_9f2…", "text": "Legal review at Acme usually takes two weeks.",
+    "source": "int_51b…", "quote": "legal usually needs two weeks with these" }
+← { "fact": {
+      "id": "fct_77a…", "record": "rec_9f2…",
+      "content": "Legal review at Acme usually takes two weeks.",
+      "kind": "stated", "validFrom": "2026-10-29T12:00:00Z", "validTo": null,
+      "writtenBy": { "type": "agent", "id": "…", "name": "Inbox agent" },
+      "sources": [ { "interaction": "int_51b…", "quote": "legal usually needs two weeks with these" } ] },
+    "noteInteraction": null }
+```
+
+`validFrom` is the cited interaction's `occurred_at` (rule 2.6). Without
+`source`, `noteInteraction` is the ID of the `note` interaction created for
+the fact to cite, and `validFrom` is the write time. A retry with the same
+idempotency key returns the same response.
+
+```
+→ get_context { "record": "rec_5a1…", "tokenBudget": 1500 }
+← { "record": {
+      "id": "rec_5a1…", "object": "person", "label": "Noa Shapira",
+      "fields": {
+        "jobTitle": { "value": "Head of Data", "writtenBy": { "type": "user", … }, "observedAt": "…" },
+        … } },
+    "openTasks": [ { "id": "rec_c40…", "title": "Send SSO docs to Noa", "status": "todo", "dueDate": "2026-11-04" } ],
+    "facts": [ { "id": "fct_1e2…", "content": "Needs SSO before agreeing to a pilot",
+                 "validFrom": "2026-10-21T09:00:00Z", "writtenBy": { "type": "agent", … },
+                 "sources": [ "int_9d0…" ] } ],
+    "recentInteractions": [ { "id": "int_9d0…", "kind": "meeting", "occurredAt": "2026-10-21T09:00:00Z",
+                              "title": "Globex data-platform demo", "summary": "…" } ],
+    "omitted": { "openTasks": 0, "facts": 4, "recentInteractions": 11 },
+    "tokenEstimate": 1380 }
+```
+
+A context pack is assembled by fixed rules (5):
+
+- The record's current field values are always included, each with who
+  wrote it and when it was observed, so a value is never mistaken for a
+  stated fact. The budget applies to the sections after it.
+- The other sections fill in this order until the budget is spent: open
+  tasks (tasks linked to the record whose status is not `done`, earliest due
+  date first, undated last), current facts (not superseded or retracted,
+  newest `validFrom` first), then recent interactions (newest first). Items
+  are never cut mid-text; a section stops at the last whole item that fits.
+- `omitted` counts the items left out of each section, so the agent knows
+  to read more with `search` or the REST routes.
+- Tokens are estimated from characters, at about four per token. Retainer
+  runs no tokenizer or model, so the budget is approximate. `tokenBudget`
+  defaults to 2000 and is capped at 16000.
+
 ---
 
 ## 7. Tenancy and auth
@@ -798,9 +873,16 @@ migrations, Zod, pg-boss, and the official MCP TypeScript SDK. No LLM SDK.
 1. Schema engine with base objects and templates, assertion-backed records
    CRUD, REST, API keys and the workspace/key CLI (including direct-write
    precedence and review).
-2. MCP endpoint with the read and write tools.
-3. Interaction log, participant matching and facts (`remember`, sources).
-4. Keyword search and context packs.
+2. MCP endpoint with the tools whose data exists after step 1:
+   `describe_schema`, `list_templates`, `apply_template`, `query_records`,
+   `get_record`, `upsert_record` and `propose_schema_change`.
+   `upsert_record` has no `source` yet, and its description covers direct
+   writes only.
+3. Interaction log, participant matching and facts: `log_interaction`,
+   `remember`, and `source` on `upsert_record`. `source` waits for this step
+   because nothing can be cited before interactions can be logged. The tool
+   descriptions gain the workflow in 4.1.
+4. Keyword search and context packs (`search`, `get_context`).
 5. Consolidator (fact dedupe and supersession, merge suggestions), review
    queue, `forget`.
 6. SDK, stdio bridge, docs, first release.
