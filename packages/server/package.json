@@ -16,10 +16,11 @@
     "db:migrate": "tsx --env-file-if-exists=../../.env src/db/migrate.ts"
   },
   "dependencies": {
-    "@retainer/shared": "workspace:*",
     "@hono/node-server": "^2.1.5",
+    "@retainer/shared": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.16",
+    "libphonenumber-js": "^1.13.15",
     "postgres": "^4.0.0",
     "zod": "^4.6.7"
   },

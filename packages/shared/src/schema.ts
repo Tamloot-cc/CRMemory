@@ -16,19 +16,25 @@ export type SelectOption = {
   label: string;
 };
 
+/**
+ * A relation is written on its many_to_one side (`person.company`); the
+ * one_to_many side (`company.people`) is its read-only inverse.
+ */
 export type RelationCardinality = 'many_to_one' | 'one_to_many';
 
-/** Type-specific settings, stored in `fields.settings`. */
+export type OnDeleteBehavior = 'set_null' | 'cascade';
+
+/** Type-specific field settings, as the API shows and accepts them. */
 export type FieldSettings = {
   /** `select` and `multi_select`. */
   options?: SelectOption[];
-  /** `relation`: the object on the other side. */
+  /** `relation`: API name (singular) of the object on the other side. */
   targetObject?: string;
-  /** `relation`: the field on the other side that points back. */
+  /** `relation`: API name of the field on the other side that points back. */
   inverseField?: string;
   relationCardinality?: RelationCardinality;
   /** `relation`, many_to_one side: what happens when the target is deleted. */
-  onDelete?: 'set_null' | 'cascade';
+  onDelete?: OnDeleteBehavior;
   /** `emails`, `phones`, `links`: cap on additional values. */
   maxValues?: number;
 };
