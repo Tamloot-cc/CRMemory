@@ -30,11 +30,11 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # Allow editing files and creating commits
-      pull-requests: write  # Allow commenting and modifying PRs
-      issues: write         # Allow commenting and modifying issues
-      id-token: write       # Required for Claude authentication
-      actions: read         # Allow reading CI results on PRs
+      contents: write # Allow editing files and creating commits
+      pull-requests: write # Allow commenting and modifying PRs
+      issues: write # Allow commenting and modifying issues
+      id-token: write # Required for Claude authentication
+      actions: read # Allow reading CI results on PRs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5

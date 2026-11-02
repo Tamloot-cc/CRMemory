@@ -3,8 +3,10 @@
     "resend": {
       "command": "npx",
       "args": [
-        "-y", "resend-mcp@2.22.0",
-        "--sender", "Tamloot PR Review <pr-review@mail.tamloot.cc>"
+        "-y",
+        "resend-mcp@2.22.0",
+        "--sender",
+        "Tamloot PR Review <pr-review@mail.tamloot.cc>"
       ],
       "env": {
         "RESEND_API_KEY": "${RESEND_API_KEY}"
