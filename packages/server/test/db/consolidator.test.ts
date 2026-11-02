@@ -273,6 +273,43 @@ describe('merge suggestions (4.2)', () => {
     const fresh = (await suggestions(ws)).filter((s) => s.status === 'pending');
     expect(fresh.flatMap((s) => [s.a, s.b])).toContain(c.id);
   });
+
+  it('counts only new pairs toward the cap and picks up the rest on the next run', async () => {
+    const ws = await newWorkspace();
+    const names = [
+      ['Granite', 'Pelican'],
+      ['Saffron', 'Quokka'],
+      ['Tundra', 'Marble'],
+      ['Violet', 'Harbor'],
+    ];
+    for (const [i, [x, y]] of names.entries()) {
+      for (const name of [x, y]) {
+        await createRecord(app, caller(ws), 'company', { name, domain: `d${i}-${n}.example` });
+      }
+    }
+    const comparedUntil = async () =>
+      (
+        await db.owner<{ compared_until: Date | null }[]>`
+          select compared_until from consolidator_runs where workspace_id = ${ws}`
+      )[0]?.compared_until;
+    const run = async () =>
+      (await consolidateWorkspace(app, ws, { maxNewSuggestions: 2 }))?.mergeSuggestions;
+
+    expect(await run()).toBe(2);
+    expect(await comparedUntil()).toEqual(new Date(0));
+    // A decided pair and a pending one do not use the next run's budget.
+    const [first] = await suggestions(ws);
+    await db.owner`update merge_suggestions set status = 'dismissed'
+      where record_a_id = ${first?.a as string} and record_b_id = ${first?.b as string}`;
+    expect(await run()).toBe(2);
+    expect(await run()).toBe(0);
+    expect((await comparedUntil())?.getTime()).toBeGreaterThan(0);
+
+    const rows = await suggestions(ws);
+    expect(rows).toHaveLength(4);
+    expect(rows.every((s) => s.reason === 'shared domain')).toBe(true);
+    expect(rows.filter((s) => s.status === 'dismissed')).toHaveLength(1);
+  });
 });
 
 describe('scheduling (4.2)', () => {

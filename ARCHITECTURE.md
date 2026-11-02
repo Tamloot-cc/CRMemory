@@ -540,8 +540,10 @@ How this is built:
   have a pg_trgm similarity of at least 0.6 and are at least three
   characters long (`similar names`). The reason never copies values. Only
   records updated since the last run's `compared_until` (its start minus
-  five minutes) are probed, and each kind adds at most 500 suggestions per
-  run. A pair keeps one row, so a dismissed or accepted pair is never
+  five minutes) are probed, and each kind adds at most 500 new suggestions
+  per run; pairs that already have a row don't count toward that. A run
+  that reaches the cap keeps the previous `compared_until`, so the next
+  run picks up the pairs it left. A pair keeps one row, so a dismissed or accepted pair is never
   suggested again. When a record is merged away or deleted, its other
   pending suggestions are closed as `dismissed` in the same transaction,
   so review only lists live pairs. The facts pass likewise compares only

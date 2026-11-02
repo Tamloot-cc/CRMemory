@@ -21,7 +21,7 @@ export const NAME_SIMILARITY = 0.6;
 /** Shorter labels are too generic to compare. */
 const MIN_LABEL_LENGTH = 3;
 /** At most this many new suggestions per kind and run, so one run cannot flood review. */
-const MAX_NEW_SUGGESTIONS = 500;
+export const MAX_NEW_SUGGESTIONS = 500;
 /**
  * The next run compares records changed since this long before this run
  * started, so a write that committed while this run was reading is not
@@ -34,6 +34,8 @@ export type ConsolidationStats = { supersededFacts: number; mergeSuggestions: nu
 export type ConsolidateOptions = {
   /** Skip the workspace when its last run started less than this long ago (Postgres interval). */
   minInterval?: string;
+  /** Overrides MAX_NEW_SUGGESTIONS (tests). */
+  maxNewSuggestions?: number;
 };
 
 /**
@@ -57,13 +59,22 @@ export async function consolidateWorkspace(
     await lockPrivacyShared(tx, workspaceId);
 
     const since = last?.compared_until ?? null;
-    const stats: ConsolidationStats = {
-      supersededFacts: await supersedeDuplicateFacts(tx, workspaceId, since),
-      mergeSuggestions: await suggestMerges(tx, workspaceId, since),
-    };
+    const supersededFacts = await supersedeDuplicateFacts(tx, workspaceId, since);
+    const merges = await suggestMerges(
+      tx,
+      workspaceId,
+      since,
+      options.maxNewSuggestions ?? MAX_NEW_SUGGESTIONS,
+    );
+    const stats: ConsolidationStats = { supersededFacts, mergeSuggestions: merges.added };
+    // A capped run leaves pairs unsuggested, so the next run compares the
+    // same records again instead of moving on (all of them after a first run).
+    const comparedUntil = merges.capped
+      ? tx`coalesce(${since}::timestamptz, 'epoch')`
+      : tx`now() - ${COMPARE_OVERLAP}::interval`;
     await tx`
       insert into consolidator_runs (workspace_id, started_at, compared_until, stats)
-      values (${workspaceId}, now(), now() - ${COMPARE_OVERLAP}::interval, ${tx.json(stats)})
+      values (${workspaceId}, now(), ${comparedUntil}, ${tx.json(stats)})
       on conflict (workspace_id) do update
         set started_at = excluded.started_at, compared_until = excluded.compared_until,
           stats = excluded.stats`;
@@ -148,12 +159,22 @@ async function supersedeDuplicateFacts(
 
 /**
  * Suggests merges for live records changed since `since` (all records on a
- * first run): shared identifiers first, then similar labels. The pair is
- * stored in sorted order; ON CONFLICT keeps an existing row, so a dismissed
- * or accepted pair stays decided.
+ * first run): shared identifiers first, then similar labels, at most `cap`
+ * new pairs of each kind. The pair is stored in sorted order. A pair that
+ * already has a row (pending or decided) is skipped before the cap, so it
+ * neither uses the budget nor is suggested again. `capped` is true when a
+ * kind reached the cap and pairs may be left.
  */
-async function suggestMerges(tx: Tx, workspaceId: string, since: Date | null): Promise<number> {
+async function suggestMerges(
+  tx: Tx,
+  workspaceId: string,
+  since: Date | null,
+  cap: number,
+): Promise<{ added: number; capped: boolean }> {
   const changed = () => (since === null ? tx`true` : tx`a.updated_at > ${since}`);
+  const isNew = (a: Fragment, b: Fragment) => tx`not exists (
+    select 1 from merge_suggestions m
+    where m.workspace_id = ${workspaceId} and m.record_a_id = ${a} and m.record_b_id = ${b})`;
   const shared = await tx`
     insert into merge_suggestions (workspace_id, record_a_id, record_b_id, reason, status)
     select ${workspaceId}::uuid, pair.a, pair.b, 'shared ' || pair.kind, 'pending'
@@ -167,9 +188,10 @@ async function suggestMerges(tx: Tx, workspaceId: string, since: Date | null): P
       join records b on b.id = y.record_id and b.deleted_at is null
         and b.object_type_id = a.object_type_id
       where a.workspace_id = ${workspaceId} and a.deleted_at is null and ${changed()}
+        and ${isNew(tx`least(x.record_id, y.record_id)`, tx`greatest(x.record_id, y.record_id)`)}
       order by least(x.record_id, y.record_id), greatest(x.record_id, y.record_id),
         array_position(array['email', 'phone', 'domain'], x.kind)
-      limit ${MAX_NEW_SUGGESTIONS}
+      limit ${cap}
     ) pair
     on conflict (workspace_id, record_a_id, record_b_id) do nothing
     returning id`;
@@ -186,9 +208,14 @@ async function suggestMerges(tx: Tx, workspaceId: string, since: Date | null): P
         and length(btrim(b.label)) >= ${MIN_LABEL_LENGTH}
       where a.workspace_id = ${workspaceId} and a.deleted_at is null and ${changed()}
         and length(btrim(a.label)) >= ${MIN_LABEL_LENGTH}
-      limit ${MAX_NEW_SUGGESTIONS}
+        and ${isNew(tx`least(a.id, b.id)`, tx`greatest(a.id, b.id)`)}
+      order by 1, 2
+      limit ${cap}
     ) pair
     on conflict (workspace_id, record_a_id, record_b_id) do nothing
     returning id`;
-  return shared.length + similar.length;
+  return {
+    added: shared.length + similar.length,
+    capped: shared.length >= cap || similar.length >= cap,
+  };
 }
