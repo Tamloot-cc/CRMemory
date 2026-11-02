@@ -12,17 +12,17 @@ no pipelines, dashboards, email sync or agent chat.
 
 ## 1. Decisions
 
-| Decision      | Choice                                                                                                                                          |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Package       | `packages/web`, published as `@retainer/web`, **MIT**                                                                                           |
-| Data source   | `@retainer/sdk` over the REST API only. Never imports `packages/server`                                                                          |
-| Data model    | Every list, form and filter is built at runtime from `GET /v1/schema`; nothing is written per object                                             |
-| UI kit        | shadcn/ui on Tailwind CSS 4, React 19                                                                                                            |
-| App shape     | Single-page app built with Vite; TanStack Router for routes, TanStack Query for server state                                                    |
-| Hosting       | Static files served by the Retainer server at `/app`, same origin as the API, so the image stays one process and there is no CORS                 |
-| Auth          | A person signs in with their own `user`-actor API key; the server turns it into an httpOnly cookie (4)                                           |
-| Twenty        | A behaviour reference only. No Twenty code is copied or translated (2)                                                                          |
-| First screens | Retainer's own: the review inbox, then records with provenance, facts and interactions                                                          |
+| Decision      | Choice                                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Package       | `packages/web`, published as `@retainer/web`, **MIT**                                                                             |
+| Data source   | `@retainer/sdk` over the REST API only. Never imports `packages/server`                                                           |
+| Data model    | Every list, form and filter is built at runtime from `GET /v1/schema`; nothing is written per object                              |
+| UI kit        | shadcn/ui on Tailwind CSS 4, React 19                                                                                             |
+| App shape     | Single-page app built with Vite; TanStack Router for routes, TanStack Query for server state                                      |
+| Hosting       | Static files served by the Retainer server at `/app`, same origin as the API, so the image stays one process and there is no CORS |
+| Auth          | A person signs in with their own `user`-actor API key; the server turns it into an httpOnly cookie (4)                            |
+| Twenty        | A behaviour reference only. No Twenty code is copied or translated (2)                                                            |
+| First screens | Retainer's own: the review inbox, then records with provenance, facts and interactions                                            |
 
 ### Why a single-page app and not Next.js
 
@@ -97,11 +97,11 @@ assertions and approvals must name the person who made them (rule 2.3).
 
 ### 4.2 Session cookie (new server routes)
 
-| Route                  | Does                                                                                                         |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Route                  | Does                                                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `POST /auth/session`   | Takes `{ key }`, checks it through `retainer_lookup_api_key`, sets the cookie and returns the same body as `GET /v1/me` |
-| `DELETE /auth/session` | Clears the cookie                                                                                            |
-| `GET /v1/me`           | The caller's workspace (`id`, `name`, `slug`), actor and scopes. Works with a bearer key or the cookie        |
+| `DELETE /auth/session` | Clears the cookie                                                                                                       |
+| `GET /v1/me`           | The caller's workspace (`id`, `name`, `slug`), actor and scopes. Works with a bearer key or the cookie                  |
 
 - The cookie is `retainer_session`, `HttpOnly`, `Secure` (except on
   localhost), `SameSite=Strict`, `Path=/`, 30-day `Max-Age`. Its value is the
@@ -122,14 +122,18 @@ assertions and approvals must name the person who made them (rule 2.3).
 
 ### 4.3 What the UI shows by scope
 
-The server enforces scopes; the UI only hides what would fail.
+The server enforces scopes. `admin` implies `read`, `write` and
+`schema:write`; UI checks use these effective scopes. The web app additionally
+restricts every mutation to a `user` actor. This UI restriction does not change
+which actors the REST and MCP APIs allow to edit or retract data.
 
-| Action                                  | Needs                     |
-| --------------------------------------- | ------------------------- |
-| Browse records, facts, interactions     | `read`                    |
-| Edit fields, retract facts and interactions, accept or reject pending values | `write` and a `user` actor |
-| Approve or reject schema changes        | `admin`                   |
-| `forget`                                | `admin`                   |
+| Action                                                                       | Needs                             |
+| ---------------------------------------------------------------------------- | --------------------------------- |
+| Browse records, facts, interactions                                          | `read`                            |
+| Edit fields, retract facts and interactions, accept or reject pending values | `write` and a `user` actor        |
+| Approve or reject schema changes                                             | `admin` and a `user` actor        |
+| Apply a template                                                             | `schema:write` and a `user` actor |
+| `forget` (conditional step 5)                                                | `admin` and a `user` actor        |
 
 A key with a non-`user` actor can sign in read-only, with a banner saying
 why actions are missing.
@@ -151,7 +155,14 @@ as the server words them.
 The first screen built and the default after sign-in. Source: `GET /v1/review`
 and `GET /v1/schema/changes?status=proposed`.
 
-Tabs, each with a count:
+Tabs, each with a total count from the server, independent of the loaded
+page. Each tab has its own cursor and a Load more control (9.1); no tab may
+silently truncate outstanding items. Counts and pages reflect live data and
+are refreshed after decisions. A record links to a review item using its
+assertion ID in the URL; the inbox fetches that item directly even when it
+is outside the loaded page.
+
+Tabs:
 
 1. **Pending values.** One row per pending assertion: record label and
    object, field label, **current value → proposed value** rendered with the
@@ -159,19 +170,31 @@ Tabs, each with a count:
    plain words, confidence, `observedAt`, and the source interaction's title
    and date with a link to it (5.6).
 
-   | `reason`          | Shown as                                                         |
-   | ----------------- | ---------------------------------------------------------------- |
-   | `outranked`       | "Newer than a value a person or integration set"                 |
-   | `low_confidence`  | "Below the workspace's confidence threshold"                     |
+   | `reason`          | Shown as                                                           |
+   | ----------------- | ------------------------------------------------------------------ |
+   | `outranked`       | "Newer than a value a person or integration set"                   |
+   | `low_confidence`  | "Below the workspace's confidence threshold"                       |
    | `unique_conflict` | "Another record already has this value" with a link to that record |
 
    Accept and Reject per row (`POST /v1/assertions/:id/accept` · `/reject`),
    and for a selection of rows. Accepting writes as the signed-in person
-   (rule 2.3). A `409 not_pending` removes the row with a note that someone
-   else decided it.
+   (rule 2.3), preserving the original `observedAt` and source. Acceptance
+   does not promise that the proposed value becomes current: inspect the
+   returned per-field outcome and record. If a newer human value still wins,
+   show "Accepted; a newer value remains current" and the current value.
+   A unique conflict leaves the item pending and shows the conflicting record
+   when available. A `409 not_pending` removes the row with a note that it is
+   no longer pending. Deleted sources, deleted fields, merged records and
+   values that no longer validate show the server error and refresh the item;
+   they must not be presented as successful decisions.
+
+   Bulk review calls the existing single-item routes with bounded concurrency.
+   Results are independent, not atomic: report success or failure per item,
+   keep failed pending items selected, and retry only failures. Never replay
+   successful decisions automatically.
 
 2. **Schema changes.** Proposed changes with their operations listed in
-   words ("Add field *Renewal date* (date) to *Company*"), the proposing
+   words ("Add field _Renewal date_ (date) to _Company_"), the proposing
    actor and time. Approve and Reject for `admin` keys
    (`POST /v1/schema/changes/:id/approve` · `/reject`). Approving refreshes
    the cached schema (6.3).
@@ -210,19 +233,21 @@ Three areas:
   that row in the review inbox. Clicking a field edits it with the type's
   input; saving sends `PATCH /v1/records/:id` with the record's
   `updatedAt` as `expectedUpdatedAt` (rule 2.5). A `412 stale_write` shows
-  the new value instead of overwriting it. A history button opens every
+  the new value instead of overwriting it, preserving the unsaved draft so
+  the person can compare, discard it, or explicitly retry against the latest
+  version. A history button opens every
   assertion for that field, including superseded, rejected and retracted
   ones, newest first.
 - **Relations.** Many-to-one fields render as a link to the target. Each
   inverse (one-to-many) field renders as a short list of linked records with
   a link to the filtered object list.
 - **Memory tabs.**
-  - *Facts*: `GET /v1/records/:id/facts`. Content, `validFrom`, writer, and
+  - _Facts_: `GET /v1/records/:id/facts`. Content, `validFrom`, writer, and
     each source with its quote. Retract (`DELETE /v1/facts/:id`) asks for
     confirmation.
-  - *Interactions*: newest first (9.1). Kind icon, title, date, summary,
+  - _Interactions_: newest first (9.1). Kind icon, title, date, summary,
     and participants, matched ones linked.
-  - *Tasks*: open tasks linked to the record, from the standard `task`
+  - _Tasks_: open tasks linked to the record, from the standard `task`
     object.
 
 ### 5.5 Search — `⌘K`
@@ -249,10 +274,11 @@ A workspace with no template applied shows the template list
 
 ### Not in v1
 
-Creating or editing objects and fields in the UI, record creation forms
-beyond the label field, kanban and pipeline views, dashboards, workspace and
-key management (operator CLI only, 7.1), several workspaces per session,
-and `forget` (until build step 5).
+Creating or editing objects and fields in the UI, kanban and pipeline views,
+dashboards, workspace and key management (operator CLI only, 7.1), several workspaces per session,
+and `forget` (until build step 5). Record creation and the release boundary
+for step 5 remain explicit open decisions (13); no label-only creation flow
+is specified by this document.
 
 ---
 
@@ -264,37 +290,41 @@ and `forget` (until build step 5).
 
 | Export    | Does                                                                                  |
 | --------- | ------------------------------------------------------------------------------------- |
-| `Display` | Read-only rendering for a table cell (`compact`) and the record page (`full`)          |
+| `Display` | Read-only rendering for a table cell (`compact`) and the record page (`full`)         |
 | `Input`   | Editing control; produces a value that passes the type's schema in `@retainer/shared` |
 | `Filter`  | The operators offered in the list filter bar for `isFilterable` fields                |
 | `isEmpty` | Whether a value counts as empty for display                                           |
 
 A registry maps every `FieldType` in `@retainer/shared` to its module, and a
-unit test fails when a type has no module. Values are validated with the
-shared Zod schemas before any write, so the UI rejects what the server would.
+unit test fails when a type has no module. Before implementing inputs,
+extract the server's pure field-aware validation and normalization into
+`@retainer/shared` (9.3). Both server and UI use it; the existing composite
+Zod shapes alone are not equivalent to server validation. Local validation
+covers value shape and field settings. The server remains authoritative for
+uniqueness, relation targets, scopes, concurrency and other database checks.
 
 ### 6.2 Behaviour per type
 
 The last column is where to read how Twenty behaves (2). Paths are under
 `packages/twenty-front/src/modules/`.
 
-| Type           | Display                                                    | Input                                                                    | Twenty reference                                   |
-| -------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------- |
-| `text`         | Single line, full text on hover                             | Text field                                                                | `ui/field/display/components/TextDisplay`          |
-| `number`       | Locale formatting                                          | Numeric field                                                            | `NumberFieldInput`                                 |
-| `boolean`      | Check or dash                                              | Switch                                                                   | `BooleanDisplay`                                   |
-| `date`         | Date in the viewer's locale                                | Date picker                                                              | `DateDisplay`                                      |
-| `date_time`    | Date and time in the viewer's time zone, ISO on hover      | Date and time picker                                                     | `DateTimeDisplay`                                  |
-| `select`       | Option label as a badge                                    | Combobox of `settings.options`                                           | `SelectDisplay`, `SelectFieldInput`                |
-| `multi_select` | Badges, overflow as "+n"                                   | Multi-select combobox                                                    | `MultiSelectDisplay`, `MultiSelectFieldInput`      |
-| `money`        | Amount from `amountMicros` with `currency`                 | Amount plus currency picker; converts to micros without floats           | `CurrencyDisplay`, `CurrencyFieldInput`            |
-| `emails`       | Primary, "+n" for additional                               | List editor: add, remove, set primary; at most `settings.maxValues`      | `EmailsDisplay`, `EmailsFieldInput`                |
-| `phones`       | Primary with country, "+n"                                 | List editor with country code                                            | `PhonesDisplay`, `PhonesFieldInput`                |
-| `links`        | Primary label or host, "+n"                                | List editor of URL and label                                             | `LinksDisplay`, `LinksFieldInput`                  |
-| `full_name`    | "First Last"                                               | Two fields                                                               | `FullNameFieldInput`                               |
-| `address`      | One line: city, country; full address on the record page   | Grouped fields; `lat`/`lng` shown, not edited                            | `AddressFieldInput`                                |
-| `relation`     | Target record's label as a link                            | Record picker searching the target object; inverse fields are read-only  | `RelationManyToOneFieldInput`                      |
-| `json`         | Collapsed preview, formatted on the record page            | Read-only in v1                                                          | `JsonDisplay`                                      |
+| Type           | Display                                                  | Input                                                                   | Twenty reference                              |
+| -------------- | -------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------- |
+| `text`         | Single line, full text on hover                          | Text field                                                              | `ui/field/display/components/TextDisplay`     |
+| `number`       | Locale formatting                                        | Numeric field                                                           | `NumberFieldInput`                            |
+| `boolean`      | Check or dash                                            | Switch                                                                  | `BooleanDisplay`                              |
+| `date`         | Date in the viewer's locale                              | Date picker                                                             | `DateDisplay`                                 |
+| `date_time`    | Date and time in the viewer's time zone, ISO on hover    | Date and time picker                                                    | `DateTimeDisplay`                             |
+| `select`       | Option label as a badge                                  | Combobox of `settings.options`                                          | `SelectDisplay`, `SelectFieldInput`           |
+| `multi_select` | Badges, overflow as "+n"                                 | Multi-select combobox                                                   | `MultiSelectDisplay`, `MultiSelectFieldInput` |
+| `money`        | Amount from `amountMicros` with `currency`               | Amount plus currency picker; converts to micros without floats          | `CurrencyDisplay`, `CurrencyFieldInput`       |
+| `emails`       | Primary, "+n" for additional                             | List editor: add, remove, set primary; at most `settings.maxValues`     | `EmailsDisplay`, `EmailsFieldInput`           |
+| `phones`       | Primary with country, "+n"                               | List editor with country code                                           | `PhonesDisplay`, `PhonesFieldInput`           |
+| `links`        | Primary label or host, "+n"                              | List editor of URL and label                                            | `LinksDisplay`, `LinksFieldInput`             |
+| `full_name`    | "First Last"                                             | Two fields                                                              | `FullNameFieldInput`                          |
+| `address`      | One line: city, country; full address on the record page | Grouped fields; `lat`/`lng` shown, not edited                           | `AddressFieldInput`                           |
+| `relation`     | Target record's label as a link                          | Record picker searching the target object; inverse fields are read-only | `RelationManyToOneFieldInput`                 |
+| `json`         | Collapsed preview, formatted on the record page          | Read-only in v1                                                         | `JsonDisplay`                                 |
 
 Composite values are replaced whole (rule 2.2), so list editors send the
 complete value, not a diff.
@@ -306,6 +336,29 @@ TanStack Query under `['schema', workspaceId, schemaVersion]` and re-read on
 window focus and after any schema approval. A `404` for an object or field
 that the cached schema still has triggers one refetch before showing an
 error.
+
+### 6.4 Mutation and session cache rules
+
+All workspace queries include `workspaceId` in their keys. On logout, an
+expired or revoked session, or replacement of the signed-in identity, cancel
+in-flight queries and clear cached data before rendering another session.
+Responses from the previous session must not repopulate the new cache.
+Column preferences use workspace and object identifiers in their storage keys.
+
+After a mutation completes, invalidate the affected queries:
+
+| Mutation                                                   | Refresh                                                                                                                     |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Record edit                                                | Record, object lists, field provenance/history, review pages and totals                                                     |
+| Assertion accept or reject, including partial bulk results | Review pages/totals and affected records, lists, provenance/history and interaction claims                                  |
+| Schema approval or template application                    | Schema, schema changes, review totals, and record/list queries built from the old schema                                    |
+| Fact retraction                                            | Record facts and the cited interactions' claims                                                                             |
+| Interaction retraction                                     | Interaction and claims, affected records and their lists, provenance/history, facts, interaction lists, review pages/totals |
+
+If the response does not identify all affected queries, invalidate the broader
+workspace query group. On `412`, refetch the record before offering an explicit
+retry. Refetch active data on window focus to pick up agent and reviewer writes
+from other clients; mutation responses are not a substitute for fresh reads.
 
 ---
 
@@ -353,17 +406,49 @@ this:
 
 ### 9.1 New or changed routes (AGPL server)
 
-| Route                                       | Purpose                                                                                                   | Needed by |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------- |
-| `POST` · `DELETE /auth/session`              | Cookie sign-in (4.2)                                                                                      | 5.1       |
-| `GET /v1/me`                                 | Workspace, actor and scopes of the caller                                                                 | 4.3       |
-| Cookie in `authenticate`, CSRF header check  | 4.2                                                                                                       | all       |
-| Static files at `/app`                       | Serves `packages/web/dist` when `RETAINER_WEB_DIR` is set; the Docker image sets it. Unknown `/app/*` paths return `index.html` | all |
-| `GET /v1/records/:id/assertions`             | Every assertion for the record, optionally by `field`, with status, actor, `observedAt`, source and reviewer | 5.4, 7 |
-| `GET /v1/records/:id/interactions`           | Interactions the record took part in, newest first, cursor-paginated                                       | 5.4       |
-| `GET /v1/interactions/:id/claims`            | Assertions and facts that cite the interaction                                                            | 5.6       |
-| Per-field provenance on `GET /v1/records/:id`| With `?include=provenance`, each field's winning assertion: actor, `observedAt`, source, and whether a pending assertion exists | 5.4, 7 |
-| Relation filter on `query`                   | Confirm `POST /v1/objects/:object/query` can filter by a relation field's target ID; add it if not        | 5.4       |
+| Route                                           | Purpose                                                                                                                         | Needed by |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `POST` · `DELETE /auth/session`                 | Cookie sign-in (4.2)                                                                                                            | 5.1       |
+| `GET /v1/me`                                    | Workspace, actor and scopes of the caller                                                                                       | 4.3       |
+| Cookie in `authenticate`, CSRF header check     | 4.2                                                                                                                             | all       |
+| Static files at `/app`                          | Serves `packages/web/dist` when `RETAINER_WEB_DIR` is set; the Docker image sets it. Unknown `/app/*` paths return `index.html` | all       |
+| `GET /v1/records/:id/assertions`                | Every assertion for the record, optionally by `field`, with status, actor, `observedAt`, source and reviewer                    | 5.4, 7    |
+| `GET /v1/records/:id/interactions`              | Interactions the record took part in, newest first, cursor-paginated                                                            | 5.4       |
+| `GET /v1/interactions/:id/claims`               | Assertions and facts that cite the interaction                                                                                  | 5.6       |
+| Per-field provenance on `GET /v1/records/:id`   | With `?include=provenance`, each field's winning assertion: actor, `observedAt`, source, and whether a pending assertion exists | 5.4, 7    |
+| Review and schema-change pagination             | Add the contracts below to the existing list routes                                                                             | 5.2, 5.7  |
+| `GET /v1/assertions/:id`                        | Fetch an assertion directly for review deep links, including its current status                                                 | 5.2, 5.4  |
+| Review enrichment                               | Source interaction summary and current conflicting record reference, as below                                                   | 5.2       |
+| Relation references on record reads and queries | Optional resolved labels alongside existing relation ID values, as below                                                        | 5.3, 5.4  |
+
+The following are prerequisites, not descriptions of today's response shapes:
+
+- **Review pages.** Preserve the existing arrays on `GET /v1/review` and add
+  `totals` and `nextCursors`, each keyed by `pendingAssertions`,
+  `unresolvedParticipants` and `mergeSuggestions`. Accept a separate cursor
+  for each collection; each has a limit and deterministic ordering by time
+  and ID. Schema changes return `{ changes, total, nextCursor }`, accepting
+  `cursor` and retaining the `status` filter. Totals count all matching items,
+  not just a page. Define cursors so removing reviewed items does not skip
+  remaining work; do not paginate a shrinking inbox by offset.
+- **Review details.** List items and direct assertion reads include nullable
+  `source: { id, title, occurredAt }` and
+  `conflictingRecord: { id, object, label }`. A missing, retracted or no-longer
+  conflicting reference is represented as null. Conflict links describe the
+  current claim, which the server rechecks on acceptance.
+- **Relation labels.** Record reads and queries support
+  `include=relationReferences`, returning a separate map keyed by target ID
+  with `{ id, object, label }`, leaving field values as IDs. Resolve targets
+  in batches through the shared record-reference presentation path under RLS;
+  the UI must not fetch each relation separately. Omit unavailable targets
+  and render an unavailable-reference state rather than inventing a label.
+- **Other growing collections.** Assertion history, record interactions,
+  interaction claims and record facts provide cursor pagination and
+  `nextCursor`; their screens expose Load more rather than silently stopping
+  at the current server limits.
+
+Relation filters by target ID already exist in the query engine (`eq` and
+`in`); use them for inverse-relation links, respecting `isFilterable`.
 
 Each route lands with API-layer tests (12, layer 3). The cookie and CSRF
 rules get tests for: cookie only, header only, both, revoked key, and a
@@ -380,17 +465,38 @@ method per REST route, with request and response types in
 the CSRF header instead of a bearer key. This is part of build step 6 moved
 earlier.
 
+### 9.3 Shared value validation (MIT)
+
+Extract pure value validation/normalization from `records/values.ts` into
+`@retainer/shared`, expressed against public field definitions and settings.
+Do not import server code into MIT packages. Cover all field types, nullability,
+select options, text limits, real dates and time zones, phone syntax, HTTP(S)
+links, nonempty full names, deduplication and multi-value limits. Match current
+server behavior: `maxValues` caps the total primary plus additional values.
+Correct the shared setting's comment, which currently describes an additional-
+values-only cap. Keep tenant, uniqueness, relation-target and write-precondition
+checks in the server. Preserve existing normalization and API error behavior
+when switching the server to the shared helpers.
+
 ---
 
 ## 10. Testing
 
 Same rules as `ARCHITECTURE.md` section 12: a real database, never a mock.
 
-| Layer         | Covers                                                                                                   | How                                                                                             |
-| ------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Unit          | Field modules: every type round-trips through its shared schema; money to micros; registry completeness | Vitest                                                                                          |
-| Component     | Displays and inputs per type, provenance tooltip, review row states                                      | Vitest and Testing Library                                                                      |
-| End to end    | Sign in, review inbox accept and reject, schema approval, record edit with a stale precondition, retract an interaction | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API as an agent key |
+| Layer      | Covers                                                                                                                  | How                                                                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness                 | Vitest                                                                                                                  |
+| Component  | Displays and inputs per type, provenance tooltip, review row states                                                     | Vitest and Testing Library                                                                                              |
+| End to end | Sign in, review inbox accept and reject, schema approval, record edit with a stale precondition, retract an interaction | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API as an agent key |
+
+Add coverage for inboxes larger than one page (including decisions between
+page loads), accurate totals and off-page review links; acceptance that leaves
+a newer value current; unique conflicts; partial bulk failures; relation-label
+batching; cache refresh after retraction; preserved drafts after stale writes;
+and logout followed by another session with requests still in flight. Permission
+checks cover admin-only scopes and non-user actors. Shared validation tests
+include invalid values previously accepted by composite schemas alone.
 
 End-to-end tests run in CI after layers 1–4.
 
@@ -399,8 +505,8 @@ End-to-end tests run in CI after layers 1–4.
 ## 11. Build order
 
 1. **Prerequisites.** Section 9: session cookie, `GET /v1/me`, static
-   serving, SDK methods for existing routes, the provenance and history
-   routes.
+   serving, SDK methods and response contracts, shared field validation,
+   pagination and enrichment, and the provenance and history routes.
 2. **Shell and review inbox.** Sign-in, layout, schema cache, every field
    type's `Display`, provenance components, and the review inbox (5.2).
 3. **Records.** Object lists, record page read-only, facts, interactions,
@@ -432,5 +538,12 @@ Each step lands with its tests (10).
    short-lived tokens. Is the simple version enough for v1?
 3. **Schema editing in the UI.** v1 only approves what agents propose. Should
    people be able to propose changes from the schema page?
-4. **Record creation.** v1 creates records only with the label field. Are
-   full forms needed, or do agents create almost everything?
+4. **Record creation.** No creation flow is specified yet. Decide whether
+   creation belongs in the web v1 before including it in implementation.
+   Label-only creation is not sufficient for objects with other required
+   fields; inclusion needs a schema-driven required-field form and tests.
+5. **Release boundary.** Decide whether search, suggested merges and `forget`
+   are part of the web v1 or a later release. Build step 5 is conditional on
+   server work and is not a complete UI contract: merge survivor selection,
+   conflict feedback, permissions and destructive confirmation still need
+   specification before that step is implemented.
