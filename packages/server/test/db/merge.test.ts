@@ -372,4 +372,52 @@ describe('merges under concurrency (rule 2.5)', () => {
       await expectDataMatchesAssertions(a.id);
     }
   });
+
+  it('retries a relation write that deadlocks with a merge of its target', async () => {
+    // The merge locks the target before the source; a relation write locks
+    // the source, then the target. Force that interleaving deterministically.
+    const x = await company('Deadlock Co');
+    const y = await company('Deadlock Co Ltd');
+    // The merged record must sort first, so the merge holds it while it
+    // waits for the survivor.
+    const [merged, survivor] = [x.id, y.id].sort() as [string, string];
+    const dana = await person({ company: merged });
+
+    const waiters = async (count: number) => {
+      for (let i = 0; i < 200; i++) {
+        const [row] = await db.owner<{ count: number }[]>`
+          select count(*)::int as count from pg_stat_activity
+          where datname = ${db.name} and wait_event_type = 'Lock'`;
+        if ((row?.count ?? 0) >= count) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`fewer than ${count} transactions are waiting on a lock`);
+    };
+
+    let locked!: () => void;
+    let release!: () => void;
+    const isLocked = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = db.owner.begin(async (tx) => {
+      await tx`select id from records where id = ${survivor} for update`;
+      locked();
+      await released;
+    });
+    await isLocked;
+    const merging = mergeRecord(app, as(USER), survivor, { recordId: merged });
+    await waiters(1); // the merge holds the merged record, waiting for the survivor
+    const patching = patchRecord(app, as(USER), dana.id, { values: { company: merged } });
+    await waiters(2); // the patch holds Dana, waiting for the merged record
+    release();
+    await holder;
+
+    const [mergeResult, patchResult] = await Promise.allSettled([merging, patching]);
+    expect(mergeResult.status).toBe('fulfilled');
+    expect(patchResult.status).toBe('fulfilled');
+    expect((await readRecord(app, as(USER), dana.id)).fields.company).toBe(survivor);
+  });
 });

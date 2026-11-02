@@ -51,11 +51,20 @@ export type WriteResponse = {
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.5;
 
+/** Postgres aborted the transaction to break a deadlock; nothing it did was kept. */
+const isDeadlock = (error: unknown) => (error as { code?: string }).code === '40P01';
+const DEADLOCK_RETRIES = 3;
+
 /**
  * A record write: one short workspace transaction holding the schema lock
  * in shared mode, so the schema it validated against stays current (3),
  * and the privacy lock, so it serializes with `forget` (2.1). Only
  * `forget` takes the privacy lock exclusively.
+ *
+ * A relation write locks its source record, then its target `FOR KEY
+ * SHARE`; merges and cascading deletes lock targets before sources. The two
+ * orders can deadlock, and Postgres then aborts one transaction. It is
+ * rolled back whole, so it is run again from the start.
  */
 export async function withWrite<T>(
   sql: Sql,
@@ -63,18 +72,26 @@ export async function withWrite<T>(
   fn: (tx: Tx, context: WriteContext) => Promise<T>,
   privacy: 'shared' | 'exclusive' = 'shared',
 ): Promise<T> {
-  return inWorkspace(sql, caller.workspaceId, async (tx) => {
-    await lockForWrite(tx, caller.workspaceId, privacy);
-    const schema = await getSchema(tx, caller.workspaceId);
-    const [workspace] = await tx<{ settings: WorkspaceSettings }[]>`
-      select settings from workspaces where id = ${caller.workspaceId}`;
-    return fn(tx, {
-      workspaceId: caller.workspaceId,
-      actor: caller.actor,
-      schema,
-      confidenceThreshold: workspace?.settings.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD,
-    });
-  });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await inWorkspace(sql, caller.workspaceId, async (tx) => {
+        await lockForWrite(tx, caller.workspaceId, privacy);
+        const schema = await getSchema(tx, caller.workspaceId);
+        const [workspace] = await tx<{ settings: WorkspaceSettings }[]>`
+          select settings from workspaces where id = ${caller.workspaceId}`;
+        return fn(tx, {
+          workspaceId: caller.workspaceId,
+          actor: caller.actor,
+          schema,
+          confidenceThreshold:
+            workspace?.settings.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD,
+        });
+      });
+    } catch (error) {
+      if (isDeadlock(error) && attempt < DEADLOCK_RETRIES) continue;
+      throw error;
+    }
+  }
 }
 
 export async function withRead<T>(
@@ -390,13 +407,10 @@ export async function decideAssertion(
   );
 }
 
-/** Postgres aborted the transaction to break a deadlock; retrying it is safe. */
-const isDeadlock = (error: unknown) => (error as { code?: string }).code === '40P01';
-
 /**
  * Merges `input.recordId` into record `id` (4.2). A merge whose records
- * changed between resolving and locking, or that lost a deadlock to a
- * concurrent write, is retried in a new transaction. With an idempotency
+ * changed between resolving and locking is retried in a new transaction
+ * (deadlocks are retried by `withWrite`). With an idempotency
  * key, a retry returns the first result; without one, merging again is a
  * no-op by state.
  */
@@ -427,11 +441,9 @@ export async function mergeRecord(
         return result;
       });
     } catch (error) {
-      const race = error instanceof MergeRaceError;
-      if ((race || isDeadlock(error)) && attempt < 3) continue;
-      throw race
-        ? new AppError(409, 'merge_conflict', 'the records changed during the merge; retry')
-        : error;
+      if (!(error instanceof MergeRaceError)) throw error;
+      if (attempt < 3) continue;
+      throw new AppError(409, 'merge_conflict', 'the records changed during the merge; retry');
     }
   }
 }

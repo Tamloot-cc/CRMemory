@@ -559,7 +559,11 @@ How this is built:
   relation write locks its target `FOR KEY SHARE`, following merges. A
   merge locks A and B `FOR UPDATE`, which waits for both. So a link to B
   written during a merge either commits first and is rewritten, or waits
-  and then points at A. A merge that loses a deadlock or a race is retried.
+  and then points at A. A relation write locks source then target, while
+  merges and cascading deletes lock targets first, so the two can deadlock;
+  any write Postgres aborts for a deadlock is rolled back and run again
+  (up to three times). A merge that loses a race to another merge is
+  retried too.
 - **Self-links.** No field disallows them in v1, so a relation from A to B
   becomes a link from A to A.
 
