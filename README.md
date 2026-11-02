@@ -27,6 +27,18 @@ docker compose -f docker/compose.yml up --build
 curl localhost:8787/health
 ```
 
+On first boot the server creates a `default` workspace and prints an admin
+API key once. Manage workspaces and keys with the operator CLI, which talks
+to the database directly:
+
+```sh
+docker compose -f docker/compose.yml exec retainer retainer workspace create --name "Acme Clinic" --template clinic
+docker compose -f docker/compose.yml exec retainer retainer key create --workspace acme-clinic \
+  --name "Front-desk agent" --actor agent:front-desk --scopes read,write,schema:write
+```
+
+Send the key as `Authorization: Bearer <key>` to the REST API under `/v1`.
+
 ## Develop
 
 Requires Node 22 and pnpm 10.
@@ -39,14 +51,15 @@ pnpm db:migrate
 pnpm dev
 ```
 
-| Command                          | What it does                                               |
-| -------------------------------- | ---------------------------------------------------------- |
-| `pnpm build`                     | Build every package                                        |
-| `pnpm typecheck`                 | Type-check every package                                   |
-| `pnpm test`                      | Run tests                                                  |
-| `pnpm lint`                      | Biome lint and format check                                |
-| `pnpm db:generate --name <name>` | Create a migration from `packages/server/src/db/schema.ts` |
-| `pnpm db:migrate`                | Apply migrations                                           |
+| Command                          | What it does                                                  |
+| -------------------------------- | ------------------------------------------------------------- |
+| `pnpm build`                     | Build every package                                           |
+| `pnpm typecheck`                 | Type-check every package                                      |
+| `pnpm test`                      | Run tests (integration tests need Postgres at `DATABASE_URL`) |
+| `pnpm lint`                      | Biome lint and format check                                   |
+| `pnpm db:generate --name <name>` | Create a migration from `packages/server/src/db/schema.ts`    |
+| `pnpm db:migrate`                | Apply migrations                                              |
+| `pnpm retainer <command>`        | Run the operator CLI against `DATABASE_URL`                   |
 
 ## Packages
 

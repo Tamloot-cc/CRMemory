@@ -14,7 +14,8 @@
     "format": "biome format --write .",
     "dev": "pnpm --filter @retainer/server dev",
     "db:generate": "pnpm --filter @retainer/server db:generate",
-    "db:migrate": "pnpm --filter @retainer/server db:migrate"
+    "db:migrate": "pnpm --filter @retainer/server db:migrate",
+    "retainer": "pnpm --silent --filter @retainer/server cli"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.4",
