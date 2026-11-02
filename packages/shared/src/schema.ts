@@ -4,7 +4,11 @@ import type { FieldType } from './field-types.js';
 export const SCHEMA_OWNERS = ['system', 'workspace', 'agent'] as const;
 export type SchemaOwner = (typeof SCHEMA_OWNERS)[number];
 
-export const SCHEMA_STATUSES = ['active', 'proposed', 'deprecated'] as const;
+/**
+ * Live schema rows are active or deprecated. A proposed change lives only in
+ * `schema_changes` until it is approved; nothing half-exists in the schema.
+ */
+export const SCHEMA_STATUSES = ['active', 'deprecated'] as const;
 export type SchemaStatus = (typeof SCHEMA_STATUSES)[number];
 
 export type SelectOption = {

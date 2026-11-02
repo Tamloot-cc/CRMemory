@@ -2,6 +2,12 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema.js';
 
+/**
+ * The role the API and workers run as (created by drizzle/0001_security.sql).
+ * It owns no tables and has no BYPASSRLS, so row-level security applies.
+ */
+export const RUNTIME_ROLE = 'retainer_app';
+
 export type SqlOptions = {
   /**
    * Postgres role every connection switches to at startup. The API and

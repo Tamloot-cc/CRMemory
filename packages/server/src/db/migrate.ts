@@ -5,9 +5,20 @@ import { createDb } from './client.js';
 
 const migrationsFolder = fileURLToPath(new URL('../../drizzle', import.meta.url));
 
+/** Extensions the migrations need: trigram and combined GIN indexes (5.1). */
+const EXTENSIONS = ['pg_trgm', 'btree_gin'] as const;
+
+/**
+ * Applies pending migrations as the migration role (the table owner). Both
+ * extensions are trusted, so a database owner without superuser can create
+ * them.
+ */
 export async function runMigrations(databaseUrl: string): Promise<void> {
-  const { db, sql } = createDb(databaseUrl);
+  const { db, sql } = createDb(databaseUrl, { max: 1 });
   try {
+    for (const extension of EXTENSIONS) {
+      await sql.unsafe(`create extension if not exists ${extension}`);
+    }
     await migrate(db, { migrationsFolder });
   } finally {
     await sql.end();
