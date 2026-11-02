@@ -39,6 +39,9 @@ importers:
       hono:
         specifier: ^4.13.16
         version: 4.13.16
+      libphonenumber-js:
+        specifier: ^1.13.15
+        version: 1.13.15
       postgres:
         specifier: ^4.0.0
         version: 4.0.0
@@ -1009,6 +1012,9 @@ packages:
     resolution: {integrity: sha512-AOLOEhvrV+iH92xXCnFr/5+3KjPKcI3xP63XJtX5spAnkznPdHijlIsUTpi7/9EhWqrTCekw5c5zh1K+YsVw7A==}
     engines: {node: '>=16.9.0'}
 
+  libphonenumber-js@1.13.15:
+    resolution: {integrity: sha512-AHdhEQeDFEJ4GKDAQ9AwxChy+v2kUILUB3TGQRpkXMkWePjXTU/WQEzWVQoIx/Gz8fE73Wr5SEuZCy2vk8jrMQ==}
+
   lightningcss-android-arm64@1.33.0:
     resolution: {integrity: sha512-gEpRTalKdosp4Bb8qWtc2iOgE5SeIHlpS1up9bFq2wAyYhl1UdTObYiHe98zEM9SQvSoqQZ1IQD0JNpg3Ml5pg==}
     engines: {node: '>= 12.0.0'}
@@ -1796,6 +1802,8 @@ snapshots:
       resolve-pkg-maps: 1.0.0
 
   hono@4.13.16: {}
+
+  libphonenumber-js@1.13.15: {}
 
   lightningcss-android-arm64@1.33.0:
     optional: true

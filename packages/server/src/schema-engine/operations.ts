@@ -1,0 +1,139 @@
+import { FIELD_TYPES } from '@retainer/shared';
+import { z } from 'zod';
+
+/**
+ * The operations a client can request (POST /v1/schema/changes). Objects
+ * are referenced by singular API name, fields by API name. Code-defined
+ * schema (base objects, templates) uses the same operations and may also
+ * reference objects by universal ID and pin universal IDs.
+ */
+
+const optionSchema = z.strictObject({
+  value: z.string().min(1).max(100),
+  label: z.string().min(1).max(200),
+});
+
+const fieldSettingsSchema = z.strictObject({
+  options: z.array(optionSchema).optional(),
+  /** Singular API name (or universal ID) of the target object. */
+  targetObject: z.string().min(1).optional(),
+  /** Name of the read-only inverse field created on the target object. */
+  inverseField: z.string().min(1).optional(),
+  /** Only the many_to_one side can be created; the inverse is derived. */
+  relationCardinality: z.literal('many_to_one').optional(),
+  onDelete: z.enum(['set_null', 'cascade']).optional(),
+  maxValues: z.number().int().positive().max(100).optional(),
+});
+
+export const fieldDefinitionSchema = z.strictObject({
+  universalId: z.uuid().optional(),
+  name: z.string().min(1),
+  label: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  type: z.enum(FIELD_TYPES),
+  settings: fieldSettingsSchema.optional(),
+  isNullable: z.boolean().optional(),
+  isUnique: z.boolean().optional(),
+  isFilterable: z.boolean().optional(),
+  isSearchable: z.boolean().optional(),
+});
+
+export const objectDefinitionSchema = z.strictObject({
+  universalId: z.uuid().optional(),
+  nameSingular: z.string().min(1),
+  namePlural: z.string().min(1),
+  labelSingular: z.string().min(1).max(200),
+  labelPlural: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  /** Name of the field shown when a record is referenced. */
+  labelField: z.string().min(1),
+  fields: z.array(fieldDefinitionSchema).min(1),
+});
+
+const objectRef = z.string().min(1);
+const fieldRef = z.string().min(1);
+
+export const schemaOperationSchema = z.discriminatedUnion('op', [
+  z.strictObject({ op: z.literal('create_object'), object: objectDefinitionSchema }),
+  z.strictObject({
+    op: z.literal('update_object'),
+    object: objectRef,
+    labelSingular: z.string().min(1).max(200).optional(),
+    labelPlural: z.string().min(1).max(200).optional(),
+    description: z.string().max(2000).nullable().optional(),
+    labelField: z.string().min(1).optional(),
+  }),
+  z.strictObject({
+    op: z.literal('rename_object'),
+    object: objectRef,
+    nameSingular: z.string().min(1),
+    namePlural: z.string().min(1),
+  }),
+  z.strictObject({ op: z.literal('delete_object'), object: objectRef }),
+  z.strictObject({
+    op: z.literal('create_field'),
+    object: objectRef,
+    field: fieldDefinitionSchema,
+  }),
+  z.strictObject({
+    op: z.literal('update_field'),
+    object: objectRef,
+    field: fieldRef,
+    label: z.string().min(1).max(200).optional(),
+    description: z.string().max(2000).nullable().optional(),
+    isNullable: z.boolean().optional(),
+    isUnique: z.boolean().optional(),
+    isFilterable: z.boolean().optional(),
+    isSearchable: z.boolean().optional(),
+    /** Accepted only to explain that type changes are not supported. */
+    type: z.enum(FIELD_TYPES).optional(),
+  }),
+  z.strictObject({
+    op: z.literal('rename_field'),
+    object: objectRef,
+    field: fieldRef,
+    name: z.string().min(1),
+  }),
+  z.strictObject({ op: z.literal('delete_field'), object: objectRef, field: fieldRef }),
+  z.strictObject({
+    op: z.literal('add_option'),
+    object: objectRef,
+    field: fieldRef,
+    option: optionSchema,
+  }),
+  z.strictObject({
+    op: z.literal('update_option'),
+    object: objectRef,
+    field: fieldRef,
+    value: z.string().min(1),
+    label: z.string().min(1).max(200),
+  }),
+  z.strictObject({
+    op: z.literal('remove_option'),
+    object: objectRef,
+    field: fieldRef,
+    value: z.string().min(1),
+  }),
+]);
+
+export type FieldDefinitionInput = z.infer<typeof fieldDefinitionSchema>;
+export type ObjectDefinitionInput = z.infer<typeof objectDefinitionSchema>;
+export type SchemaOperation = z.infer<typeof schemaOperationSchema>;
+
+/** API callers cannot pin universal IDs; those belong to code-defined schema. */
+export function stripUniversalIds(operations: SchemaOperation[]): SchemaOperation[] {
+  return operations.map((operation) => {
+    if (operation.op === 'create_object') {
+      const { universalId: _object, ...object } = operation.object;
+      return {
+        ...operation,
+        object: { ...object, fields: object.fields.map(({ universalId: _f, ...f }) => f) },
+      };
+    }
+    if (operation.op === 'create_field') {
+      const { universalId: _field, ...field } = operation.field;
+      return { ...operation, field };
+    }
+    return operation;
+  });
+}
