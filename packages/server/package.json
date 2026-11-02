@@ -14,6 +14,8 @@
     "test": "vitest run --passWithNoTests",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=../../.env src/db/migrate.ts",
+    "db:viewer": "tsx --env-file-if-exists=../../.env src/db/viewer.ts",
+    "db:studio": "drizzle-kit studio",
     "cli": "tsx --env-file-if-exists=../../.env src/cli.ts"
   },
   "dependencies": {
