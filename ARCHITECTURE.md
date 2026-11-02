@@ -108,7 +108,7 @@ output that actor's higher precedence. System maintenance uses a server-owned
 
 | Table                | Holds                                                                                                                                                                                                                                   |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `records`            | One row per entity: `workspace_id`, `object_type_id`, `data jsonb` (keyed by field `key`), `search tsvector`, built-in columns                                                                                                          |
+| `records`            | One row per entity: `workspace_id`, `object_type_id`, `data jsonb` (keyed by field `key`), `search tsvector` and `label` (5.1), built-in columns                                                                                        |
 | `record_links`       | Relations as edges: `field_id`, `source_record_id`, `target_record_id`. Real foreign keys with cascade delete                                                                                                                           |
 | `record_identifiers` | Normalized identifiers pointing at a record: every email, phone and website domain, plus the value of every `is_unique` field. `(workspace_id, field_id, value)` is unique for `is_unique` fields (the standard `person.emails` is one) |
 
@@ -370,7 +370,8 @@ are applied through the same engine when a workspace is created or upgraded.
 ```
 
 One Docker image, started with a role: `api`, `worker`, or `all`.
-Postgres is the only dependency; the job queue runs on Postgres too.
+Postgres is the only dependency, with the standard `pg_trgm` and `btree_gin`
+extensions for search (5.1); the job queue runs on Postgres too.
 
 ### 4.1 Ingest pipeline (per interaction)
 
@@ -520,18 +521,79 @@ with no card at all. A card made stale by retraction, merge or `forget` may
 contain removed content, so it is not served until regenerated. Context
 packs distinguish stated claims from current field values.
 
-`search` uses Postgres full-text search only.
-Each fact carries its `record_id` and each interaction its matched record
-IDs (possibly none or several), so a hit on a fact or interaction also
-points to records. Apply workspace and liveness filters before ranking and
-limit, rank with `ts_rank`, and return source IDs with a snippet
-(`ts_headline`) rather than whole interactions.
-Required scaffold addition: generated `tsvector` columns with GIN indexes on
-`facts` and `interactions`, next to `records.search`. All three use one text-search
-configuration, `simple` in v1, for mixed Hebrew/English text without
-language-specific stemming. Alternative configurations are deferred;
-changing one later requires rebuilding stored search vectors as well as
-changing query tokenization.
+### 5.1 Search
+
+Search is Postgres full-text search, plus two standard extensions that ship
+with Postgres and are offered by managed services: `pg_trgm` (fuzzy matching)
+and `btree_gin` (combined indexes). No embeddings, no BM25 extension.
+
+#### What is indexed
+
+| Source         | Search text                                                                           | Column and index                                     |
+| -------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `records`      | Values of `is_searchable` fields; the label field (usually the name) weighted highest | `search tsvector`, GIN on `(workspace_id, search)`   |
+| `records`      | The label field as plain text, e.g. "Dana Levi"                                       | `label text`, trigram GIN on `(workspace_id, label)` |
+| `facts`        | `content`                                                                             | `search tsvector`, GIN on `(workspace_id, search)`   |
+| `interactions` | `title` (weighted higher) and `content`                                               | `search tsvector`, GIN on `(workspace_id, search)`   |
+
+The server computes every `search` and `label` value, in the same
+transaction that writes the row (for records, the one that recomputes
+`records.data`). They are not Postgres generated columns: which record fields
+are searchable lives in schema metadata, and indexing and querying must share
+one normalization function. Each fact carries its `record_id` and each
+interaction its matched record IDs (possibly none or several), so a hit on a
+fact or interaction also points to records.
+
+Every index leads with `workspace_id` (`btree_gin`), so a common word is
+matched within one workspace inside the index instead of across every
+tenant and filtered afterwards.
+
+#### Text normalization
+
+All `tsvector` columns use the `simple` configuration: lowercase, split on
+spaces and punctuation, no stemming. It handles mixed Hebrew and English
+text. Two additions cover what stemming would otherwise catch:
+
+- **Hebrew prefixes.** Hebrew attaches prefix letters to words. A Hebrew
+  word that starts with ו, ה, ב, כ, ל, מ or ש is also indexed without that
+  letter when two or more letters remain, so "בפגישה" ("in the meeting") is
+  indexed as both "בפגישה" and "פגישה" ("meeting"). Query terms expand the same
+  way. A word whose first letter is not really a prefix gains a spurious
+  variant; that costs some precision and is accepted.
+- **English plurals and endings.** Query terms of four or more letters are
+  also matched as prefixes (`meeting:*`), so "meeting" finds "meetings".
+
+Changing the configuration or the normalization later requires a background
+job that rebuilds stored search values.
+
+#### How a search runs
+
+1. The server parses the query (quoted phrases, `OR`, `-word`) and builds the
+   `tsquery` with the normalization above.
+2. It runs one query each on records, facts and interactions. Workspace and
+   liveness filters (and, for facts, "current, not superseded") apply before
+   ranking and limit.
+3. Each list is ranked with `ts_rank_cd`, using length normalization so long
+   transcripts do not outrank short, precise matches. Hits carry a snippet
+   from `ts_headline`, never the whole interaction.
+4. If the records query returns few hits, the server also matches
+   `records.label` by trigram similarity, so "Dana Levy" finds "Dana Levi".
+5. Results come back grouped by type, each with its record IDs. Scores from
+   the three lists are not comparable, so a caller that wants one list asks
+   for it merged by reciprocal rank fusion (rank positions, not scores).
+
+#### Why not BM25
+
+`ts_rank_cd` scores how often and how close together query words appear, but
+has no inverse document frequency: a word that appears everywhere in a
+workspace counts as much as a rare one. BM25 handles that, but Postgres has it
+only through extensions (for example ParadeDB's `pg_search` or Tiger Data's
+`pg_textsearch`) that many managed Postgres services do not offer, which
+would break "plain Postgres is the only dependency". Within one workspace
+the candidate set is small, and an agent reads the top results anyway.
+
+Search sits behind one internal interface, so a BM25 backend can be added
+later as an option without changing the API.
 
 `ask` is deferred from v1: callers can compose search and context tools in
 their own agent. This keeps request-time model loops, budgets and timeout
@@ -550,6 +612,7 @@ handling out of the API server.
 | `POST /v1/schema/changes/:id/approve` · `/reject` | Decide a proposed change                                                    |
 | `POST /v1/objects/:object/records`                | Create a record                                                             |
 | `POST /v1/objects/:object/query`                  | Filter records                                                              |
+| `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)  |
 | `GET` · `PATCH` · `DELETE /v1/records/:id`        | One record                                                                  |
 | `GET /v1/records/:id/context`                     | Context pack                                                                |
 | `POST /v1/records/:id/merge`                      | Merge another record into this one                                          |
@@ -561,7 +624,7 @@ handling out of the API server.
 | `POST /v1/interactions`                           | Log an interaction (ingest runs in the background)                          |
 | `GET` · `DELETE /v1/interactions/:id`             | Inspect ingest status or retract a source                                   |
 | `POST /v1/interactions/:id/retry`                 | Retry failed ingest without a new source identity                           |
-| `POST /v1/search`                                 | Hybrid search                                                               |
+| `POST /v1/search`                                 | Keyword search (5.1)                                                        |
 
 The OpenAPI document is generated per workspace from its schema.
 
@@ -583,9 +646,43 @@ errors name the field and the allowed values so the agent can retry.
 `remember(record, text)` stores the text as a `note` interaction and writes
 one `stated` fact from it at once, so the agent can read it back
 immediately. Do not enqueue extraction of that note too, which would create
-a second fact. `upsert_record` uses an explicit record ID or a declared unique
-identifier with the conflict rules in 1.2; names and shared handles are not
-idempotency keys. Calls without either explicitly create a new record.
+a second fact.
+
+#### Finding the record to update
+
+`upsert_record` finds its record in one of two ways:
+
+- `id`: an explicit record ID. An ID merged into another record resolves to
+  the surviving one.
+- `match`: one unique field and its value, for example
+  `{ "emails": "dana@acme.com" }`, looked up in `record_identifiers` with the
+  conflict rules in 1.2. Only `is_unique` fields are accepted. Names and
+  phones are rejected with an error that points the agent to `search` or
+  `query_records`.
+
+With neither, the call creates a new record.
+
+`ifMissing` decides what happens when `id` or `match` finds nothing:
+`"fail"` (the default) or `"create"`. The default is `"fail"` so that "update
+Dana's address" can never create a new person by accident. With `"create"`,
+the `match` value is written to the new record.
+
+```
+→ upsert_record {
+    "object": "person",
+    "match":  { "emails": "dana@acme.com" },
+    "values": { "address": { "street1": "12 Rothschild Blvd", "city": "Tel Aviv" } } }
+← { "id": "rec_9f2…", "created": false, "fields": { "address": "applied" } }
+```
+
+The response reports each field as `applied`, `pending_review` or
+`superseded` (rule 2.3), so an agent can tell its user that an update is
+waiting for approval rather than claim it is done.
+
+An agent that knows only a name or a phone number searches first
+(`search` or `query_records`), then updates by `id`. With several
+candidates, it tells them apart by company, email or recent interactions, or
+asks its user.
 
 Create-style writes (`remember`, record creation and merge requests) accept
 a caller idempotency key scoped by workspace and operation. Store the request
@@ -662,7 +759,8 @@ provider), and the official MCP TypeScript SDK.
 6. SDK, stdio bridge, docs, first release.
 
 Not planned: embeddings and semantic search. Search is Postgres full-text
-only, so no vector extension or embedding provider is needed.
+only, so no vector extension or embedding provider is needed. A BM25 backend
+may come later as an option (5.1).
 
 Left out of the first release: `ask`, phone-based participant matching,
 typed SQL views, per-field index automation, field type changes, inferred
@@ -693,9 +791,10 @@ step 1.
 - [ ] `records.merged_into_id` (1.1, 4.2)
 - [ ] `field_assertions.observed_at` (1.3, rule 2.2)
 - [ ] `record_cards.stale_since`, `source_revision`, `withheld` (4.2, 5)
-- [ ] Generated `search tsvector` columns with GIN indexes on `facts` and
-  `interactions`, using the `simple` configuration like `records.search`
-  (5)
+- [ ] `search tsvector` on `facts` and `interactions`, computed by the server
+  like `records.search` (5.1)
+- [ ] `records.label text`: the label field as plain text, for fuzzy name
+  lookup (5.1)
 - [ ] `workspace_id` on `interaction_participants` and `fact_sources` (7)
 
 **Changed constraints and defaults**
@@ -708,6 +807,13 @@ step 1.
   `SCHEMA_STATUSES` in `@crmemory/shared` (1.1)
 - [ ] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
   `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
+
+**Extensions and search indexes**
+
+- [ ] The migration runner creates `pg_trgm` and `btree_gin` (5.1)
+- [ ] Replace `records_search_gin` with a GIN index on
+  `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
+- [ ] Trigram GIN index on `records (workspace_id, label)` (5.1)
 
 **Security**
 
