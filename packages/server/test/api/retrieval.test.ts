@@ -173,6 +173,15 @@ describe('POST /v1/search', () => {
     expect(res.body).toEqual({ records: [], facts: [], interactions: [] });
   });
 
+  it('reserves the channel of remember notes, so no logged interaction is hidden as one', async () => {
+    const res = await t.request('/v1/interactions', {
+      key: keys.agent,
+      body: { kind: 'note', channel: 'retainer', occurredAt: '2026-10-29T14:00:00+02:00' },
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('reserved');
+  });
+
   it('validates the body and needs a key', async () => {
     expect((await search({ query: '   ' })).status).toBe(400);
     expect((await search({ query: 'x', limit: 51 })).status).toBe(400);
@@ -297,9 +306,7 @@ describe('GET /v1/records/:id/context', () => {
       },
     ]);
     expect(pack.omitted).toEqual({ openTasks: 0, facts: 0, recentInteractions: 0 });
-    expect(pack.tokenEstimate).toBe(
-      Math.ceil(JSON.stringify({ ...pack, tokenEstimate: undefined }).length / 4),
-    );
+    expect(pack.tokenEstimate).toBe(Math.ceil(JSON.stringify(pack).length / 4));
     expect(pack.tokenEstimate).toBeLessThanOrEqual(2000);
   });
 
@@ -323,13 +330,46 @@ describe('GET /v1/records/:id/context', () => {
     // Room for two tasks and the fact: the third task does not fit, and the
     // section after it still gets the rest.
     const full = await context(company);
-    const head = Math.ceil(JSON.stringify(full.body.record).length / 4);
-    const task = Math.ceil(JSON.stringify(full.body.openTasks[0]).length / 4);
-    const fact = Math.ceil(JSON.stringify(full.body.facts[0]).length / 4);
-    const some = await context(company, `?tokenBudget=${head + 2 * task + fact + 5}`);
+    const frame = JSON.stringify({
+      ...full.body,
+      openTasks: [],
+      facts: [],
+      recentInteractions: [],
+      omitted: { openTasks: 3, facts: 1, recentInteractions: 0 },
+    }).length;
+    // Each item costs its JSON and a comma; 5 tokens of slack is far less than a task.
+    const task = JSON.stringify(full.body.openTasks[0]).length + 1;
+    const fact = JSON.stringify(full.body.facts[0]).length + 1;
+    const budget = Math.ceil((frame + 2 * task + fact) / 4) + 5;
+    const some = await context(company, `?tokenBudget=${budget}`);
     expect(some.body.openTasks).toHaveLength(2);
     expect(some.body.facts).toHaveLength(1);
     expect(some.body.omitted).toEqual({ openTasks: 1, facts: 0, recentInteractions: 0 });
+  });
+
+  it('never sends more than the budget once the values fit, framing included', async () => {
+    const company = await create('company', { name: `Frame ${word()}` });
+    for (let i = 0; i < 40; i++) await create('task', { title: `T${i}`, status: 'todo', company });
+    // With no room for items, the pack is the values and the framing around them.
+    const bare = Math.ceil(
+      JSON.stringify((await context(company, '?tokenBudget=1')).body).length / 4,
+    );
+    for (const extra of [0, 1, 30, 100, 250, 400]) {
+      const budget = bare + extra;
+      const res = await context(company, `?tokenBudget=${budget}`);
+      const sent = JSON.stringify(res.body).length;
+      expect(sent, `budget ${budget}`).toBeLessThanOrEqual(budget * 4);
+      expect(res.body.tokenEstimate).toBe(Math.ceil(sent / 4));
+      expect(res.body.openTasks.length + res.body.omitted.openTasks).toBe(40);
+    }
+  });
+
+  it('lets the budget, not a row limit, decide how many items fit', async () => {
+    const company = await create('company', { name: `Many ${word()}` });
+    for (let i = 0; i < 230; i++) await create('task', { title: `T${i}`, status: 'todo', company });
+    const res = await context(company, '?tokenBudget=16000');
+    expect(res.body.openTasks).toHaveLength(230);
+    expect(res.body.omitted.openTasks).toBe(0);
   });
 
   it('refuses deleted, unknown and foreign records', async () => {

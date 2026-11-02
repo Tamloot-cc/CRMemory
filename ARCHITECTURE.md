@@ -765,7 +765,8 @@ hiddenFactIds }`, the last being facts whose only live source it was.
 `source`, `noteInteraction` is the ID of the `note` interaction created for
 the fact to cite, and `validFrom` is the write time. The note has channel
 `retainer`, the fact's text as its summary, and the record as its one
-participant with role `subject`. A `quote` needs a `source`. A retry with the
+participant with role `subject`. The `retainer` channel is reserved for these
+notes: `log_interaction` rejects it, so retrieval can tell them apart. A `quote` needs a `source`. A retry with the
 same idempotency key returns the same response.
 `GET /v1/records/:id/facts` returns `{ record, facts }` with facts in this
 shape, newest `validFrom` first, listing only live sources.
@@ -803,6 +804,10 @@ A context pack is assembled by fixed rules (5):
 - Tokens are estimated from characters, at about four per token. Retainer
   runs no tokenizer or model, so the budget is approximate. `tokenBudget`
   defaults to 2000 and is capped at 16000.
+- The budget covers the whole response, keys, commas and `omitted` included:
+  once the record's values fit, the pack's JSON is never longer than
+  `tokenBudget × 4` characters. `tokenEstimate` is that length in tokens. No
+  fixed row limit applies; the budget alone decides what is left out.
 
 ---
 

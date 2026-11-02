@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
-import { NOTE_CHANNEL } from '../memory/facts.js';
+import { NOTE_CHANNEL } from '../memory/interactions.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 
 /**

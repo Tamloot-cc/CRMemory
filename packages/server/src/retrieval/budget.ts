@@ -3,18 +3,25 @@
  * tokens are estimated from characters: about four per token.
  */
 
-const CHARS_PER_TOKEN = 4;
+export const CHARS_PER_TOKEN = 4;
 
-/** Estimated tokens of a value as it is sent: its JSON. */
+/** Characters of a value as it is sent: its JSON. */
+export function jsonLength(value: unknown): number {
+  return JSON.stringify(value).length;
+}
+
+/** Estimated tokens of a value as it is sent. */
 export function estimateTokens(value: unknown): number {
-  return Math.ceil(JSON.stringify(value).length / CHARS_PER_TOKEN);
+  return Math.ceil(jsonLength(value) / CHARS_PER_TOKEN);
 }
 
 /**
- * Fills sections, in the order of their keys, until the budget is spent.
- * Items are never cut: a section takes items while the next one fits, stops
- * at the first that does not, and the next section continues with what is
- * left.
+ * Fills sections, in the order of their keys, until `budget` characters are
+ * spent. Each item costs its JSON plus the comma that separates it in its
+ * array, so the fitted arrays never add more than `budget` characters to the
+ * JSON they sit in. Items are never cut: a section takes items while the
+ * next one fits, stops at the first that does not, and the next section
+ * continues with what is left.
  */
 export function fitSections<T extends Record<string, readonly unknown[]>>(
   sections: T,
@@ -25,7 +32,7 @@ export function fitSections<T extends Record<string, readonly unknown[]>>(
   for (const [name, items] of Object.entries(sections)) {
     const taken: unknown[] = [];
     for (const item of items) {
-      const cost = estimateTokens(item);
+      const cost = jsonLength(item) + 1;
       if (used + cost > budget) break;
       used += cost;
       taken.push(item);

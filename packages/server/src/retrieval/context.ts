@@ -1,11 +1,11 @@
 import type { Actor } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
-import { NOTE_CHANNEL } from '../memory/facts.js';
+import { NOTE_CHANNEL } from '../memory/interactions.js';
 import { getRecord } from '../records/read.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { BASE_FIELD_IDS, BASE_OBJECT_IDS } from '../templates/base.js';
-import { estimateTokens, fitSections } from './budget.js';
+import { CHARS_PER_TOKEN, estimateTokens, fitSections, jsonLength } from './budget.js';
 
 /**
  * Context packs (5, 6.2): what an agent needs about one record, assembled by
@@ -64,10 +64,12 @@ export type ContextPack = {
 };
 
 /**
- * Items read per section. A section larger than this cannot fit even the
- * largest budget, so the rest only adds to `omitted`, which counts them all.
+ * The shortest JSON any section item can have: `{"id":"<uuid>"}`. A budget
+ * of `n` characters never fits more than `n / MIN_ITEM_CHARS` items, so
+ * reading that many rows per section lets the budget, not a row limit, decide
+ * what is left out.
  */
-const SECTION_LIMIT = 200;
+const MIN_ITEM_CHARS = 45;
 
 export async function contextPack(
   tx: Tx,
@@ -76,25 +78,37 @@ export async function contextPack(
   recordId: string,
   input: ContextInput,
 ): Promise<ContextPack> {
+  const budgetChars = input.tokenBudget * CHARS_PER_TOKEN;
+  const rows = Math.floor(budgetChars / MIN_ITEM_CHARS) + 1;
   // Resolves merged IDs and refuses deleted records, like get_record.
   const record = await getRecord(tx, workspaceId, schema, recordId);
   const [fields, tasks, facts, interactions] = await Promise.all([
     currentFields(tx, workspaceId, schema, record.id, record.fields),
-    openTasks(tx, workspaceId, schema, record.id),
-    currentFacts(tx, workspaceId, record.id),
-    recentInteractions(tx, workspaceId, record.id),
+    openTasks(tx, workspaceId, schema, record.id, rows),
+    currentFacts(tx, workspaceId, record.id, rows),
+    recentInteractions(tx, workspaceId, record.id, rows),
   ]);
 
-  // The record's values are always included; the budget applies to the
-  // sections after them.
+  // The record's values are always included. The sections get what is left
+  // after the whole pack around them: the record, the keys and brackets, and
+  // `omitted` and `tokenEstimate` at their largest (every item omitted, an
+  // estimate as long as the budget). So a pack whose values fit never
+  // serializes to more than the budget.
   const head = { id: record.id, object: record.object, label: record.label, fields };
-  const remaining = Math.max(0, input.tokenBudget - estimateTokens(head));
+  const frame: ContextPack = {
+    record: head,
+    openTasks: [],
+    facts: [],
+    recentInteractions: [],
+    omitted: { openTasks: tasks.total, facts: facts.total, recentInteractions: interactions.total },
+    tokenEstimate: input.tokenBudget,
+  };
   const { included } = fitSections(
     { openTasks: tasks.items, facts: facts.items, recentInteractions: interactions.items },
-    remaining,
+    Math.max(0, budgetChars - jsonLength(frame)),
   );
 
-  const pack: Omit<ContextPack, 'tokenEstimate'> = {
+  const pack: ContextPack = {
     record: head,
     ...included,
     omitted: {
@@ -102,8 +116,12 @@ export async function contextPack(
       facts: facts.total - included.facts.length,
       recentInteractions: interactions.total - included.recentInteractions.length,
     },
+    tokenEstimate: input.tokenBudget,
   };
-  return { ...pack, tokenEstimate: estimateTokens(pack) };
+  // The estimate covers the whole response, itself included (sized with the
+  // budget in its place).
+  pack.tokenEstimate = estimateTokens(pack);
+  return pack;
 }
 
 type Section<T> = { items: T[]; total: number };
@@ -151,6 +169,7 @@ async function openTasks(
   workspaceId: string,
   schema: CompiledSchema,
   recordId: string,
+  limit: number,
 ): Promise<Section<OpenTask>> {
   const task = schema.objectsByUniversalId.get(BASE_OBJECT_IDS.task);
   if (task?.state.status !== 'active') return { items: [], total: 0 };
@@ -177,7 +196,7 @@ async function openTasks(
            or (l.source_record_id = ${recordId} and l.target_record_id = t.id))
       ${notDone}
     order by ${dueOrder} t.created_at, t.id
-    limit ${SECTION_LIMIT}`;
+    limit ${limit}`;
   return {
     items: rows.map((row) => ({
       id: row.id,
@@ -194,6 +213,7 @@ async function currentFacts(
   tx: Tx,
   workspaceId: string,
   recordId: string,
+  limit: number,
 ): Promise<Section<ContextFact>> {
   const rows = await tx<
     {
@@ -220,7 +240,7 @@ async function currentFacts(
         join interactions i on i.id = s.interaction_id and i.deleted_at is null
         where s.fact_id = f.id)
     order by f.valid_from desc, f.created_at desc, f.id
-    limit ${SECTION_LIMIT}`;
+    limit ${limit}`;
   return {
     items: rows.map((row) => ({
       id: row.id,
@@ -242,6 +262,7 @@ async function recentInteractions(
   tx: Tx,
   workspaceId: string,
   recordId: string,
+  limit: number,
 ): Promise<Section<ContextInteraction>> {
   const rows = await tx<
     {
@@ -261,7 +282,7 @@ async function recentInteractions(
         select 1 from interaction_participants p
         where p.interaction_id = i.id and p.record_id = ${recordId})
     order by i.occurred_at desc, i.id
-    limit ${SECTION_LIMIT}`;
+    limit ${limit}`;
   return {
     items: rows.map((row) => ({
       id: row.id,
