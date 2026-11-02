@@ -2,29 +2,33 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Slot } from '@radix-ui/react-slot';
 import { Link } from '@tanstack/react-router';
 import { cva } from 'class-variance-authority';
-import { type ClassValue, clsx } from 'clsx';
-import { ArrowUpRight, Database, Inbox, LogOut, Search, Shapes, X } from 'lucide-react';
-import type {
-  ButtonHTMLAttributes,
-  HTMLAttributes,
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
+import { ArrowUpRight, ChevronRight, Database, Inbox, Menu, X } from 'lucide-react';
+import {
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  useContext,
 } from 'react';
-import { twMerge } from 'tailwind-merge';
-export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
+import { cn, NavigationContext } from './core.js';
+
 // Adapted from shadcn/ui Button (MIT); see THIRD_PARTY.md.
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 h-9 px-3',
+  'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:shrink-0',
   {
     variants: {
       variant: {
         primary: 'bg-primary text-primary-foreground hover:opacity-90',
         destructive: 'bg-destructive text-white hover:opacity-90',
-        outline: 'border border-input bg-background hover:bg-muted',
-        ghost: 'hover:bg-muted text-muted-foreground',
+        outline: 'border border-input bg-background hover:bg-hover',
+        ghost: 'hover:bg-hover text-muted-foreground hover:text-foreground',
       },
-      size: { default: '', small: 'h-7 px-2 text-xs' },
+      size: {
+        default: 'h-8 px-3',
+        small: 'h-7 px-2 text-xs',
+        icon: 'h-8 w-8 px-0',
+      },
     },
     defaultVariants: { variant: 'outline', size: 'default' },
   },
@@ -37,7 +41,7 @@ export function Button({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'destructive' | 'outline' | 'ghost';
-  size?: 'default' | 'small';
+  size?: 'default' | 'small' | 'icon';
   asChild?: boolean;
 }) {
   const C = asChild ? Slot : 'button';
@@ -50,7 +54,7 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
       className={
         props.type === 'checkbox'
           ? 'h-4 w-4 shrink-0 accent-primary'
-          : 'h-9 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus:ring-2 focus:ring-ring disabled:opacity-50'
+          : 'h-8 w-full min-w-0 rounded-md border border-input bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring disabled:opacity-50'
       }
     />
   );
@@ -59,7 +63,7 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className="h-9 max-w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+      className="h-8 max-w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
     />
   );
 }
@@ -67,19 +71,28 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
   return (
     <textarea
       {...props}
-      className="min-h-28 w-full rounded-md border border-input bg-background p-3 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+      className="min-h-28 w-full rounded-md border border-input bg-background p-2.5 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
     />
   );
 }
 export function Stack({ children }: { children: ReactNode }) {
-  return <div className="flex flex-col gap-4">{children}</div>;
+  return <div className="flex flex-col gap-3">{children}</div>;
 }
 export function Row({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center gap-3">{children}</div>;
+  return <div className="flex flex-wrap items-center gap-2">{children}</div>;
 }
 export function Label({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
   return (
-    <label htmlFor={htmlFor} className="flex flex-col gap-2 text-sm font-medium">
+    <label htmlFor={htmlFor} className="flex flex-col gap-1.5 text-sm font-medium">
+      {children}
+    </label>
+  );
+}
+/** A checkbox (or radio) beside its label, on one line. */
+export function CheckLabel({ children }: { children: ReactNode }) {
+  return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: the control is passed in as a child.
+    <label className="flex min-w-0 flex-1 items-center gap-2 text-sm [&>span]:truncate">
       {children}
     </label>
   );
@@ -97,7 +110,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-xs font-medium',
+        'inline-flex items-center gap-1 rounded-sm border px-1.5 py-px text-xs font-medium',
         tone === 'pending'
           ? 'border-amber-300/40 text-amber-700 dark:text-amber-300'
           : tone === 'success'
@@ -114,7 +127,7 @@ export function Notice({ children, error = false }: { children: ReactNode; error
     <div
       role={error ? 'alert' : 'status'}
       className={cn(
-        'rounded-lg border p-4 text-sm',
+        'rounded-lg border px-3 py-2.5 text-sm',
         error
           ? 'border-destructive/30 text-destructive'
           : 'border-border bg-muted/40 text-muted-foreground',
@@ -124,53 +137,100 @@ export function Notice({ children, error = false }: { children: ReactNode; error
     </div>
   );
 }
+
+/**
+ * A screen: a slim top bar with breadcrumb and actions, then the content.
+ * `layout="fill"` gives the content the rest of the viewport with no padding,
+ * for grids that scroll on their own.
+ */
 export function Page({
   eyebrow,
   title,
   description,
   actions,
+  layout = 'default',
   children,
 }: {
   eyebrow?: string;
   title: string;
-  description?: string;
   actions?: ReactNode;
   children: ReactNode;
-}) {
+} & ({ layout?: 'default'; description?: string } | { layout: 'fill'; description?: never })) {
+  const openNavigation = useContext(NavigationContext);
+  const fill = layout === 'fill';
   return (
-    <section className="mx-auto flex w-full max-w-6xl flex-col gap-7 px-5 py-8 lg:px-10 lg:py-10">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+    <section className={cn('flex flex-col', fill ? 'h-dvh' : 'min-h-dvh')}>
+      <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background/85 px-3 backdrop-blur md:px-5">
+        {openNavigation ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Open navigation"
+            className="-ml-1 md:hidden"
+            onClick={openNavigation}
+          >
+            <Menu size={16} />
+          </Button>
+        ) : null}
+        <div className="flex min-w-0 items-center gap-1.5 text-sm">
           {eyebrow ? (
-            <p className="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-              {eyebrow}
-            </p>
+            <>
+              <span className="hidden max-w-48 truncate text-muted-foreground first-letter:uppercase sm:inline-block">
+                {eyebrow}
+              </span>
+              <ChevronRight
+                size={14}
+                aria-hidden
+                className="hidden shrink-0 text-muted-foreground/60 sm:inline"
+              />
+            </>
           ) : null}
-          <h1 className="text-3xl font-semibold tracking-tight">{title}</h1>
-          {description ? (
-            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{description}</p>
-          ) : null}
+          {fill ? (
+            <h1 className="truncate font-medium">{title}</h1>
+          ) : (
+            <span className="truncate font-medium">{title}</span>
+          )}
         </div>
-        {actions}
+        {actions ? <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div> : null}
       </header>
-      {children}
+      {fill ? (
+        <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+      ) : (
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-6 md:px-8 md:py-8">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+            {description ? (
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{description}</p>
+            ) : null}
+          </div>
+          {children}
+        </div>
+      )}
     </section>
   );
 }
+/** Padded area inside a `fill` page, for notices and empty states. */
+export function Inset({ children }: { children: ReactNode }) {
+  return <div className="flex flex-col gap-3 p-3 md:px-5">{children}</div>;
+}
 export function Panel({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <section className="rounded-lg border border-border bg-card p-5">
-      {title ? <h2 className="mb-4 text-sm font-semibold">{title}</h2> : null}
-      {children}
+    <section className="rounded-lg border border-border bg-card">
+      {title ? (
+        <h2 className="border-b border-border px-4 py-2.5 text-sm font-medium">{title}</h2>
+      ) : null}
+      <div className="p-4">{children}</div>
     </section>
   );
 }
 export function Empty({ title, description }: { title: string; description?: string }) {
   return (
-    <div className="flex min-h-64 flex-col items-center justify-center rounded-lg border border-dashed border-border p-8 text-center">
-      <Inbox size={28} strokeWidth={1.4} className="mb-4 text-muted-foreground" />
-      <h2 className="font-medium">{title}</h2>
-      <p className="mt-2 max-w-sm text-sm text-muted-foreground">{description}</p>
+    <div className="flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border p-8 text-center">
+      <Inbox size={24} strokeWidth={1.4} className="mb-3 text-muted-foreground" />
+      <h2 className="text-sm font-medium">{title}</h2>
+      {description ? (
+        <p className="mt-1 max-w-sm text-sm text-muted-foreground">{description}</p>
+      ) : null}
     </div>
   );
 }
@@ -184,7 +244,10 @@ export function Tabs({
   onChange: (v: string) => void;
 }) {
   return (
-    <nav aria-label="Sections" className="flex flex-wrap gap-1 border-b border-border">
+    <nav
+      aria-label="Sections"
+      className="flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
+    >
       {items.map((i) => (
         <button
           type="button"
@@ -192,7 +255,7 @@ export function Tabs({
           aria-current={value === i.value ? 'page' : undefined}
           onClick={() => onChange(i.value)}
           className={cn(
-            'flex items-center gap-2 border-b-2 px-3 py-3 text-sm',
+            '-mb-px flex shrink-0 items-center gap-2 border-b-2 px-2.5 py-2 text-sm',
             value === i.value
               ? 'border-primary font-medium'
               : 'border-transparent text-muted-foreground hover:text-foreground',
@@ -207,7 +270,7 @@ export function Tabs({
 }
 export function RecordLink({ id, children }: { id: string; children: ReactNode }) {
   return (
-    <Link to="/r/$id" params={{ id }} className="font-medium hover:underline">
+    <Link to="/r/$id" params={{ id }} className="truncate font-medium hover:underline">
       {children}
     </Link>
   );
@@ -291,8 +354,8 @@ export function Dialog({
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/35 backdrop-blur-xs" />
-        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(94vw,42rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-auto rounded-lg border border-border bg-background p-6 shadow-xl">
-          <DialogPrimitive.Title className="pr-6 text-lg font-semibold">
+        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(94vw,42rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-auto rounded-lg border border-border bg-background p-5 shadow-xl">
+          <DialogPrimitive.Title className="pr-6 text-base font-semibold">
             {title}
           </DialogPrimitive.Title>
           <DialogPrimitive.Description
@@ -304,9 +367,9 @@ export function Dialog({
             <button
               type="button"
               aria-label="Close"
-              className="absolute right-4 top-4 rounded-md p-1 text-muted-foreground hover:bg-muted"
+              className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground hover:bg-hover"
             >
-              <X size={18} />
+              <X size={16} />
             </button>
           </DialogPrimitive.Close>
           {children}
@@ -315,17 +378,18 @@ export function Dialog({
     </DialogPrimitive.Root>
   );
 }
+/** A small static table inside a page. Record lists use `DataGrid`. */
 export function Table({ headers, children }: { headers: ReactNode[]; children: ReactNode }) {
   return (
     <div className="overflow-auto rounded-lg border border-border">
-      <table className="w-full border-collapse text-sm">
-        <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+      <table className="w-full border-separate border-spacing-0 text-sm">
+        <thead className="text-left text-xs text-muted-foreground">
           <tr>
             {headers.map((h, i) => (
               <th
                 key={String(h)}
                 className={cn(
-                  'whitespace-nowrap border-b border-border px-4 py-3 font-medium',
+                  'h-9 whitespace-nowrap border-b border-border bg-muted/50 px-3 font-medium',
                   i === 0 ? 'sticky left-0 bg-muted' : '',
                 )}
               >
@@ -334,14 +398,14 @@ export function Table({ headers, children }: { headers: ReactNode[]; children: R
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-border">{children}</tbody>
+        <tbody className="[&>tr:last-child>td]:border-b-0">{children}</tbody>
       </table>
     </div>
   );
 }
 export function Tr({ children, ...props }: HTMLAttributes<HTMLTableRowElement>) {
   return (
-    <tr {...props} className="hover:bg-muted/30">
+    <tr {...props} className="group">
       {children}
     </tr>
   );
@@ -350,7 +414,7 @@ export function Td({ children, first = false }: { children: ReactNode; first?: b
   return (
     <td
       className={cn(
-        'max-w-72 px-4 py-3 align-top',
+        'max-w-72 border-b border-border px-3 py-2 align-top group-hover:bg-hover',
         first ? 'sticky left-0 bg-card font-medium' : '',
       )}
     >
@@ -360,77 +424,15 @@ export function Td({ children, first = false }: { children: ReactNode; first?: b
 }
 export function FieldRow({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <div className="grid gap-2 border-b border-border py-3 last:border-0 sm:grid-cols-[180px_1fr]">
+    <div className="grid gap-1 border-b border-border py-2.5 last:border-0 sm:grid-cols-[160px_1fr] sm:gap-3">
       <div className="text-sm text-muted-foreground">{label}</div>
       <div className="min-w-0 text-sm">{children}</div>
     </div>
   );
 }
-export function Shell({
-  workspace,
-  objects,
-  onSignOut,
-  onSearch,
-  children,
-}: {
-  workspace: string;
-  objects: { name: string; label: string }[];
-  onSignOut: () => void;
-  onSearch: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <div className="min-h-screen bg-background text-foreground md:grid md:grid-cols-[220px_1fr]">
-      <aside className="border-b border-border bg-sidebar md:sticky md:top-0 md:h-screen md:border-b-0 md:border-r">
-        <div className="flex items-center gap-2 px-5 py-6 font-semibold tracking-tight">
-          <Database size={20} className="text-primary" />
-          Retainer<Badge>v1</Badge>
-        </div>
-        <div className="px-5 pb-4 text-xs text-muted-foreground">{workspace}</div>
-        <nav aria-label="Main navigation" className="flex flex-col gap-1 px-3">
-          <Button asChild variant="ghost">
-            <Link to="/">
-              <Inbox size={16} />
-              Review inbox
-            </Link>
-          </Button>
-          <Button variant="ghost" onClick={onSearch}>
-            <Search size={16} />
-            Find anything <kbd className="ml-auto text-xs">⌘K</kbd>
-          </Button>
-          <p className="px-3 pb-1 pt-5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-            Objects
-          </p>
-          {objects.map((o) => (
-            <Button key={o.name} asChild variant="ghost">
-              <Link to="/o/$object" params={{ object: o.name }}>
-                <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
-                {o.label}
-              </Link>
-            </Button>
-          ))}
-          <div className="my-3 border-t border-border" />
-          <Button asChild variant="ghost">
-            <Link to="/schema">
-              <Shapes size={16} />
-              Schema
-            </Link>
-          </Button>
-          <Button onClick={onSignOut} variant="ghost">
-            <LogOut size={16} />
-            Sign out
-          </Button>
-        </nav>
-        <p className="hidden px-6 pt-10 text-xs leading-relaxed text-muted-foreground md:block">
-          Memory you can trace.
-          <br />
-          Decisions you control.
-        </p>
-      </aside>
-      <main className="min-w-0">{children}</main>
-    </div>
-  );
-}
+export { DataGrid, FilterChip, GridFooter, Toolbar } from './data-grid.js';
+export { MenuHeader, MenuItem, MenuList, Popover, PopoverForm } from './popover.js';
+export { Shell } from './shell.js';
 export function SignInFrame({ children }: { children: ReactNode }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/30 p-6">

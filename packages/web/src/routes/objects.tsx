@@ -1,248 +1,538 @@
-import type { FieldView, QueryInput } from '@retainer/shared';
-import { SORTABLE_TYPES } from '@retainer/shared';
+import type { FieldView, ObjectView, QueryInput } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
-import { useParams } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useNavigate, useParams } from '@tanstack/react-router';
+import { ArrowUpDown, ChevronLeft, ChevronRight, Columns3, ListFilter } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
 import { filterValue, operatorsFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import {
   Button,
-  Dialog,
+  CheckLabel,
+  DataGrid,
   Empty,
+  FilterChip,
+  GridFooter,
   Input,
+  Inset,
   Label,
+  MenuHeader,
+  MenuItem,
+  MenuList,
   Muted,
   Notice,
   Page,
+  Popover,
+  PopoverForm,
   RecordLink,
-  Row,
   Select,
-  Stack,
-  Table,
-  Td,
-  Tr,
+  Toolbar,
 } from '../ui/index.js';
+import {
+  addClause,
+  type ColumnPrefs,
+  defaultColumnOrder,
+  defaultColumnWidth,
+  describeClause,
+  encodeFilter,
+  encodeSort,
+  type FilterClause,
+  isSortable,
+  loadColumnPrefs,
+  moveColumn,
+  nextSort,
+  operatorLabel,
+  type PageTrail,
+  pageRange,
+  parseListSearch,
+  recordNextPage,
+  resolveColumns,
+  type SortState,
+  saveColumnPrefs,
+  setColumnVisible,
+  shiftColumn,
+} from './list-state.js';
 import { QueryError, useView } from './state.js';
+
+const PAGE_SIZE = 50;
+const BUILT_IN_SORTS = [
+  { name: 'updatedAt', label: 'Updated' },
+  { name: 'createdAt', label: 'Created' },
+];
+
 export function ObjectPage() {
   const { object: name } = useParams({ strict: false }) as { object: string };
   const { session, schema } = useWorkspace();
-  const { search, setSearch } = useView();
   const object = schema.objects.find((o) => o.nameSingular === name || o.namePlural === name);
-  const [columnsOpen, setColumnsOpen] = useState(false),
-    [error, setError] = useState('');
-  const key = `retainer:columns:v1:${session.workspace.id}:${name}`;
-  const [preferences, setPreferences] = useState<Record<string, string[]>>({});
-  let saved: string[] | undefined = preferences[key];
-  if (!saved) {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(key) ?? 'null');
-      if (Array.isArray(parsed) && parsed.every((v) => typeof v === 'string')) saved = parsed;
-    } catch {
-      /* Fall back to schema defaults. */
-    }
-  }
-  const visible =
-    saved ??
-    object?.fields.filter((f) => f.type !== 'json' && !f.readOnly).map((f) => f.name) ??
-    [];
-  const columns = (object?.fields ?? [])
-    .filter((f) => f.name === object?.labelField || visible.includes(f.name))
-    .sort((a, b) => Number(b.name === object?.labelField) - Number(a.name === object?.labelField));
-  const [filterField, setFilterField] = useState(''),
-    [operator, setOperator] = useState('eq'),
-    [value, setValue] = useState<unknown>('');
-  const selected = object?.fields.find((f) => f.name === filterField);
-  let input: QueryInput = { limit: 50, cursor: search.cursor, include: ['relationReferences'] };
-  let parseError = '';
-  try {
-    input = {
-      ...input,
-      filter: search.filter ? JSON.parse(search.filter) : undefined,
-      sort: search.sort ? JSON.parse(search.sort) : undefined,
-    };
-  } catch {
-    parseError = 'This address contains an invalid filter or sort';
-  }
-  const query = useQuery({
-    queryKey: [session.workspace.id, 'records', name, input],
-    queryFn: ({ signal }) => api.queryRecords(name, input, signal),
-    enabled: !!object && !parseError,
-  });
-  function applyFilter() {
-    if (!selected) return;
-    try {
-      const v = filterValue(selected, operator, value);
-      void setSearch({
-        filter: JSON.stringify({ [selected.name]: { [operator]: v } }),
-        cursor: undefined,
-      });
-      setError('');
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  function saveColumns(next: string[]) {
-    setPreferences((p) => ({ ...p, [key]: next }));
-    try {
-      localStorage.setItem(key, JSON.stringify(next));
-    } catch {
-      setError('Column preferences could not be saved in this browser');
-    }
-  }
   if (!object)
     return (
       <Page title="Object unavailable">
         <Notice error>This object is no longer in the schema.</Notice>
       </Page>
     );
+  // Remount per object so saved column preferences are read once, on mount.
+  return <ObjectList key={`${session.workspace.id}:${name}`} name={name} object={object} />;
+}
+
+function ObjectList({ name, object }: { name: string; object: ObjectView }) {
+  const { session } = useWorkspace();
+  const { search, setSearch } = useView();
+  const navigate = useNavigate();
+  const workspace = session.workspace.id;
+  const [error, setError] = useState('');
+  const [prefs, setPrefs] = useState(() => loadColumnPrefs(() => localStorage, workspace, name));
+
+  const view = parseListSearch(search);
+  const { clauses, sort } = view;
+  const input: QueryInput = {
+    limit: PAGE_SIZE,
+    cursor: search.cursor,
+    include: ['relationReferences'],
+    ...view.query,
+  };
+  const query = useQuery({
+    queryKey: [workspace, 'records', name, input],
+    queryFn: ({ signal }) => api.queryRecords(name, input, signal),
+    enabled: !view.error,
+  });
+
+  // Cursors only go forward; remember each page's predecessor for "Previous".
+  const viewKey = `${search.filter ?? ''}|${search.sort ?? ''}`;
+  const [trail, setTrail] = useState<{ key: string; pages: PageTrail }>({
+    key: viewKey,
+    pages: {},
+  });
+  const pages = trail.key === viewKey ? trail.pages : {};
+
+  const columns = useMemo(() => resolveColumns(object, prefs), [object, prefs]);
+  const order = useMemo(
+    () => columns.filter((f) => f.name !== object.labelField).map((f) => f.name),
+    [columns, object],
+  );
+  const gridColumns = useMemo(
+    () =>
+      columns.map((f, i) => ({
+        id: f.name,
+        label: f.label,
+        width: prefs?.widths[f.name] ?? defaultColumnWidth(f, i === 0),
+        sortable: isSortable(f),
+        pinned: i === 0,
+      })),
+    [columns, prefs],
+  );
+  const references = query.data?.relationReferences;
+  const records = query.data?.records;
+  const rows = useMemo(
+    () =>
+      (records ?? []).map((r) => ({
+        id: r.id,
+        cells: columns.map((f, i) => {
+          const Display = fields[f.type].Display;
+          const cell = (
+            <Display
+              key={f.name}
+              field={f}
+              value={r.fields[f.name]}
+              compact
+              references={references}
+            />
+          );
+          return i === 0 ? (
+            <RecordLink key={f.name} id={r.id}>
+              {r.label ? cell : 'Untitled record'}
+            </RecordLink>
+          ) : (
+            cell
+          );
+        }),
+      })),
+    [records, columns, references],
+  );
+  const openRow = useCallback(
+    (id: string) => void navigate({ to: '/r/$id', params: { id } }),
+    [navigate],
+  );
+
+  function savePrefs(next: ColumnPrefs) {
+    setPrefs(next);
+    if (!saveColumnPrefs(() => localStorage, workspace, name, next))
+      setError('Column preferences could not be saved in this browser');
+  }
+  const saveOrder = (next: string[]) => savePrefs({ order: next, widths: prefs?.widths ?? {} });
+  const setFilter = (next: FilterClause[] | undefined) =>
+    void setSearch({ filter: next && encodeFilter(next), cursor: undefined });
+  const nextCursor = query.data?.nextCursor;
+  const previous = search.cursor ? pages[search.cursor] : undefined;
+
   return (
     <Page
+      layout="fill"
       eyebrow="Objects"
       title={object.labelPlural}
-      description={`${object.fields.length} fields · ${object.description ?? 'Agent-written records, with their sources.'}`}
-      actions={<Button onClick={() => setColumnsOpen(true)}>Columns</Button>}
+      actions={
+        <ColumnsMenu
+          object={object}
+          columns={columns}
+          order={order}
+          onChange={saveOrder}
+          onReset={() => savePrefs({ order: defaultColumnOrder(object), widths: {} })}
+        />
+      }
     >
-      <Row>
-        <Select
-          aria-label="Filter field"
-          value={filterField}
-          onChange={(e) => {
-            const f = object.fields.find((f) => f.name === e.target.value);
-            setFilterField(e.target.value);
-            setOperator(f ? (operatorsFor(f)[0] ?? 'isNull') : 'eq');
-            setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : '');
-          }}
-        >
-          <option value="">Filter by…</option>
-          {object.fields
-            .filter((f) => f.isFilterable)
-            .map((f) => (
-              <option key={f.name} value={f.name}>
-                {f.label}
-              </option>
-            ))}
-        </Select>
-        {selected ? (
-          <>
-            <Select
-              aria-label="Filter operator"
-              value={operator}
-              onChange={(e) => {
-                setOperator(e.target.value);
-                setValue(e.target.value === 'isNull' ? true : '');
-              }}
-            >
-              {operatorsFor(selected).map((o) => (
-                <option key={o}>{o}</option>
-              ))}
-            </Select>
-            <FilterControl field={selected} value={value} operator={operator} onChange={setValue} />
-            <Button onClick={applyFilter}>Apply filter</Button>
-          </>
+      <Toolbar
+        end={
+          <SortMenu
+            object={object}
+            sort={sort}
+            onChange={(next) => void setSearch({ sort: encodeSort(next), cursor: undefined })}
+          />
+        }
+      >
+        {clauses.map((c, i) => (
+          <FilterChip
+            key={`${c.field}:${c.operator}:${JSON.stringify(c.value)}`}
+            {...describeClause(
+              c,
+              object.fields.find((f) => f.name === c.field),
+            )}
+            onRemove={() => setFilter(clauses.filter((_, j) => j !== i))}
+          />
+        ))}
+        {view.custom ? (
+          <FilterChip
+            field="Custom filter"
+            removeLabel="Remove custom filter"
+            onRemove={() => setFilter(undefined)}
+          />
         ) : null}
-        {search.filter ? (
-          <Button onClick={() => void setSearch({ filter: undefined, cursor: undefined })}>
+        <FilterMenu
+          object={object}
+          onApply={(clause) => {
+            setError('');
+            setFilter(addClause(clauses, clause));
+          }}
+          onError={setError}
+        />
+        {clauses.length > 1 ? (
+          <Button variant="ghost" size="small" onClick={() => setFilter(undefined)}>
             Clear filters
           </Button>
         ) : null}
+      </Toolbar>
+      {error || view.error || query.error ? (
+        <Inset>
+          {error || view.error ? <Notice error>{error || view.error}</Notice> : null}
+          {query.error ? (
+            <QueryError error={query.error} retry={() => void query.refetch()} />
+          ) : null}
+        </Inset>
+      ) : null}
+      {query.isPending && !view.error ? (
+        <Inset>
+          <Notice>Loading records…</Notice>
+        </Inset>
+      ) : rows.length ? (
+        <DataGrid
+          label={object.labelPlural}
+          columns={gridColumns}
+          sort={sort ? { column: sort.field, direction: sort.direction } : undefined}
+          onSort={(column) => void setSearch({ sort: nextSort(sort, column), cursor: undefined })}
+          onResize={(column, width) =>
+            savePrefs({ order, widths: { ...prefs?.widths, [column]: width } })
+          }
+          onReorder={(column, target) => saveOrder(moveColumn(order, column, target))}
+          onOpenRow={openRow}
+          rows={rows}
+        />
+      ) : query.data ? (
+        <Inset>
+          <Empty
+            title="No records found"
+            description={
+              search.filter
+                ? 'No records match these filters.'
+                : 'Ask your agent to add records, and they will show up here.'
+            }
+          />
+        </Inset>
+      ) : null}
+      {query.data ? (
+        <GridFooter
+          end={
+            <>
+              <Button
+                variant="ghost"
+                size="small"
+                disabled={!search.cursor}
+                onClick={() => void setSearch({ cursor: previous?.previous })}
+              >
+                <ChevronLeft size={14} />
+                {search.cursor && !previous ? 'First page' : 'Previous'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="small"
+                disabled={!nextCursor}
+                onClick={() => {
+                  if (!nextCursor) return;
+                  setTrail({
+                    key: viewKey,
+                    pages: recordNextPage(pages, search.cursor, nextCursor),
+                  });
+                  void setSearch({ cursor: nextCursor });
+                }}
+              >
+                Next
+                <ChevronRight size={14} />
+              </Button>
+            </>
+          }
+        >
+          {pageRange(pages, search.cursor, rows.length, PAGE_SIZE)}
+          {nextCursor ? ' · more available' : ''}
+        </GridFooter>
+      ) : null}
+    </Page>
+  );
+}
+
+function SortMenu({
+  object,
+  sort,
+  onChange,
+}: {
+  object: ObjectView;
+  sort: SortState | undefined;
+  onChange: (sort: SortState | undefined) => void;
+}) {
+  const options = [
+    ...object.fields.filter(isSortable).map((f) => ({ name: f.name, label: f.label })),
+    ...BUILT_IN_SORTS,
+  ];
+  const current = sort ? (options.find((o) => o.name === sort.field)?.label ?? sort.field) : '';
+  return (
+    <Popover
+      label="Sort records"
+      align="end"
+      trigger={
+        <Button variant="ghost" size="small">
+          <ArrowUpDown size={14} />
+          {sort ? `${current} ${sort.direction === 'asc' ? '↑' : '↓'}` : 'Sort'}
+        </Button>
+      }
+    >
+      <Label>
+        Sort by
         <Select
           aria-label="Sort records"
-          value={search.sort ?? ''}
-          onChange={(e) => void setSearch({ sort: e.target.value || undefined, cursor: undefined })}
+          value={sort ? `${sort.field}:${sort.direction}` : ''}
+          onChange={(e) => {
+            const [field = '', direction] = e.target.value.split(':');
+            onChange(
+              field && (direction === 'asc' || direction === 'desc')
+                ? { field, direction }
+                : undefined,
+            );
+          }}
         >
           <option value="">Default order</option>
-          {[
-            ...object.fields
-              .filter((f) => f.isFilterable && SORTABLE_TYPES.includes(f.type))
-              .map((f) => ({ name: f.name, label: f.label })),
-            { name: 'updatedAt', label: 'Updated' },
-            { name: 'createdAt', label: 'Created' },
-          ].flatMap((f) =>
-            ['asc', 'desc'].map((direction) => (
-              <option
-                key={`${f.name}:${direction}`}
-                value={JSON.stringify([{ field: f.name, direction }])}
-              >
+          {options.flatMap((f) =>
+            (['asc', 'desc'] as const).map((direction) => (
+              <option key={`${f.name}:${direction}`} value={`${f.name}:${direction}`}>
                 {f.label} · {direction === 'asc' ? 'ascending' : 'descending'}
               </option>
             )),
           )}
         </Select>
-      </Row>
-      {search.filter ? <Muted>Filter: {search.filter}</Muted> : null}
-      {error || parseError ? <Notice error>{error || parseError}</Notice> : null}
-      {query.error ? <QueryError error={query.error} retry={() => void query.refetch()} /> : null}
-      {query.isPending && !parseError ? <Notice>Loading records…</Notice> : null}
-      {query.data?.records.length ? (
-        <Table headers={columns.map((f) => f.label)}>
-          {query.data.records.map((r) => (
-            <Tr key={r.id}>
-              {columns.map((f, i) => {
-                const Display = fields[f.type].Display;
-                return (
-                  <Td first={i === 0} key={f.name}>
-                    {i === 0 ? (
-                      <RecordLink id={r.id}>
-                        <Display
-                          field={f}
-                          value={r.fields[f.name]}
-                          compact
-                          references={query.data?.relationReferences}
-                        />
-                      </RecordLink>
-                    ) : (
-                      <Display
-                        field={f}
-                        value={r.fields[f.name]}
-                        compact
-                        references={query.data?.relationReferences}
-                      />
-                    )}
-                  </Td>
-                );
-              })}
-            </Tr>
-          ))}
-        </Table>
-      ) : query.data ? (
-        <Empty
-          title="No records found"
-          description="Try another filter, or ask your agent to add records."
-        />
-      ) : null}
-      <Row>
-        {search.cursor ? (
-          <Button onClick={() => void setSearch({ cursor: undefined })}>First page</Button>
-        ) : null}
-        {query.data?.nextCursor ? (
-          <Button onClick={() => void setSearch({ cursor: query.data?.nextCursor ?? undefined })}>
-            Next 50 records
-          </Button>
-        ) : null}
-      </Row>
-      <Dialog open={columnsOpen} onOpenChange={setColumnsOpen} title="Visible columns">
-        <Stack>
-          {object.fields.map((f) => (
-            <Label key={f.name}>
-              <Input
-                type="checkbox"
-                checked={f.name === object.labelField || visible.includes(f.name)}
-                disabled={f.name === object.labelField}
-                onChange={(e) =>
-                  saveColumns(
-                    e.target.checked ? [...visible, f.name] : visible.filter((n) => n !== f.name),
-                  )
-                }
-              />
-              {f.label}
-            </Label>
-          ))}
-        </Stack>
-      </Dialog>
-    </Page>
+      </Label>
+      <Muted>Or click a column header to sort by it.</Muted>
+    </Popover>
   );
 }
+
+function FilterMenu({
+  object,
+  onApply,
+  onError,
+}: {
+  object: ObjectView;
+  onApply: (clause: FilterClause) => void;
+  onError: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false),
+    [field, setField] = useState(''),
+    [operator, setOperator] = useState('eq'),
+    [value, setValue] = useState<unknown>('');
+  const selected = object.fields.find((f) => f.name === field);
+  function apply() {
+    if (!selected) return;
+    try {
+      onApply({ field: selected.name, operator, value: filterValue(selected, operator, value) });
+      setOpen(false);
+      setField('');
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  }
+  return (
+    <Popover
+      label="Add a filter"
+      open={open}
+      onOpenChange={setOpen}
+      trigger={
+        <Button variant="ghost" size="small">
+          <ListFilter size={14} />
+          Filter
+        </Button>
+      }
+    >
+      <PopoverForm onSubmit={apply}>
+        <Label>
+          Field
+          <Select
+            aria-label="Filter field"
+            value={field}
+            onChange={(e) => {
+              const f = object.fields.find((f) => f.name === e.target.value);
+              setField(e.target.value);
+              setOperator(f ? (operatorsFor(f)[0] ?? 'isNull') : 'eq');
+              setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : '');
+            }}
+          >
+            <option value="">Choose a field…</option>
+            {object.fields
+              .filter((f) => f.isFilterable)
+              .map((f) => (
+                <option key={f.name} value={f.name}>
+                  {f.label}
+                </option>
+              ))}
+          </Select>
+        </Label>
+        {selected ? (
+          <>
+            <Label>
+              Condition
+              <Select
+                aria-label="Filter operator"
+                value={operator}
+                onChange={(e) => {
+                  setOperator(e.target.value);
+                  setValue(e.target.value === 'isNull' ? true : '');
+                }}
+              >
+                {operatorsFor(selected).map((o) => (
+                  <option key={o} value={o}>
+                    {operatorLabel(o)}
+                  </option>
+                ))}
+              </Select>
+            </Label>
+            <FilterControl field={selected} value={value} operator={operator} onChange={setValue} />
+            <Button type="submit" variant="primary">
+              Apply filter
+            </Button>
+          </>
+        ) : null}
+      </PopoverForm>
+    </Popover>
+  );
+}
+
+/** `columns` is what the grid shows, label first; `order` is the rest by name. */
+function ColumnsMenu({
+  object,
+  columns,
+  order,
+  onChange,
+  onReset,
+}: {
+  object: ObjectView;
+  columns: FieldView[];
+  order: string[];
+  onChange: (order: string[]) => void;
+  onReset: () => void;
+}) {
+  const label = columns.find((f) => f.name === object.labelField);
+  const shown = columns.filter((f) => f !== label);
+  const hidden = object.fields.filter(
+    (f) => f.name !== object.labelField && !order.includes(f.name),
+  );
+  return (
+    <Popover
+      label="Visible columns"
+      align="end"
+      trigger={
+        <Button size="small">
+          <Columns3 size={14} />
+          Columns
+        </Button>
+      }
+    >
+      <MenuHeader
+        title="Visible columns"
+        action={
+          <Button variant="ghost" size="small" onClick={onReset}>
+            Reset
+          </Button>
+        }
+      />
+      <MenuList>
+        {label ? (
+          <MenuItem>
+            <CheckLabel>
+              <Input type="checkbox" checked disabled />
+              <span>{label.label}</span>
+            </CheckLabel>
+          </MenuItem>
+        ) : null}
+        {shown.map((f, i) => (
+          <MenuItem key={f.name}>
+            <CheckLabel>
+              <Input
+                type="checkbox"
+                checked
+                onChange={() => onChange(setColumnVisible(order, f.name, false))}
+              />
+              <span>{f.label}</span>
+            </CheckLabel>
+            <Button
+              variant="ghost"
+              size="small"
+              aria-label={`Move ${f.label} left`}
+              disabled={i === 0}
+              onClick={() => onChange(shiftColumn(order, f.name, -1))}
+            >
+              <ChevronLeft size={14} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="small"
+              aria-label={`Move ${f.label} right`}
+              disabled={i === shown.length - 1}
+              onClick={() => onChange(shiftColumn(order, f.name, 1))}
+            >
+              <ChevronRight size={14} />
+            </Button>
+          </MenuItem>
+        ))}
+        {hidden.map((f) => (
+          <MenuItem key={f.name} muted>
+            <CheckLabel>
+              <Input
+                type="checkbox"
+                checked={false}
+                onChange={() => onChange(setColumnVisible(order, f.name, true))}
+              />
+              <span>{f.label}</span>
+            </CheckLabel>
+          </MenuItem>
+        ))}
+      </MenuList>
+    </Popover>
+  );
+}
+
 function FilterControl(props: {
   field: FieldView;
   value: unknown;

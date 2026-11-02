@@ -216,15 +216,35 @@ Tabs:
 
 One route for every object. Source: `POST /v1/objects/:object/query`.
 
+- A full-width, spreadsheet-style grid with a sticky header and a sticky
+  label column.
 - Columns come from the object's fields in schema order. The label field is
   first and pinned. Inverse relations and `json` fields are hidden by
-  default; a column menu shows and hides the rest, saved per object in
-  `localStorage`.
+  default. The column menu shows, hides and reorders the rest; headers can
+  also be dragged to reorder and their edges dragged (or arrow-keyed) to
+  resize. Order and widths are saved per object in `localStorage`
+  (`retainer:columns:v2:…`, migrating the v1 visible-columns list).
 - Filters are offered for `isFilterable` fields only, with the operators
-  each type supports (6). Sort by any sortable column.
-- Cursor pagination with `limit` 50.
+  each type supports (6). Each active filter is a removable chip in the
+  toolbar; several chips are ANDed. A URL filter the chips can't express
+  (`or`, `not`) shows as one "Custom filter" chip.
+- Click a sortable header to sort ascending, descending, then off. The Sort
+  menu also offers Updated and Created.
+- Cursor pagination with `limit` 50. A footer shows the row range and
+  Previous/Next; Previous is remembered for pages reached in this visit,
+  otherwise it returns to the first page.
 - Rows open the record page.
-- The sidebar lists every object from the schema, standard ones first.
+
+### 5.3a Shell
+
+- A left sidebar: workspace, Find anything (⌘K), Review inbox with its
+  pending count, every object from the schema (standard ones first, with an
+  icon), Schema, and the signed-in actor with Sign out.
+- It collapses to an icon rail with its toggle or ⌘\, remembered in
+  `localStorage`. Below `md` it is a drawer opened from the top bar.
+- Every screen has a slim top bar with a breadcrumb and the screen's
+  actions. Record lists fill the width; other screens use a readable
+  centred column.
 
 ### 5.4 Record — `/app/r/:id`
 

@@ -6,6 +6,7 @@
   --color-card: var(--card);
   --color-popover: var(--card);
   --color-sidebar: var(--sidebar);
+  --color-hover: var(--hover);
   --color-primary: #5965d8;
   --color-primary-foreground: #ffffff;
   --color-muted: var(--muted);
@@ -22,6 +23,7 @@
   --foreground: #202126;
   --card: #fff;
   --sidebar: #f7f7f9;
+  --hover: #eeeef2;
   --muted: #f0f0f3;
   --muted-foreground: #71717c;
   --border: #e5e5eb;
@@ -34,6 +36,7 @@
     --foreground: #eeeef2;
     --card: #1d1e24;
     --sidebar: #15161a;
+    --hover: #24252c;
     --muted: #282930;
     --muted-foreground: #a3a3af;
     --border: #32333c;
