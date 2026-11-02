@@ -13,7 +13,7 @@ There is no UI. It is a backend for agents.
   or an agent working in it, can add fields and objects at runtime.
 - **Derived memory**: background workers extract facts and field values from
   raw interactions, with provenance and confidence.
-- **Self-hosted**: one Docker image and Postgres with pgvector.
+- **Self-hosted**: one Docker image and Postgres.
 
 Status: early development. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
 design and build order.
