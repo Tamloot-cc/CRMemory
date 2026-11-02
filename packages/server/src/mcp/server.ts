@@ -22,6 +22,9 @@ import {
   upsertRecord,
   valuesSchema,
 } from '../records/service.js';
+import { contextInputSchema } from '../retrieval/context.js';
+import { searchInputSchema } from '../retrieval/search.js';
+import { contextFor, searchFor } from '../retrieval/service.js';
 import {
   describeSchema,
   requestSchemaChange,
@@ -44,8 +47,10 @@ API key; every call acts on it, and every write is recorded as yours.
 Start with describe_schema. If the workspace is not initialized, pick a
 template with list_templates and apply_template, or ask your user.
 
-Find records with query_records, read them with get_record, and write them
-with upsert_record. Write the values you learned; Retainer keeps every claim's
+Find records with search (keywords across records, facts and interactions)
+or query_records (exact filters on one object). Before working on a person or
+company, read get_context: their current values, open tasks, facts and recent
+interactions in one call. Write records with upsert_record. Write the values you learned; Retainer keeps every claim's
 history and decides which value wins. A value a person set outranks yours, so
 your write may come back as pending_review: tell your user it is waiting for
 approval rather than saying it is done.
@@ -133,7 +138,7 @@ const upsertRecordInput = z.strictObject({
   id: upsertInputSchema.shape.id.describe('Update this record.'),
   match: upsertInputSchema.shape.match.describe(
     'Find the record by one unique field and its value, e.g. { "emails": "dana@acme.com" }. ' +
-      'Names and phones are not unique: find those records with query_records first.',
+      'Names and phones are not unique: find those records with search or query_records first.',
   ),
   values: valuesSchema
     .default({})
@@ -222,6 +227,24 @@ const rememberInput = z.strictObject({
     .describe('Retrying with the same key returns the first result instead of a second fact.'),
 });
 
+const searchInput = z.strictObject({
+  query: searchInputSchema.shape.query.describe(
+    'Keywords. Matches whole words, so add other forms with OR, e.g. "meeting OR meetings". ' +
+      'Use "quotes" for a phrase and -word to exclude a word.',
+  ),
+  limit: searchInputSchema.shape.limit.describe('Hits per type, 10 by default (at most 50).'),
+});
+
+const getContextInput = z.strictObject({
+  record: z
+    .uuid()
+    .describe('The record ID. An ID merged into another record returns the survivor.'),
+  tokenBudget: contextInputSchema.shape.tokenBudget.describe(
+    "Approximate size of the pack in tokens, 2000 by default (at most 16000). The record's " +
+      'values are always included; tasks, facts and interactions fill the rest.',
+  ),
+});
+
 const applyTemplateInput = z.strictObject({
   name: z.string().min(1).describe('Template name from list_templates, e.g. "sales" or "blank".'),
 });
@@ -305,6 +328,38 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     ({ id }) => run(caller, 'read', () => readRecord(sql, caller, id)),
+  );
+
+  server.registerTool(
+    'search',
+    {
+      title: 'Search',
+      description:
+        'Keyword search across records, current facts and interactions, grouped by type and ' +
+        'ranked within each. Every hit carries the record IDs it belongs to. Use it to find a ' +
+        'record by name or by anything said about it. When no record matches word for word, ' +
+        'records with a similar label come back with match "similar_label" (a misspelled ' +
+        'name), so check them before using one. Words match whole, without stemming.',
+      inputSchema: searchInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    (input) => run(caller, 'read', () => searchFor(sql, caller, input)),
+  );
+
+  server.registerTool(
+    'get_context',
+    {
+      title: 'Get context for a record',
+      description:
+        'Returns what Retainer knows about one record, fitted to a token budget: its current ' +
+        'field values (each with who wrote it and when it was observed), then open tasks ' +
+        '(earliest due first), current facts and recent interactions (newest first). Field ' +
+        'values are what the CRM holds; facts are plain-language claims with their sources. ' +
+        'omitted counts what did not fit; read more with search or a larger tokenBudget.',
+      inputSchema: getContextInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ record, ...input }) => run(caller, 'read', () => contextFor(sql, caller, record, input)),
   );
 
   server.registerTool(

@@ -577,14 +577,17 @@ requires a background job that rebuilds stored search values.
    handles quoted phrases, `OR` and `-word`. There is no custom parser.
 2. The server runs one query each on records, facts and interactions.
    Workspace and liveness filters (and, for facts, "current, not
-   superseded") apply before ranking and limit.
+   superseded") apply before ranking and limit. The `note` interactions
+   `remember` creates are left out: their text is the fact's, so it is found
+   with the fact, or hidden with it once the fact is retracted.
 3. Each list is ranked with `ts_rank_cd`, using length normalization so long
    texts do not outrank short, precise matches.
 4. If the records query finds nothing, the server matches `records.label` by
    trigram similarity, so "Dana Levy" finds "Dana Levi".
 5. Results come back grouped by type. Each hit carries its record IDs and
    its text as stored: a record's label, a fact's content, an interaction's
-   title and summary. Scores from the three lists are not comparable and are
+   title and summary. A record hit says whether it matched the text or only
+   a similar label. Scores from the three lists are not comparable and are
    not merged.
 
 Agents cover other word forms themselves: the `search` tool description
@@ -792,7 +795,8 @@ A context pack is assembled by fixed rules (5):
 - The other sections fill in this order until the budget is spent: open
   tasks (tasks linked to the record whose status is not `done`, earliest due
   date first, undated last), current facts (not superseded or retracted,
-  newest `validFrom` first), then recent interactions (newest first). Items
+  newest `validFrom` first), then recent interactions (newest first, without
+  the notes `remember` created, whose text is already a fact). Items
   are never cut mid-text; a section stops at the last whole item that fits.
 - `omitted` counts the items left out of each section, so the agent knows
   to read more with `search` or the REST routes.
@@ -991,13 +995,13 @@ Every build step lands with its tests. Nothing is "done" until the layers
 below that apply to it pass locally and in CI. Retainer has no language
 model inside it, so every layer except 5 is deterministic.
 
-| Layer                   | What it proves                                                                                                                                                                      | How                                                                                                 | Runs                   |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
-| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                        | Vitest, no database                                                                                 | Every PR               |
-| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget`        | Vitest against real Postgres; each test gets a fresh database                                       | Every PR               |
-| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                                  | The Hono app called in-process against a real database                                              | Every PR               |
-| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context                | A runner starts Postgres and the server, then drives them through the MCP client and REST           | Every PR (from step 2) |
-| 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation                | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
+| Layer                   | What it proves                                                                                                                                                               | How                                                                                                 | Runs                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
+| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                 | Vitest, no database                                                                                 | Every PR               |
+| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget` | Vitest against real Postgres; each test gets a fresh database                                       | Every PR               |
+| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                           | The Hono app called in-process against a real database                                              | Every PR               |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context         | A runner starts Postgres and the server, then drives them through the MCP client and REST           | Every PR (from step 2) |
+| 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation         | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
 
 ### Rules
 

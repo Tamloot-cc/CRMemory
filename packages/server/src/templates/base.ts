@@ -11,6 +11,12 @@ export const BASE_OBJECT_IDS = {
   task: 'd0690d5f-d7f4-47ce-8007-0a81a276a70b',
 } as const;
 
+/** Base fields that server code reads directly, such as open tasks in context packs (6.2). */
+export const BASE_FIELD_IDS = {
+  taskStatus: '107158ae-ba0f-482e-afe1-5e45bd6ccfd6',
+  taskDueDate: '368276ea-604d-4dcd-b6ad-796431a84a06',
+} as const;
+
 export const BASE_OPERATIONS: SchemaOperation[] = [
   {
     op: 'create_object',
@@ -125,7 +131,7 @@ export const BASE_OPERATIONS: SchemaOperation[] = [
           isSearchable: true,
         },
         {
-          universalId: '107158ae-ba0f-482e-afe1-5e45bd6ccfd6',
+          universalId: BASE_FIELD_IDS.taskStatus,
           name: 'status',
           label: 'Status',
           type: 'select',
@@ -138,7 +144,7 @@ export const BASE_OPERATIONS: SchemaOperation[] = [
           },
         },
         {
-          universalId: '368276ea-604d-4dcd-b6ad-796431a84a06',
+          universalId: BASE_FIELD_IDS.taskDueDate,
           name: 'dueDate',
           label: 'Due date',
           type: 'date',

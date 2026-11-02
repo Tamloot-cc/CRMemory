@@ -7,6 +7,7 @@ import { VERSION } from '../version.js';
 import { type AppEnv, errorResponse, toAppError } from './http.js';
 import { memoryRoutes } from './routes/memory.js';
 import { recordRoutes } from './routes/records.js';
+import { retrievalRoutes } from './routes/retrieval.js';
 import { schemaRoutes } from './routes/schema.js';
 import { templateRoutes } from './routes/templates.js';
 
@@ -44,6 +45,7 @@ export function createApp(deps: AppDeps) {
   templateRoutes(v1, deps.sql);
   recordRoutes(v1, deps.sql);
   memoryRoutes(v1, deps.sql);
+  retrievalRoutes(v1, deps.sql);
   app.route('/v1', v1);
 
   mcpRoute(app, deps.sql);
