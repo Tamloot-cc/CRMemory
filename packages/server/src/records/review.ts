@@ -2,6 +2,11 @@ import type { Actor } from '@retainer/shared';
 import type { AssertionStatus, ReviewReason } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
+import {
+  listUnresolvedParticipants,
+  lockSource,
+  type UnresolvedParticipant,
+} from '../memory/interactions.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { getRecord, type PresentedRecord } from './read.js';
 import { normalizeFieldValue } from './values.js';
@@ -40,14 +45,14 @@ export type MergeSuggestionView = {
 export type ReviewQueue = {
   pendingAssertions: PendingAssertion[];
   mergeSuggestions: MergeSuggestionView[];
-  /**
-   * Participants matching deleted records (1.2). Interactions arrive in
-   * build step 3; until then this list is always empty.
-   */
-  unresolvedParticipants: unknown[];
+  /** Participants whose handle belongs only to deleted, unmerged records (1.2). */
+  unresolvedParticipants: UnresolvedParticipant[];
 };
 
-/** What waits for a person: pending assertions and suggested merges (6.1). */
+/**
+ * What waits for a person (6.1): pending assertions, suggested merges and
+ * participants matching deleted records.
+ */
 export async function listReview(
   tx: Tx,
   workspaceId: string,
@@ -119,7 +124,7 @@ export async function listReview(
       reason: s.reason,
       createdAt: s.created_at.toISOString(),
     })),
-    unresolvedParticipants: [],
+    unresolvedParticipants: await listUnresolvedParticipants(tx, workspaceId, limit),
   };
 }
 
@@ -130,11 +135,13 @@ type PendingRow = {
   value: unknown;
   status: AssertionStatus;
   source_interaction_id: string | null;
+  observed_at: Date;
 };
 
 async function loadPending(tx: Tx, workspaceId: string, assertionId: string): Promise<PendingRow> {
   const [row] = await tx<PendingRow[]>`
-    select id, record_id, field_id, value, status, source_interaction_id from field_assertions
+    select id, record_id, field_id, value, status, source_interaction_id, observed_at
+    from field_assertions
     where id = ${assertionId} and workspace_id = ${workspaceId}`;
   if (!row) throw notFound('assertion', { id: assertionId });
   return row;
@@ -156,8 +163,10 @@ export type DecisionResult = {
 
 /**
  * Accepts a pending assertion (rule 2.3): the value is re-asserted with the
- * reviewing user as actor, keeping its source interaction, and goes through
- * the normal write path. The original is kept, marked superseded.
+ * reviewing user as actor, keeping its source interaction and `observed_at`,
+ * and goes through the normal write path, so a value a person set later
+ * still stands. The original is kept, marked superseded. The source is
+ * locked before the record, the order retraction uses.
  */
 export async function acceptAssertion(
   tx: Tx,
@@ -166,6 +175,12 @@ export async function acceptAssertion(
 ): Promise<DecisionResult> {
   requireReviewer(context.actor);
   const first = await loadPending(tx, context.workspaceId, assertionId);
+  if (first.status !== 'pending_review') {
+    throw new AppError(409, 'not_pending', `assertion is ${first.status}, not pending_review`);
+  }
+  if (first.source_interaction_id) {
+    await lockSource(tx, context.workspaceId, first.source_interaction_id);
+  }
   const record = await lockRecord(tx, context.workspaceId, first.record_id);
   // Re-read under the record lock, so two reviewers cannot both accept it.
   const pending = await loadPending(tx, context.workspaceId, assertionId);
@@ -196,6 +211,7 @@ export async function acceptAssertion(
 
   const fields = await writeFields(tx, context, object, record, new Map([[field, value]]), {
     sourceInteractionId: pending.source_interaction_id,
+    observedAt: pending.observed_at,
   });
   await tx`
     update field_assertions set status = 'superseded', reviewed_by = ${tx.json(context.actor)},
@@ -216,7 +232,8 @@ export async function rejectAssertion(
 ): Promise<DecisionResult> {
   requireReviewer(context.actor);
   const [row] = await tx<PendingRow[]>`
-    select id, record_id, field_id, value, status, source_interaction_id from field_assertions
+    select id, record_id, field_id, value, status, source_interaction_id, observed_at
+    from field_assertions
     where id = ${assertionId} and workspace_id = ${context.workspaceId}
     for update`;
   if (!row) throw notFound('assertion', { id: assertionId });

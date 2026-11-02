@@ -5,6 +5,7 @@ import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
 import { inWorkspace, lockSchemaShared, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';
+import { lockSource } from '../memory/interactions.js';
 import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import { identifiersFor, lookupValue } from './derive.js';
@@ -27,6 +28,7 @@ import {
   softDeleteRecord,
   UniqueConflictError,
   type WriteContext,
+  type WriteOptions,
   writeFields,
 } from './write.js';
 
@@ -51,7 +53,7 @@ const DEFAULT_CONFIDENCE_THRESHOLD = 0.5;
  * A record write: one short workspace transaction holding the schema lock
  * in shared mode, so the schema it validated against stays current (3).
  */
-async function withWrite<T>(
+export async function withWrite<T>(
   sql: Sql,
   caller: Caller,
   fn: (tx: Tx, context: WriteContext) => Promise<T>,
@@ -70,7 +72,7 @@ async function withWrite<T>(
   });
 }
 
-async function withRead<T>(
+export async function withRead<T>(
   sql: Sql,
   caller: Caller,
   fn: (tx: Tx, schema: CompiledSchema) => Promise<T>,
@@ -93,13 +95,35 @@ export function requireObject(schema: CompiledSchema, name: string): CompiledObj
 
 export const valuesSchema = z.record(z.string(), z.unknown());
 
+/** The interaction a write cites (rule 2.1); its `occurred_at` becomes `observed_at`. */
+export const sourceSchema = z.uuid();
+
+/**
+ * Write options for a cited source (rules 2.1, 2.2): the interaction must be
+ * live in this workspace, and its `occurred_at` is the claim's
+ * `observed_at`. It is locked before any record, the order retraction uses.
+ */
+async function citeSource(tx: Tx, workspaceId: string, source?: string): Promise<WriteOptions> {
+  if (source === undefined) return {};
+  const cited = await lockSource(tx, workspaceId, source);
+  return { sourceInteractionId: cited.id, observedAt: cited.occurredAt };
+}
+
+export type CreateOptions = {
+  /** Retrying with the same key returns the first result (6.2). */
+  idempotencyKey?: string;
+  /** The interaction the values come from. */
+  source?: string;
+};
+
 export async function createRecord(
   sql: Sql,
   caller: Caller,
   objectName: string,
   values: Record<string, unknown>,
-  idempotencyKey?: string,
+  options: CreateOptions = {},
 ): Promise<WriteResponse> {
+  const { idempotencyKey, source } = options;
   return withWrite(sql, caller, async (tx, context) => {
     const object = requireObject(context.schema, objectName);
     let claimId: string | undefined;
@@ -109,14 +133,15 @@ export async function createRecord(
         caller.workspaceId,
         'create_record',
         idempotencyKey,
-        requestHash({ object: object.name, values }),
+        requestHash({ object: object.name, values, source: source ?? null }),
       );
       if (claim.kind === 'replay') return claim.result as WriteResponse;
       claimId = claim.id;
     }
+    const cited = await citeSource(tx, caller.workspaceId, source);
     const writes = prepareValues(object, values, 'create');
     const record = await insertRecord(tx, context, object);
-    const fields = await writeFields(tx, context, object, record, writes);
+    const fields = await writeFields(tx, context, object, record, writes, cited);
     const response: WriteResponse = {
       id: record.id,
       created: true,
@@ -134,6 +159,7 @@ export const upsertInputSchema = z.strictObject({
   values: valuesSchema.default({}),
   ifMissing: z.enum(['fail', 'create']).default('fail'),
   expectedUpdatedAt: z.iso.datetime({ offset: true }).optional(),
+  source: sourceSchema.optional(),
 });
 export type UpsertInput = z.infer<typeof upsertInputSchema>;
 
@@ -219,6 +245,7 @@ export async function upsertRecord(
     try {
       return await withWrite(sql, caller, async (tx, context) => {
         const object = requireObject(context.schema, objectName);
+        const cited = await citeSource(tx, caller.workspaceId, input.source);
         let targetId: string | null = null;
         let match: ReturnType<typeof matchField> | undefined;
 
@@ -245,6 +272,7 @@ export async function upsertRecord(
           }
           const writes = prepareValues(object, input.values, 'update');
           const fields = await writeFields(tx, context, object, record, writes, {
+            ...cited,
             ...(input.expectedUpdatedAt ? { expectedUpdatedAt: input.expectedUpdatedAt } : {}),
           });
           return {
@@ -268,7 +296,7 @@ export async function upsertRecord(
         const writes = prepareValues(object, values, 'create');
         creatingWith = match?.field;
         const record = await insertRecord(tx, context, object);
-        const fields = await writeFields(tx, context, object, record, writes);
+        const fields = await writeFields(tx, context, object, record, writes, cited);
         return {
           id: record.id,
           created: true,
@@ -288,6 +316,7 @@ export async function upsertRecord(
 export const patchInputSchema = z.strictObject({
   values: valuesSchema,
   expectedUpdatedAt: z.iso.datetime({ offset: true }).optional(),
+  source: sourceSchema.optional(),
 });
 
 export async function patchRecord(
@@ -297,10 +326,12 @@ export async function patchRecord(
   input: z.infer<typeof patchInputSchema>,
 ): Promise<WriteResponse> {
   return withWrite(sql, caller, async (tx, context) => {
+    const cited = await citeSource(tx, caller.workspaceId, input.source);
     const record = await lockRecord(tx, caller.workspaceId, id);
     const object = objectOf(context.schema, record);
     const writes = prepareValues(object, input.values, 'update');
     const fields = await writeFields(tx, context, object, record, writes, {
+      ...cited,
       ...(input.expectedUpdatedAt ? { expectedUpdatedAt: input.expectedUpdatedAt } : {}),
     });
     return {

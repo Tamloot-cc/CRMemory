@@ -13,13 +13,15 @@ let fresh: McpTestClient;
 let salesAgentKey: string;
 const clients: McpTestClient[] = [];
 
-const STEP_2_TOOLS = [
+const TOOLS = [
   'apply_template',
   'describe_schema',
   'get_record',
   'list_templates',
+  'log_interaction',
   'propose_schema_change',
   'query_records',
+  'remember',
   'upsert_record',
 ];
 
@@ -130,9 +132,9 @@ describe('connecting', () => {
     expect(JSON.parse(call.result.content[0].text).workspace.name).toBe('Acme Sales');
   });
 
-  it('lists the step 2 tools, none of which takes a workspace', async () => {
+  it('lists the tools, none of which takes a workspace', async () => {
     const { tools } = await agent.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual(STEP_2_TOOLS);
+    expect(tools.map((tool) => tool.name).sort()).toEqual(TOOLS);
     for (const tool of tools) {
       expect(tool.description?.length).toBeGreaterThan(40);
       expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain('workspace');
@@ -142,6 +144,20 @@ describe('connecting', () => {
 
   it('gives agents instructions that start from describe_schema', () => {
     expect(agent.getInstructions()).toContain('describe_schema');
+  });
+
+  it('spells out the memory workflow: log the interaction first, then cite it (4.1)', async () => {
+    const instructions = agent.getInstructions() ?? '';
+    const log = instructions.indexOf('1. log_interaction');
+    expect(log).toBeGreaterThan(-1);
+    expect(instructions.indexOf('2. upsert_record with source')).toBeGreaterThan(log);
+    expect(instructions.indexOf('3. remember')).toBeGreaterThan(log);
+    const { tools } = await agent.listTools();
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    expect(byName.get('upsert_record')?.inputSchema.properties).toHaveProperty('source');
+    expect(byName.get('upsert_record')?.description).toContain('log_interaction');
+    expect(byName.get('remember')?.description).toContain('log_interaction');
+    expect(byName.get('log_interaction')?.description).toContain('source');
   });
 });
 
@@ -504,5 +520,168 @@ describe('scopes', () => {
 
     const template = await agent2.call('apply_template', { name: 'recruiting' });
     expect(template.body.error.code).toBe('forbidden');
+  });
+});
+
+describe('the memory workflow (4.1): log_interaction, then cite it', () => {
+  let external = 0;
+  const logCall = async (args: Record<string, unknown> = {}, client = agent) =>
+    client.call('log_interaction', {
+      kind: 'call',
+      channel: 'zoom',
+      occurredAt: '2026-10-29T14:00:00+02:00',
+      ...args,
+    });
+
+  it('logs an interaction and returns matched and unmatched participants (6.2)', async () => {
+    const dana = await createPerson();
+    const danaEmail = dana.record.fields.emails as { primary: string };
+    const res = await logCall({
+      externalId: `zoom-${++external}`,
+      title: 'Acme renewal call',
+      summary: 'Discussed the renewal.',
+      participants: [
+        { handle: danaEmail.primary, role: 'customer' },
+        { handle: 'ron.peretz@acme.test', role: 'customer' },
+        { handle: '+972 54 123 4567', role: 'customer' },
+      ],
+    });
+    expect(res.isError).toBe(false);
+    expect(res.body).toEqual({
+      id: expect.any(String),
+      created: true,
+      participants: {
+        matched: [{ handle: danaEmail.primary, role: 'customer', recordId: dana.id }],
+        unmatched: [
+          { handle: 'ron.peretz@acme.test', role: 'customer', reason: 'no_match' },
+          { handle: '+972541234567', role: 'customer', reason: 'phone_only' },
+        ],
+      },
+    });
+  });
+
+  it('returns one interaction for concurrent calls with the same externalId', async () => {
+    const args = { externalId: `zoom-${++external}`, title: 'Concurrent call' };
+    const results = await Promise.all([
+      logCall(args, agent),
+      logCall(args, agent),
+      logCall(args, agent2),
+      logCall(args, agent2),
+    ]);
+    expect(results.every((r) => !r.isError)).toBe(true);
+    expect(new Set(results.map((r) => r.body.id)).size).toBe(1);
+    expect(results.filter((r) => r.body.created)).toHaveLength(1);
+
+    const conflict = await logCall({ ...args, title: 'Edited title' });
+    expect(conflict.isError).toBe(true);
+    expect(conflict.body.error).toMatchObject({ code: 'interaction_conflict' });
+  });
+
+  it('cites the interaction in upsert_record, so an older email loses to a newer call', async () => {
+    const dana = await createPerson();
+    const call = await logCall({ occurredAt: '2026-10-28T10:00:00Z' });
+    const mail = await logCall({
+      kind: 'email',
+      channel: 'gmail',
+      occurredAt: '2026-09-01T10:00:00Z',
+    });
+    const fromCall = await agent.call('upsert_record', {
+      object: 'person',
+      id: dana.id,
+      values: { jobTitle: 'VP Sales' },
+      source: call.body.id,
+    });
+    expect(fromCall.body.fields).toEqual({ jobTitle: 'applied' });
+    const fromMail = await agent2.call('upsert_record', {
+      object: 'person',
+      id: dana.id,
+      values: { jobTitle: 'Sales Director' },
+      source: mail.body.id,
+    });
+    expect(fromMail.body.fields).toEqual({ jobTitle: 'superseded' });
+    expect(fromMail.body.record.fields.jobTitle).toBe('VP Sales');
+
+    const created = await agent.call('upsert_record', {
+      object: 'person',
+      values: { emails: email() },
+      source: call.body.id,
+    });
+    expect(created.body.created).toBe(true);
+
+    const unknown = await agent.call('upsert_record', {
+      object: 'person',
+      id: dana.id,
+      values: { jobTitle: 'CEO' },
+      source: '00000000-0000-4000-8000-000000000000',
+    });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.body.error.code).toBe('invalid_source');
+    expect(unknown.body.error.message).toContain('log_interaction');
+  });
+
+  it('remembers a fact citing the interaction (6.2)', async () => {
+    const dana = await createPerson();
+    const call = await logCall();
+    const res = await agent.call('remember', {
+      record: dana.id,
+      text: 'Legal review at Acme usually takes two weeks.',
+      source: call.body.id,
+      quote: 'legal usually needs two weeks with these',
+    });
+    expect(res.isError).toBe(false);
+    expect(res.body).toEqual({
+      fact: {
+        id: expect.any(String),
+        record: dana.id,
+        content: 'Legal review at Acme usually takes two weeks.',
+        kind: 'stated',
+        validFrom: '2026-10-29T12:00:00.000Z',
+        validTo: null,
+        writtenBy: { type: 'agent', id: 'inbox', name: 'Inbox agent' },
+        sources: [{ interaction: call.body.id, quote: 'legal usually needs two weeks with these' }],
+      },
+      noteInteraction: null,
+    });
+
+    const note = await agent.call('remember', { record: dana.id, text: 'Prefers WhatsApp.' });
+    expect(note.body.noteInteraction).toEqual(expect.any(String));
+    expect(note.body.fact.sources).toEqual([
+      { interaction: note.body.noteInteraction, quote: null },
+    ]);
+  });
+
+  it('replays concurrent remember calls with the same idempotency key', async () => {
+    const dana = await createPerson();
+    const args = { record: dana.id, text: 'Budget approved for Q1.', idempotencyKey: 'mcp-fact-1' };
+    const results = await Promise.all([
+      agent.call('remember', args),
+      agent.call('remember', args),
+      agent.call('remember', args),
+    ]);
+    expect(results.every((r) => !r.isError)).toBe(true);
+    expect(new Set(results.map((r) => r.body.fact.id)).size).toBe(1);
+    expect(new Set(results.map((r) => r.body.noteInteraction)).size).toBe(1);
+  });
+
+  it('needs the write scope to log or remember', async () => {
+    const dana = await createPerson();
+    const logged = await logCall({}, reader);
+    expect(logged.isError).toBe(true);
+    expect(logged.body.error.code).toBe('forbidden');
+    const remembered = await reader.call('remember', { record: dana.id, text: 'x' });
+    expect(remembered.body.error.code).toBe('forbidden');
+  });
+
+  it("cannot cite or remember on another workspace's data", async () => {
+    const dana = await createPerson();
+    const theirs = await logCall({}, outsider);
+    const res = await agent.call('remember', {
+      record: dana.id,
+      text: 'x',
+      source: theirs.body.id,
+    });
+    expect(res.body.error.code).toBe('invalid_source');
+    const foreign = await outsider.call('remember', { record: dana.id, text: 'x' });
+    expect(foreign.body.error.code).toBe('not_found');
   });
 });

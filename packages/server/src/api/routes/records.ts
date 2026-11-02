@@ -12,6 +12,7 @@ import {
   patchRecord,
   readRecord,
   reviewQueue,
+  sourceSchema,
   upsertInputSchema,
   upsertRecord,
   valuesSchema,
@@ -19,13 +20,16 @@ import {
 import type { AppEnv } from '../http.js';
 import { idParam, limitParam, readBody } from '../request.js';
 
-const createSchema = z.strictObject({ values: valuesSchema });
+const createSchema = z.strictObject({ values: valuesSchema, source: sourceSchema.optional() });
 
 export function recordRoutes(app: Hono<AppEnv>, sql: Sql) {
   app.post('/objects/:object/records', requireScope('write'), async (c) => {
-    const { values } = await readBody(c, createSchema);
-    const key = c.req.header('idempotency-key');
-    const result = await createRecord(sql, c.get('caller'), c.req.param('object'), values, key);
+    const { values, source } = await readBody(c, createSchema);
+    const idempotencyKey = c.req.header('idempotency-key');
+    const result = await createRecord(sql, c.get('caller'), c.req.param('object'), values, {
+      ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+      ...(source !== undefined ? { source } : {}),
+    });
     return c.json(result, 201);
   });
 

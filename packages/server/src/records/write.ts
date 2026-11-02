@@ -6,7 +6,7 @@ import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.j
 import type { FieldState } from '../schema-engine/types.js';
 import { identifiersFor, searchTextOf } from './derive.js';
 import { searchVector } from './search-sql.js';
-import { pickWinner, type RankedAssertion, reviewReason } from './winner.js';
+import { compareAssertions, pickWinner, type RankedAssertion, reviewReason } from './winner.js';
 
 /** Everything a write needs: who, where, and the schema it validated against. */
 export type WriteContext = {
@@ -237,9 +237,23 @@ export async function writeFields(
     winners.set(field, winner);
   }
 
-  if (winners.size === 0) return statuses;
+  if (winners.size > 0) await applyWinners(tx, context, object, record, winners);
+  return statuses;
+}
 
-  // records.data, record_links and record_identifiers follow the winners.
+/**
+ * Makes `records.data`, `record_links`, `record_identifiers`, the label and
+ * the search text follow the given fields' winners (rule 2.4). The record
+ * must be locked.
+ */
+async function applyWinners(
+  tx: Tx,
+  context: WriteContext,
+  object: CompiledObject,
+  record: LockedRecord,
+  winners: Map<FieldState, AssertionRow | undefined>,
+  identifiersDone: ReadonlySet<FieldState> = new Set(),
+): Promise<void> {
   const data = { ...record.data };
   for (const [field, winner] of winners) {
     if (field.type === 'relation') {
@@ -250,14 +264,14 @@ export async function writeFields(
           insert into record_links (workspace_id, field_id, source_record_id, target_record_id,
             created_by)
           values (${context.workspaceId}, ${field.id as string}, ${record.id},
-            ${winner.value as string}, ${tx.json(context.actor)})`;
+            ${winner.value as string}, ${tx.json(winner.actor)})`;
       }
       continue;
     }
     if (winner) data[field.key] = winner.value;
     else delete data[field.key];
 
-    if (hasIdentifiers(field)) {
+    if (hasIdentifiers(field) && !identifiersDone.has(field)) {
       await replaceIdentifiers(tx, context.workspaceId, record.id, field, winner?.value ?? null);
     }
   }
@@ -271,7 +285,75 @@ export async function writeFields(
     returning updated_at`;
   record.data = data;
   record.updated_at = updated?.updated_at ?? record.updated_at;
-  return statuses;
+}
+
+/**
+ * Recomputes fields of a locked record from their eligible assertions alone
+ * (rule 2.4): the winner becomes `active`, the rest `superseded`, and the
+ * derived data follows. Used after assertions stop counting, e.g. when their
+ * source is retracted.
+ *
+ * An older value can no longer be restored when another record has since
+ * claimed it (1.2). Rather than fail, so that a retraction always takes
+ * effect, that candidate waits for review (`unique_conflict`) and the next
+ * one wins; accepting it later fails until the claim is released.
+ */
+export async function recomputeFields(
+  tx: Tx,
+  context: WriteContext,
+  object: CompiledObject,
+  record: LockedRecord,
+  fieldIds: readonly string[],
+): Promise<void> {
+  const fields = fieldIds
+    .map((id) => object.fieldsById.get(id))
+    .filter((f): f is FieldState => f !== undefined);
+  if (fields.length === 0) return;
+  const rows = await tx<AssertionRow[]>`
+    select id, field_id, value, actor, status, observed_at, created_at from field_assertions
+    where record_id = ${record.id} and field_id = any(${fields.map((f) => f.id as string)}::uuid[])
+      and status in ('active', 'superseded')`;
+  const winners = new Map<FieldState, AssertionRow | undefined>();
+  const claimed = new Set<FieldState>();
+  for (const field of fields) {
+    const ranked = rows
+      .filter((r) => r.field_id === field.id)
+      .sort((a, b) => compareAssertions(toRanked(a), toRanked(b)));
+    let winner: AssertionRow | undefined = ranked[0];
+    if (field.isUnique) {
+      // The claim attempt itself is the test, so a claim another transaction
+      // has made but not yet committed is waited for, not missed.
+      winner = undefined;
+      for (const candidate of ranked) {
+        const holder = await claimIdentifiers(
+          tx,
+          context.workspaceId,
+          record.id,
+          field,
+          candidate.value,
+        );
+        if (!holder) {
+          winner = candidate;
+          break;
+        }
+        await tx`update field_assertions set status = 'pending_review',
+            review_reason = 'unique_conflict'
+          where id = ${candidate.id}`;
+      }
+      if (!winner) await claimIdentifiers(tx, context.workspaceId, record.id, field, null);
+      claimed.add(field);
+    }
+    const winnerId = winner?.id;
+    if (winnerId) {
+      await tx`update field_assertions set status = 'active'
+        where id = ${winnerId} and status <> 'active'`;
+    }
+    await tx`update field_assertions set status = 'superseded'
+      where record_id = ${record.id} and field_id = ${field.id as string}
+        and status = 'active' and id is distinct from ${winnerId ?? null}::uuid`;
+    winners.set(field, winner);
+  }
+  await applyWinners(tx, context, object, record, winners, claimed);
 }
 
 /**
@@ -287,6 +369,23 @@ async function replaceIdentifiers(
   field: FieldState,
   value: unknown,
 ): Promise<void> {
+  const conflict = await claimIdentifiers(tx, workspaceId, recordId, field, value);
+  if (conflict) throw new UniqueConflictError(field, conflict.value, conflict.recordId);
+}
+
+/**
+ * Replaces a field's identifier rows, returning the first claim another
+ * record holds instead of throwing. ON CONFLICT DO NOTHING leaves the
+ * transaction usable, and the next call starts by deleting this field's
+ * rows, so a caller can try another value.
+ */
+async function claimIdentifiers(
+  tx: Tx,
+  workspaceId: string,
+  recordId: string,
+  field: FieldState,
+  value: unknown,
+): Promise<{ value: string; recordId: string } | null> {
   const fieldId = field.id as string;
   await tx`delete from record_identifiers where record_id = ${recordId} and field_id = ${fieldId}`;
   for (const identifier of identifiersFor(field, value)) {
@@ -307,9 +406,10 @@ async function replaceIdentifiers(
         select record_id from record_identifiers
         where workspace_id = ${workspaceId} and field_id = ${fieldId}
           and value = ${identifier.value} and is_claim`;
-      throw new UniqueConflictError(field, identifier.value, holder?.record_id ?? 'unknown');
+      return { value: identifier.value, recordId: holder?.record_id ?? 'unknown' };
     }
   }
+  return null;
 }
 
 /** Inserts an empty record row; the caller writes its values with `writeFields`. */

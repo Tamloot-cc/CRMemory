@@ -15,6 +15,13 @@
       "when": 1793612749649,
       "tag": "0001_security",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793619706195,
+      "tag": "0002_step_3_memory",
+      "breakpoints": true
     }
   ]
 }
