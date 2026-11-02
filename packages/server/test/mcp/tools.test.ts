@@ -16,12 +16,14 @@ const clients: McpTestClient[] = [];
 const TOOLS = [
   'apply_template',
   'describe_schema',
+  'get_context',
   'get_record',
   'list_templates',
   'log_interaction',
   'propose_schema_change',
   'query_records',
   'remember',
+  'search',
   'upsert_record',
 ];
 
@@ -683,5 +685,60 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
     expect(res.body.error.code).toBe('invalid_source');
     const foreign = await outsider.call('remember', { record: dana.id, text: 'x' });
     expect(foreign.body.error.code).toBe('not_found');
+  });
+});
+
+describe('finding and reading a record (5): search, then get_context', () => {
+  it('finds a misspelled name, then reads its values, facts and interactions', async () => {
+    const dana = await createPerson({ name: 'Dana Mizrahi-Katz', jobTitle: 'CFO' });
+    const danaEmail = (dana.record.fields.emails as { primary: string }).primary;
+    const call = await agent.call('log_interaction', {
+      kind: 'call',
+      channel: 'zoom',
+      occurredAt: '2026-10-29T14:00:00+02:00',
+      title: 'Budget planning',
+      participants: [{ handle: danaEmail }],
+    });
+    await agent.call('remember', {
+      record: dana.id,
+      text: 'Signs off on anything above 50k.',
+      source: call.body.id,
+    });
+
+    const found = await reader.call('search', { query: 'Dana Mizrahi-Kats' });
+    expect(found.isError).toBe(false);
+    expect(found.body.records).toEqual([
+      { id: dana.id, object: 'person', label: 'Dana Mizrahi-Katz', match: 'similar_label' },
+    ]);
+    const byFact = await reader.call('search', { query: '"signs off" OR nothingmatches' });
+    expect(byFact.body.facts).toMatchObject([{ record: dana.id }]);
+
+    const pack = await reader.call('get_context', { record: dana.id, tokenBudget: 500 });
+    expect(pack.isError).toBe(false);
+    expect(pack.body.record.fields.jobTitle).toEqual({
+      value: 'CFO',
+      writtenBy: { type: 'agent', id: 'inbox', name: 'Inbox agent' },
+      observedAt: expect.any(String),
+    });
+    expect(pack.body.facts).toMatchObject([
+      { content: 'Signs off on anything above 50k.', sources: [call.body.id] },
+    ]);
+    expect(pack.body.recentInteractions).toMatchObject([{ id: call.body.id }]);
+    expect(pack.body.tokenEstimate).toBeLessThanOrEqual(500);
+  });
+
+  it('names the problem in validation errors and stays in its workspace', async () => {
+    const bad = await agent.call('get_context', { record: 'not-an-id' });
+    expect(bad.isError).toBe(true);
+    const tooBig = await agent.call('get_context', {
+      record: '00000000-0000-4000-8000-000000000000',
+      tokenBudget: 99_999,
+    });
+    expect(tooBig.isError).toBe(true);
+    const dana = await createPerson({ name: 'Ofri Ben-Ami' });
+    const foreign = await outsider.call('get_context', { record: dana.id });
+    expect(foreign.body.error.code).toBe('not_found');
+    const nothing = await outsider.call('search', { query: 'Ofri' });
+    expect(nothing.body).toEqual({ records: [], facts: [], interactions: [] });
   });
 });

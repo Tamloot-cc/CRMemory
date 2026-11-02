@@ -578,14 +578,17 @@ requires a background job that rebuilds stored search values.
    handles quoted phrases, `OR` and `-word`. There is no custom parser.
 2. The server runs one query each on records, facts and interactions.
    Workspace and liveness filters (and, for facts, "current, not
-   superseded") apply before ranking and limit.
+   superseded") apply before ranking and limit. The `note` interactions
+   `remember` creates are left out: their text is the fact's, so it is found
+   with the fact, or hidden with it once the fact is retracted.
 3. Each list is ranked with `ts_rank_cd`, using length normalization so long
    texts do not outrank short, precise matches.
 4. If the records query finds nothing, the server matches `records.label` by
    trigram similarity, so "Dana Levy" finds "Dana Levi".
 5. Results come back grouped by type. Each hit carries its record IDs and
    its text as stored: a record's label, a fact's content, an interaction's
-   title and summary. Scores from the three lists are not comparable and are
+   title and summary. A record hit says whether it matched the text or only
+   a similar label. Scores from the three lists are not comparable and are
    not merged.
 
 Agents cover other word forms themselves: the `search` tool description
@@ -774,7 +777,8 @@ hiddenFactIds }`, the last being facts whose only live source it was.
 `source`, `noteInteraction` is the ID of the `note` interaction created for
 the fact to cite, and `validFrom` is the write time. The note has channel
 `retainer`, the fact's text as its summary, and the record as its one
-participant with role `subject`. A `quote` needs a `source`. A retry with the
+participant with role `subject`. The `retainer` channel is reserved for these
+notes: `log_interaction` rejects it, so retrieval can tell them apart. A `quote` needs a `source`. A retry with the
 same idempotency key returns the same response.
 `GET /v1/records/:id/facts` returns `{ record, facts }` with facts in this
 shape, newest `validFrom` first, listing only live sources.
@@ -802,15 +806,20 @@ A context pack is assembled by fixed rules (5):
   wrote it and when it was observed, so a value is never mistaken for a
   stated fact. The budget applies to the sections after it.
 - The other sections fill in this order until the budget is spent: open
-  tasks (tasks linked to the record whose status is not `done`, earliest due
-  date first, undated last), current facts (not superseded or retracted,
-  newest `validFrom` first), then recent interactions (newest first). Items
+  tasks (tasks linked to the record through an active relation field whose
+  status is not `done`, earliest due date first, undated last), current facts (not superseded or retracted,
+  newest `validFrom` first), then recent interactions (newest first, without
+  the notes `remember` created, whose text is already a fact). Items
   are never cut mid-text; a section stops at the last whole item that fits.
 - `omitted` counts the items left out of each section, so the agent knows
   to read more with `search` or the REST routes.
 - Tokens are estimated from characters, at about four per token. Retainer
   runs no tokenizer or model, so the budget is approximate. `tokenBudget`
   defaults to 2000 and is capped at 16000.
+- The budget covers the whole response, keys, commas and `omitted` included:
+  once the record's values fit, the pack's JSON is never longer than
+  `tokenBudget × 4` characters. `tokenEstimate` is that length in tokens. No
+  fixed row limit applies; the budget alone decides what is left out.
 
 ---
 

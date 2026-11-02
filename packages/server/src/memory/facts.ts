@@ -5,7 +5,7 @@ import { AppError, invalid, notFound } from '../errors.js';
 import { requestHash } from '../idempotency.js';
 import { searchVector } from '../records/search-sql.js';
 import { lockRecord, resolveRecordId, type WriteContext } from '../records/write.js';
-import { type CitedSource, lockSource } from './interactions.js';
+import { type CitedSource, lockSource, NOTE_CHANNEL } from './interactions.js';
 
 /**
  * Facts (1.3): plain-language claims about a record, each citing the
@@ -14,8 +14,6 @@ import { type CitedSource, lockSource } from './interactions.js';
  * superseded and at least one of its sources is live (2.1).
  */
 
-/** The channel of the `note` interactions `remember` creates for uncited facts. */
-export const NOTE_CHANNEL = 'retainer';
 /** The role of the record a note is about, among the note's participants. */
 export const NOTE_SUBJECT_ROLE = 'subject';
 

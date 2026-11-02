@@ -26,9 +26,23 @@ export const participantInputSchema = z.strictObject({
   role: z.string().trim().min(1).max(100).optional(),
 });
 
+/**
+ * The channel of the `note` interactions `remember` creates for uncited
+ * facts. It is reserved, so retrieval can tell those notes apart from any
+ * interaction an agent logs.
+ */
+export const NOTE_CHANNEL = 'retainer';
+
 export const logInteractionInputSchema = z.strictObject({
   kind: z.enum(INTERACTION_KINDS),
-  channel: z.string().trim().min(1).max(100),
+  channel: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .refine((channel) => channel !== NOTE_CHANNEL, {
+      message: `channel "${NOTE_CHANNEL}" is reserved for the notes remember creates`,
+    }),
   externalId: z.string().min(1).max(500).optional(),
   occurredAt: z.iso.datetime({ offset: true }),
   title: z.string().max(500).optional(),
