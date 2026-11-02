@@ -2,7 +2,7 @@ import type { Actor, AssertionView, Provenance, RecordReference } from '@retaine
 import type { Fragment } from 'postgres';
 import type { Tx } from '../db/tx.js';
 import { notFound } from '../errors.js';
-import { getInteraction } from '../memory/interactions.js';
+import { type InteractionRow, presentInteractions } from '../memory/interactions.js';
 import { identifiersFor } from '../records/derive.js';
 import { getRecord, type PresentedRecord } from '../records/read.js';
 import { normalizeFieldValue } from '../records/values.js';
@@ -209,11 +209,11 @@ export async function interactionPage(
   cursor?: string,
 ) {
   const rows = await tx<
-    { id: string; stamp: string }[]
-  >`select i.id, i.occurred_at::text as stamp from interactions i where i.deleted_at is null and ${where} and ${after(tx, tx`i.occurred_at`, tx`i.id`, cursor, true)} order by i.occurred_at desc, i.id desc limit ${limit + 1}`;
+    (InteractionRow & { stamp: string })[]
+  >`select i.*, i.occurred_at::text as stamp from interactions i where i.deleted_at is null and ${where} and ${after(tx, tx`i.occurred_at`, tx`i.id`, cursor, true)} order by i.occurred_at desc, i.id desc limit ${limit + 1}`;
   const result = page(rows, limit);
   return {
-    items: await Promise.all(result.items.map((r) => getInteraction(tx, workspaceId, r.id))),
+    items: await presentInteractions(tx, workspaceId, result.items),
     nextCursor: result.nextCursor,
   };
 }

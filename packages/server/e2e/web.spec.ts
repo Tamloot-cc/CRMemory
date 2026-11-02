@@ -235,6 +235,7 @@ test('discards a previous session response that arrives after a replacement logi
   release();
   await expect(page.getByText('Previous session secret')).not.toBeVisible();
   await expect(page.getByText('Other workspace', { exact: true })).toBeVisible();
+  await page.unrouteAll({ behavior: 'wait' });
 });
 
 test('supports keyboard review and system dark mode on a narrow screen', async ({

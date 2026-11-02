@@ -85,9 +85,12 @@ export const test = base.extend<{
     try {
       await use({ url, keys: { user, agent, reader, other: otherKey }, request });
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((e) => (e ? reject(e) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        server.close((e) => (e ? reject(e) : resolve()));
+        // Canceled browser requests can leave active sockets open after the
+        // assertions finish. Stop accepting first, then close those sockets.
+        if ('closeAllConnections' in server) server.closeAllConnections();
+      });
       await sql.end();
       await owner.end();
       await admin.unsafe(`drop database "${name}" with (force)`);

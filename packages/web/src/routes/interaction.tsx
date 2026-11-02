@@ -127,6 +127,7 @@ export function InteractionPage() {
               <Panel key={f.id}>
                 <Stack>
                   <p>{f.content}</p>
+                  {f.status ? <Badge>{f.status}</Badge> : null}
                   <RecordLink id={f.record}>View record</RecordLink>
                   <ActorBadge actor={f.writtenBy} />
                   {f.sources

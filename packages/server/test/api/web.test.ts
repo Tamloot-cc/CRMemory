@@ -1,5 +1,9 @@
+import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { revokeApiKey } from '../../src/auth/keys.js';
+import { RUNTIME_ROLE } from '../../src/db/client.js';
+import { withRead } from '../../src/records/service.js';
+import { interactionPage } from '../../src/web/reads.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.js';
 
@@ -268,4 +272,188 @@ it('searches labels within one object under RLS even when the label field is not
     body: { search: 'Dana', filter: { jobTitle: { eq: 'CEO' } } },
   });
   expect(combined.body.records).toHaveLength(0);
+});
+
+it('uses a configured external origin behind TLS proxies without trusting forwarded headers', async () => {
+  const proxied = startTestApp(db, { publicOrigin: 'https://retainer.example/' });
+  const headers = {
+    'X-Retainer-Client': 'web',
+    origin: 'https://retainer.example',
+    'x-forwarded-proto': 'http',
+    'x-forwarded-host': 'attacker.example',
+  };
+  const login = await proxied.request('http://localhost/auth/session', {
+    body: { key: keys.user },
+    headers,
+  });
+  expect(login.status).toBe(200);
+  expect(login.headers.get('set-cookie')).toContain('Secure');
+  const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+  expect(
+    (
+      await proxied.request('http://localhost/v1/objects/person/query', {
+        body: {},
+        headers: { ...headers, cookie },
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await proxied.request('http://localhost/auth/session', {
+        body: { key: keys.user },
+        headers: {
+          ...headers,
+          origin: 'https://attacker.example',
+          'x-forwarded-host': 'retainer.example',
+          'x-forwarded-proto': 'https',
+        },
+      })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await proxied.request('http://localhost/v1/objects/person/query', {
+        body: {},
+        headers: { ...headers, cookie, origin: 'http://localhost' },
+      })
+    ).status,
+  ).toBe(403);
+  const mcp = await proxied.app.request('http://localhost/mcp', {
+    method: 'POST',
+    headers: {
+      ...headers,
+      cookie,
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'proxy-test', version: '1' },
+      },
+    }),
+  });
+  expect(mcp.status).toBe(200);
+  await mcp.text();
+  expect(
+    (
+      await proxied.request('http://localhost/auth/session', {
+        method: 'DELETE',
+        headers: { ...headers, cookie },
+      })
+    ).status,
+  ).toBe(200);
+});
+
+it('keeps historical facts in interaction claims while record memory only lists current facts', async () => {
+  const record = (await create({ name: 'Dana' })).body.record;
+  const source = (
+    await t.request('/v1/interactions', {
+      key: keys.agent,
+      body: {
+        kind: 'meeting',
+        channel: 'test',
+        occurredAt: '2026-10-20T10:00:00Z',
+        title: 'Source',
+      },
+    })
+  ).body;
+  const ids: string[] = [];
+  for (const text of ['Retracted', 'Ended', 'Superseded', 'Current'])
+    ids.push(
+      (
+        await t.request(`/v1/records/${record.id}/facts`, {
+          key: keys.agent,
+          body: { text, source: source.id, quote: `Quote: ${text}` },
+        })
+      ).body.fact.id,
+    );
+  await t.request(`/v1/facts/${ids[0]}`, { key: keys.user, method: 'DELETE' });
+  // Seed the two historical states written by consolidation in a migrated test DB.
+  await db.owner`update facts set valid_to = '2026-10-21T10:00:00Z' where id = ${ids[1] as string}`;
+  await db.owner`update facts set superseded_by = ${ids[3] as string} where id = ${ids[2] as string}`;
+  const current = (await t.request(`/v1/records/${record.id}/facts`, { key: keys.user })).body;
+  expect(current.facts.map((f: any) => f.content)).toEqual(['Current']);
+  const claims = (await t.request(`/v1/interactions/${source.id}/claims`, { key: keys.user })).body;
+  expect(Object.fromEntries(claims.facts.map((f: any) => [f.content, f.status]))).toEqual({
+    Retracted: 'retracted',
+    Ended: 'ended',
+    Superseded: 'superseded',
+    Current: 'current',
+  });
+  expect(claims.facts.find((f: any) => f.content === 'Retracted').sources[0].quote).toBe(
+    'Quote: Retracted',
+  );
+  const first = (
+    await t.request(`/v1/interactions/${source.id}/claims?limit=1`, { key: keys.user })
+  ).body;
+  const second = (
+    await t.request(
+      `/v1/interactions/${source.id}/claims?limit=1&factsCursor=${first.nextCursors.facts}`,
+      { key: keys.user },
+    )
+  ).body;
+  expect(second.facts[0].id).not.toBe(first.facts[0].id);
+  expect(
+    (await t.request(`/v1/interactions/${source.id}/claims`, { key: keys.other })).status,
+  ).toBe(404);
+});
+
+it('hydrates interaction pages in a bounded number of real database queries', async () => {
+  const record = (await create({ name: 'Dana' })).body.record;
+  for (let i = 0; i < 20; i++)
+    await t.request('/v1/interactions', {
+      key: keys.agent,
+      body: {
+        kind: 'meeting',
+        channel: 'test',
+        occurredAt: `2026-10-${String(i + 1).padStart(2, '0')}T10:00:00Z`,
+        title: `Meeting ${i}`,
+        participants: [
+          { recordId: record.id, role: 'subject' },
+          { handle: 'missing@example.test', role: 'guest' },
+        ],
+      },
+    });
+  const me = (await t.request('/v1/me', { key: keys.user })).body;
+  let statements = 0;
+  const sql = postgres(db.url, {
+    connection: { role: RUNTIME_ROLE },
+    onnotice: false,
+    debug: () => {
+      statements++;
+    },
+  });
+  const caller = { workspaceId: me.workspace.id, actor: me.actor, scopes: ['read'] as const };
+  const read = (limit: number) =>
+    withRead(sql, caller, (tx) =>
+      interactionPage(
+        tx,
+        caller.workspaceId,
+        tx`exists(select 1 from interaction_participants p where p.interaction_id = i.id and p.record_id = ${record.id})`,
+        limit,
+      ),
+    );
+  try {
+    await read(1);
+    statements = 0;
+    await read(1);
+    const one = statements;
+    statements = 0;
+    const all = await read(20);
+    expect(statements).toBe(one);
+    expect(statements).toBeLessThan(10);
+    expect(all.items).toHaveLength(20);
+    expect(all.items[0]?.title).toBe('Meeting 19');
+    expect(all.items[0]?.participants).toMatchObject({
+      matched: [{ recordId: record.id, role: 'subject' }],
+      unmatched: [{ handle: 'missing@example.test', reason: 'no_match' }],
+    });
+  } finally {
+    await sql.end();
+  }
 });

@@ -826,6 +826,11 @@ mutations require `X-Retainer-Client: web` and reject a mismatched Origin;
 this applies to the shared REST/MCP authentication middleware. Sign-in and
 sign-out also require the header. The browser stores no key in local storage.
 
+For TLS termination at a reverse proxy, set `RETAINER_PUBLIC_ORIGIN` to the
+external origin (for example `https://retainer.example`). CSRF checks compare
+the browser Origin to this configured value; forwarded headers are not trusted.
+The setting also controls the cookie's public host and Secure handling.
+
 Web read routes add paginated assertion history, record interactions,
 interaction claims, review totals/cursors, and optional winning provenance
 and batched relation references. Object queries accept an optional `search`

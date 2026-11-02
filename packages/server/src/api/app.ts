@@ -3,6 +3,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { authenticate } from '../auth/middleware.js';
 import { meRoute, sessionRoutes } from '../auth/session.js';
+import { publicOriginSchema } from '../config.js';
 import type { Sql } from '../db/client.js';
 import { AppError } from '../errors.js';
 import { mcpRoute } from '../mcp/route.js';
@@ -18,10 +19,12 @@ export type AppDeps = {
   /** A pool connected as the runtime role, so RLS applies to every query. */
   sql: Sql;
   webDir?: string;
+  publicOrigin?: string;
 };
 
 export function createApp(deps: AppDeps) {
   const app = new Hono<AppEnv>();
+  const publicOrigin = deps.publicOrigin ? publicOriginSchema.parse(deps.publicOrigin) : undefined;
 
   app.onError((error, c) => {
     const known = toAppError(error);
@@ -43,9 +46,9 @@ export function createApp(deps: AppDeps) {
     }
   });
 
-  sessionRoutes(app, deps.sql);
+  sessionRoutes(app, deps.sql, publicOrigin);
   const v1 = new Hono<AppEnv>();
-  v1.use('*', authenticate(deps.sql));
+  v1.use('*', authenticate(deps.sql, publicOrigin));
   meRoute(v1, deps.sql);
   webReadRoutes(v1, deps.sql);
   schemaRoutes(v1, deps.sql);
@@ -54,7 +57,7 @@ export function createApp(deps: AppDeps) {
   memoryRoutes(v1, deps.sql);
   app.route('/v1', v1);
 
-  mcpRoute(app, deps.sql);
+  mcpRoute(app, deps.sql, publicOrigin);
 
   if (deps.webDir) {
     const root = resolve(deps.webDir);

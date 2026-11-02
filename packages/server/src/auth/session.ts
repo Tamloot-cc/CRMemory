@@ -18,12 +18,12 @@ export async function lookupKey(sql: Sql, raw: string): Promise<Caller> {
   if (!key) throw new AppError(401, 'unauthorized', 'the API key is unknown or revoked');
   return { workspaceId: key.workspace_id, actor: key.actor, scopes: key.scopes };
 }
-export function requireWebHeader(c: Context): void {
+export function requireWebHeader(c: Context, publicOrigin?: string): void {
   if (c.req.header('X-Retainer-Client') !== 'web')
     throw new AppError(403, 'csrf', 'send X-Retainer-Client: web');
   // A sibling origin must not be able to use a permissive proxy CORS policy.
   const origin = c.req.header('origin');
-  if (origin && origin !== new URL(c.req.url).origin)
+  if (origin && origin !== (publicOrigin ?? new URL(c.req.url).origin))
     throw new AppError(403, 'csrf', 'origin must match the request origin');
 }
 async function presentSession(sql: Sql, caller: Caller): Promise<Session> {
@@ -35,16 +35,17 @@ async function presentSession(sql: Sql, caller: Caller): Promise<Session> {
     return { workspace, actor: caller.actor, scopes: [...caller.scopes] };
   });
 }
-export function sessionRoutes(app: Hono<AppEnv>, sql: Sql) {
+export function sessionRoutes(app: Hono<AppEnv>, sql: Sql, publicOrigin?: string) {
   app.post('/auth/session', async (c) => {
-    requireWebHeader(c);
+    requireWebHeader(c, publicOrigin);
     const { key } = await readBody(c, z.strictObject({ key: z.string().min(1).max(1024) }));
     const caller = await lookupKey(sql, key);
     const result = await presentSession(sql, caller);
-    const hostname = new URL(c.req.url).hostname;
+    const url = new URL(publicOrigin ?? c.req.url);
     setCookie(c, SESSION_COOKIE, key, {
       httpOnly: true,
-      secure: !['localhost', '127.0.0.1', '[::1]'].includes(hostname),
+      secure:
+        url.protocol === 'https:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname),
       sameSite: 'Strict',
       path: '/',
       maxAge: 30 * 24 * 60 * 60,
@@ -53,7 +54,7 @@ export function sessionRoutes(app: Hono<AppEnv>, sql: Sql) {
     return c.json(result);
   });
   app.delete('/auth/session', (c) => {
-    requireWebHeader(c);
+    requireWebHeader(c, publicOrigin);
     deleteCookie(c, SESSION_COOKIE, { path: '/' });
     c.header('Cache-Control', 'no-store');
     return c.json({ signedOut: true });

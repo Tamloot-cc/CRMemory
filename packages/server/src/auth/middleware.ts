@@ -15,7 +15,7 @@ const BEARER = /^Bearer\s+(\S+)$/i;
  * into api_keys. The caller's workspace, scopes and actor come from the
  * key, never from the request.
  */
-export function authenticate(sql: Sql): MiddlewareHandler<AppEnv> {
+export function authenticate(sql: Sql, publicOrigin?: string): MiddlewareHandler<AppEnv> {
   return createMiddleware<AppEnv>(async (c, next) => {
     const authorization = c.req.header('authorization');
     const match = BEARER.exec(authorization ?? '');
@@ -35,7 +35,7 @@ export function authenticate(sql: Sql): MiddlewareHandler<AppEnv> {
     }
     try {
       if (authorization === undefined && !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method))
-        requireWebHeader(c);
+        requireWebHeader(c, publicOrigin);
       c.set('caller', await lookupKey(sql, raw));
     } catch (error) {
       if (!(error instanceof AppError)) throw error;

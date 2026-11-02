@@ -87,6 +87,7 @@ export async function factsPage(
   where: Fragment,
   limit: number,
   cursor?: string,
+  history = false,
 ): Promise<{ facts: PresentedFact[]; nextCursor: string | null }> {
   const rows = await tx<
     {
@@ -98,9 +99,11 @@ export async function factsPage(
       valid_from: Date;
       valid_to: Date | null;
       actor: Actor;
+      deleted_at: Date | null;
+      superseded_by: string | null;
     }[]
-  >`select f.*, f.valid_from::text as stamp from facts f where f.deleted_at is null and f.superseded_by is null and f.valid_to is null and ${where}
-    and exists(select 1 from fact_sources s join interactions i on i.id = s.interaction_id and i.deleted_at is null where s.fact_id = f.id)
+  >`select f.*, f.valid_from::text as stamp from facts f where ${where}
+    ${history ? tx`` : tx`and f.deleted_at is null and f.superseded_by is null and f.valid_to is null and exists(select 1 from fact_sources s join interactions i on i.id = s.interaction_id and i.deleted_at is null where s.fact_id = f.id)`}
     and ${after(tx, tx`f.valid_from`, tx`f.id`, cursor, true)} order by f.valid_from desc, f.id desc limit ${limit + 1}`;
   const result = page(rows, limit);
   const ids = result.items.map((r) => r.id);
@@ -112,6 +115,17 @@ export async function factsPage(
   return {
     facts: result.items.map((r) => ({
       id: r.id,
+      ...(history
+        ? {
+            status: r.deleted_at
+              ? ('retracted' as const)
+              : r.superseded_by
+                ? ('superseded' as const)
+                : r.valid_to
+                  ? ('ended' as const)
+                  : ('current' as const),
+          }
+        : {}),
       record: r.record_id,
       content: r.content,
       kind: r.kind,

@@ -1,6 +1,26 @@
 import { z } from 'zod';
 
+export const publicOriginSchema = z
+  .url()
+  .refine((value) => {
+    if (!URL.canParse(value)) return false;
+    const url = new URL(value);
+    return (
+      ['http:', 'https:'].includes(url.protocol) &&
+      !url.username &&
+      !url.password &&
+      url.pathname === '/' &&
+      !url.search &&
+      !url.hash
+    );
+  }, 'use an http(s) origin without credentials, a path, query or fragment')
+  .transform((value) => new URL(value).origin);
+
 const configSchema = z.object({
+  RETAINER_PUBLIC_ORIGIN: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    publicOriginSchema.optional(),
+  ),
   RETAINER_WEB_DIR: z.string().optional(),
   DATABASE_URL: z.string().url(),
   RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),

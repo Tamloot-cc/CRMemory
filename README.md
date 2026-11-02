@@ -55,6 +55,11 @@ cookie, never browser storage. Use HTTPS outside localhost; Secure cookies
 require it. Revoking the API key ends access immediately. Signing out clears
 the browser cookie; it does not revoke the key.
 
+For TLS termination at a reverse proxy, set `RETAINER_PUBLIC_ORIGIN` to the
+external origin (for example `https://retainer.example`). CSRF checks compare
+the browser Origin to this configured value; forwarded headers are not trusted.
+The setting also controls the cookie's public host and Secure handling.
+
 Non-user keys can browse read-only. Global search, merge suggestions, `forget`
 and record creation are deferred; the web app does not require those backend
 milestones to run.

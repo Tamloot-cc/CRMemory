@@ -105,6 +105,7 @@ export function webReadRoutes(app: Hono<AppEnv>, sql: Sql) {
           tx`exists (select 1 from fact_sources s where s.fact_id = f.id and s.interaction_id = ${id})`,
           limit,
           c.req.query('factsCursor'),
+          true,
         ),
       ]);
       return c.json({

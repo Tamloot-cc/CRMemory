@@ -121,6 +121,11 @@ assertions and approvals must name the person who made them (rule 2.3).
   set the same cookie with a key it issues. That lives outside this
   repository (7).
 
+For TLS termination at a reverse proxy, set `RETAINER_PUBLIC_ORIGIN` to the
+external origin (for example `https://retainer.example`). CSRF checks compare
+the browser Origin to this configured value; forwarded headers are not trusted.
+The setting also controls the cookie's public host and Secure handling.
+
 ### 4.3 What the UI shows by scope
 
 The server enforces scopes. `admin` implies `read`, `write` and

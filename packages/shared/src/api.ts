@@ -131,6 +131,7 @@ export type ReviewQueue = {
 };
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export type PresentedFact = {
+  status?: 'current' | 'retracted' | 'superseded' | 'ended';
   id: string;
   record: string;
   content: string;
