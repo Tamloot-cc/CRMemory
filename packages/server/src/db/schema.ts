@@ -13,15 +13,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
-  vector,
 } from 'drizzle-orm/pg-core';
-
-/**
- * Embedding size. Fixed in the DDL, so changing it needs a migration and a
- * re-embed. 1536 fits OpenAI text-embedding-3-small and models that can
- * truncate to 1536 dimensions.
- */
-export const EMBEDDING_DIMENSIONS = 1536;
 
 const tsvector = customType<{ data: string }>({
   dataType: () => 'tsvector',
@@ -301,23 +293,6 @@ export const interactionParticipants = pgTable(
   ],
 );
 
-export const interactionChunks = pgTable(
-  'interaction_chunks',
-  {
-    id: id(),
-    interactionId: uuid('interaction_id')
-      .notNull()
-      .references(() => interactions.id, { onDelete: 'cascade' }),
-    position: integer('position').notNull(),
-    content: text('content').notNull(),
-    embedding: vector('embedding', { dimensions: EMBEDDING_DIMENSIONS }),
-  },
-  (t) => [
-    uniqueIndex('interaction_chunks_position_uq').on(t.interactionId, t.position),
-    index('interaction_chunks_embedding_idx').using('hnsw', t.embedding.op('vector_cosine_ops')),
-  ],
-);
-
 /** A claimed value for one field of one record. `records.data` is derived from these. */
 export const fieldAssertions = pgTable(
   'field_assertions',
@@ -365,7 +340,6 @@ export const facts = pgTable(
     validFrom: timestamp('valid_from', { withTimezone: true }).notNull().defaultNow(),
     validTo: timestamp('valid_to', { withTimezone: true }),
     supersededBy: uuid('superseded_by'),
-    embedding: vector('embedding', { dimensions: EMBEDDING_DIMENSIONS }),
     actor: jsonb('actor').$type<Actor>().notNull(),
     createdAt: createdAt(),
     deletedAt: deletedAt(),
@@ -374,7 +348,6 @@ export const facts = pgTable(
     index('facts_record_current_idx')
       .on(t.recordId, t.validFrom)
       .where(sql`${t.validTo} is null and ${t.deletedAt} is null`),
-    index('facts_embedding_idx').using('hnsw', t.embedding.op('vector_cosine_ops')),
   ],
 );
 

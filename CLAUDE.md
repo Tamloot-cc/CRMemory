@@ -1,7 +1,7 @@
 # CRMemory
 
 Open-source memory for AI agents that work with CRM data. No UI: REST API,
-MCP endpoint and background workers on Postgres + pgvector. Read
+MCP endpoint and background workers on Postgres. Read
 `ARCHITECTURE.md` before changing the data model, the schema engine, or write
 rules.
 
@@ -21,7 +21,8 @@ rules.
 - `records.data` is derived from `field_assertions`; write assertions, not data.
 - All schema changes go through the schema engine; never write to
   `object_types` or `fields` directly.
-- Never hold a DB transaction open across an LLM or embedding call.
+- Never hold a DB transaction open across an LLM call.
+- No embeddings or semantic search: search is Postgres full-text only.
 - Server code is AGPL-3.0; `shared`, `sdk` and `mcp` are MIT. Don't import
   server code into the MIT packages.
 - TypeScript 7: `types: ["node"]` is set in `tsconfig.base.json` because TS no
