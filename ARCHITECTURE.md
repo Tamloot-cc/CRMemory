@@ -9,12 +9,15 @@ It combines two ideas:
 - **Schema as data** (from [Twenty](https://github.com/twentyhq/twenty)): the
   shape of the CRM (objects, fields, relations) is stored as rows, so a
   workspace, or an agent working in it, can extend the model at runtime.
-- **Derived memory** (from [Honcho](https://github.com/plastic-labs/honcho)):
-  raw interactions go in, and background workers turn them into facts, field
-  values and summaries, each traceable to its source.
+- **Memory with provenance** (inspired by
+  [Honcho](https://github.com/plastic-labs/honcho), but agent-written):
+  agents read conversations with their own models and write typed field
+  values, plain-language facts and a log of interactions. Every value records
+  who wrote it and which interaction it came from.
 
-Interactions come in, the current schema tells the extractor what to look
-for, and the output is typed field values plus plain-language facts.
+Retainer never calls a language model. Agents decide what to remember;
+Retainer validates it, resolves conflicts, keeps its history and makes it
+searchable. Full conversations stay with the agent.
 
 ---
 
@@ -98,11 +101,8 @@ the deleted record (2.1, step 3), so a rebuild cannot recreate dangling links.
 
 Every write carries an actor: `{ type, id, name? }` where `type` is `user`,
 `agent`, `integration`, or `system`. The API key decides the actor; callers
-cannot claim to be someone else. Background extraction uses a server-assigned
-`agent` actor, while the source interaction retains its submitting actor.
-An email imported with a user's or integration's key must not give LLM
-output that actor's higher precedence. System maintenance uses a server-owned
-`system` actor; neither actor comes from extraction output.
+cannot claim to be someone else. Server maintenance (consolidation, merge
+bookkeeping) uses a server-owned `system` actor.
 
 ### 1.2 Records
 
@@ -121,7 +121,7 @@ transaction that recomputes `records.data`.
 `links`) keep extra values in an array that an expression index on
 `data->>'<key>'` cannot see or enforce. It is used for participant matching,
 for uniqueness, and for finding duplicates, and its unique constraint is what
-stops two concurrent ingests from creating the same person twice.
+stops two concurrent writes from creating the same person twice.
 This is a required addition to the scaffold. Store a canonical value and an
 explicit uniqueness claim on each identifier row; a fixed partial unique
 index over claims enforces `(workspace_id, field_id, value)` without
@@ -136,7 +136,7 @@ candidates. If supplied identifiers point to different records, return a
 conflict with candidate IDs; never pick the first match or merge implicitly.
 A losing concurrent create rolls back the entire provisional record and
 retries lookup. Soft-deleted records retain uniqueness claims until restored
-or explicitly purged, so ingest cannot silently recreate them. A match on a
+or explicitly purged, so writes cannot silently recreate them. A match on a
 soft-deleted record follows `merged_into_id` when set; otherwise the
 participant stays unresolved and is listed in `GET /v1/review`, rather than
 attaching new interactions to a hidden record.
@@ -175,22 +175,25 @@ install can add them later as an opt-in.
 
 ### 1.3 Memory
 
-| Table                      | Holds                                                                                                                                                                                                             |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `interactions`             | Raw, immutable sources: meeting, call, email, message, note, document. `kind`, `channel`, `occurred_at`, `content`, `external_id` (unique per workspace and channel, for safe re-ingest), `ingest_status`         |
-| `interaction_participants` | Who took part: a `handle` (email or phone), `role`, and the matched `record_id` once resolved                                                                                                                     |
-| `field_assertions`         | A claimed value for one field of one record: value, actor, source interaction, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`) |
-| `facts`                    | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                          |
-| `fact_sources`             | What a fact rests on: an interaction (with an optional quote) or other facts (for inferences)                                                                                                                     |
-| `record_cards`             | A short regenerated profile per record, used at the top of every context pack                                                                                                                                     |
+| Table                      | Holds                                                                                                                                                                                                                                                                                      |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `interactions`             | A log of what happened, written by the agent: `kind` (meeting, call, email, message, note), `channel`, `occurred_at`, `title`, an agent-written `summary`, `external_id` (unique per workspace and channel, so logging the same source twice is a no-op). No transcripts or message bodies |
+| `interaction_participants` | Who took part: a `handle` (email or phone) and/or a `record_id` the agent supplies, and a `role`                                                                                                                                                                                           |
+| `field_assertions`         | A claimed value for one field of one record: value, actor, source interaction, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`)                                                                          |
+| `facts`                    | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                   |
+| `fact_sources`             | What a fact rests on: an interaction (with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                              |
 
 Required scaffold addition: `field_assertions.observed_at`. Replace
 the unconditional `facts.valid_from = now()` default with source-derived
 validity (rule 2.6), so backfilled facts do not appear newly true.
 
-Sending an interaction again with the same `(workspace_id, channel,
-external_id)` and identical input returns the existing one, including its
-ingest status. A different payload for that identity returns a conflict;
+Retainer stores what the agent chose to record, not the conversation itself.
+A summary or quote is stored like any other value, so an agent should not put
+in it what the workspace should not keep.
+
+Logging an interaction again with the same `(workspace_id, channel,
+external_id)` and identical input returns the existing one. A different
+payload for that identity returns a conflict;
 it is never silently ignored. `channel` must distinguish source accounts
 when their external IDs can overlap. Without `external_id`, callers do not
 get deduplication. An edited source needs a new `external_id` in v1;
@@ -202,9 +205,10 @@ the old interaction (`DELETE /v1/interactions/:id`).
 ## 2. Write rules
 
 1. **Nothing is written without an actor and, for derived data, a source.**
-   A direct write through the API has the actor as its source. A fact an
-   agent states directly (`remember`) is stored with a `note` interaction as
-   its source, so every fact has one.
+   A field write may cite an interaction as its source (`source` on
+   `upsert_record`); without one, the actor is the source. Every fact cites
+   an interaction: the agent passes one, or `remember` creates a `note`
+   interaction for it.
 2. **Precedence decides a field's value**:
    `user` > `integration` > `agent` > `system`. Within the same precedence,
    the assertion with the latest
@@ -215,8 +219,9 @@ the old interaction (`DELETE /v1/interactions/:id`).
    remain authoritative until explicitly changed. Clearing a nullable field
    is an assertion with a `null` value; missing keys mean no change. Composite
    fields are replaced as a whole in v1, including their additional values.
-   `observed_at` is derived by the server from the source, not invented by
-   the extractor; direct writes use server time.
+   `observed_at` is set by the server: the cited interaction's `occurred_at`,
+   or the write time when no interaction is cited. Callers cannot set it
+   directly.
 3. **Agents never silently overwrite people, and are never silently
    ignored.** If the winning assertion is a `user` or `integration` one and
    an agent asserts a different value with a newer `observed_at`, the agent's
@@ -239,8 +244,8 @@ the old interaction (`DELETE /v1/interactions/:id`).
    (`SELECT … FOR UPDATE`), inserts its assertions, recomputes only the
    touched keys, and updates `data`, `record_links` and `record_identifiers`
    in the same short transaction. Nothing does read-modify-write on `data`
-   outside that lock, so two agents or two ingests writing the same record
-   never lose each other's values. Multi-record writes lock records in sorted
+   outside that lock, so two agents writing the same record never lose each
+   other's values. Multi-record writes lock records in sorted
    ID order. An optional expected `updated_at` precondition rejects stale
    direct edits; serialization alone does not detect a stale agent's intent.
 6. **Facts are never deleted by the system, only superseded.** Two times are
@@ -256,9 +261,9 @@ the old interaction (`DELETE /v1/interactions/:id`).
 
 Soft delete (`deleted_at`) is the default for records, facts and
 interactions. Reads exclude deleted parents as well as deleted rows: a
-record's facts and card are hidden with it. Retracting an interaction also
-excludes its derived claims, recomputes field winners and
-invalidates affected cards. Facts with other live sources may remain.
+record's facts are hidden with it. Retracting an interaction also excludes
+the claims that cite it and recomputes field winners. Facts with other live
+sources may remain.
 Restoring a source must revalidate its derived claims before exposing them.
 
 `forget` (admin scope) is the hard delete for privacy requests. First collect
@@ -271,18 +276,16 @@ can erase those dependencies. Then, in a coordinated deletion operation:
 2. hard-delete interactions it took part in, with their source quotes, and
    remove their assertions and facts that have no live source;
 3. invalidate inbound relation assertions and recompute surviving records'
-   field values, links, identifiers and search text; discard and regenerate
-   affected cards from surviving sources;
-4. hard-delete the record, its assertions, facts, card, links and identifiers;
+   field values, links, identifiers and search text;
+4. hard-delete the record, its assertions, facts, links and identifiers;
 5. write a minimal audit entry (actor ID, time, counts), without copied names,
-   handles, source text or extracted values.
+   handles, summaries, quotes or field values.
 
-Workers and writes coordinate with deletion: after every external call they
-recheck that sources and targets are live under lock before committing, and
-participant creation checks suppression in the same serialization boundary
-as `forget`. A queued or running job must not resurrect deleted content.
-Delete job payloads, idempotency responses and error text containing erased
-content too; prefer jobs carrying IDs only.
+Writes coordinate with deletion: creating a record or resolving a
+participant checks suppression in the same serialization boundary as
+`forget`, so a suppressed email or phone cannot come back. Jobs carry IDs
+only, and must not resurrect deleted content. Delete idempotency responses
+and error text containing erased content too.
 
 Facts on other records that mention the person but rest on other sources
 ("Acme's champion is Dana") cannot be found reliably. Collect candidates by
@@ -405,81 +408,41 @@ The workspace records which templates it has applied, with their versions
                                 │                     memory · job queue
                                 ▼                          ▲
                             Workers ───────────────────────┘
-                            ├─ ingest  (per interaction)
                             └─ consolidate (scheduled)
 ```
 
 One Docker image, started with a role: `api`, `worker`, or `all`.
 Postgres is the only dependency, with the standard `pg_trgm` and `btree_gin`
-extensions for search (5.1); the job queue runs on Postgres too.
+extensions for search (5.1); the job queue runs on Postgres too. Retainer
+calls no language model and needs no model API key.
 
-### 4.1 Ingest pipeline (per interaction)
+### 4.1 How memory gets written
 
-1. **Resolve participants**: normalize handles (lowercased email, E.164
-   phone) and look them up in `record_identifiers`. Unknown handles create a
-   `person` record (actor `system`) or stay unresolved, depending on
-   workspace settings. Only a handle that is a unique identifier can
-   auto-create, because the create relies on that unique constraint: a
-   concurrent ingest that loses the race uses the winner's record.
-   Phones are not unique (numbers are shared and reassigned), so in v1 a
-   participant known only by phone (WhatsApp, SMS, calls) stays unresolved
-   unless the caller passes its record ID. Matching a phone held by exactly
-   one live record is a later option.
-   Never auto-created: the workspace's own domains (its team),
-   no-reply and bulk senders, suppressed handles (2.1), and participants
-   with only a display name (a transcript speaker called "John"). A new
-   person is linked to an existing `company` only if that domain identifies
-   exactly one company, excluding free-mail domains. A domain alone never
-   merges companies; ambiguous handles remain unresolved.
-2. **Extract**: one structured LLM call. The prompt includes the schema of
-   the objects involved and their current values and open tasks, so output
-   is typed and the model can update rather than duplicate:
-   - field assertions for the participants' records and their related records
-     (company, deals);
-   - facts with quotes from the source;
-   - new records to create (e.g. a task someone committed to).
+The agent reads the conversation with its own model and decides what is
+worth keeping. Retainer only stores, validates and resolves. After a
+meeting, call or email thread, an agent typically:
 
-   Extraction never changes the schema. Something with no field to hold it
-   becomes a fact. Source content is untrusted data, not instructions: the
-   extractor has no tools or schema-write authority. The server supplies
-   target IDs and validates every output against those allowed targets;
-   confidence and JSON validity do not establish that a claim is true.
-3. **Write** everything with provenance, applying the write rules. Output is
-   validated against the schema as it is now, which may have changed while
-   the LLM ran; values for fields that no longer exist are dropped. The
-   write runs in one transaction that locks the interaction row, rechecks
-   source liveness, exits if it is already `done`, persists all extracted
-   outputs and sets it to `done`, so a retried job never writes twice.
-   Participant resolution is independently idempotent; new tasks and other
-   extraction-created records are committed with the extraction output.
-4. **Mark** affected `record_cards` stale and durably schedule a card
-   refresh in that same transaction (pg-boss transactional enqueue
-   or a Postgres outbox). Interaction creation and initial ingest enqueue
-   are atomic too; a crash between database commit and enqueue cannot strand
-   work. Cards are regenerated by a debounced job, not once per interaction.
-   Jobs have bounded retries and visible failure state; an authorized retry
-   resumes failed work without requiring a new source identity.
+1. **Logs the interaction** with `log_interaction`: kind, channel, time,
+   title, its own short summary, the source's external ID, and the
+   participants as handles (emails, phones) and/or record IDs.
+2. **Updates records** with `upsert_record`, citing the interaction as
+   `source` so the values carry its date and provenance (rule 2.2).
+3. **Stores facts** with `remember`, citing the same interaction and an
+   optional quote.
+4. **Creates tasks** someone committed to, as `task` records.
 
-#### Cost and latency
+Participants are resolved synchronously when the interaction is logged:
+handles are normalized (lowercased email, E.164 phone) and matched against
+unique identifiers in `record_identifiers`. Matched participants are linked;
+the response lists the unmatched ones so the agent can create those people
+itself or leave them. Retainer never creates records on its own. Phones are
+not unique (numbers are shared and reassigned), so a participant known only
+by phone stays unresolved unless the agent passes its record ID. Matching a
+phone held by exactly one live record is a later option.
 
-Extraction is the main running cost, so the first release keeps it bounded:
-interactions from bulk or no-reply senders, and internal-only ones with no
-target record, are stored and searchable but not extracted. A note or an
-internal meeting about a customer is still extracted when the caller names
-its target records as `mentioned` participants (`log_interaction` accepts
-record IDs there); otherwise a user's own notes, which have no external
-participant, would never be extracted. Enforce limits on source bytes,
-chunks, input/output tokens, attempts and concurrent calls per workspace;
-reject oversized input explicitly rather than silently truncating it.
-Content too long for one call is extracted in bounded chunks within the
-same job, deduplicating repeated outputs from chunk overlap, and committed
-once. A retry re-runs the whole extraction; per-chunk checkpoints are
-deferred, since they need their own storage and most interactions fit one
-call. Record skipped/failed reasons separately from successful extraction.
-The extraction model is a workspace setting (a small model is the
-default), and token usage is recorded on the
-interaction so operators can see cost per workspace. Ingest is asynchronous,
-so its latency never blocks `log_interaction`.
+Each write is its own short transaction, and each follows the write rules,
+so an agent that stops halfway leaves consistent data; it can resume, and
+`external_id` and idempotency keys (6.2) make retries safe.
 
 ### 4.2 Consolidator (scheduled per workspace)
 
@@ -498,16 +461,7 @@ so its latency never blocks `log_interaction`.
   in 3). Suggestions are stored as rows (`merge_suggestions`: the two
   record IDs, reason, status) so `GET /v1/review` can list them.
 
-Every field/fact mutation, source retraction, merge and schema change that
-affects a card marks it stale in the same transaction. `record_cards` stores
-`stale_since` and an incrementing `source_revision`. Regeneration publishes
-and clears staleness only if that revision is unchanged since its inputs
-were read; an older job cannot mark a newer mutation's card fresh.
-
-Required scaffold additions: `merge_suggestions` and
-`record_cards.stale_since` / `source_revision` / `withheld` (set when
-retraction, merge or `forget` made the card stale, so it is not served; see
-5). Flagging stale field values
+Required scaffold addition: `merge_suggestions`. Flagging stale field values
 is deferred: "stale" has no definition yet and nothing reads the flag.
 
 **Merging** record B into A moves B's assertions, facts, links, identifiers
@@ -534,32 +488,32 @@ Not in the first release: inferring facts from other facts
 (`kind = inferred`). The schema keeps the `kind` column and premise links
 so it can be added without a migration.
 
-### 4.3 Rule from Honcho
+### 4.3 No language model inside Retainer
 
-Never hold a database transaction open across an LLM call.
-Compute the external result first, then write in a short transaction.
+Retainer never calls a language model or an embedding provider. Every
+judgment about what a conversation means is made by the agent, with the
+agent's own model. This keeps self-hosting free of model keys and LLM cost,
+keeps full conversations with the agent, and keeps Retainer's behavior
+deterministic and testable.
 
 ---
 
 ## 5. Read paths
 
-| Operation                           | What it returns                                                                                          |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `describe_schema`                   | The workspace (ID, name, applied templates, `initialized`) and a compact list of its objects and fields  |
-| `query_records`                     | Structured filter, sort and pagination over one object                                                   |
-| `get_record`                        | One record with its fields, links and card                                                               |
-| `search`                            | Keyword search (Postgres full-text) across records, facts and interactions, with highlighted snippets    |
-| `get_context(record, token_budget)` | A ready-to-use pack: card, key fields, recent facts, open tasks, last interactions, fitted to the budget |
+| Operation                           | What it returns                                                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `describe_schema`                   | The workspace (ID, name, applied templates, `initialized`) and a compact list of its objects and fields        |
+| `query_records`                     | Structured filter, sort and pagination over one object                                                         |
+| `get_record`                        | One record with its fields and links                                                                           |
+| `search`                            | Keyword search (Postgres full-text) across records, facts and interactions, with highlighted snippets          |
+| `get_context(record, token_budget)` | A ready-to-use pack: key fields, current facts, open tasks, recent interaction summaries, fitted to the budget |
 
 Every read hides soft-deleted parents/rows and superseded facts by default.
 An explicit history mode can list retained assertions and facts with their
-source and validity dates; exact `as_of` snapshots are deferred. A card
-made stale by new information is still served, marked with `stale_since`,
-followed by the facts and field changes newer than it; omitting it would
-leave busy records, which are always stale between debounced refreshes,
-with no card at all. A card made stale by retraction, merge or `forget` may
-contain removed content, so it is not served until regenerated. Context
-packs distinguish stated claims from current field values.
+source and validity dates; exact `as_of` snapshots are deferred. Context
+packs distinguish stated facts from current field values and show who wrote
+each. They are assembled by rules (recency, precedence, the token budget),
+not summarized by a model; summarizing is the agent's job.
 
 ### 5.1 Search
 
@@ -574,7 +528,7 @@ and `btree_gin` (combined indexes). No embeddings, no BM25 extension.
 | `records`      | Values of `is_searchable` fields; the label field (usually the name) weighted highest | `search tsvector`, GIN on `(workspace_id, search)`   |
 | `records`      | The label field as plain text, e.g. "Dana Levi"                                       | `label text`, trigram GIN on `(workspace_id, label)` |
 | `facts`        | `content`                                                                             | `search tsvector`, GIN on `(workspace_id, search)`   |
-| `interactions` | `title` (weighted higher) and `content`                                               | `search tsvector`, GIN on `(workspace_id, search)`   |
+| `interactions` | `title` (weighted higher) and `summary`                                               | `search tsvector`, GIN on `(workspace_id, search)`   |
 
 The server computes every `search` and `label` value, in the same
 transaction that writes the row (for records, the one that recomputes
@@ -614,8 +568,8 @@ job that rebuilds stored search values.
    liveness filters (and, for facts, "current, not superseded") apply before
    ranking and limit.
 3. Each list is ranked with `ts_rank_cd`, using length normalization so long
-   transcripts do not outrank short, precise matches. Hits carry a snippet
-   from `ts_headline`, never the whole interaction.
+   texts do not outrank short, precise matches. Hits carry a snippet from
+   `ts_headline`.
 4. If the records query returns few hits, the server also matches
    `records.label` by trigram similarity, so "Dana Levy" finds "Dana Levi".
 5. Results come back grouped by type, each with its record IDs. Scores from
@@ -635,9 +589,8 @@ the candidate set is small, and an agent reads the top results anyway.
 Search sits behind one internal interface, so a BM25 backend can be added
 later as an option without changing the API.
 
-`ask` is deferred from v1: callers can compose search and context tools in
-their own agent. This keeps request-time model loops, budgets and timeout
-handling out of the API server.
+There is no `ask` endpoint: answering questions is the agent's job. It
+composes `search`, `query_records` and `get_context` with its own model.
 
 ---
 
@@ -663,9 +616,8 @@ handling out of the API server.
 | `DELETE /v1/facts/:id`                            | Retract a fact (soft delete)                                                |
 | `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records |
 | `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                  |
-| `POST /v1/interactions`                           | Log an interaction (ingest runs in the background)                          |
-| `GET` · `DELETE /v1/interactions/:id`             | Inspect ingest status or retract a source                                   |
-| `POST /v1/interactions/:id/retry`                 | Retry failed ingest without a new source identity                           |
+| `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)        |
+| `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                              |
 | `POST /v1/search`                                 | Keyword search (5.1)                                                        |
 
 The OpenAPI document is generated per workspace from its schema.
@@ -691,10 +643,16 @@ and any search or query across workspaces, are out of scope for v1.
 Inputs are validated at runtime against the workspace schema, and validation
 errors name the field and the allowed values so the agent can retry.
 
-`remember(record, text)` stores the text as a `note` interaction and writes
-one `stated` fact from it at once, so the agent can read it back
-immediately. Do not enqueue extraction of that note too, which would create
-a second fact.
+`remember(record, text, source?, quote?)` writes one `stated` fact at once,
+citing `source` (an interaction ID) with an optional quote. Without
+`source`, it creates a `note` interaction for the fact to cite.
+
+`upsert_record` accepts an optional `source` (an interaction ID). Values
+from a conversation should cite it, so they carry the interaction's date as
+`observed_at` (rule 2.2) and an older email cannot overwrite a newer claim.
+
+The tool descriptions spell out the workflow in 4.1, so an agent knows to
+log the interaction first and cite it in the writes that follow.
 
 #### Finding the record to update
 
@@ -740,7 +698,7 @@ does not make note creation or assertion history idempotent. A merge
 request is already idempotent by state (B already merged into A is a
 no-op). Required scaffold addition: an `idempotency_keys` table (workspace,
 operation, key, request hash, result, expiry); `interactions.external_id`
-only covers interaction ingest.
+only covers logging interactions.
 
 Several agents can share a workspace. Each uses its own API key, so every
 write is attributed to the agent that made it; between agents the latest
@@ -812,8 +770,7 @@ admin HTTP API in v1.
 ## 9. Stack
 
 TypeScript on Node 22, pnpm workspaces, Hono, Drizzle ORM and drizzle-kit
-migrations, Zod, pg-boss, the Vercel AI SDK (bring your own model
-provider), and the official MCP TypeScript SDK.
+migrations, Zod, pg-boss, and the official MCP TypeScript SDK. No LLM SDK.
 
 ## 10. Build order
 
@@ -821,8 +778,8 @@ provider), and the official MCP TypeScript SDK.
    CRUD, REST, API keys and the workspace/key CLI (including direct-write
    precedence and review).
 2. MCP endpoint with the read and write tools.
-3. Interactions and the ingest pipeline (participants, extraction, assertions).
-4. Facts, keyword search, context packs.
+3. Interaction log, participant matching and facts (`remember`, sources).
+4. Keyword search and context packs.
 5. Consolidator (fact dedupe and supersession, merge suggestions), review
    queue, `forget`.
 6. SDK, stdio bridge, docs, first release.
@@ -831,16 +788,16 @@ Each step lands with its tests (12). Step 1 also sets up the test harness:
 fresh database per test, a helper that starts the server, and the CI
 workflow.
 
-Not planned: embeddings and semantic search. Search is Postgres full-text
-only, so no vector extension or embedding provider is needed. A BM25 backend
-may come later as an option (5.1).
+Not planned: embeddings and semantic search, and any language model inside
+Retainer (server-side extraction, generated summaries, an `ask` endpoint).
+Search is Postgres full-text only. A BM25 backend may come later as an
+option (5.1).
 
-Left out of the first release: `ask`, phone-based participant matching,
-typed SQL views, per-field index automation, field type changes, inferred
-facts, automatic record merges, stale-field flags, per-chunk extraction
-checkpoints, exact historical belief snapshots, versioned re-ingest of edited
-sources, partial redaction on `forget`, and agents connected to more than one
-workspace.
+Left out of the first release: phone-based participant matching, typed SQL
+views, per-field index automation, field type changes, inferred facts,
+automatic record merges, stale-field flags, exact historical belief
+snapshots, versioned re-logging of edited sources, partial redaction on
+`forget`, and agents connected to more than one workspace.
 
 ## 11. Schema checklist before build step 1
 
@@ -866,12 +823,17 @@ step 1.
   `workspaces.initialized_at` (3.1)
 - [ ] `records.merged_into_id` (1.1, 4.2)
 - [ ] `field_assertions.observed_at` (1.3, rule 2.2)
-- [ ] `record_cards.stale_since`, `source_revision`, `withheld` (4.2, 5)
-- [ ] `search tsvector` on `facts` and `interactions`, computed by the server
-  like `records.search` (5.1)
+- [ ] `search tsvector` on `facts` and `interactions` (title and summary),
+  computed by the server like `records.search` (5.1)
 - [ ] `records.label text`: the label field as plain text, for fuzzy name
   lookup (5.1)
 - [ ] `workspace_id` on `interaction_participants` and `fact_sources` (7)
+
+**Agent-written memory (4.1, 4.3)**
+
+- [ ] `interactions`: replace `content`, `content_format`, `ingest_status`
+  and `ingest_error` with `summary text`
+- [ ] Drop the `record_cards` table
 
 **Changed constraints and defaults**
 
@@ -902,16 +864,16 @@ step 1.
 ## 12. Testing
 
 Every build step lands with its tests. Nothing is "done" until the layers
-below that apply to it pass locally and in CI.
+below that apply to it pass locally and in CI. Retainer has no language
+model inside it, so every layer except 5 is deterministic.
 
-| Layer                   | What it proves                                                                                                                                                                      | How                                                                                                     | Runs                   |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------- |
-| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), Hebrew prefix and query parsing (5.1), value validation | Vitest, no database                                                                                     | Every PR               |
-| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget`        | Vitest against real Postgres; each test gets a fresh database                                           | Every PR               |
-| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                                  | The Hono app called in-process against a real database                                                  | Every PR               |
-| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction, review a conflict, search, get context                            | A runner starts Postgres and the server, then drives them through the MCP client and REST               | Every PR (from step 2) |
-| 5. Live agent           | Whether a real agent understands the tools: names, descriptions, error messages                                                                                                     | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks     | By hand, per milestone |
-| 6. Extraction quality   | Whether the LLM extracts the right fields and facts from real conversations                                                                                                         | A small set of sample transcripts in Hebrew and English with expected outputs, run against a real model | On demand, not in CI   |
+| Layer                   | What it proves                                                                                                                                                                      | How                                                                                                 | Runs                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
+| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), Hebrew prefix and query parsing (5.1), value validation | Vitest, no database                                                                                 | Every PR               |
+| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget`        | Vitest against real Postgres; each test gets a fresh database                                       | Every PR               |
+| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                                  | The Hono app called in-process against a real database                                              | Every PR               |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context                | A runner starts Postgres and the server, then drives them through the MCP client and REST           | Every PR (from step 2) |
+| 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation                | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
 
 ### Rules
 
@@ -922,9 +884,6 @@ below that apply to it pass locally and in CI.
 - **Real Postgres, never a mock,** for anything that touches the database.
   Locking, row-level security and unique constraints are the point of
   layers 2 and 3.
-- **No real LLM calls in CI.** Ingest tests use a mock model (the AI SDK's
-  mock provider) that returns fixed structured output, so they are
-  deterministic and free. Layer 6 is the only place a real model runs.
 - **Concurrency is tested, not assumed.** Every rule in 2 that says
   "serialized", "atomic" or "idempotent" gets a test that runs the
   competing operations at the same time.
@@ -934,5 +893,5 @@ below that apply to it pass locally and in CI.
 ### CI
 
 A GitHub Actions workflow runs on every PR and on `main`: lint, typecheck,
-then layers 1–4, with Postgres as a service container. Layer 6 is a manual
-workflow that needs a model API key.
+then layers 1–4, with Postgres as a service container. Retainer calls no
+model, so CI needs no API keys.
