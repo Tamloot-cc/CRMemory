@@ -22,8 +22,6 @@ See `ARCHITECTURE.md` section 12 for the six test layers.
   integration tests against real Postgres. Never mock the database.
 - Each test gets its own fresh database cloned from a migrated template;
   never share rows between tests.
-- No real LLM calls in tests; use the AI SDK mock provider. Real-model
-  extraction evals are manual (layer 6).
 - Rules described as serialized, atomic or idempotent need a test that runs
   the competing operations concurrently.
 
@@ -34,7 +32,8 @@ See `ARCHITECTURE.md` section 12 for the six test layers.
 - `records.data` is derived from `field_assertions`; write assertions, not data.
 - All schema changes go through the schema engine; never write to
   `object_types` or `fields` directly.
-- Never hold a DB transaction open across an LLM call.
+- Retainer never calls a language model or embedding provider. Agents decide
+  what to write; the server validates, stores and retrieves.
 - No embeddings or semantic search: search is Postgres full-text only.
 - Server code is AGPL-3.0; `shared`, `sdk` and `mcp` are MIT. Don't import
   server code into the MIT packages.

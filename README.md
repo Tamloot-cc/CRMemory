@@ -3,16 +3,18 @@
 Open-source memory for AI agents that work with customer relationships.
 
 Retainer keeps a living record of every person, company and deal a business
-works with. Agents log interactions (meetings, calls, emails, messages), and
-Retainer turns them into typed fields and plain-language facts, each linked to
-the interaction it came from. Agents read it back through MCP or a REST API.
+works with. Agents read conversations with their own models and write what
+matters: typed fields, plain-language facts and a log of interactions, each
+linked to who wrote it and where it came from. Agents read it back through MCP
+or a REST API.
 
 There is no UI. It is a backend for agents.
 
 - **Schema as data**: objects and fields are stored as rows, so a workspace,
   or an agent working in it, can add fields and objects at runtime.
-- **Derived memory**: background workers extract facts and field values from
-  raw interactions, with provenance and confidence.
+- **Agent-written memory**: Retainer never calls a language model. It
+  validates writes, resolves conflicts between agents and people, keeps
+  history and makes it searchable.
 - **Self-hosted**: one Docker image and Postgres.
 
 Status: early development. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
