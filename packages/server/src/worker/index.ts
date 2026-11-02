@@ -1,5 +1,5 @@
 /**
- * Background workers: ingest, consolidate, embed, schema-index builder.
+ * Background workers: ingest and consolidate.
  * Not implemented yet; see ARCHITECTURE.md section 4 and the build order.
  */
 export async function startWorker(): Promise<{ stop: () => Promise<void> }> {

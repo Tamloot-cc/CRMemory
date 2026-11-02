@@ -1,5 +1,5 @@
 {
-  "id": "77ef75a6-a991-4ea1-b60d-a0068ecbdfc4",
+  "id": "72280f20-f0ed-4a0f-968f-a473bbb356ff",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -293,12 +293,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "embedding": {
-          "name": "embedding",
-          "type": "vector(1536)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "actor": {
           "name": "actor",
           "type": "jsonb",
@@ -340,22 +334,6 @@
           "where": "\"facts\".\"valid_to\" is null and \"facts\".\"deleted_at\" is null",
           "concurrently": false,
           "method": "btree",
-          "with": {}
-        },
-        "facts_embedding_idx": {
-          "name": "facts_embedding_idx",
-          "columns": [
-            {
-              "expression": "embedding",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "vector_cosine_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "hnsw",
           "with": {}
         }
       },
@@ -785,102 +763,6 @@
           "tableTo": "object_types",
           "columnsFrom": [
             "object_type_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.interaction_chunks": {
-      "name": "interaction_chunks",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "interaction_id": {
-          "name": "interaction_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "position": {
-          "name": "position",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content": {
-          "name": "content",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "embedding": {
-          "name": "embedding",
-          "type": "vector(1536)",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "interaction_chunks_position_uq": {
-          "name": "interaction_chunks_position_uq",
-          "columns": [
-            {
-              "expression": "interaction_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "position",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "interaction_chunks_embedding_idx": {
-          "name": "interaction_chunks_embedding_idx",
-          "columns": [
-            {
-              "expression": "embedding",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "vector_cosine_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "hnsw",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "interaction_chunks_interaction_id_interactions_id_fk": {
-          "name": "interaction_chunks_interaction_id_interactions_id_fk",
-          "tableFrom": "interaction_chunks",
-          "tableTo": "interactions",
-          "columnsFrom": [
-            "interaction_id"
           ],
           "columnsTo": [
             "id"

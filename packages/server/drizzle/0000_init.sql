@@ -30,7 +30,6 @@ CREATE TABLE "facts" (
 	"valid_from" timestamp with time zone DEFAULT now() NOT NULL,
 	"valid_to" timestamp with time zone,
 	"superseded_by" uuid,
-	"embedding" vector(1536),
 	"actor" jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"deleted_at" timestamp with time zone
@@ -70,14 +69,6 @@ CREATE TABLE "fields" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"deleted_at" timestamp with time zone
-);
---> statement-breakpoint
-CREATE TABLE "interaction_chunks" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"interaction_id" uuid NOT NULL,
-	"position" integer NOT NULL,
-	"content" text NOT NULL,
-	"embedding" vector(1536)
 );
 --> statement-breakpoint
 CREATE TABLE "interaction_participants" (
@@ -195,7 +186,6 @@ ALTER TABLE "field_assertions" ADD CONSTRAINT "field_assertions_field_id_fields_
 ALTER TABLE "field_assertions" ADD CONSTRAINT "field_assertions_source_interaction_id_interactions_id_fk" FOREIGN KEY ("source_interaction_id") REFERENCES "public"."interactions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "fields" ADD CONSTRAINT "fields_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "fields" ADD CONSTRAINT "fields_object_type_id_object_types_id_fk" FOREIGN KEY ("object_type_id") REFERENCES "public"."object_types"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "interaction_chunks" ADD CONSTRAINT "interaction_chunks_interaction_id_interactions_id_fk" FOREIGN KEY ("interaction_id") REFERENCES "public"."interactions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "interaction_participants" ADD CONSTRAINT "interaction_participants_interaction_id_interactions_id_fk" FOREIGN KEY ("interaction_id") REFERENCES "public"."interactions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "interaction_participants" ADD CONSTRAINT "interaction_participants_record_id_records_id_fk" FOREIGN KEY ("record_id") REFERENCES "public"."records"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "interactions" ADD CONSTRAINT "interactions_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -213,14 +203,11 @@ CREATE INDEX "api_keys_workspace_idx" ON "api_keys" USING btree ("workspace_id")
 CREATE INDEX "fact_sources_fact_idx" ON "fact_sources" USING btree ("fact_id");--> statement-breakpoint
 CREATE INDEX "fact_sources_interaction_idx" ON "fact_sources" USING btree ("interaction_id");--> statement-breakpoint
 CREATE INDEX "facts_record_current_idx" ON "facts" USING btree ("record_id","valid_from") WHERE "facts"."valid_to" is null and "facts"."deleted_at" is null;--> statement-breakpoint
-CREATE INDEX "facts_embedding_idx" ON "facts" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
 CREATE INDEX "field_assertions_record_field_idx" ON "field_assertions" USING btree ("record_id","field_id","created_at");--> statement-breakpoint
 CREATE INDEX "field_assertions_review_idx" ON "field_assertions" USING btree ("workspace_id") WHERE "field_assertions"."status" = 'pending_review';--> statement-breakpoint
 CREATE UNIQUE INDEX "fields_universal_uq" ON "fields" USING btree ("workspace_id","universal_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "fields_key_uq" ON "fields" USING btree ("object_type_id","key");--> statement-breakpoint
 CREATE UNIQUE INDEX "fields_name_uq" ON "fields" USING btree ("object_type_id","name") WHERE "fields"."deleted_at" is null;--> statement-breakpoint
-CREATE UNIQUE INDEX "interaction_chunks_position_uq" ON "interaction_chunks" USING btree ("interaction_id","position");--> statement-breakpoint
-CREATE INDEX "interaction_chunks_embedding_idx" ON "interaction_chunks" USING hnsw ("embedding" vector_cosine_ops);--> statement-breakpoint
 CREATE INDEX "interaction_participants_interaction_idx" ON "interaction_participants" USING btree ("interaction_id");--> statement-breakpoint
 CREATE INDEX "interaction_participants_record_idx" ON "interaction_participants" USING btree ("record_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "interactions_external_uq" ON "interactions" USING btree ("workspace_id","channel","external_id") WHERE "interactions"."external_id" is not null;--> statement-breakpoint
