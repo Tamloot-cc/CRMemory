@@ -682,10 +682,11 @@ the tool list without limit and break clients' tool caching.
 `get_record`, `search`, `get_context`, `upsert_record`, `log_interaction`,
 `remember`, `propose_schema_change`.
 
-One MCP connection is one API key, so one workspace. An agent that works for
-two businesses connects twice, once per workspace's key. `describe_schema`
-returns the workspace's ID and name so the agent can tell its connections
-apart. There is no search or query across workspaces.
+In v1 an agent is connected to exactly one workspace through one API key.
+Every call acts on that workspace, so no tool takes a workspace parameter.
+`describe_schema` still returns the workspace's ID and name for logs and
+for the agent's own context. Agents that work across several workspaces,
+and any search or query across workspaces, are out of scope for v1.
 
 Inputs are validated at runtime against the workspace schema, and validation
 errors name the field and the allowed values so the agent can retry.
@@ -834,7 +835,8 @@ Left out of the first release: `ask`, phone-based participant matching,
 typed SQL views, per-field index automation, field type changes, inferred
 facts, automatic record merges, stale-field flags, per-chunk extraction
 checkpoints, exact historical belief snapshots, versioned re-ingest of edited
-sources, and partial redaction on `forget`.
+sources, partial redaction on `forget`, and agents connected to more than one
+workspace.
 
 ## 11. Schema checklist before build step 1
 
