@@ -4,8 +4,15 @@ import { INTERACTION_KINDS, type InteractionKind, type UnmatchedReason } from '.
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { requestHash } from '../idempotency.js';
+import { isSuppressed, suppressedOf, suppressionDigest } from '../privacy/suppression.js';
 import { searchVector } from '../records/search-sql.js';
-import { type LockedRecord, recomputeFields, type WriteContext } from '../records/write.js';
+import {
+  lockRecordsForUpdate,
+  MAX_MERGE_HOPS,
+  type RemovedClaim,
+  releaseAndRecompute,
+  type WriteContext,
+} from '../records/write.js';
 import { type Handle, parseHandle } from './handles.js';
 
 /**
@@ -17,8 +24,6 @@ import { type Handle, parseHandle } from './handles.js';
 export const MAX_PARTICIPANTS = 200;
 /** How far past the server's clock `occurredAt` may be, for clock skew. */
 const FUTURE_SKEW = '10 minutes';
-/** Merge chains are short; this only stops a corrupt cycle. */
-const MAX_MERGE_HOPS = 16;
 
 export const participantInputSchema = z.strictObject({
   handle: z.string().trim().min(1).max(320).optional(),
@@ -287,6 +292,17 @@ export async function logInteraction(
     );
   }
 
+  // A handle erased by forget is never stored again (2.1), not even inside
+  // the unkeyed request hash, where the stored fields beside it would let a
+  // database dump confirm guesses. The caller holds the privacy lock in
+  // shared mode, so forget cannot run between this check and the commit.
+  const suppressed = await suppressedOf(
+    tx,
+    context.workspaceId,
+    participants.flatMap((p) => (p.handle ? [p.handle] : [])),
+  );
+  const erased = participants.map((p) => p.handle !== null && isSuppressed(suppressed, p.handle));
+
   const hash = requestHash({
     kind: input.kind,
     channel: input.channel,
@@ -294,8 +310,11 @@ export async function logInteraction(
     occurredAt: occurredAt.toISOString(),
     title: input.title ?? null,
     summary: input.summary ?? null,
-    participants: participants.map((p) => ({
-      handle: p.handle?.value ?? null,
+    participants: participants.map((p, i) => ({
+      handle:
+        p.handle && erased[i]
+          ? `suppressed:${suppressionDigest(context.workspaceId, p.handle)}`
+          : (p.handle?.value ?? null),
       recordId: p.recordId,
       role: p.role,
     })),
@@ -312,17 +331,19 @@ export async function logInteraction(
 
   if (!inserted) return existingInteraction(tx, context.workspaceId, input, hash);
 
-  const resolutions = await resolveParticipants(tx, context.workspaceId, participants);
-  const rows = participants.map((p, position) => {
+  const kept = participants.map((p, i) => (erased[i] ? { ...p, handle: null } : p));
+  const resolutions = await resolveParticipants(tx, context.workspaceId, kept);
+  const rows = kept.map((p, position) => {
     const resolution = resolutions[position] as Resolution;
+    const matched = 'recordId' in resolution;
     return {
       workspace_id: context.workspaceId,
       interaction_id: inserted.id,
       position,
       handle: p.handle?.value ?? null,
       role: p.role,
-      record_id: 'recordId' in resolution ? resolution.recordId : null,
-      unmatched_reason: 'reason' in resolution ? resolution.reason : null,
+      record_id: matched ? resolution.recordId : null,
+      unmatched_reason: matched ? null : erased[position] ? 'suppressed' : resolution.reason,
     };
   });
   if (rows.length > 0) await tx`insert into interaction_participants ${tx(rows)}`;
@@ -519,16 +540,13 @@ export async function retractInteraction(
     select distinct record_id from field_assertions
     where workspace_id = ${context.workspaceId} and source_interaction_id = ${id}
       and status in ('active', 'superseded', 'pending_review')`;
-  const recordIds = affected.map((a) => a.record_id).sort();
-  const locked =
-    recordIds.length === 0
-      ? []
-      : await tx<LockedRecord[]>`
-          select id, object_type_id, data, updated_at, deleted_at, merged_into_id from records
-          where workspace_id = ${context.workspaceId} and id = any(${recordIds}::uuid[])
-          order by id for update`;
+  const locked = await lockRecordsForUpdate(
+    tx,
+    context.workspaceId,
+    affected.map((a) => a.record_id),
+  );
 
-  const retracted = await tx<{ record_id: string; field_id: string; status: string }[]>`
+  const retracted = await tx<RemovedClaim[]>`
     with target as (
       select id, record_id, field_id, status from field_assertions
       where workspace_id = ${context.workspaceId} and source_interaction_id = ${id}
@@ -538,34 +556,9 @@ export async function retractInteraction(
     from target t where a.id = t.id
     returning t.record_id, t.field_id, t.status`;
 
-  // Release every identifier the retracted winners held, across all affected
-  // records, before recomputing any of them. Otherwise a claim from this very
-  // interaction on a record later in the order would block another record's
-  // previous value from coming back.
-  const released = retracted.filter((a) => a.status === 'active');
-  if (released.length > 0) {
-    await tx`
-      delete from record_identifiers ri
-      using unnest(${released.map((a) => a.record_id)}::uuid[],
-        ${released.map((a) => a.field_id)}::uuid[]) as r(record_id, field_id)
-      where ri.workspace_id = ${context.workspaceId}
-        and ri.record_id = r.record_id and ri.field_id = r.field_id`;
-  }
-
-  const recomputed: string[] = [];
-  for (const record of locked) {
-    const fieldIds = [
-      ...new Set(
-        retracted
-          .filter((a) => a.record_id === record.id && a.status === 'active')
-          .map((a) => a.field_id),
-      ),
-    ];
-    const object = context.schema.objectsById.get(record.object_type_id);
-    if (fieldIds.length === 0 || !object) continue;
-    await recomputeFields(tx, context, object, record, fieldIds);
-    recomputed.push(record.id);
-  }
+  // A claim from this very interaction on a record later in the order must
+  // not block another record's previous value from coming back.
+  const recomputed = await releaseAndRecompute(tx, context, locked, retracted);
 
   const hidden = await tx<{ id: string }[]>`
     select distinct f.id from facts f

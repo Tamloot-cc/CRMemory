@@ -68,7 +68,7 @@ export const LABEL_FIELD_TYPES: ReadonlySet<FieldType> = new Set([
   'select',
 ]);
 
-const MULTI_VALUE_TYPES: ReadonlySet<FieldType> = new Set(['emails', 'phones', 'links']);
+export const MULTI_VALUE_TYPES: ReadonlySet<FieldType> = new Set(['emails', 'phones', 'links']);
 
 /**
  * Step 3 of the engine: checks the desired schema as a whole. Returns every

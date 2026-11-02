@@ -2,6 +2,7 @@ import type { Actor, ActorType } from '@retainer/shared';
 import type { AssertionStatus, ReviewReason } from '../db/schema.js';
 import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
+import { isSuppressed, suppressedOf, suppressibleHandles } from '../privacy/suppression.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import { identifiersFor, searchTextOf } from './derive.js';
@@ -29,6 +30,11 @@ export type WriteOptions = {
   confidence?: number;
   /** Rejects the write if the record changed since (rule 2.5). */
   expectedUpdatedAt?: string;
+  /**
+   * Skips the suppression check (2.1). Only for values live records already
+   * hold, such as the combined emails a merge writes.
+   */
+  skipSuppressionCheck?: boolean;
 };
 
 /** What happened to each written field (6.2). */
@@ -82,10 +88,16 @@ const toRanked = (row: AssertionRow): RankedAssertion => ({
 const hasIdentifiers = (field: FieldState) =>
   field.isUnique || field.type === 'emails' || field.type === 'phones' || field.type === 'links';
 
+/**
+ * Merges flatten chains (4.2), so a merged ID is one hop from its survivor;
+ * the limit only stops a corrupt cycle.
+ */
+export const MAX_MERGE_HOPS = 16;
+
 /** Follows `merged_into_id` to the surviving record (4.2). */
 export async function resolveRecordId(tx: Tx, workspaceId: string, id: string): Promise<string> {
   let current = id;
-  for (let hops = 0; hops < 16; hops++) {
+  for (let hops = 0; hops < MAX_MERGE_HOPS; hops++) {
     const [row] = await tx<{ merged_into_id: string | null }[]>`
       select merged_into_id from records where id = ${current} and workspace_id = ${workspaceId}`;
     if (!row) throw notFound('record', { id });
@@ -98,13 +110,17 @@ export async function resolveRecordId(tx: Tx, workspaceId: string, id: string): 
 /**
  * Locks a live record for writing (rule 2.5). A merged ID resolves to the
  * surviving record; a deleted record cannot be written.
+ *
+ * Writes take `FOR NO KEY UPDATE`, so they serialize with each other but
+ * not with the `FOR KEY SHARE` a relation write takes on its target. Merges
+ * and deletes take `FOR UPDATE`, which waits for both.
  */
 export async function lockRecord(tx: Tx, workspaceId: string, id: string): Promise<LockedRecord> {
   const canonical = await resolveRecordId(tx, workspaceId, id);
   const [row] = await tx<LockedRecord[]>`
     select id, object_type_id, data, updated_at, deleted_at, merged_into_id from records
     where id = ${canonical} and workspace_id = ${workspaceId}
-    for update`;
+    for no key update`;
   if (!row) throw notFound('record', { id });
   if (row.merged_into_id) return lockRecord(tx, workspaceId, row.merged_into_id);
   if (row.deleted_at) {
@@ -126,7 +142,45 @@ export function objectOf(
   return object;
 }
 
-/** Relation values must point at a live record of the target object, in this workspace. */
+type TargetRow = {
+  id: string;
+  object_type_id: string;
+  deleted_at: Date | null;
+  merged_into_id: string | null;
+};
+
+/**
+ * Locks relation targets `FOR KEY SHARE` in sorted ID order, following
+ * merges (4.2). A merge locks the record it removes `FOR UPDATE`, so this
+ * waits for it; READ COMMITTED then sees the merged row, and the value
+ * moves to the survivor.
+ */
+async function lockTargets(
+  tx: Tx,
+  workspaceId: string,
+  ids: readonly string[],
+): Promise<Map<string, TargetRow | undefined>> {
+  const lock = (some: readonly string[]) => tx<TargetRow[]>`
+    select id, object_type_id, deleted_at, merged_into_id from records
+    where workspace_id = ${workspaceId} and id = any(${some as string[]}::uuid[])
+    order by id for key share`;
+  const rows = new Map((await lock(ids)).map((r) => [r.id, r]));
+  const targets = new Map<string, TargetRow | undefined>();
+  for (const id of ids) {
+    let row = rows.get(id);
+    for (let hops = 0; row?.merged_into_id && hops < MAX_MERGE_HOPS; hops++) {
+      [row] = await lock([row.merged_into_id]);
+    }
+    targets.set(id, row?.merged_into_id ? undefined : row);
+  }
+  return targets;
+}
+
+/**
+ * Relation values must point at a live record of the target object, in this
+ * workspace. A merged ID is replaced by its surviving record, as for any ID
+ * a caller passes.
+ */
 async function checkRelationTargets(
   tx: Tx,
   context: WriteContext,
@@ -137,13 +191,13 @@ async function checkRelationTargets(
     (entry): entry is [FieldState, string] => entry[0].type === 'relation' && entry[1] !== null,
   );
   if (relations.length === 0) return;
-  const rows = await tx<{ id: string; object_type_id: string; deleted_at: Date | null }[]>`
-    select id, object_type_id, deleted_at from records
-    where workspace_id = ${context.workspaceId} and id = any(${relations.map(([, id]) => id)}::uuid[])`;
-  const byId = new Map(rows.map((r) => [r.id, r]));
+  const byId = await lockTargets(tx, context.workspaceId, [
+    ...new Set(relations.map(([, id]) => id)),
+  ]);
   const errors = [];
   for (const [field, targetId] of relations) {
     const target = byId.get(targetId);
+    if (target && target.id !== targetId) writes.set(field, target.id);
     const targetObject = context.schema.objectsByUniversalId.get(
       field.settings.targetObjectId ?? '',
     );
@@ -158,6 +212,45 @@ async function checkRelationTargets(
   }
   if (errors.length > 0) {
     throw new AppError(422, 'invalid_values', `invalid values for ${object.name}`, { errors });
+  }
+}
+
+/**
+ * Emails and phones erased by `forget` cannot be written again (2.1). A
+ * handle the record already holds is not new: another live record can
+ * share a phone with the forgotten person and keeps it. The caller holds
+ * the privacy lock in shared mode, so the check and the write commit
+ * inside the same boundary as `forget`. The error names the field, never
+ * the value.
+ */
+async function checkSuppressed(
+  tx: Tx,
+  context: WriteContext,
+  record: LockedRecord,
+  writes: Map<FieldState, unknown>,
+): Promise<void> {
+  const handles = [...writes].flatMap(([field, value]) =>
+    suppressibleHandles(field, value).map((handle) => ({ field, handle })),
+  );
+  const suppressed = await suppressedOf(
+    tx,
+    context.workspaceId,
+    handles.map((h) => h.handle),
+  );
+  const hits = handles.filter((h) => isSuppressed(suppressed, h.handle));
+  if (hits.length === 0) return;
+  const held = await tx<{ value: string }[]>`
+    select value from record_identifiers
+    where record_id = ${record.id} and kind in ('email', 'phone')`;
+  const heldValues = new Set(held.map((h) => h.value));
+  const hit = hits.find((h) => !heldValues.has(h.handle.value));
+  if (hit) {
+    throw new AppError(
+      409,
+      'suppressed',
+      `a value of ${hit.field.name} was erased by a privacy request and cannot be stored again`,
+      { field: hit.field.name },
+    );
   }
 }
 
@@ -184,6 +277,7 @@ export async function writeFields(
     });
   }
   await checkRelationTargets(tx, context, object, writes);
+  if (!options.skipSuppressionCheck) await checkSuppressed(tx, context, record, writes);
 
   const fields = [...writes.keys()];
   const fieldIds = fields.map((f) => f.id as string);
@@ -356,6 +450,75 @@ export async function recomputeFields(
   await applyWinners(tx, context, object, record, winners, claimed);
 }
 
+/** Locks records `FOR UPDATE` in sorted ID order (rule 2.5), for merges, retraction and `forget`. */
+export async function lockRecordsForUpdate(
+  tx: Tx,
+  workspaceId: string,
+  ids: readonly string[],
+): Promise<LockedRecord[]> {
+  if (ids.length === 0) return [];
+  return tx<LockedRecord[]>`
+    select id, object_type_id, data, updated_at, deleted_at, merged_into_id from records
+    where workspace_id = ${workspaceId} and id = any(${[...ids].sort()}::uuid[])
+    order by id for update`;
+}
+
+/** An assertion that stopped counting, with the status it had. */
+export type RemovedClaim = { record_id: string; field_id: string; status: string };
+
+/**
+ * After assertions stop counting (retracted or deleted), recomputes the
+ * fields where one of them was winning, on the given locked records. Every
+ * identifier those winners held is released first, across all records, so
+ * a claim from one record cannot block another's previous value from
+ * coming back. Returns the IDs of the records recomputed.
+ */
+export async function releaseAndRecompute(
+  tx: Tx,
+  context: WriteContext,
+  locked: readonly LockedRecord[],
+  removed: readonly RemovedClaim[],
+): Promise<string[]> {
+  const winners = removed.filter((c) => c.status === 'active');
+  if (winners.length > 0) {
+    await tx`
+      delete from record_identifiers ri
+      using unnest(${winners.map((c) => c.record_id)}::uuid[],
+        ${winners.map((c) => c.field_id)}::uuid[]) as r(record_id, field_id)
+      where ri.workspace_id = ${context.workspaceId}
+        and ri.record_id = r.record_id and ri.field_id = r.field_id`;
+  }
+  const recomputed: string[] = [];
+  for (const record of locked) {
+    const fieldIds = [
+      ...new Set(winners.filter((c) => c.record_id === record.id).map((c) => c.field_id)),
+    ];
+    const object = context.schema.objectsById.get(record.object_type_id);
+    if (fieldIds.length === 0 || !object) continue;
+    await recomputeFields(tx, context, object, record, fieldIds);
+    recomputed.push(record.id);
+  }
+  return recomputed;
+}
+
+/**
+ * Closes pending merge suggestions that involve records which are no
+ * longer live (merged or deleted), so review only ever lists live pairs.
+ */
+export async function closeSuggestionsFor(
+  tx: Tx,
+  context: WriteContext,
+  recordIds: readonly string[],
+): Promise<void> {
+  if (recordIds.length === 0) return;
+  await tx`
+    update merge_suggestions set status = 'dismissed', decided_by = ${tx.json(context.actor)},
+      decided_at = clock_timestamp()
+    where workspace_id = ${context.workspaceId} and status = 'pending'
+      and (record_a_id = any(${recordIds as string[]}::uuid[])
+        or record_b_id = any(${recordIds as string[]}::uuid[]))`;
+}
+
 /**
  * Replaces a field's identifier rows with those of its new winning value.
  * A claim another record already holds fails the whole write with the
@@ -480,8 +643,7 @@ export async function softDeleteRecord(
   }
 
   const sorted = [...ids].sort();
-  const locked = await tx<{ id: string; deleted_at: Date | null }[]>`
-    select id, deleted_at from records where id = any(${sorted}::uuid[]) order by id for update`;
+  const locked = await lockRecordsForUpdate(tx, context.workspaceId, sorted);
   if (locked.find((r) => r.id === rootId)?.deleted_at) {
     throw new AppError(409, 'record_deleted', `record ${rootId} is already deleted`, {
       recordId: rootId,
@@ -491,5 +653,6 @@ export async function softDeleteRecord(
     update records set deleted_at = clock_timestamp(), updated_at = clock_timestamp(),
       updated_by = ${tx.json(context.actor)}
     where id = any(${sorted}::uuid[]) and deleted_at is null`;
+  await closeSuggestionsFor(tx, context, sorted);
   return sorted;
 }

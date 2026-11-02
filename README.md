@@ -40,6 +40,13 @@ docker compose -f docker/compose.yml exec retainer retainer key create --workspa
 
 Send the key as `Authorization: Bearer <key>` to the REST API under `/v1`.
 
+To erase a person on request (`POST /v1/records/:id/forget`), set
+`RETAINER_SUPPRESSION_KEY` to a long random secret (at least 32 characters)
+and keep it stable: erased emails and phones are stored only as an HMAC under
+this key, so a new key lets them back in. `openssl rand -hex 32` makes one.
+The consolidator runs per workspace every `RETAINER_CONSOLIDATE_INTERVAL_MINUTES`
+(default 60).
+
 ## Open the web app
 
 The Docker image serves the app at [localhost:8787/app](http://localhost:8787/app/).
@@ -60,9 +67,9 @@ external origin (for example `https://retainer.example`). CSRF checks compare
 the browser Origin to this configured value; forwarded headers are not trusted.
 The setting also controls the cookie's public host and Secure handling.
 
-Non-user keys can browse read-only. Global search, merge suggestions, `forget`
-and record creation are deferred; the web app does not require those backend
-milestones to run.
+Non-user keys can browse read-only. Merge suggestions appear in the review
+inbox; merging, dismissing and `forget` are available over the REST API but
+not yet in the app. Global search and record creation in the app are deferred.
 
 ## Connect an agent
 

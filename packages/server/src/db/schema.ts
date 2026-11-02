@@ -375,9 +375,16 @@ export const interactions = pgTable(
 
 /**
  * Why a participant was not matched to a record (4.1, 6.2). `ambiguous`:
- * the handle is claimed by more than one live record (1.2).
+ * the handle is claimed by more than one live record (1.2). `suppressed`:
+ * the handle was erased by `forget` (2.1), so it is not stored.
  */
-export const UNMATCHED_REASONS = ['no_match', 'phone_only', 'deleted_record', 'ambiguous'] as const;
+export const UNMATCHED_REASONS = [
+  'no_match',
+  'phone_only',
+  'deleted_record',
+  'ambiguous',
+  'suppressed',
+] as const;
 export type UnmatchedReason = (typeof UNMATCHED_REASONS)[number];
 
 export const interactionParticipants = pgTable(
@@ -411,7 +418,7 @@ export const interactionParticipants = pgTable(
       .where(sql`${t.unmatchedReason} = 'deleted_record'`),
     check(
       'interaction_participants_unmatched_reason',
-      sql`${t.unmatchedReason} in ('no_match', 'phone_only', 'deleted_record', 'ambiguous')`,
+      sql`${t.unmatchedReason} in ('no_match', 'phone_only', 'deleted_record', 'ambiguous', 'suppressed')`,
     ),
   ],
 );
@@ -472,6 +479,8 @@ export const fieldAssertions = pgTable(
       [fields.workspaceId, fields.id],
     ),
     index('field_assertions_record_field_idx').on(t.recordId, t.fieldId, t.status),
+    // Relation claims by target, for merges and forget (4.2, 2.1).
+    index('field_assertions_field_idx').on(t.workspaceId, t.fieldId),
     index('field_assertions_source_idx')
       .on(t.sourceInteractionId)
       .where(sql`${t.sourceInteractionId} is not null`),
@@ -505,6 +514,8 @@ export const facts = pgTable(
   (t) => [
     unique('facts_workspace_id_uq').on(t.workspaceId, t.id),
     tenantFk('facts_record_fk', [t.workspaceId, t.recordId], [records.workspaceId, records.id]),
+    // Every fact of a record, for merges and record deletion (4.2, 2.1).
+    index('facts_record_idx').on(t.recordId),
     index('facts_record_current_idx')
       .on(t.recordId, t.validFrom)
       .where(sql`${t.validTo} is null and ${t.deletedAt} is null`),
@@ -563,6 +574,8 @@ export const mergeSuggestions = pgTable(
       [records.workspaceId, records.id],
     ),
     uniqueIndex('merge_suggestions_pair_uq').on(t.workspaceId, t.recordAId, t.recordBId),
+    // The pair index covers record_a; this one covers record_b (4.2).
+    index('merge_suggestions_record_b_idx').on(t.workspaceId, t.recordBId),
     index('merge_suggestions_pending_idx')
       .on(t.workspaceId, t.createdAt)
       .where(sql`${t.status} = 'pending'`),
@@ -617,3 +630,18 @@ export const deletionAuditLog = pgTable(
   },
   (t) => [index('deletion_audit_log_workspace_idx').on(t.workspaceId, t.createdAt)],
 );
+
+/**
+ * The consolidator's last run per workspace (4.2). Workers take turns
+ * through an advisory lock. `compared_until` is how far records have been
+ * compared for merge suggestions, so a later run probes only newer changes.
+ */
+export const consolidatorRuns = pgTable('consolidator_runs', {
+  workspaceId: uuid('workspace_id')
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+  comparedUntil: timestamp('compared_until', { withTimezone: true }).notNull(),
+  /** Counts from the last run: superseded facts, new suggestions. */
+  stats: jsonb('stats').$type<Record<string, number>>().notNull().default({}),
+});

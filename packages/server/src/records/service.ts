@@ -1,14 +1,16 @@
-import type { Actor } from '@retainer/shared';
+import type { Actor, ForgetResult, MergeResult, MergeSuggestionDecision } from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
-import { inWorkspace, lockSchemaShared, type Tx } from '../db/tx.js';
+import { inWorkspace, lockForWrite, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';
 import { lockSource } from '../memory/interactions.js';
+import { forgetRecord } from '../privacy/forget.js';
 import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import { identifiersFor, lookupValue } from './derive.js';
+import { dismissMergeSuggestion, type MergeInput, MergeRaceError, mergeRecords } from './merge.js';
 import { type QueryInput, queryRecords } from './query.js';
 import { getRecord, type PresentedRecord } from './read.js';
 import {
@@ -49,27 +51,47 @@ export type WriteResponse = {
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.5;
 
+/** Postgres aborted the transaction to break a deadlock; nothing it did was kept. */
+const isDeadlock = (error: unknown) => (error as { code?: string }).code === '40P01';
+const DEADLOCK_RETRIES = 3;
+
 /**
  * A record write: one short workspace transaction holding the schema lock
- * in shared mode, so the schema it validated against stays current (3).
+ * in shared mode, so the schema it validated against stays current (3),
+ * and the privacy lock, so it serializes with `forget` (2.1). Only
+ * `forget` takes the privacy lock exclusively.
+ *
+ * A relation write locks its source record, then its target `FOR KEY
+ * SHARE`; merges and cascading deletes lock targets before sources. The two
+ * orders can deadlock, and Postgres then aborts one transaction. It is
+ * rolled back whole, so it is run again from the start.
  */
 export async function withWrite<T>(
   sql: Sql,
   caller: Caller,
   fn: (tx: Tx, context: WriteContext) => Promise<T>,
+  privacy: 'shared' | 'exclusive' = 'shared',
 ): Promise<T> {
-  return inWorkspace(sql, caller.workspaceId, async (tx) => {
-    await lockSchemaShared(tx, caller.workspaceId);
-    const schema = await getSchema(tx, caller.workspaceId);
-    const [workspace] = await tx<{ settings: WorkspaceSettings }[]>`
-      select settings from workspaces where id = ${caller.workspaceId}`;
-    return fn(tx, {
-      workspaceId: caller.workspaceId,
-      actor: caller.actor,
-      schema,
-      confidenceThreshold: workspace?.settings.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD,
-    });
-  });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await inWorkspace(sql, caller.workspaceId, async (tx) => {
+        await lockForWrite(tx, caller.workspaceId, privacy);
+        const schema = await getSchema(tx, caller.workspaceId);
+        const [workspace] = await tx<{ settings: WorkspaceSettings }[]>`
+          select settings from workspaces where id = ${caller.workspaceId}`;
+        return fn(tx, {
+          workspaceId: caller.workspaceId,
+          actor: caller.actor,
+          schema,
+          confidenceThreshold:
+            workspace?.settings.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD,
+        });
+      });
+    } catch (error) {
+      if (isDeadlock(error) && attempt < DEADLOCK_RETRIES) continue;
+      throw error;
+    }
+  }
 }
 
 export async function withRead<T>(
@@ -383,4 +405,61 @@ export async function decideAssertion(
       ? acceptAssertion(tx, context, assertionId)
       : rejectAssertion(tx, context, assertionId),
   );
+}
+
+/**
+ * Merges `input.recordId` into record `id` (4.2). A merge whose records
+ * changed between resolving and locking is retried in a new transaction
+ * (deadlocks are retried by `withWrite`). With an idempotency
+ * key, a retry returns the first result; without one, merging again is a
+ * no-op by state.
+ */
+export async function mergeRecord(
+  sql: Sql,
+  caller: Caller,
+  id: string,
+  input: MergeInput,
+  idempotencyKey?: string,
+): Promise<MergeResult> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await withWrite(sql, caller, async (tx, context) => {
+        let claimId: string | undefined;
+        if (idempotencyKey !== undefined) {
+          const claim = await claimIdempotencyKey(
+            tx,
+            caller.workspaceId,
+            'merge',
+            idempotencyKey,
+            requestHash({ id, recordId: input.recordId, values: input.values ?? null }),
+          );
+          if (claim.kind === 'replay') return claim.result as MergeResult;
+          claimId = claim.id;
+        }
+        const result = await mergeRecords(tx, context, id, input);
+        if (claimId) await storeIdempotentResult(tx, claimId, result);
+        return result;
+      });
+    } catch (error) {
+      if (!(error instanceof MergeRaceError)) throw error;
+      if (attempt < 3) continue;
+      throw new AppError(409, 'merge_conflict', 'the records changed during the merge; retry');
+    }
+  }
+}
+
+export async function dismissSuggestion(
+  sql: Sql,
+  caller: Caller,
+  id: string,
+): Promise<MergeSuggestionDecision> {
+  return withWrite(sql, caller, (tx, context) => dismissMergeSuggestion(tx, context, id));
+}
+
+/**
+ * `forget` (2.1). It holds the privacy lock exclusively, so it waits for
+ * in-flight writes in the workspace and blocks new ones until it commits.
+ */
+export async function forget(sql: Sql, caller: Caller, id: string): Promise<ForgetResult> {
+  return withWrite(sql, caller, (tx, context) => forgetRecord(tx, context, id), 'exclusive');
 }

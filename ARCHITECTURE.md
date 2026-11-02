@@ -303,6 +303,37 @@ participant checks suppression in the same serialization boundary as
 only, and must not resurrect deleted content. Delete idempotency responses
 and error text containing erased content too.
 
+How this is built:
+
+- **Who.** `forget` needs the `admin` scope and a `user` actor; an agent
+  with an admin key cannot erase a person.
+- **What it covers.** The record and every record merged into it. Its
+  handles are its current email and phone identifiers, every email or
+  phone it was ever claimed to have, and the handles of interactions it
+  was matched in. It "took part in" an interaction when a participant row
+  points at it or carries one of those handles.
+- **Boundary.** A workspace advisory lock. Every write takes it in shared
+  mode after the schema lock; `forget` takes it exclusively, so it waits
+  for in-flight writes and blocks new ones until it commits. A record
+  write with a suppressed email or phone fails with `409 suppressed`,
+  naming the field but not the value. A suppressed participant handle is
+  stored as `null` with the reason `suppressed`.
+- **Key.** The HMAC key is `RETAINER_SUPPRESSION_KEY` (at least 32
+  characters), kept outside the database so a dump alone does not reveal
+  the handles. The HMAC covers the workspace ID, kind and normalized
+  handle. Without the key, `forget` fails with `503 not_configured`; if a
+  workspace already has suppressions, writes that could add a handle fail
+  closed. Changing the key forgets earlier suppressions.
+- **Idempotency.** Stored responses whose text contains an erased record,
+  interaction or fact ID are deleted.
+- **Response.** IDs and counts only: records, interactions, facts and
+  assertions deleted, inbound relations removed, handles suppressed, the
+  records recomputed, and review candidates (other live records, facts and
+  interactions matching the name by phrase search or a handle by text).
+- **Shared phones.** The check skips handles the written record already
+  holds, so another live record that shares a suppressed phone keeps it
+  and can still be edited, but no other record can add it.
+
 Facts on other records that mention the person but rest on other sources
 ("Acme's champion is Dana") cannot be found reliably. Collect candidates by
 name and identifier search before deletion and return their IDs for human
@@ -488,6 +519,56 @@ so an agent that stops halfway leaves consistent data; it can resume, and
 Required scaffold addition: `merge_suggestions`. Flagging stale field values
 is deferred: "stale" has no definition yet and nothing reads the flag.
 
+How this is built:
+
+- **Scheduling.** The queue is Postgres. Every minute, a worker asks the
+  `SECURITY DEFINER` function `retainer_workspaces_due(interval)` which
+  workspaces last ran longer ago than `RETAINER_CONSOLIDATE_INTERVAL_MINUTES`
+  (default 60). It runs each workspace in one transaction, under a
+  per-workspace advisory try-lock, so several workers never run the same
+  workspace twice. `consolidator_runs` holds the last start, the stats, and
+  `compared_until`. A run holds the privacy lock (2.1) in shared mode.
+- **Exact duplicate facts.** Duplicates are current facts of the same live
+  record with equal text after trimming, collapsing whitespace and
+  lowercasing, and equal `valid_from` and `valid_to`. The oldest is the
+  canonical fact. It gains each duplicate's source links; the duplicates
+  keep theirs and get `superseded_by`. The facts are locked and the groups
+  found again before writing, so a fact retracted meanwhile is skipped.
+- **Merge suggestions.** Two live records of the same object are suggested
+  when they share an email, phone or website domain identifier
+  (`shared email`, `shared phone`, `shared domain`), or when their labels
+  have a pg_trgm similarity of at least 0.6 and are at least three
+  characters long (`similar names`). The reason never copies values. Only
+  records updated since the last run's `compared_until` (its start minus
+  five minutes) are probed, and each kind adds at most 500 new suggestions
+  per run; pairs that already have a row don't count toward that. A run
+  that reaches the cap keeps the previous `compared_until`, so the next
+  run picks up the pairs it left. A pair keeps one row, so a dismissed or accepted pair is never
+  suggested again. When a record is merged away or deleted, its other
+  pending suggestions are closed as `dismissed` in the same transaction,
+  so review only lists live pairs. The facts pass likewise compares only
+  records that gained a fact or changed since `compared_until`.
+- **Dismissing.** `POST /v1/review/merges/:id/dismiss`, as a `user`.
+- **Merging.** `POST /v1/records/:id/merge` with `{ "recordId": "<B>",
+  "values"?: {…} }`, as a `user` with the `write` scope; `values` overrides
+  any field. It takes an `Idempotency-Key`. Merging the record in the path
+  into itself is `422`. If B is already merged into A it is a no-op
+  (`merged: false`); if A was merged into B it is `409 record_merged`. On
+  success the pair's pending suggestion becomes `accepted`, and records
+  previously merged into B now point at A, so every merge chain is one hop.
+  Only the fields B had claims for are recomputed.
+- **Locks.** Ordinary writes lock their record `FOR NO KEY UPDATE`, and a
+  relation write locks its target `FOR KEY SHARE`, following merges. A
+  merge locks A and B `FOR UPDATE`, which waits for both. So a link to B
+  written during a merge either commits first and is rewritten, or waits
+  and then points at A. A relation write locks source then target, while
+  merges and cascading deletes lock targets first, so the two can deadlock;
+  any write Postgres aborts for a deadlock is rolled back and run again
+  (up to three times). A merge that loses a race to another merge is
+  retried too.
+- **Self-links.** No field disallows them in v1, so a relation from A to B
+  becomes a link from A to A.
+
 **Merging** record B into A moves B's assertions, facts, links, identifiers
 and participant matches to A, recomputes A's values with the normal write
 rules, and soft-deletes B with `merged_into_id = A`. Reads of B return A.
@@ -635,6 +716,7 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                        |
 | `DELETE /v1/facts/:id`                            | Retract a fact (soft delete)                                                |
 | `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records |
+| `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                             |
 | `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                  |
 | `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)        |
 | `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                              |
@@ -753,8 +835,9 @@ logged; `handle` or `role` is `null` when not given. An unmatched
 participant's `reason` is `no_match`, `phone_only` (phones never resolve a
 participant on their own, 4.1), `deleted_record` (the handle belongs to a
 soft-deleted record that was not merged; it is also listed in
-`GET /v1/review`, 1.2) or `ambiguous` (several live records claim the
-handle; `candidates` lists their IDs, 1.2).
+`GET /v1/review`, 1.2), `ambiguous` (several live records claim the
+handle; `candidates` lists their IDs, 1.2) or `suppressed` (the handle was
+erased by `forget`; it is not stored, and `handle` is `null`, 2.1).
 
 `DELETE /v1/interactions/:id` returns how far the retraction reached:
 `{ id, deleted: true, retractedAssertions, recomputedRecordIds,

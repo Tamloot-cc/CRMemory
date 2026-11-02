@@ -26,6 +26,16 @@ const configSchema = z.object({
   RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
   PORT: z.coerce.number().int().positive().default(8787),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  /** How often the consolidator runs per workspace (4.2). */
+  RETAINER_CONSOLIDATE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
+  /**
+   * Secret for the keyed HMAC of suppressed handles (2.1). Needed by
+   * `forget`; read from the environment where it is used.
+   */
+  RETAINER_SUPPRESSION_KEY: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(32, 'use at least 32 characters').optional(),
+  ),
 });
 
 export type Config = z.infer<typeof configSchema>;

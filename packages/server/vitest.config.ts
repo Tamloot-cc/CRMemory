@@ -29,6 +29,7 @@ export default defineConfig({
           name: 'integration',
           include: ['test/**/*.test.ts'],
           globalSetup: ['test/global-setup.ts'],
+          env: { RETAINER_SUPPRESSION_KEY: 'test-suppression-key-0123456789abcdef' },
           testTimeout: 30_000,
           hookTimeout: 60_000,
         },
