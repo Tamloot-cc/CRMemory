@@ -38,7 +38,10 @@ if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {
 }
 
 if (config.RETAINER_ROLE === 'worker' || config.RETAINER_ROLE === 'all') {
-  const worker = await startWorker();
+  const worker = await startWorker({
+    sql,
+    intervalMinutes: config.RETAINER_CONSOLIDATE_INTERVAL_MINUTES,
+  });
   stops.push(worker.stop);
 }
 

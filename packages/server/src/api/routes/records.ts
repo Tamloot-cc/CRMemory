@@ -2,12 +2,16 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { mergeInputSchema } from '../../records/merge.js';
 import { queryInputSchema } from '../../records/query.js';
 import {
   createRecord,
   decideAssertion,
   deleteRecord,
+  dismissSuggestion,
   findRecords,
+  forget,
+  mergeRecord,
   patchInputSchema,
   patchRecord,
   readRecord,
@@ -55,6 +59,21 @@ export function recordRoutes(app: Hono<AppEnv>, sql: Sql) {
 
   app.delete('/records/:id', requireScope('write'), async (c) =>
     c.json(await deleteRecord(sql, c.get('caller'), idParam(c))),
+  );
+
+  app.post('/records/:id/merge', requireScope('write'), async (c) => {
+    const id = idParam(c);
+    const input = await readBody(c, mergeInputSchema);
+    const key = c.req.header('idempotency-key');
+    return c.json(await mergeRecord(sql, c.get('caller'), id, input, key));
+  });
+
+  app.post('/records/:id/forget', requireScope('admin'), async (c) =>
+    c.json(await forget(sql, c.get('caller'), idParam(c))),
+  );
+
+  app.post('/review/merges/:id/dismiss', requireScope('write'), async (c) =>
+    c.json(await dismissSuggestion(sql, c.get('caller'), idParam(c))),
   );
 
   for (const decision of ['accept', 'reject'] as const) {

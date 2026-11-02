@@ -412,9 +412,10 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'participants with their recordId, and unmatched ones with a reason: "no_match" (no ' +
         'record has this email; create the person with upsert_record if worth keeping), ' +
         '"phone_only" (phones never match on their own; pass recordId if you know it), ' +
-        '"deleted_record" (the email belongs to a deleted record; a person will review it) or ' +
-        '"ambiguous" (several records claim it; candidates lists them). Retainer never ' +
-        'creates records for you.\n\n' +
+        '"deleted_record" (the email belongs to a deleted record; a person will review it), ' +
+        '"ambiguous" (several records claim it; candidates lists them) or "suppressed" (the ' +
+        'person asked to be forgotten; the handle is not stored, and do not create a record ' +
+        'for it). Retainer never creates records for you.\n\n' +
         'Logging the same channel and externalId again with the same input returns the same ' +
         'interaction with created: false; different input is a conflict.',
       inputSchema: logInteractionInput,

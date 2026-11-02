@@ -13,17 +13,13 @@ import {
   reviewQueue,
   upsertRecord,
 } from '../../src/records/service.js';
-import {
-  computeDataFromAssertions,
-  lockRecord,
-  UniqueConflictError,
-  writeFields,
-} from '../../src/records/write.js';
+import { lockRecord, UniqueConflictError, writeFields } from '../../src/records/write.js';
 import { getSchema } from '../../src/schema-engine/compiled.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import type { SchemaOperation } from '../../src/schema-engine/operations.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { expectDataMatchesAssertions as expectDataCache } from '../helpers/records.js';
 
 const db = useTestDatabase();
 let app: Sql;
@@ -50,17 +46,7 @@ async function rawRecord(id: string) {
   return row;
 }
 
-/** records.data must always equal what the assertions say (rule 2.4). */
-async function expectDataMatchesAssertions(id: string) {
-  await inWorkspace(app, workspaceId, async (tx) => {
-    const schema = await getSchema(tx, workspaceId);
-    const [row] = await tx<{ object_type_id: string; data: Record<string, unknown> }[]>`
-      select object_type_id, data from records where id = ${id}`;
-    const object = schema.objectsById.get(row?.object_type_id as string);
-    if (!object) throw new Error('object not found');
-    expect(await computeDataFromAssertions(tx, object, id)).toEqual(row?.data);
-  });
-}
+const expectDataMatchesAssertions = (id: string) => expectDataCache(app, workspaceId, id);
 
 beforeAll(async () => {
   app = db.connect({ role: RUNTIME_ROLE, max: 30 });

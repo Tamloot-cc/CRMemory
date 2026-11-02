@@ -25,6 +25,7 @@ services:
     environment:
       DATABASE_URL: postgres://retainer:retainer@postgres:5432/retainer
       RETAINER_PUBLIC_ORIGIN: "${RETAINER_PUBLIC_ORIGIN:-}"
+      RETAINER_SUPPRESSION_KEY: "${RETAINER_SUPPRESSION_KEY:-}"
       RETAINER_ROLE: all
       PORT: "8787"
     ports:

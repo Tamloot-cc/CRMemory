@@ -22,6 +22,27 @@
       "when": 1793619706195,
       "tag": "0002_step_3_memory",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793644576426,
+      "tag": "0003_step_5_consolidator",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793644578858,
+      "tag": "0004_step_5_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793646071402,
+      "tag": "0005_step_5_indexes",
+      "breakpoints": true
     }
   ]
 }

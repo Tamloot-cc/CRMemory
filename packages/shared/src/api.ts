@@ -121,6 +121,43 @@ export type MergeSuggestion = {
   reason: string;
   createdAt: string;
 };
+/** `POST /v1/records/:id/merge` (4.2). */
+export type MergeResult = {
+  /** The surviving record. */
+  id: string;
+  /** The record merged into it; reads of it now return the survivor. */
+  mergedId: string;
+  /** False when it was already merged into the survivor (idempotent by state). */
+  merged: boolean;
+  /** Other records whose relations to the merged record now point at the survivor. */
+  recomputedRecordIds: string[];
+  record: PresentedRecord;
+};
+/** `POST /v1/review/merges/:id/dismiss`. */
+export type MergeSuggestionDecision = {
+  id: string;
+  status: 'dismissed';
+};
+/** `POST /v1/records/:id/forget` (2.1): counts only, never erased content. */
+export type ForgetResult = {
+  id: string;
+  forgotten: true;
+  counts: {
+    records: number;
+    interactions: number;
+    facts: number;
+    assertions: number;
+    inboundRelations: number;
+    suppressedHandles: number;
+  };
+  /** Records whose values were recomputed after their claims or links were removed. */
+  recomputedRecordIds: string[];
+  /**
+   * Live rows that may still mention the person, found by name and handle
+   * search before deletion. Not a guarantee: a person reviews them.
+   */
+  reviewCandidates: { records: string[]; facts: string[]; interactions: string[] };
+};
 export type ReviewCollection = 'pendingAssertions' | 'unresolvedParticipants' | 'mergeSuggestions';
 export type ReviewQueue = {
   pendingAssertions: AssertionView[];
@@ -142,7 +179,12 @@ export type PresentedFact = {
   sources: { interaction: string; quote: string | null }[];
 };
 export type InteractionKind = 'meeting' | 'call' | 'email' | 'message' | 'note';
-export type UnmatchedReason = 'no_match' | 'phone_only' | 'deleted_record' | 'ambiguous';
+export type UnmatchedReason =
+  | 'no_match'
+  | 'phone_only'
+  | 'deleted_record'
+  | 'ambiguous'
+  | 'suppressed';
 export type MatchedParticipant = { handle: string | null; role: string | null; recordId: string };
 export type UnmatchedParticipant = {
   handle: string | null;

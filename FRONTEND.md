@@ -1,7 +1,9 @@
 # Retainer web app
 
-Status: web steps 1–4 are implemented and verified locally. Conditional step 5
-and the product questions in section 13 remain deferred. Read
+Status: web steps 1–4 are implemented and verified locally. Server build
+step 5 has landed (merge, dismiss and `forget` routes; merge suggestions in
+`GET /v1/review`), but web step 5 and the product questions in section 13
+remain deferred. Read
 `ARCHITECTURE.md` first; this document uses its section numbers.
 
 Retainer is used by agents through REST and MCP. The web app is for the

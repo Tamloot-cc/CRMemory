@@ -11,6 +11,8 @@ let reader: McpTestClient;
 let outsider: McpTestClient;
 let fresh: McpTestClient;
 let salesAgentKey: string;
+let salesUserKey: string;
+let salesAdminKey: string;
 const clients: McpTestClient[] = [];
 
 const TOOLS = [
@@ -39,9 +41,12 @@ beforeAll(async () => {
       agent2: { actor: { type: 'agent', id: 'calendar' }, scopes: ['read', 'write'] },
       user: { actor: { type: 'user', id: 'maya' }, scopes: ['read', 'write'] },
       reader: { actor: { type: 'agent', id: 'reader' }, scopes: ['read'] },
+      admin: { actor: { type: 'user', id: 'ops' }, scopes: ['admin'] },
     },
   );
   salesAgentKey = sales.keys.agent;
+  salesUserKey = sales.keys.user;
+  salesAdminKey = sales.keys.admin;
   const other = await t.setupWorkspace(
     { name: 'Other' },
     { agent: { actor: { type: 'agent', id: 'other' }, scopes: ['read', 'write'] } },
@@ -740,5 +745,52 @@ describe('finding and reading a record (5): search, then get_context', () => {
     expect(foreign.body.error.code).toBe('not_found');
     const nothing = await outsider.call('search', { query: 'Ofri' });
     expect(nothing.body).toEqual({ records: [], facts: [], interactions: [] });
+  });
+});
+
+describe('after a person merges and forgets (4.2, 2.1)', () => {
+  it('shows the survivor for a merged ID and never brings a forgotten person back', async () => {
+    // The agent created a duplicate; a person merges it over REST.
+    const merav = await createPerson({ name: { first: 'Merav', last: 'Golan' } });
+    const duplicate = await createPerson({ name: { first: 'Merav', last: 'Golan' } });
+    const merged = await t.request(`/v1/records/${merav.id}/merge`, {
+      key: salesUserKey,
+      body: { recordId: duplicate.id },
+    });
+    expect(merged.status).toBe(200);
+    const read = await agent.call('get_record', { id: duplicate.id });
+    expect(read.isError).toBe(false);
+    expect(read.body.id).toBe(merav.id);
+    const emails = read.body.fields.emails as { primary: string; additional: string[] };
+    expect(emails.additional).toHaveLength(1);
+
+    // She asks to be forgotten.
+    const forgotten = await t.request(`/v1/records/${merav.id}/forget`, {
+      key: salesAdminKey,
+      method: 'POST',
+    });
+    expect(forgotten.status).toBe(200);
+    const gone = await agent.call('get_record', { id: merav.id });
+    expect(gone.body.error.code).toBe('not_found');
+
+    // Later the agent logs a meeting with her: the handle is not stored, and
+    // creating her again is refused.
+    const logged = await agent.call('log_interaction', {
+      kind: 'meeting',
+      channel: 'calendar',
+      occurredAt: '2026-10-30T09:00:00Z',
+      participants: [{ handle: emails.primary, role: 'customer' }],
+    });
+    expect(logged.body.participants.unmatched).toEqual([
+      { handle: null, role: 'customer', reason: 'suppressed' },
+    ]);
+    const again = await agent.call('upsert_record', {
+      object: 'person',
+      match: { emails: emails.primary },
+      values: { name: { first: 'Merav', last: 'Golan' } },
+      ifMissing: 'create',
+    });
+    expect(again.isError).toBe(true);
+    expect(again.body.error.code).toBe('suppressed');
   });
 });

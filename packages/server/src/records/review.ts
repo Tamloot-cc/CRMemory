@@ -1,7 +1,7 @@
 import type { Actor } from '@retainer/shared';
 import type { AssertionStatus, ReviewReason } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
-import { AppError, forbidden, notFound } from '../errors.js';
+import { AppError, notFound, requireUser } from '../errors.js';
 import {
   listUnresolvedParticipants,
   lockSource,
@@ -153,11 +153,7 @@ async function loadPending(
   return row;
 }
 
-function requireReviewer(actor: Actor): void {
-  if (actor.type !== 'user') {
-    throw forbidden('only a user can decide pending assertions; an agent cannot approve itself');
-  }
-}
+const requireReviewer = (actor: Actor) => requireUser(actor, 'decide pending assertions');
 
 export type DecisionResult = {
   assertionId: string;
