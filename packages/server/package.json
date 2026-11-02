@@ -1,6 +1,6 @@
 {
   "name": "@retainer/server",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Retainer server: REST API, MCP endpoint, workers and schema engine.",
   "license": "AGPL-3.0-only",
@@ -31,9 +31,10 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
+    "@playwright/test": "^1.56.0",
+    "@retainer/sdk": "workspace:*",
     "drizzle-kit": "^0.31.11",
-    "tsx": "^4.23.15",
-    "@playwright/test": "^1.56.0"
+    "tsx": "^4.23.15"
   },
   "bin": {
     "retainer": "./dist/cli.js"

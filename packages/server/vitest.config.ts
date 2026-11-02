@@ -6,10 +6,11 @@ import { defineConfig } from 'vitest/config';
 const envFile = fileURLToPath(new URL('../../.env', import.meta.url));
 if (existsSync(envFile) && !process.env.CI) process.loadEnvFile(envFile);
 
-// Tests import the shared package from source so they never run against a
+// Tests import the MIT packages from source so they never run against a
 // stale build.
 const alias = {
   '@retainer/shared': fileURLToPath(new URL('../shared/src/index.ts', import.meta.url)),
+  '@retainer/sdk': fileURLToPath(new URL('../sdk/src/index.ts', import.meta.url)),
 };
 
 export default defineConfig({

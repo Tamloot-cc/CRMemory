@@ -271,6 +271,77 @@ export type TemplateView = {
     fields: { object: string; field: string }[];
   };
 };
+/** `POST /v1/search` input (5.1), in Postgres `websearch_to_tsquery` syntax. */
+export type SearchInput = { query: string; limit?: number };
+export type RecordHit = {
+  id: string;
+  object: string;
+  label: string | null;
+  /** `text`: a full-text match. `similar_label`: the fuzzy fallback on the label. */
+  match: 'text' | 'similar_label';
+};
+export type FactHit = { id: string; record: string; content: string; validFrom: string };
+export type InteractionHit = {
+  id: string;
+  kind: string;
+  occurredAt: string;
+  title: string | null;
+  summary: string | null;
+  /** Live records matched to its participants; possibly none or several. */
+  records: string[];
+};
+/** Each list is ranked on its own; scores are not comparable across lists. */
+export type SearchResult = {
+  records: RecordHit[];
+  facts: FactHit[];
+  interactions: InteractionHit[];
+};
+/** `GET /v1/records/:id/context` input (6.2). */
+export type ContextInput = { tokenBudget?: number };
+/** A current field value with who wrote it and when it was true at the source. */
+export type ContextField = { value: unknown; writtenBy: Actor; observedAt: string };
+export type OpenTask = {
+  id: string;
+  title: string | null;
+  status: unknown;
+  dueDate: unknown;
+};
+export type ContextFact = {
+  id: string;
+  content: string;
+  validFrom: string;
+  writtenBy: Actor;
+  /** Live interactions the fact rests on. */
+  sources: string[];
+};
+export type ContextInteraction = {
+  id: string;
+  kind: string;
+  occurredAt: string;
+  title: string | null;
+  summary: string | null;
+};
+export type ContextPack = {
+  record: {
+    id: string;
+    object: string;
+    label: string | null;
+    fields: Record<string, ContextField>;
+  };
+  openTasks: OpenTask[];
+  facts: ContextFact[];
+  recentInteractions: ContextInteraction[];
+  /** Items of each section left out to fit the budget. */
+  omitted: { openTasks: number; facts: number; recentInteractions: number };
+  tokenEstimate: number;
+};
+/** `POST /v1/records/:id/merge` input (4.2). */
+export type MergeInput = {
+  /** The record merged into the one in the path; it is soft-deleted. */
+  recordId: string;
+  /** Values the survivor should end with, by field name. */
+  values?: Record<string, unknown>;
+};
 export const SORTABLE_TYPES: readonly FieldType[] = [
   'text',
   'number',

@@ -1,4 +1,11 @@
-import type { Actor } from '@retainer/shared';
+import type {
+  Actor,
+  ContextFact,
+  ContextField,
+  ContextInteraction,
+  ContextPack,
+  OpenTask,
+} from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { NOTE_CHANNEL } from '../memory/interactions.js';
@@ -20,48 +27,6 @@ export const contextInputSchema = z.strictObject({
   tokenBudget: z.number().int().min(1).max(MAX_TOKEN_BUDGET).default(DEFAULT_TOKEN_BUDGET),
 });
 export type ContextInput = z.infer<typeof contextInputSchema>;
-
-/** A current field value with who wrote it and when it was true at the source. */
-export type ContextField = { value: unknown; writtenBy: Actor; observedAt: string };
-
-export type OpenTask = {
-  id: string;
-  title: string | null;
-  status: unknown;
-  dueDate: unknown;
-};
-
-export type ContextFact = {
-  id: string;
-  content: string;
-  validFrom: string;
-  writtenBy: Actor;
-  /** Live interactions the fact rests on. */
-  sources: string[];
-};
-
-export type ContextInteraction = {
-  id: string;
-  kind: string;
-  occurredAt: string;
-  title: string | null;
-  summary: string | null;
-};
-
-export type ContextPack = {
-  record: {
-    id: string;
-    object: string;
-    label: string | null;
-    fields: Record<string, ContextField>;
-  };
-  openTasks: OpenTask[];
-  facts: ContextFact[];
-  recentInteractions: ContextInteraction[];
-  /** Items of each section left out to fit the budget. */
-  omitted: { openTasks: number; facts: number; recentInteractions: number };
-  tokenEstimate: number;
-};
 
 /**
  * The shortest JSON any section item can have: `{"id":"<uuid>"}`. A budget

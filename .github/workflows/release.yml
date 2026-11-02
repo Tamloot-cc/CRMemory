@@ -1,0 +1,136 @@
+name: Release
+
+# Pushing a tag like v0.1.0 publishes @retainer/shared, @retainer/sdk and
+# @retainer/mcp to npm, pushes the Docker image to GitHub Container Registry,
+# and creates a GitHub release. Run it by hand for a dry run that builds and
+# packs everything but publishes nothing. See docs/releasing.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and pack only; publish nothing
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+  IMAGE: ghcr.io/${{ github.repository_owner }}/retainer
+
+jobs:
+  check:
+    name: Versions and changelog
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - name: Check versions match the tag
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            node scripts/check-release.mjs "$GITHUB_REF_NAME"
+          else
+            node scripts/check-release.mjs
+          fi
+
+  ci:
+    name: CI
+    needs: check
+    uses: ./.github/workflows/ci.yml
+
+  npm:
+    name: Publish to npm
+    needs: [check, ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      # Builds everything, so whichever packages are not private get published built.
+      - run: pnpm build
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            pnpm -r publish --dry-run --no-git-checks
+          else
+            pnpm -r publish --no-git-checks
+          fi
+
+  docker:
+    name: Publish the Docker image
+    needs: [check, ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: env.DRY_RUN != 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=v${{ needs.check.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.check.outputs.version }}
+            type=raw,value=latest,enable=${{ !contains(needs.check.outputs.version, '-') }}
+          labels: |
+            org.opencontainers.image.title=Retainer
+            org.opencontainers.image.description=Open-source memory for AI agents that work with CRM data
+            org.opencontainers.image.licenses=AGPL-3.0-only
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.DRY_RUN != 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  github-release:
+    name: GitHub release
+    needs: [check, npm, docker]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create the release from the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          awk -v v="## $VERSION" '$0 == v {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --title "Retainer $VERSION" --notes-file notes.md $prerelease

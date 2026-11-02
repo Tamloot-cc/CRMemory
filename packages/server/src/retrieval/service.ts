@@ -1,7 +1,8 @@
+import type { ContextPack, SearchResult } from '@retainer/shared';
 import type { Sql } from '../db/client.js';
 import { type Caller, withRead } from '../records/service.js';
-import { type ContextInput, type ContextPack, contextPack } from './context.js';
-import { type SearchInput, type SearchResult, search } from './search.js';
+import { type ContextInput, contextPack } from './context.js';
+import { type SearchInput, search } from './search.js';
 
 /** Search and context packs for one caller, shared by REST and MCP (5, 5.1). */
 

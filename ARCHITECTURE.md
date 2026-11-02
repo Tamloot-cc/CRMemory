@@ -25,9 +25,8 @@ searchable. Full conversations stay with the agent.
 ## 1. Data model
 
 Three layers, all in one Postgres database. This document describes the
-intended first release; the scaffold is not a working implementation of these
-invariants. Inline schema notes identify changes still needed in
-`packages/server/src/db/schema.ts`; section 11 collects them in one checklist.
+design as of the first release (0.1.0). Section 11 records the schema
+checklist that build step 1 completed.
 
 ### 1.1 Schema (metadata)
 
