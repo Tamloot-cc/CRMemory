@@ -29,6 +29,7 @@ import {
   Toolbar,
 } from '../ui/index.js';
 import {
+  addClause,
   type ColumnPrefs,
   defaultColumnOrder,
   defaultColumnWidth,
@@ -36,6 +37,7 @@ import {
   encodeFilter,
   encodeSort,
   type FilterClause,
+  type FilterParts,
   isSortable,
   loadColumnPrefs,
   moveColumn,
@@ -50,7 +52,6 @@ import {
   saveColumnPrefs,
   setColumnVisible,
   shiftColumn,
-  withClause,
 } from './list-state.js';
 import { QueryError, useView } from './state.js';
 
@@ -83,7 +84,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const [prefs, setPrefs] = useState(() => loadColumnPrefs(() => localStorage, workspace, name));
 
   const view = parseListSearch(search);
-  const { clauses, sort } = view;
+  const { clauses, custom, sort } = view;
   const input: QueryInput = {
     limit: PAGE_SIZE,
     cursor: search.cursor,
@@ -159,7 +160,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       setError('Column preferences could not be saved in this browser');
   }
   const saveOrder = (next: string[]) => savePrefs({ order: next, widths: prefs?.widths ?? {} });
-  const setFilter = (next: FilterClause[] | undefined) =>
+  const setFilter = (next: FilterParts | undefined) =>
     void setSearch({ filter: next && encodeFilter(next), cursor: undefined });
   const nextCursor = query.data?.nextCursor;
   const previous = search.cursor ? pages[search.cursor] : undefined;
@@ -195,25 +196,29 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               c,
               object.fields.find((f) => f.name === c.field),
             )}
-            onRemove={() => setFilter(clauses.filter((_, j) => j !== i))}
+            onRemove={() => setFilter({ clauses: clauses.filter((_, j) => j !== i), custom })}
           />
         ))}
-        {view.custom ? (
+        {custom.map((part, i) => (
           <FilterChip
+            key={JSON.stringify(part)}
             field="Custom filter"
-            removeLabel="Remove custom filter"
-            onRemove={() => setFilter(undefined)}
+            value={JSON.stringify(part)}
+            removeLabel={
+              custom.length > 1 ? `Remove custom filter ${i + 1}` : 'Remove custom filter'
+            }
+            onRemove={() => setFilter({ clauses, custom: custom.filter((_, j) => j !== i) })}
           />
-        ) : null}
+        ))}
         <FilterMenu
           object={object}
           onApply={(clause) => {
             setError('');
-            void setSearch({ filter: withClause(view, clause), cursor: undefined });
+            setFilter({ clauses: addClause(clauses, clause), custom });
           }}
           onError={setError}
         />
-        {clauses.length > 1 ? (
+        {clauses.length + custom.length > 1 ? (
           <Button variant="ghost" size="small" onClick={() => setFilter(undefined)}>
             Clear filters
           </Button>

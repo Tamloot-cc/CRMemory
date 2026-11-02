@@ -6,6 +6,7 @@ import {
   columnsKey,
   describeClause,
   encodeFilter,
+  type FilterClause,
   loadColumnPrefs,
   moveColumn,
   nextSort,
@@ -16,7 +17,6 @@ import {
   resolveColumns,
   setColumnVisible,
   shiftColumn,
-  withClause,
 } from './list-state.js';
 
 const field = (name: string, extra: Partial<FieldView> = {}) =>
@@ -44,6 +44,7 @@ const storage = (items: Record<string, string>) => () => ({
 });
 
 const parseFilter = (filter: string | undefined) => parseListSearch({ filter });
+const encodeClauses = (clauses: FilterClause[]) => encodeFilter({ clauses, custom: [] });
 const parseSort = (sort: string | undefined) => parseListSearch({ sort }).sort;
 
 describe('columns', () => {
@@ -96,7 +97,7 @@ describe('columns', () => {
 
 describe('filters', () => {
   it('round-trips one clause in the original single-condition shape', () => {
-    const raw = encodeFilter([{ field: 'jobTitle', operator: 'eq', value: 'CTO' }]);
+    const raw = encodeClauses([{ field: 'jobTitle', operator: 'eq', value: 'CTO' }]);
     expect(raw).toBe('{"jobTitle":{"eq":"CTO"}}');
     expect(parseFilter(raw).clauses).toEqual([{ field: 'jobTitle', operator: 'eq', value: 'CTO' }]);
   });
@@ -106,8 +107,8 @@ describe('filters', () => {
       { field: 'a', operator: 'eq', value: 1 },
       { field: 'a', operator: 'lt', value: 5 },
     ];
-    expect(parseFilter(encodeFilter(clauses)).clauses).toEqual(clauses);
-    expect(encodeFilter([])).toBeUndefined();
+    expect(parseFilter(encodeClauses(clauses)).clauses).toEqual(clauses);
+    expect(encodeClauses([])).toBeUndefined();
   });
 
   it('reads bare values and multi-operator conditions', () => {
@@ -119,23 +120,35 @@ describe('filters', () => {
   });
 
   it('flags filters chips cannot express, and invalid JSON', () => {
-    expect(parseFilter('{"or":[{"a":1},{"b":2}]}')).toMatchObject({ custom: true, clauses: [] });
-    expect(parseFilter('{"and":[{"or":[]}]}')).toMatchObject({ custom: true });
+    expect(parseFilter('{"or":[{"a":1},{"b":2}]}')).toMatchObject({
+      custom: [{ or: [{ a: 1 }, { b: 2 }] }],
+      clauses: [],
+    });
+    expect(parseFilter('{"and":[{"not":{"a":1}},{"b":2}]}')).toMatchObject({
+      custom: [{ not: { a: 1 } }],
+      clauses: [{ field: 'b', operator: 'eq', value: 2 }],
+    });
     expect(parseFilter('{nope').error).toMatch(/invalid filter/);
     expect(parseFilter('[1]').error).toMatch(/invalid filter/);
   });
 
-  it('ANDs a new clause with a custom filter instead of dropping it', () => {
-    const custom = parseListSearch({ filter: '{"or":[{"a":1},{"b":2}]}' });
-    const next = parseListSearch({
-      filter: withClause(custom, { field: 'c', operator: 'eq', value: 3 }),
-    });
-    expect(next.query.filter).toEqual({ and: [{ or: [{ a: 1 }, { b: 2 }] }, { c: { eq: 3 } }] });
-    expect(next.custom).toBe(true);
-    const plain = parseListSearch({ filter: '{"a":{"eq":1}}' });
-    expect(withClause(plain, { field: 'b', operator: 'eq', value: 2 })).toBe(
-      '{"and":[{"a":{"eq":1}},{"b":{"eq":2}}]}',
-    );
+  it('keeps custom parts beside chips, flat, as clauses are added, replaced and removed', () => {
+    const or = { or: [{ a: 1 }, { b: 2 }] };
+    let view = parseFilter(JSON.stringify(or));
+    const add = (clause: FilterClause) =>
+      parseFilter(encodeFilter({ clauses: addClause(view.clauses, clause), custom: view.custom }));
+    view = add({ field: 'c', operator: 'gt', value: 10 });
+    view = add({ field: 'c', operator: 'gt', value: 20 });
+    view = add({ field: 'd', operator: 'eq', value: 'x' });
+    expect(view.custom).toEqual([or]);
+    expect(view.clauses).toEqual([
+      { field: 'c', operator: 'gt', value: 20 },
+      { field: 'd', operator: 'eq', value: 'x' },
+    ]);
+    expect(view.query.filter).toEqual({ and: [or, { c: { gt: 20 } }, { d: { eq: 'x' } }] });
+    const withoutCustom = encodeFilter({ clauses: view.clauses, custom: [] });
+    expect(parseFilter(withoutCustom).custom).toEqual([]);
+    expect(encodeFilter({ clauses: [], custom: [or] })).toBe(JSON.stringify(or));
   });
 
   it('replaces a clause on the same field and operator', () => {

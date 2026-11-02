@@ -226,8 +226,9 @@ One route for every object. Source: `POST /v1/objects/:object/query`.
   (`retainer:columns:v2:…`, migrating the v1 visible-columns list).
 - Filters are offered for `isFilterable` fields only, with the operators
   each type supports (6). Each active filter is a removable chip in the
-  toolbar; several chips are ANDed. A URL filter the chips can't express
-  (`or`, `not`) shows as one "Custom filter" chip.
+  toolbar; several chips are ANDed. The URL filter is read as one flat AND:
+  parts the chips can't express (`or`, `not`) show as "Custom filter" chips
+  and stay in place while other chips are added, replaced or removed.
 - Click a sortable header to sort ascending, descending, then off. The Sort
   menu also offers Updated and Created.
 - Cursor pagination with `limit` 50. A footer shows the row range and

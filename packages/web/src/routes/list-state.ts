@@ -112,30 +112,38 @@ export function defaultColumnWidth(field: FieldView, isLabel: boolean): number {
 }
 
 // ---------------------------------------------------------------------------
-// Filters: a flat list of clauses, ANDed, kept in the URL as the API filter.
+// Filters: the URL filter as one flat AND of parts. Parts the chips can
+// express become clauses; the rest (`or`, `not`) are kept as opaque custom
+// parts, so adding or removing a chip never disturbs them.
 // ---------------------------------------------------------------------------
 
 export type FilterClause = { field: string; operator: string; value: unknown };
+export type FilterParts = { clauses: FilterClause[]; custom: Record<string, unknown>[] };
 
 const NESTING = new Set(['and', 'or', 'not']);
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v);
 
-function clausesOf(filter: Record<string, unknown>): FilterClause[] | undefined {
-  const out: FilterClause[] = [];
-  for (const [field, condition] of Object.entries(filter)) {
-    if (NESTING.has(field)) return undefined;
-    if (isPlainObject(condition)) {
+/** Splits a filter into its top-level ANDed parts, flattening nested `and`s. */
+function splitFilter(filter: Record<string, unknown>, out: FilterParts): FilterParts {
+  for (const [key, condition] of Object.entries(filter)) {
+    if (key === 'and' && Array.isArray(condition)) {
+      for (const part of condition)
+        if (isPlainObject(part)) splitFilter(part, out);
+        else out.custom.push({ and: [part] });
+    } else if (NESTING.has(key)) out.custom.push({ [key]: condition });
+    else if (isPlainObject(condition)) {
       const entries = Object.entries(condition);
-      if (!entries.length) return undefined;
-      for (const [operator, value] of entries) out.push({ field, operator, value });
-    } else out.push({ field, operator: 'eq', value: condition });
+      if (!entries.length) out.custom.push({ [key]: condition });
+      for (const [operator, value] of entries) out.clauses.push({ field: key, operator, value });
+    } else out.clauses.push({ field: key, operator: 'eq', value: condition });
   }
   return out;
 }
 
-export function encodeFilter(clauses: FilterClause[]): string | undefined {
-  const parts = clauses.map((c) => ({ [c.field]: { [c.operator]: c.value } }));
+/** The single writer of URL filters: one part as-is, several as one flat `and`. */
+export function encodeFilter({ clauses, custom }: FilterParts): string | undefined {
+  const parts = [...custom, ...clauses.map((c) => ({ [c.field]: { [c.operator]: c.value } }))];
   if (!parts.length) return undefined;
   return JSON.stringify(parts.length === 1 ? parts[0] : { and: parts });
 }
@@ -219,10 +227,7 @@ const isSortEntry = (v: unknown): v is SortState =>
 // for the API.
 // ---------------------------------------------------------------------------
 
-export type ListSearch = {
-  clauses: FilterClause[];
-  /** A filter the chips can't express (`or`, `not`, nested `and`); shown as one chip. */
-  custom: boolean;
+export type ListSearch = FilterParts & {
   sort: SortState | undefined;
   query: Pick<QueryInput, 'filter' | 'sort'>;
   error: string;
@@ -236,35 +241,14 @@ function readJson(raw: string): { value: unknown } | undefined {
   }
 }
 
-function chipsOf(filter: Record<string, unknown>): FilterClause[] | undefined {
-  if (Object.keys(filter).length === 1 && Array.isArray(filter.and)) {
-    const parts = filter.and.map((p) => (isPlainObject(p) ? clausesOf(p) : undefined));
-    return parts.every((p): p is FilterClause[] => !!p) ? parts.flat() : undefined;
-  }
-  return clausesOf(filter);
-}
-
-/**
- * The URL filter after adding `clause`. A custom filter is kept and ANDed
- * with the new clause rather than replaced.
- */
-export function withClause(view: ListSearch, clause: FilterClause): string | undefined {
-  if (!view.custom) return encodeFilter(addClause(view.clauses, clause));
-  return JSON.stringify({
-    and: [view.query.filter, { [clause.field]: { [clause.operator]: clause.value } }],
-  });
-}
-
 export function parseListSearch(search: { filter?: string; sort?: string }): ListSearch {
-  const result: ListSearch = { clauses: [], custom: false, sort: undefined, query: {}, error: '' };
+  const result: ListSearch = { clauses: [], custom: [], sort: undefined, query: {}, error: '' };
   if (search.filter) {
     const parsed = readJson(search.filter)?.value;
     if (!isPlainObject(parsed)) result.error = 'This address contains an invalid filter';
     else {
       result.query.filter = parsed;
-      const clauses = chipsOf(parsed);
-      if (clauses) result.clauses = clauses;
-      else result.custom = true;
+      splitFilter(parsed, result);
     }
   }
   if (search.sort) {
