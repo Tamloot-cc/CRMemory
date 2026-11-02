@@ -1,6 +1,6 @@
 import type { FieldView, ObjectView, QueryInput } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useParams } from '@tanstack/react-router';
+import { useParams } from '@tanstack/react-router';
 import { ArrowUpDown, ChevronLeft, ChevronRight, Columns3, ListFilter } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
@@ -53,6 +53,7 @@ import {
   setColumnVisible,
   shiftColumn,
 } from './list-state.js';
+import { RecordSheet } from './record-view.js';
 import { QueryError, useView } from './state.js';
 
 const PAGE_SIZE = 50;
@@ -78,7 +79,6 @@ export function ObjectPage() {
 function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const { session } = useWorkspace();
   const { search, setSearch } = useView();
-  const navigate = useNavigate();
   const workspace = session.workspace.id;
   const [error, setError] = useState('');
   const [prefs, setPrefs] = useState(() => loadColumnPrefs(() => localStorage, workspace, name));
@@ -139,7 +139,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
             />
           );
           return i === 0 ? (
-            <RecordLink key={f.name} id={r.id}>
+            <RecordLink key={f.name} id={r.id} inSheet>
               {r.label ? cell : 'Untitled record'}
             </RecordLink>
           ) : (
@@ -149,10 +149,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       })),
     [records, columns, references],
   );
-  const openRow = useCallback(
-    (id: string) => void navigate({ to: '/r/$id', params: { id } }),
-    [navigate],
-  );
+  const openRow = useCallback((id: string) => void setSearch({ record: id }), [setSearch]);
 
   function savePrefs(next: ColumnPrefs) {
     setPrefs(next);
@@ -247,6 +244,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           }
           onReorder={(column, target) => saveOrder(moveColumn(order, column, target))}
           onOpenRow={openRow}
+          selectedRow={search.record}
           rows={rows}
         />
       ) : query.data ? (
@@ -296,6 +294,9 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           {pageRange(pages, search.cursor, rows.length, PAGE_SIZE)}
           {nextCursor ? ' · more available' : ''}
         </GridFooter>
+      ) : null}
+      {search.record ? (
+        <RecordSheet id={search.record} onClose={() => void setSearch({ record: undefined })} />
       ) : null}
     </Page>
   );

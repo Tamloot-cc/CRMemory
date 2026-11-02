@@ -34,12 +34,15 @@ test('sign in, accept and reject values, browse records, and inspect provenance'
   await expect(page.getByText("You're all caught up")).toBeVisible();
   await page.getByRole('link', { name: 'People', exact: true }).click();
   await page.getByRole('link', { name: 'Dana Levi' }).click();
-  await expect(page.getByRole('heading', { name: 'Dana Levi' })).toBeVisible();
-  await expect(page.getByText('CEO', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'History of Job title' }).click();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByText('rejected', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Dana Levi' });
+  await expect(sheet.getByRole('heading', { name: 'Dana Levi' })).toBeVisible();
+  await expect(sheet.getByText('CEO', { exact: true })).toBeVisible();
+  await sheet.getByRole('button', { name: 'History of Job title' }).click();
+  const history = page.getByRole('dialog', { name: 'History of Job title' });
+  await expect(history.getByText('rejected', { exact: true })).toBeVisible();
+  await history.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(history).not.toBeVisible();
+  await expect(sheet).toBeVisible();
   await page.screenshot({ path: '/tmp/retainer-web-record.png', fullPage: true });
   expect(
     await page.evaluate(() => Object.values(localStorage).some((v) => v.includes('rtn_'))),
@@ -71,11 +74,10 @@ test('preserves a draft after a stale edit and retries only with explicit action
   await expect(page.getByRole('textbox', { name: 'Job title', exact: true })).toHaveValue(
     'My draft',
   );
-  await expect(
-    page.getByRole('dialog').getByText('Changed elsewhere', { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText('Changed elsewhere', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Retry with latest version' }).click();
-  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Job title', exact: true })).not.toBeVisible();
+  await expect(page.getByText('My draft', { exact: true })).toBeVisible();
   expect((await r.request(`/records/${record.id}`)).fields.jobTitle).toBe('My draft');
 });
 test('approves a schema proposal and refreshes the schema', async ({ page, retainer: r }) => {
@@ -425,7 +427,8 @@ test('edits schema-driven scalar and composite fields through the real API', asy
     await page.getByRole('button', { name: `Edit ${label}`, exact: true }).click();
     await change();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByRole('dialog')).not.toBeVisible();
+    // The button reads "Saving…" while in flight; the editor closes once the write lands.
+    await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
   }
   await edit('Score', () => page.getByLabel('Score', { exact: true }).fill('42.5'));
   await edit('Active', () => page.getByRole('switch').check());
@@ -479,4 +482,58 @@ test('edits schema-driven scalar and composite fields through the real API', asy
     company: company.id,
     metadata: { source: 'test' },
   });
+});
+
+test('opens records from the list in a side sheet and edits fields inline', async ({
+  page,
+  retainer: r,
+}) => {
+  const dana = (
+    await r.request('/objects/person/records', { values: { name: 'Dana Levi', jobTitle: 'CTO' } })
+  ).record;
+  await r.request('/objects/person/records', { values: { name: 'Noa Cohen', jobTitle: 'CFO' } });
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('link', { name: 'People', exact: true }).click();
+  const grid = page.getByRole('region', { name: 'People' });
+
+  // A click anywhere on the row opens the sheet and records it in the URL.
+  await grid.getByRole('row').filter({ hasText: 'Dana Levi' }).getByText('CTO').click();
+  const sheet = page.getByRole('dialog', { name: 'Dana Levi' });
+  await expect(sheet).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('record')).toBe(dana.id);
+
+  // Click the value, type, Enter: saved through the API and shown in the grid behind.
+  await sheet.getByText('CTO', { exact: true }).click();
+  const input = sheet.getByRole('textbox', { name: 'Job title', exact: true });
+  await expect(input).toBeFocused();
+  await input.fill('Chief Technology Officer');
+  await input.press('Enter');
+  await expect(input).not.toBeVisible();
+  await expect(sheet.getByText('Chief Technology Officer', { exact: true })).toBeVisible();
+  await expect(grid.getByText('Chief Technology Officer', { exact: true })).toBeVisible();
+  expect((await r.request(`/records/${dana.id}`)).fields.jobTitle).toBe('Chief Technology Officer');
+
+  // Escape cancels an edit without closing the sheet; the next Escape closes it.
+  await sheet.getByRole('button', { name: 'Edit Job title', exact: true }).click();
+  await input.fill('Discarded draft');
+  await page.keyboard.press('Escape');
+  await expect(input).not.toBeVisible();
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByText('Chief Technology Officer', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(sheet).not.toBeVisible();
+  expect(new URL(page.url()).searchParams.get('record')).toBeNull();
+
+  // Back reopens it; clicking another row while open swaps the record.
+  await page.goBack();
+  await expect(sheet).toBeVisible();
+  await grid.getByRole('link', { name: 'Noa Cohen' }).click();
+  await expect(page.getByRole('dialog', { name: 'Noa Cohen' })).toBeVisible();
+  await expect(sheet).not.toBeVisible();
+
+  // The full page is one click away and edits the same way.
+  await page.getByRole('link', { name: 'Open full page' }).click();
+  await expect(page.getByRole('heading', { name: 'Noa Cohen', level: 1 })).toBeVisible();
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await page.screenshot({ path: '/tmp/retainer-web-sheet.png', fullPage: true });
 });
