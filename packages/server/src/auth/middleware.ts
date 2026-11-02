@@ -43,16 +43,20 @@ export function authenticate(sql: Sql): MiddlewareHandler<AppEnv> {
 /** Requires a scope; `admin` implies every other scope. */
 export function requireScope(scope: ApiKeyScope): MiddlewareHandler<AppEnv> {
   return createMiddleware<AppEnv>(async (c, next) => {
-    const { scopes } = c.get('caller');
-    if (!scopes.includes(scope) && !scopes.includes('admin')) {
-      return errorResponse(
-        c,
-        new AppError(403, 'forbidden', `this API key needs the "${scope}" scope`, {
-          required: scope,
-          scopes,
-        }),
-      );
-    }
+    const missing = missingScope(c.get('caller').scopes, scope);
+    if (missing) return errorResponse(c, missing);
     await next();
+  });
+}
+
+/** The 403 for a key without `scope`, or undefined when it has it (REST and MCP). */
+export function missingScope(
+  scopes: readonly ApiKeyScope[],
+  scope: ApiKeyScope,
+): AppError | undefined {
+  if (scopes.includes(scope) || scopes.includes('admin')) return undefined;
+  return new AppError(403, 'forbidden', `this API key needs the "${scope}" scope`, {
+    required: scope,
+    scopes,
   });
 }

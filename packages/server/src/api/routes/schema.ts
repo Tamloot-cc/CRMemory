@@ -1,28 +1,22 @@
 import type { Hono } from 'hono';
-import { z } from 'zod';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
 import { SCHEMA_CHANGE_STATUSES, type SchemaChangeStatus } from '../../db/schema.js';
 import { inWorkspace } from '../../db/tx.js';
 import { AppError } from '../../errors.js';
-import { getSchema } from '../../schema-engine/compiled.js';
 import {
   decideSchemaChange,
   getSchemaChange,
   listSchemaChanges,
-  runSchemaChange,
   type SchemaChangeResult,
 } from '../../schema-engine/engine.js';
-import { schemaOperationSchema, stripUniversalIds } from '../../schema-engine/operations.js';
-import { presentSchema } from '../../schema-engine/present.js';
-import { readWorkspace } from '../../workspaces/workspaces.js';
+import {
+  describeSchema,
+  requestSchemaChange,
+  schemaChangeRequestSchema,
+} from '../../schema-engine/service.js';
 import type { AppEnv } from '../http.js';
 import { idParam, limitParam, readBody } from '../request.js';
-
-const changeRequestSchema = z.strictObject({
-  operations: z.array(schemaOperationSchema).min(1).max(100),
-  reason: z.string().max(2000).optional(),
-});
 
 /** 200 applied or unchanged, 202 waiting for approval, 409 conflicting records. */
 function statusFor(result: SchemaChangeResult): 200 | 202 | 409 {
@@ -33,40 +27,13 @@ function statusFor(result: SchemaChangeResult): 200 | 202 | 409 {
 
 export function schemaRoutes(app: Hono<AppEnv>, sql: Sql) {
   /** describe_schema: the workspace and its objects and fields (5). */
-  app.get('/schema', requireScope('read'), async (c) => {
-    const { workspaceId } = c.get('caller');
-    return inWorkspace(sql, workspaceId, async (tx) => {
-      const [workspace, schema] = await Promise.all([
-        readWorkspace(tx, workspaceId),
-        getSchema(tx, workspaceId),
-      ]);
-      return c.json({
-        workspace: {
-          id: workspace.id,
-          name: workspace.name,
-          slug: workspace.slug,
-          templates: workspace.templates,
-          initialized: workspace.initializedAt !== null,
-          schemaVersion: schema.version,
-        },
-        objects: presentSchema(schema),
-      });
-    });
-  });
+  app.get('/schema', requireScope('read'), async (c) =>
+    c.json(await describeSchema(sql, c.get('caller'))),
+  );
 
   app.post('/schema/changes', requireScope('schema:write'), async (c) => {
-    const caller = c.get('caller');
-    const body = await readBody(c, changeRequestSchema);
-    const result = await inWorkspace(sql, caller.workspaceId, (tx) =>
-      runSchemaChange(tx, {
-        workspaceId: caller.workspaceId,
-        actor: caller.actor,
-        scopes: caller.scopes,
-        // Universal IDs belong to code-defined schema, never to callers.
-        operations: stripUniversalIds(body.operations),
-        ...(body.reason ? { reason: body.reason } : {}),
-      }),
-    );
+    const body = await readBody(c, schemaChangeRequestSchema);
+    const result = await requestSchemaChange(sql, c.get('caller'), body);
     return c.json(result, statusFor(result));
   });
 

@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { authenticate } from '../auth/middleware.js';
 import type { Sql } from '../db/client.js';
 import { AppError } from '../errors.js';
-import { SchemaValidationError } from '../schema-engine/types.js';
+import { mcpRoute } from '../mcp/route.js';
 import { VERSION } from '../version.js';
-import { type AppEnv, errorResponse } from './http.js';
+import { type AppEnv, errorResponse, toAppError } from './http.js';
 import { recordRoutes } from './routes/records.js';
 import { schemaRoutes } from './routes/schema.js';
 import { templateRoutes } from './routes/templates.js';
@@ -13,17 +13,6 @@ export type AppDeps = {
   /** A pool connected as the runtime role, so RLS applies to every query. */
   sql: Sql;
 };
-
-/** Maps errors to `{ error: { code, message, details } }` responses. */
-function toAppError(error: unknown): AppError | undefined {
-  if (error instanceof AppError) return error;
-  if (error instanceof SchemaValidationError) {
-    return new AppError(422, 'schema_invalid', 'the schema change is invalid', {
-      issues: error.issues,
-    });
-  }
-  return undefined;
-}
 
 export function createApp(deps: AppDeps) {
   const app = new Hono<AppEnv>();
@@ -54,6 +43,8 @@ export function createApp(deps: AppDeps) {
   templateRoutes(v1, deps.sql);
   recordRoutes(v1, deps.sql);
   app.route('/v1', v1);
+
+  mcpRoute(app, deps.sql);
 
   return app;
 }
