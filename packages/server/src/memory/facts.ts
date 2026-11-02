@@ -1,4 +1,4 @@
-import type { Actor } from '@retainer/shared';
+import type { Actor, PresentedFact } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError, invalid, notFound } from '../errors.js';
@@ -24,16 +24,7 @@ export const rememberInputSchema = z.strictObject({
 });
 export type RememberInput = z.infer<typeof rememberInputSchema>;
 
-export type PresentedFact = {
-  id: string;
-  record: string;
-  content: string;
-  kind: 'stated' | 'inferred';
-  validFrom: string;
-  validTo: string | null;
-  writtenBy: Actor;
-  sources: { interaction: string; quote: string | null }[];
-};
+export type { PresentedFact } from '@retainer/shared';
 
 /** What `remember` returns (6.2). */
 export type RememberResult = { fact: PresentedFact; noteInteraction: string | null };

@@ -1,24 +1,10 @@
-import type { Actor } from '@retainer/shared';
+import type { Actor, PresentedRecord } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { resolveRecordId } from './write.js';
 
-/** A record as the API returns it: values keyed by field name. */
-export type PresentedRecord = {
-  id: string;
-  object: string;
-  label: string | null;
-  /**
-   * Field values by name. A many_to_one relation is the target's ID; its
-   * read-only inverse is a list of source IDs (at most INVERSE_LIMIT).
-   */
-  fields: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
-  createdBy: Actor;
-  updatedBy: Actor;
-};
+export type { PresentedRecord } from '@retainer/shared';
 
 export type RecordRow = {
   id: string;

@@ -1,4 +1,4 @@
-import type { Actor } from '@retainer/shared';
+import type { Actor, PresentedInteraction } from '@retainer/shared';
 import { z } from 'zod';
 import { INTERACTION_KINDS, type InteractionKind, type UnmatchedReason } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
@@ -64,18 +64,7 @@ export type Participants = { matched: MatchedParticipant[]; unmatched: Unmatched
 /** What `log_interaction` returns (6.2). */
 export type LogInteractionResult = { id: string; created: boolean; participants: Participants };
 
-export type PresentedInteraction = {
-  id: string;
-  kind: InteractionKind;
-  channel: string;
-  externalId: string | null;
-  occurredAt: string;
-  title: string | null;
-  summary: string | null;
-  participants: Participants;
-  createdBy: Actor;
-  createdAt: string;
-};
+export type { PresentedInteraction } from '@retainer/shared';
 
 type NormalizedParticipant = {
   handle: Handle | null;
@@ -237,11 +226,12 @@ async function presentParticipants(
   tx: Tx,
   workspaceId: string,
   rows: readonly ParticipantRow[],
+  knownCandidates?: Map<string, EmailMatch>,
 ): Promise<Participants> {
   const ambiguous = rows.flatMap((r) =>
     r.unmatched_reason === 'ambiguous' && r.handle ? [r.handle] : [],
   );
-  const candidates = await matchEmails(tx, workspaceId, ambiguous);
+  const candidates = knownCandidates ?? (await matchEmails(tx, workspaceId, ambiguous));
   const participants: Participants = { matched: [], unmatched: [] };
   for (const row of rows) {
     if (row.record_id) {
@@ -380,7 +370,7 @@ async function existingInteraction(
   };
 }
 
-type InteractionRow = {
+export type InteractionRow = {
   id: string;
   kind: InteractionKind;
   channel: string;
@@ -407,6 +397,9 @@ export async function getInteraction(
   if (row.deleted_at) {
     throw new AppError(404, 'interaction_deleted', `interaction ${id} was retracted`, { id });
   }
+  return presentInteraction(row, await loadParticipants(tx, workspaceId, row.id));
+}
+function presentInteraction(row: InteractionRow, participants: Participants): PresentedInteraction {
   return {
     id: row.id,
     kind: row.kind,
@@ -415,10 +408,37 @@ export async function getInteraction(
     occurredAt: row.occurred_at.toISOString(),
     title: row.title,
     summary: row.summary,
-    participants: await loadParticipants(tx, workspaceId, row.id),
+    participants,
     createdBy: row.created_by,
     createdAt: row.created_at.toISOString(),
   };
+}
+/** Hydrates a page with one participant read and one shared candidate lookup. */
+export async function presentInteractions(
+  tx: Tx,
+  workspaceId: string,
+  rows: readonly InteractionRow[],
+): Promise<PresentedInteraction[]> {
+  if (!rows.length) return [];
+  const ids = rows.map((r) => r.id);
+  const participants = await tx<
+    (ParticipantRow & { interaction_id: string })[]
+  >`select interaction_id,handle,role,record_id,unmatched_reason from interaction_participants where workspace_id = ${workspaceId} and interaction_id = any(${ids}::uuid[]) order by interaction_id,position`;
+  const candidates = await matchEmails(
+    tx,
+    workspaceId,
+    participants.flatMap((p) => (p.unmatched_reason === 'ambiguous' && p.handle ? [p.handle] : [])),
+  );
+  const grouped = new Map<string, ParticipantRow[]>(ids.map((id) => [id, []]));
+  for (const p of participants) grouped.get(p.interaction_id)?.push(p);
+  return Promise.all(
+    rows.map(async (row) =>
+      presentInteraction(
+        row,
+        await presentParticipants(tx, workspaceId, grouped.get(row.id) ?? [], candidates),
+      ),
+    ),
+  );
 }
 
 /** A live interaction cited as a source, and when it happened (rules 2.1, 2.2). */

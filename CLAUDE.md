@@ -1,7 +1,7 @@
 # Retainer
 
-Open-source memory for AI agents that work with CRM data. No UI: REST API,
-MCP endpoint and background workers on Postgres. Read
+Open-source memory for AI agents that work with CRM data. Optional web app
+in `packages/web`, plus a REST API, MCP endpoint and background workers on Postgres. Read
 `ARCHITECTURE.md` before changing the data model, the schema engine, or write
 rules.
 
@@ -12,6 +12,9 @@ rules.
   (set `RETAINER_PG_PORT` if 5432 is taken, and match `DATABASE_URL`)
 - `pnpm db:generate --name <name>` after editing `packages/server/src/db/schema.ts`;
   `pnpm db:migrate` to apply. Never hand-edit generated migrations.
+- Web: `pnpm dev:web` alongside `pnpm dev`; `pnpm build` builds static assets.
+- `pnpm test:web` runs Playwright against the built web app and real Postgres
+  (`DATABASE_URL` required; fresh cloned database per test).
 - `pnpm dev` runs the server with `RETAINER_ROLE=all` from `.env`.
 
 ## Testing

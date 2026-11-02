@@ -210,7 +210,7 @@ describe('facts', () => {
 
     const listed = await t.request(`/v1/records/${dana.id}/facts`, { key: keys.reader });
     expect(listed.status).toBe(200);
-    expect(listed.body).toEqual({ record: dana.id, facts: [created.body.fact] });
+    expect(listed.body).toEqual({ record: dana.id, facts: [created.body.fact], nextCursor: null });
 
     const retracted = await t.request(`/v1/facts/${created.body.fact.id}`, {
       key: keys.user,

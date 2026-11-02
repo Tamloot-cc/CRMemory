@@ -1,0 +1,219 @@
+import type { Actor, AssertionView, Provenance, RecordReference } from '@retainer/shared';
+import type { Fragment } from 'postgres';
+import type { Tx } from '../db/tx.js';
+import { notFound } from '../errors.js';
+import { type InteractionRow, presentInteractions } from '../memory/interactions.js';
+import { identifiersFor } from '../records/derive.js';
+import { getRecord, type PresentedRecord } from '../records/read.js';
+import { normalizeFieldValue } from '../records/values.js';
+import type { CompiledSchema } from '../schema-engine/compiled.js';
+import { after, page } from './pagination.js';
+
+/** All cross-record labels go through this RLS-bound reference presenter. */
+export async function references(
+  tx: Tx,
+  schema: CompiledSchema,
+  ids: string[],
+): Promise<Record<string, RecordReference>> {
+  if (!ids.length) return {};
+  const rows = await tx<
+    { id: string; label: string | null; object_type_id: string }[]
+  >`select id, label, object_type_id from records where id = any(${ids}::uuid[]) and deleted_at is null`;
+  return Object.fromEntries(
+    rows.map((r) => [
+      r.id,
+      {
+        id: r.id,
+        label: r.label,
+        object: schema.objectsById.get(r.object_type_id)?.name ?? 'unknown',
+      },
+    ]),
+  );
+}
+export async function relationReferences(
+  tx: Tx,
+  schema: CompiledSchema,
+  records: PresentedRecord[],
+) {
+  const ids = records.flatMap((r) => {
+    const object = schema.objectsByName.get(r.object);
+    return (object?.activeFields.filter((f) => f.type === 'relation') ?? []).flatMap((f) => {
+      const value = r.fields[f.name];
+      return typeof value === 'string' ? [value] : Array.isArray(value) ? (value as string[]) : [];
+    });
+  });
+  return references(tx, schema, [...new Set(ids)]);
+}
+type AssertionRow = {
+  id: string;
+  record_id: string;
+  field_id: string;
+  object_type_id: string;
+  label: string | null;
+  data: Record<string, unknown>;
+  value: unknown;
+  status: AssertionView['status'];
+  review_reason: AssertionView['reason'];
+  actor: Actor;
+  confidence: number;
+  observed_at: Date;
+  created_at: Date;
+  source_interaction_id: string | null;
+  title: string | null;
+  occurred_at: Date | null;
+  reviewed_by: Actor | null;
+  reviewed_at: Date | null;
+  stamp: string;
+  current_link: string | null;
+};
+export async function assertions(
+  tx: Tx,
+  schema: CompiledSchema,
+  where: Fragment,
+  limit: number,
+  cursor?: string,
+  descending = false,
+) {
+  const rows = await tx<
+    AssertionRow[]
+  >`select a.*, a.created_at::text as stamp, r.object_type_id, r.label, r.data, i.title, i.occurred_at,
+    (select l.target_record_id from record_links l where l.source_record_id = r.id and l.field_id = a.field_id) as current_link
+    from field_assertions a join records r on r.id = a.record_id
+    left join interactions i on i.id = a.source_interaction_id and i.deleted_at is null
+    where ${where} and ${after(tx, tx`a.created_at`, tx`a.id`, cursor, descending)}
+    order by a.created_at ${tx.unsafe(descending ? 'desc' : 'asc')}, a.id ${tx.unsafe(descending ? 'desc' : 'asc')} limit ${limit + 1}`;
+  const result = page(rows, limit);
+  // Resolve unique claims in one query for the whole page, never one read per row.
+  const claims = result.items.flatMap((r) => {
+    const field = schema.fieldOwners.get(r.field_id)?.fieldsById.get(r.field_id);
+    if (r.review_reason !== 'unique_conflict' || !field) return [];
+    try {
+      return identifiersFor(field, normalizeFieldValue(field, r.value)).map((i) => ({
+        assertion: r.id,
+        field: r.field_id,
+        value: i.value,
+      }));
+    } catch {
+      return [];
+    }
+  });
+  const holders = claims.length
+    ? await tx<
+        { field_id: string; value: string; record_id: string }[]
+      >`select field_id, value, record_id from record_identifiers where is_claim and (${claims.map((c) => tx`(field_id = ${c.field}::uuid and value = ${c.value})`).reduce((a, b) => tx`${a} or ${b}`)})`
+    : [];
+  const targetIds = result.items.flatMap((r) => {
+    const field = schema.fieldOwners.get(r.field_id)?.fieldsById.get(r.field_id);
+    return field?.type === 'relation'
+      ? [r.value, r.current_link].filter((v): v is string => typeof v === 'string')
+      : [];
+  });
+  const refs = await references(tx, schema, [...holders.map((h) => h.record_id), ...targetIds]);
+  return {
+    items: result.items.map((r): AssertionView => {
+      const object = schema.objectsById.get(r.object_type_id);
+      const field = object?.fieldsById.get(r.field_id);
+      const claim = claims.filter((c) => c.assertion === r.id);
+      const holder = holders.find(
+        (h) =>
+          h.record_id !== r.record_id &&
+          claim.some((c) => c.value === h.value && c.field === h.field_id),
+      );
+      return {
+        id: r.id,
+        recordId: r.record_id,
+        recordLabel: r.label,
+        object: object?.name ?? 'unknown',
+        field: field?.name ?? r.field_id,
+        value: r.value,
+        currentValue:
+          field?.type === 'relation' ? r.current_link : field ? (r.data[field.key] ?? null) : null,
+        status: r.status,
+        reason: r.review_reason,
+        actor: r.actor,
+        confidence: r.confidence,
+        observedAt: r.observed_at.toISOString(),
+        createdAt: r.created_at.toISOString(),
+        sourceInteractionId: r.source_interaction_id,
+        source:
+          r.occurred_at && r.source_interaction_id
+            ? {
+                id: r.source_interaction_id,
+                title: r.title,
+                occurredAt: r.occurred_at.toISOString(),
+              }
+            : null,
+        conflictingRecord: holder ? (refs[holder.record_id] ?? null) : null,
+        ...(field?.type === 'relation' ? { relationReferences: refs } : {}),
+        reviewedBy: r.reviewed_by,
+        reviewedAt: r.reviewed_at?.toISOString() ?? null,
+      };
+    }),
+    nextCursor: result.nextCursor,
+  };
+}
+export async function assertionById(tx: Tx, schema: CompiledSchema, id: string) {
+  const result = await assertions(tx, schema, tx`a.id = ${id}`, 1);
+  if (!result.items[0]) throw notFound('assertion');
+  return result.items[0];
+}
+export async function enrichedRecord(
+  tx: Tx,
+  workspaceId: string,
+  schema: CompiledSchema,
+  id: string,
+  includes: string[],
+) {
+  const record = await getRecord(tx, workspaceId, schema, id);
+  const result: PresentedRecord & {
+    provenance?: Record<string, Provenance>;
+    relationReferences?: Record<string, RecordReference>;
+  } = { ...record };
+  if (includes.includes('relationReferences'))
+    result.relationReferences = await relationReferences(tx, schema, [record]);
+  if (includes.includes('provenance')) {
+    // Active assertions are unique per field after recomputation; pending IDs are fetched without a page cap.
+    const rows = await tx<
+      { id: string; field_id: string; status: string }[]
+    >`select id, field_id, status from field_assertions where record_id = ${record.id} and status in ('active','pending_review') order by created_at,id`;
+    const active = await assertions(
+      tx,
+      schema,
+      tx`a.record_id = ${record.id} and (a.status = 'active' or a.id in (select distinct on (field_id) id from field_assertions where record_id = ${record.id} and status = 'pending_review' order by field_id,created_at,id))`,
+      Math.max(rows.length, 1),
+    );
+    result.provenance = Object.fromEntries(
+      (schema.objectsByName.get(record.object)?.activeFields ?? [])
+        .filter((f) => f.settings.relationCardinality !== 'one_to_many')
+        .map((f) => [
+          f.name,
+          {
+            assertion:
+              active.items.find((a) => a.field === f.name && a.status === 'active') ?? null,
+            pendingAssertion:
+              active.items.find((a) => a.field === f.name && a.status === 'pending_review') ?? null,
+            pendingAssertionIds: rows
+              .filter((a) => a.field_id === f.id && a.status === 'pending_review')
+              .map((a) => a.id),
+          },
+        ]),
+    );
+  }
+  return result;
+}
+export async function interactionPage(
+  tx: Tx,
+  workspaceId: string,
+  where: Fragment,
+  limit: number,
+  cursor?: string,
+) {
+  const rows = await tx<
+    (InteractionRow & { stamp: string })[]
+  >`select i.*, i.occurred_at::text as stamp from interactions i where i.deleted_at is null and ${where} and ${after(tx, tx`i.occurred_at`, tx`i.id`, cursor, true)} order by i.occurred_at desc, i.id desc limit ${limit + 1}`;
+  const result = page(rows, limit);
+  return {
+    items: await presentInteractions(tx, workspaceId, result.items),
+    nextCursor: result.nextCursor,
+  };
+}

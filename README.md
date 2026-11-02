@@ -8,7 +8,8 @@ matters: typed fields, plain-language facts and a log of interactions, each
 linked to who wrote it and where it came from. Agents read it back through MCP
 or a REST API.
 
-There is no UI. It is a backend for agents.
+The optional web app lets people review agent proposals, browse records with
+provenance, edit fields, and retract facts and interactions.
 
 - **Schema as data**: objects and fields are stored as rows, so a workspace,
   or an agent working in it, can add fields and objects at runtime.
@@ -39,6 +40,30 @@ docker compose -f docker/compose.yml exec retainer retainer key create --workspa
 
 Send the key as `Authorization: Bearer <key>` to the REST API under `/v1`.
 
+## Open the web app
+
+The Docker image serves the app at [localhost:8787/app](http://localhost:8787/app/).
+Create a separate personal key for each reviewer:
+
+```sh
+docker compose -f docker/compose.yml exec retainer retainer key create --workspace acme-clinic \
+  --name "Dana (web)" --actor user:dana --scopes read,write,admin
+```
+
+Enter that key on the sign-in screen. It is kept in an HTTP-only, same-site
+cookie, never browser storage. Use HTTPS outside localhost; Secure cookies
+require it. Revoking the API key ends access immediately. Signing out clears
+the browser cookie; it does not revoke the key.
+
+For TLS termination at a reverse proxy, set `RETAINER_PUBLIC_ORIGIN` to the
+external origin (for example `https://retainer.example`). CSRF checks compare
+the browser Origin to this configured value; forwarded headers are not trusted.
+The setting also controls the cookie's public host and Secure handling.
+
+Non-user keys can browse read-only. Global search, merge suggestions, `forget`
+and record creation are deferred; the web app does not require those backend
+milestones to run.
+
 ## Connect an agent
 
 Agents connect over MCP (Streamable HTTP) at `/mcp`, with the same key as a
@@ -52,7 +77,8 @@ claude mcp add --transport http retainer http://localhost:8787/mcp \
 
 Tools: `describe_schema`, `list_templates`, `apply_template`,
 `query_records`, `get_record`, `upsert_record` and `propose_schema_change`.
-Interactions, facts and search come in later build steps.
+`log_interaction` and `remember` are also available. Global search and context packs
+come in later build steps.
 
 ## Develop
 
@@ -63,11 +89,20 @@ pnpm install
 cp .env.example .env
 docker compose -f docker/compose.yml up -d postgres
 pnpm db:migrate
+pnpm build
 pnpm dev
+# In another terminal (Vite proxies REST and auth requests to port 8787):
+pnpm dev:web
 ```
+
+Open [localhost:5173/app](http://localhost:5173/app/). To serve the production
+build from the API process locally, set `RETAINER_WEB_DIR` to the absolute
+path of `packages/web/dist` in `.env`.
 
 | Command                          | What it does                                                  |
 | -------------------------------- | ------------------------------------------------------------- |
+| `pnpm dev:web`                   | Start the frontend dev server                                 |
+| `pnpm test:web`                  | Browser tests against the built app and real Postgres         |
 | `pnpm build`                     | Build every package                                           |
 | `pnpm typecheck`                 | Type-check every package                                      |
 | `pnpm test`                      | Run tests (integration tests need Postgres at `DATABASE_URL`) |
@@ -83,9 +118,10 @@ pnpm dev
 | `packages/server` | AGPL-3.0 | API, MCP endpoint, workers, schema engine   |
 | `packages/shared` | MIT      | Field types, composite value shapes, actors |
 | `packages/sdk`    | MIT      | TypeScript client                           |
+| `packages/web`    | MIT      | Optional review and records web app         |
 | `packages/mcp`    | MIT      | stdio bridge for MCP clients                |
 
 ## License
 
 The server is licensed under [AGPL-3.0](LICENSE). The SDK, shared types and
-MCP bridge are MIT-licensed; see each package's `LICENSE`.
+MCP bridge and web app are MIT-licensed; see each package's `LICENSE`.

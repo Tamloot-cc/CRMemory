@@ -4,7 +4,6 @@ import type { Sql } from '../../db/client.js';
 import { rememberInputSchema } from '../../memory/facts.js';
 import { logInteractionInputSchema } from '../../memory/interactions.js';
 import {
-  factsOf,
   logInteractionFor,
   readInteraction,
   remember,
@@ -12,7 +11,7 @@ import {
   retractInteractionFor,
 } from '../../memory/service.js';
 import type { AppEnv } from '../http.js';
-import { idParam, limitParam, readBody } from '../request.js';
+import { idParam, readBody } from '../request.js';
 
 /** The interaction log and facts (6.1), on the same services as the MCP tools. */
 export function memoryRoutes(app: Hono<AppEnv>, sql: Sql) {
@@ -28,10 +27,6 @@ export function memoryRoutes(app: Hono<AppEnv>, sql: Sql) {
 
   app.delete('/interactions/:id', requireScope('write'), async (c) =>
     c.json(await retractInteractionFor(sql, c.get('caller'), idParam(c))),
-  );
-
-  app.get('/records/:id/facts', requireScope('read'), async (c) =>
-    c.json(await factsOf(sql, c.get('caller'), idParam(c), limitParam(c, 100, 500))),
   );
 
   app.post('/records/:id/facts', requireScope('write'), async (c) => {

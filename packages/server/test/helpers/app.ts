@@ -1,6 +1,6 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { Actor } from '@retainer/shared';
-import { createApp } from '../../src/api/app.js';
+import { type AppDeps, createApp } from '../../src/api/app.js';
 import { createApiKey } from '../../src/auth/keys.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
 import type { ApiKeyScope } from '../../src/db/schema.js';
@@ -26,9 +26,9 @@ export type RequestOptions = {
  * way layer 3 (API) tests use it. No port is opened. The app runs as the
  * runtime role, as in production, so RLS applies.
  */
-export function startTestApp(db: TestDatabase) {
+export function startTestApp(db: TestDatabase, options: Omit<AppDeps, 'sql'> = {}) {
   const sql = db.connect({ role: RUNTIME_ROLE, max: 20 });
-  const app = createApp({ sql });
+  const app = createApp({ sql, ...options });
 
   async function request<T = any>(
     path: string,

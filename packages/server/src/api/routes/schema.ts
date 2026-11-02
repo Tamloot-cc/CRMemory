@@ -1,13 +1,12 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
-import { SCHEMA_CHANGE_STATUSES, type SchemaChangeStatus } from '../../db/schema.js';
+import { SCHEMA_CHANGE_STATUSES } from '../../db/schema.js';
 import { inWorkspace } from '../../db/tx.js';
 import { AppError } from '../../errors.js';
 import {
   decideSchemaChange,
   getSchemaChange,
-  listSchemaChanges,
   type SchemaChangeResult,
 } from '../../schema-engine/engine.js';
 import {
@@ -15,6 +14,7 @@ import {
   requestSchemaChange,
   schemaChangeRequestSchema,
 } from '../../schema-engine/service.js';
+import { after, page } from '../../web/pagination.js';
 import type { AppEnv } from '../http.js';
 import { idParam, limitParam, readBody } from '../request.js';
 
@@ -47,15 +47,26 @@ export function schemaRoutes(app: Hono<AppEnv>, sql: Sql) {
         `status must be one of: ${SCHEMA_CHANGE_STATUSES.join(', ')}`,
       );
     }
-    const changes = await inWorkspace(sql, workspaceId, (tx) =>
-      listSchemaChanges(
-        tx,
-        workspaceId,
-        status as SchemaChangeStatus | undefined,
-        limitParam(c, 50, 200),
-      ),
+    return c.json(
+      await inWorkspace(sql, workspaceId, async (tx) => {
+        const limit = limitParam(c, 50, 200);
+        const where = status ? tx`status = ${status}` : tx`true`;
+        const rows = await tx<
+          { id: string; stamp: string }[]
+        >`select id, created_at::text as stamp from schema_changes where ${where} and ${after(tx, tx`created_at`, tx`id`, c.req.query('cursor'), true)} order by created_at desc,id desc limit ${limit + 1}`;
+        const result = page(rows, limit);
+        const [total] = await tx<
+          { count: number }[]
+        >`select count(*)::int as count from schema_changes where ${where}`;
+        return {
+          changes: await Promise.all(
+            result.items.map((r) => getSchemaChange(tx, workspaceId, r.id)),
+          ),
+          total: total?.count ?? 0,
+          nextCursor: result.nextCursor,
+        };
+      }),
     );
-    return c.json({ changes });
   });
 
   app.get('/schema/changes/:id', requireScope('read'), async (c) => {

@@ -1,0 +1,61 @@
+import { RetainerClient } from '@retainer/sdk';
+import type { SchemaDescription, Scope, Session } from '@retainer/shared';
+import { createContext, useContext } from 'react';
+
+let sessionEpoch = 0;
+export function resetSessionTransport() {
+  sessionEpoch++;
+}
+export const api = new RetainerClient({
+  baseUrl: window.location.origin,
+  credentials: 'include',
+  fetch: async (input, init) => {
+    const epoch = sessionEpoch;
+    let response = await window.fetch(input, init);
+    const url = new URL(
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+    );
+    const read = !init?.method || init.method === 'GET' || url.pathname.endsWith('/query');
+    if (
+      response.status === 404 &&
+      read &&
+      url.pathname.startsWith('/v1/') &&
+      url.pathname !== '/v1/schema'
+    ) {
+      const refreshed = await api.schema(init?.signal ?? undefined);
+      if (epoch !== sessionEpoch)
+        throw new DOMException('Previous session response discarded', 'AbortError');
+      window.dispatchEvent(new CustomEvent('retainer:schema-refreshed', { detail: refreshed }));
+      response = await window.fetch(input, init);
+    }
+    if (epoch !== sessionEpoch)
+      throw new DOMException('Previous session response discarded', 'AbortError');
+    return response;
+  },
+  onUnauthorized: () => window.dispatchEvent(new Event('retainer:unauthorized')),
+});
+export const WorkspaceContext = createContext<{
+  session: Session;
+  schema: SchemaDescription;
+} | null>(null);
+export function useWorkspace() {
+  const value = useContext(WorkspaceContext);
+  if (!value) throw new Error('Missing workspace');
+  return value;
+}
+export function canMutate(session: Session, scope: Scope = 'write') {
+  return (
+    session.actor.type === 'user' &&
+    (session.scopes.includes('admin') || session.scopes.includes(scope))
+  );
+}
+export function hasScope(session: Session, scope: Scope) {
+  return session.scopes.includes('admin') || session.scopes.includes(scope);
+}
+
+export const AuthContext = createContext<{ session: Session; signOut: () => void } | null>(null);
+export function useAuth() {
+  const value = useContext(AuthContext);
+  if (!value) throw new Error('Missing session');
+  return value;
+}
