@@ -508,7 +508,7 @@ and `GET /v1/records/:id/context` (step 4), merges and `forget` (step 5).
 and schema-operation types in `@retainer/shared`. It supports abort signals
 and typed API errors. The app uses it with `credentials: 'include'` and the
 CSRF header instead of a bearer key. This part of architecture step 6 moved
-earlier; the stdio bridge and release preparation remain separate work.
+earlier; step 6 completed it with the step 4 and 5 routes.
 
 ### 9.3 Shared value validation (MIT)
 

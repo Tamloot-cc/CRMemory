@@ -1,18 +1,44 @@
 {
   "name": "@retainer/mcp",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "stdio bridge to a Retainer server's MCP endpoint, for MCP clients that only speak stdio.",
+  "keywords": [
+    "retainer",
+    "crm",
+    "ai-agents",
+    "memory",
+    "mcp",
+    "model-context-protocol",
+    "stdio"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Tamloot-cc/Retainer/tree/main/packages/mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tamloot-cc/Retainer.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": "https://github.com/Tamloot-cc/Retainer/issues",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "retainer-mcp": "./dist/index.js"
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.4.0"
   }
 }

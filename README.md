@@ -18,8 +18,9 @@ provenance, edit fields, and retract facts and interactions.
   history and makes it searchable.
 - **Self-hosted**: one Docker image and Postgres.
 
-Status: early development. See [ARCHITECTURE.md](ARCHITECTURE.md) for the
-design and build order.
+Status: 0.1.0, the first release; see the [changelog](CHANGELOG.md). Guides
+are in [docs/](docs/README.md); the design is in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Run it
 
@@ -82,10 +83,19 @@ claude mcp add --transport http retainer http://localhost:8787/mcp \
   --header "Authorization: Bearer <key>"
 ```
 
+For clients that only speak stdio, use the `@retainer/mcp` bridge:
+
+```sh
+claude mcp add retainer \
+  --env RETAINER_URL=http://localhost:8787 --env RETAINER_API_KEY=<key> \
+  -- npx -y @retainer/mcp
+```
+
 Tools: `describe_schema`, `list_templates`, `apply_template`,
-`query_records`, `get_record`, `upsert_record` and `propose_schema_change`.
-`log_interaction` and `remember` are also available. Global search and context packs
-come in later build steps.
+`query_records`, `get_record`, `search`, `get_context`, `upsert_record`,
+`log_interaction`, `remember` and `propose_schema_change`. See
+[Connecting agents](docs/agents.md) for the workflow an agent should follow,
+and [the SDK guide](docs/sdk.md) to call the REST API from code.
 
 ## Develop
 
@@ -106,17 +116,18 @@ Open [localhost:5173/app](http://localhost:5173/app/). To serve the production
 build from the API process locally, set `RETAINER_WEB_DIR` to the absolute
 path of `packages/web/dist` in `.env`.
 
-| Command                          | What it does                                                  |
-| -------------------------------- | ------------------------------------------------------------- |
-| `pnpm dev:web`                   | Start the frontend dev server                                 |
-| `pnpm test:web`                  | Browser tests against the built app and real Postgres         |
-| `pnpm build`                     | Build every package                                           |
-| `pnpm typecheck`                 | Type-check every package                                      |
-| `pnpm test`                      | Run tests (integration tests need Postgres at `DATABASE_URL`) |
-| `pnpm lint`                      | Biome lint and format check                                   |
-| `pnpm db:generate --name <name>` | Create a migration from `packages/server/src/db/schema.ts`    |
-| `pnpm db:migrate`                | Apply migrations                                              |
-| `pnpm retainer <command>`        | Run the operator CLI against `DATABASE_URL`                   |
+| Command                          | What it does                                                             |
+| -------------------------------- | ------------------------------------------------------------------------ |
+| `pnpm dev:web`                   | Start the frontend dev server                                            |
+| `pnpm test:web`                  | Browser tests against the built app and real Postgres                    |
+| `pnpm build`                     | Build every package                                                      |
+| `pnpm typecheck`                 | Type-check every package                                                 |
+| `pnpm test`                      | Run tests (integration tests need Postgres at `DATABASE_URL`)            |
+| `pnpm lint`                      | Biome lint and format check                                              |
+| `pnpm db:generate --name <name>` | Create a migration from `packages/server/src/db/schema.ts`               |
+| `pnpm db:migrate`                | Apply migrations                                                         |
+| `pnpm retainer <command>`        | Run the operator CLI against `DATABASE_URL`                              |
+| `pnpm release:check [tag]`       | Check versions and changelog before a release ([how](docs/releasing.md)) |
 
 ## Packages
 

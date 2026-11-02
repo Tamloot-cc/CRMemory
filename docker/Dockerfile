@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM node:22-slim AS build
+# The build stage runs natively once, even for multi-arch images: its output
+# is plain JavaScript with no native modules, so it is the same on every arch.
+FROM --platform=$BUILDPLATFORM node:22-slim AS build
 RUN corepack enable
 WORKDIR /app
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./

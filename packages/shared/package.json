@@ -1,9 +1,25 @@
 {
   "name": "@retainer/shared",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Shared types for Retainer: field types, composite value shapes, actors and schema definitions.",
+  "keywords": [
+    "retainer",
+    "crm",
+    "ai-agents",
+    "memory"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Tamloot-cc/Retainer/tree/main/packages/shared#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tamloot-cc/Retainer.git",
+    "directory": "packages/shared"
+  },
+  "bugs": "https://github.com/Tamloot-cc/Retainer/issues",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -15,6 +31,10 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

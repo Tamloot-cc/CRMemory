@@ -1,9 +1,27 @@
 {
   "name": "@retainer/sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "TypeScript client for the Retainer API.",
+  "keywords": [
+    "retainer",
+    "crm",
+    "ai-agents",
+    "memory",
+    "sdk",
+    "api-client"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/Tamloot-cc/Retainer/tree/main/packages/sdk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tamloot-cc/Retainer.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": "https://github.com/Tamloot-cc/Retainer/issues",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -15,6 +33,10 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

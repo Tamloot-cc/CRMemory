@@ -80,29 +80,40 @@ export function startTestApp(db: TestDatabase, options: Omit<AppDeps, 'sql'> = {
   async function mcpClient(key: string): Promise<McpTestClient> {
     const client = new Client({ name: 'retainer-test', version: '0.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL('http://retainer.test/mcp'), {
-      fetch: (url, init) => Promise.resolve(app.request(url.toString(), init)),
+      fetch: inProcessFetch,
       requestInit: { headers: { authorization: `Bearer ${key}` } },
     });
     await client.connect(transport);
-
-    /** Calls a tool and parses its JSON text, keeping `isError`. */
-    async function call<T = any>(name: string, args: Record<string, unknown> = {}) {
-      const result = await client.callTool({ name, arguments: args });
-      const [first] = result.content as { type: string; text?: string }[];
-      const text = first?.type === 'text' ? (first.text ?? '') : '';
-      let body: T;
-      try {
-        body = JSON.parse(text) as T;
-      } catch {
-        body = text as T;
-      }
-      return { isError: result.isError === true, body, raw: result };
-    }
-
-    return Object.assign(client, { call });
+    return Object.assign(client, {
+      call: <T = any>(name: string, args?: Record<string, unknown>) =>
+        callTool<T>(client, name, args),
+    });
   }
 
-  return { app, sql, request, setupWorkspace, mcpClient };
+  /** A `fetch` that serves any URL from the in-process app, for clients under test. */
+  function inProcessFetch(url: string | URL | Request, init?: RequestInit): Promise<Response> {
+    return Promise.resolve(app.request(url.toString(), init));
+  }
+
+  return { app, sql, request, setupWorkspace, mcpClient, inProcessFetch };
+}
+
+/** Calls a tool and parses its JSON text, keeping `isError`. */
+export async function callTool<T = any>(
+  client: Client,
+  name: string,
+  args: Record<string, unknown> = {},
+) {
+  const result = await client.callTool({ name, arguments: args });
+  const [first] = result.content as { type: string; text?: string }[];
+  const text = first?.type === 'text' ? (first.text ?? '') : '';
+  let body: T;
+  try {
+    body = JSON.parse(text) as T;
+  } catch {
+    body = text as T;
+  }
+  return { isError: result.isError === true, body, raw: result };
 }
 
 export type McpTestClient = Client & {

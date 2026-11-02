@@ -1,3 +1,4 @@
+import type { FactHit, InteractionHit, RecordHit, SearchResult } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { NOTE_CHANNEL } from '../memory/interactions.js';
@@ -16,32 +17,6 @@ export const searchInputSchema = z.strictObject({
   limit: z.number().int().min(1).max(50).default(10),
 });
 export type SearchInput = z.infer<typeof searchInputSchema>;
-
-export type RecordHit = {
-  id: string;
-  object: string;
-  label: string | null;
-  /** `text`: a full-text match. `similar_label`: the fuzzy fallback on the label. */
-  match: 'text' | 'similar_label';
-};
-
-export type FactHit = { id: string; record: string; content: string; validFrom: string };
-
-export type InteractionHit = {
-  id: string;
-  kind: string;
-  occurredAt: string;
-  title: string | null;
-  summary: string | null;
-  /** Live records matched to its participants; possibly none or several. */
-  records: string[];
-};
-
-export type SearchResult = {
-  records: RecordHit[];
-  facts: FactHit[];
-  interactions: InteractionHit[];
-};
 
 /**
  * Length normalization for `ts_rank_cd`: divide by 1 + log(document

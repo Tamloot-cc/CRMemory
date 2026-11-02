@@ -19,7 +19,8 @@
     "db:studio": "pnpm --filter @retainer/server db:studio",
     "retainer": "pnpm --silent --filter @retainer/server cli",
     "dev:web": "pnpm --filter @retainer/web dev",
-    "test:web": "pnpm --filter @retainer/server test:web"
+    "test:web": "pnpm --filter @retainer/server test:web",
+    "release:check": "node scripts/check-release.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.4",

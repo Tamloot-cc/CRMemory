@@ -1,6 +1,12 @@
 import type {
   AssertionView,
+  ContextInput,
+  ContextPack,
   DecisionResult,
+  ForgetResult,
+  MergeInput,
+  MergeResult,
+  MergeSuggestionDecision,
   Page,
   PresentedFact,
   PresentedInteraction,
@@ -14,6 +20,8 @@ import type {
   SchemaChangeResult,
   SchemaDescription,
   SchemaOperation,
+  SearchInput,
+  SearchResult,
   Session,
   TemplateView,
   WriteResponse,
@@ -176,6 +184,30 @@ export class RetainerClient {
     return this.request<{ id: string; deleted: true; deletedRecordIds: string[] }>(
       `/v1/records/${encodeURIComponent(id)}`,
       { method: 'DELETE' },
+    );
+  }
+  /** Merges `input.recordId` into `id`, which survives. Retrying with the same key is safe. */
+  mergeRecords(id: string, input: MergeInput, idempotencyKey?: string) {
+    return this.post<MergeResult>(
+      `/v1/records/${encodeURIComponent(id)}/merge`,
+      input,
+      undefined,
+      idempotencyKey,
+    );
+  }
+  /** Erases a person and what was logged about them (needs the `admin` scope). Not reversible. */
+  forget(id: string) {
+    return this.post<ForgetResult>(`/v1/records/${encodeURIComponent(id)}/forget`);
+  }
+  search(input: SearchInput, signal?: AbortSignal) {
+    return this.post<SearchResult>('/v1/search', input, signal);
+  }
+  context(id: string, input: ContextInput = {}, signal?: AbortSignal) {
+    return this.get<ContextPack>(`/v1/records/${encodeURIComponent(id)}/context`, input, signal);
+  }
+  dismissMergeSuggestion(id: string) {
+    return this.post<MergeSuggestionDecision>(
+      `/v1/review/merges/${encodeURIComponent(id)}/dismiss`,
     );
   }
   review(
