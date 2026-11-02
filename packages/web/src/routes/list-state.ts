@@ -182,7 +182,9 @@ export function describeClause(
 function formatFilterValue(value: unknown, field: FieldView | undefined): string {
   if (Array.isArray(value)) return value.map((v) => formatFilterValue(v, field)).join(', ');
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  if (field?.type === 'money' && typeof value === 'number') return microsToDecimal(value);
+  // Money filters are integer micros; anything else came from a hand-edited URL.
+  if (field?.type === 'money' && Number.isSafeInteger(value))
+    return microsToDecimal(value as number);
   if (field?.type === 'select' || field?.type === 'multi_select')
     return field.settings.options?.find((o) => o.value === value)?.label ?? String(value);
   if (isPlainObject(value)) return JSON.stringify(value);
@@ -240,6 +242,17 @@ function chipsOf(filter: Record<string, unknown>): FilterClause[] | undefined {
     return parts.every((p): p is FilterClause[] => !!p) ? parts.flat() : undefined;
   }
   return clausesOf(filter);
+}
+
+/**
+ * The URL filter after adding `clause`. A custom filter is kept and ANDed
+ * with the new clause rather than replaced.
+ */
+export function withClause(view: ListSearch, clause: FilterClause): string | undefined {
+  if (!view.custom) return encodeFilter(addClause(view.clauses, clause));
+  return JSON.stringify({
+    and: [view.query.filter, { [clause.field]: { [clause.operator]: clause.value } }],
+  });
 }
 
 export function parseListSearch(search: { filter?: string; sort?: string }): ListSearch {

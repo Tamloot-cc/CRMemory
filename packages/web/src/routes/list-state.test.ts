@@ -16,6 +16,7 @@ import {
   resolveColumns,
   setColumnVisible,
   shiftColumn,
+  withClause,
 } from './list-state.js';
 
 const field = (name: string, extra: Partial<FieldView> = {}) =>
@@ -124,6 +125,19 @@ describe('filters', () => {
     expect(parseFilter('[1]').error).toMatch(/invalid filter/);
   });
 
+  it('ANDs a new clause with a custom filter instead of dropping it', () => {
+    const custom = parseListSearch({ filter: '{"or":[{"a":1},{"b":2}]}' });
+    const next = parseListSearch({
+      filter: withClause(custom, { field: 'c', operator: 'eq', value: 3 }),
+    });
+    expect(next.query.filter).toEqual({ and: [{ or: [{ a: 1 }, { b: 2 }] }, { c: { eq: 3 } }] });
+    expect(next.custom).toBe(true);
+    const plain = parseListSearch({ filter: '{"a":{"eq":1}}' });
+    expect(withClause(plain, { field: 'b', operator: 'eq', value: 2 })).toBe(
+      '{"and":[{"a":{"eq":1}},{"b":{"eq":2}}]}',
+    );
+  });
+
   it('replaces a clause on the same field and operator', () => {
     const one = addClause([], { field: 'a', operator: 'eq', value: 1 });
     expect(addClause(one, { field: 'a', operator: 'eq', value: 2 })).toEqual([
@@ -150,6 +164,9 @@ describe('filters', () => {
     expect(
       describeClause({ field: 'amount', operator: 'gt', value: 2_500_000 }, amount).value,
     ).toBe('2.5');
+    expect(describeClause({ field: 'amount', operator: 'gt', value: 2.5 }, amount).value).toBe(
+      '2.5',
+    );
   });
 });
 

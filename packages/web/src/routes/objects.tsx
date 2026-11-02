@@ -29,7 +29,6 @@ import {
   Toolbar,
 } from '../ui/index.js';
 import {
-  addClause,
   type ColumnPrefs,
   defaultColumnOrder,
   defaultColumnWidth,
@@ -51,6 +50,7 @@ import {
   saveColumnPrefs,
   setColumnVisible,
   shiftColumn,
+  withClause,
 } from './list-state.js';
 import { QueryError, useView } from './state.js';
 
@@ -209,7 +209,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           object={object}
           onApply={(clause) => {
             setError('');
-            setFilter(addClause(clauses, clause));
+            void setSearch({ filter: withClause(view, clause), cursor: undefined });
           }}
           onError={setError}
         />
