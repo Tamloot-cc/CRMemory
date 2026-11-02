@@ -1,30 +1,30 @@
-# Self-hosted CRMemory: Postgres, plus one app container
+# Self-hosted Retainer: Postgres, plus one app container
 # running both the API and the workers.
 #   docker compose -f docker/compose.yml up --build
 services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_USER: crmemory
-      POSTGRES_PASSWORD: crmemory
-      POSTGRES_DB: crmemory
+      POSTGRES_USER: retainer
+      POSTGRES_PASSWORD: retainer
+      POSTGRES_DB: retainer
     ports:
-      - "${CRMEMORY_PG_PORT:-5432}:5432"
+      - "${RETAINER_PG_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U crmemory"]
+      test: ["CMD-SHELL", "pg_isready -U retainer"]
       interval: 2s
       timeout: 3s
       retries: 30
 
-  crmemory:
+  retainer:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     environment:
-      DATABASE_URL: postgres://crmemory:crmemory@postgres:5432/crmemory
-      CRMEMORY_ROLE: all
+      DATABASE_URL: postgres://retainer:retainer@postgres:5432/retainer
+      RETAINER_ROLE: all
       PORT: "8787"
     ports:
       - "8787:8787"

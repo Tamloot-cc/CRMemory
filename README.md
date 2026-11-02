@@ -1,10 +1,10 @@
-# CRMemory
+# Retainer
 
 Open-source memory for AI agents that work with customer relationships.
 
-CRMemory keeps a living record of every person, company and deal a business
+Retainer keeps a living record of every person, company and deal a business
 works with. Agents log interactions (meetings, calls, emails, messages), and
-CRMemory turns them into typed fields and plain-language facts, each linked to
+Retainer turns them into typed fields and plain-language facts, each linked to
 the interaction it came from. Agents read it back through MCP or a REST API.
 
 There is no UI. It is a backend for agents.

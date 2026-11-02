@@ -1,6 +1,6 @@
-# CRMemory architecture
+# Retainer architecture
 
-CRMemory is an open-source memory layer for AI agents that work with customer
+Retainer is an open-source memory layer for AI agents that work with customer
 relationships. It has no UI. Agents and apps use it through a REST API and an
 MCP server.
 
@@ -37,7 +37,7 @@ Every schema row carries:
 
 - `universal_id`: a stable UUID that is the same for a standard object or
   field in every workspace, so upgrades can find it.
-- `owner`: `system` (shipped with CRMemory), `workspace` (added by a person),
+- `owner`: `system` (shipped with Retainer), `workspace` (added by a person),
   or `agent` (added by an agent).
 - `status`: `active` or `deprecated`. A proposed change lives only in
   `schema_changes` until it is approved; nothing half-exists in the live
@@ -66,7 +66,7 @@ API and MCP schemas are cached per `(workspace, schema_version)`.
 | `address`                                                | `{ street1, street2, city, state, postcode, country, lat, lng }` |
 | `relation`                                               | Not in `records.data`; see `record_links`                        |
 
-Composite shapes are defined once in `@crmemory/shared`, so every object that
+Composite shapes are defined once in `@retainer/shared`, so every object that
 has emails stores them the same way.
 
 #### Built-in columns on every record
@@ -388,7 +388,7 @@ work without a template, and a template can be applied later.
 later (a consultancy that starts recruiting). If a template's object or field
 name collides with an existing custom one, applying it fails validation and
 the error lists the collisions; nothing is half-applied. Template updates in
-new CRMemory releases reach workspaces through the same upgrade path as base
+new Retainer releases reach workspaces through the same upgrade path as base
 objects, matched by `universal_id`.
 
 The workspace records which templates it has applied, with their versions
@@ -672,7 +672,7 @@ The OpenAPI document is generated per workspace from its schema.
 
 ### 6.2 MCP
 
-Hosted on the API server at `/mcp` (Streamable HTTP). `@crmemory/mcp` is a
+Hosted on the API server at `/mcp` (Streamable HTTP). `@retainer/mcp` is a
 small stdio bridge for local clients that only speak stdio.
 
 Tools are generic, not one per object. Custom objects would otherwise grow
@@ -784,11 +784,11 @@ workspace key can create another workspace. On a self-hosted install, the
 server image includes a CLI that talks to the database directly:
 
 ```sh
-docker compose exec crmemory crmemory workspace create --name "Acme Clinic" --template clinic
-docker compose exec crmemory crmemory workspace list
-docker compose exec crmemory crmemory key create --workspace acme-clinic \
+docker compose exec retainer retainer workspace create --name "Acme Clinic" --template clinic
+docker compose exec retainer retainer workspace list
+docker compose exec retainer retainer key create --workspace acme-clinic \
   --name "Front-desk agent" --actor agent:front-desk --scopes read,write,schema:write
-docker compose exec crmemory crmemory key revoke <key-id>
+docker compose exec retainer retainer key revoke <key-id>
 ```
 
 `--template` is optional; without it, the first agent chooses one (3.1).
@@ -876,7 +876,7 @@ step 1.
 - [ ] `facts.valid_from`: no `now()` default; set from the source (1.3,
   rule 2.6)
 - [ ] Remove `proposed` from live `object_types` / `fields` status and from
-  `SCHEMA_STATUSES` in `@crmemory/shared` (1.1)
+  `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
 - [ ] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
   `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
 
