@@ -138,11 +138,17 @@ type PendingRow = {
   observed_at: Date;
 };
 
-async function loadPending(tx: Tx, workspaceId: string, assertionId: string): Promise<PendingRow> {
+async function loadPending(
+  tx: Tx,
+  workspaceId: string,
+  assertionId: string,
+  lock = false,
+): Promise<PendingRow> {
   const [row] = await tx<PendingRow[]>`
     select id, record_id, field_id, value, status, source_interaction_id, observed_at
     from field_assertions
-    where id = ${assertionId} and workspace_id = ${workspaceId}`;
+    where id = ${assertionId} and workspace_id = ${workspaceId}
+    ${lock ? tx`for update` : tx``}`;
   if (!row) throw notFound('assertion', { id: assertionId });
   return row;
 }
@@ -182,8 +188,9 @@ export async function acceptAssertion(
     await lockSource(tx, context.workspaceId, first.source_interaction_id);
   }
   const record = await lockRecord(tx, context.workspaceId, first.record_id);
-  // Re-read under the record lock, so two reviewers cannot both accept it.
-  const pending = await loadPending(tx, context.workspaceId, assertionId);
+  // Lock the assertion after its record: rejection locks this row too.
+  // Without this lock, rejection could commit between our read and final update.
+  const pending = await loadPending(tx, context.workspaceId, assertionId, true);
   if (pending.status !== 'pending_review') {
     throw new AppError(409, 'not_pending', `assertion is ${pending.status}, not pending_review`);
   }

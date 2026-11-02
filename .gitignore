@@ -8,3 +8,6 @@ coverage/
 
 # spec-duel review snapshots
 *.review/
+
+playwright-report/
+test-results/

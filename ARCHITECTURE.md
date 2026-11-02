@@ -1,8 +1,9 @@
 # Retainer architecture
 
 Retainer is an open-source memory layer for AI agents that work with customer
-relationships. It has no UI. Agents and apps use it through a REST API and an
-MCP server.
+relationships. Agents and apps use it through a REST API and an MCP server.
+An optional web app in `packages/web` gives people review, records and
+provenance screens; see `FRONTEND.md` for its scope.
 
 It combines two ideas:
 
@@ -610,15 +611,21 @@ composes `search`, `query_records` and `get_context` with its own model.
 
 | Route                                             | Purpose                                                                     |
 | ------------------------------------------------- | --------------------------------------------------------------------------- |
+| `GET /v1/me`                                      | Caller workspace, actor and scopes                                          |
+| `GET /v1/schema/changes` · `/:id`                 | Paginated change history or one change                                      |
 | `GET /v1/schema`                                  | Current schema                                                              |
 | `POST /v1/schema/changes`                         | Request a schema change (applied or proposed)                               |
 | `POST /v1/schema/changes/:id/approve` · `/reject` | Decide a proposed change                                                    |
 | `GET /v1/templates`                               | Templates and what each adds (3.1)                                          |
 | `POST /v1/templates/:name/apply`                  | Apply a template (needs `schema:write`)                                     |
 | `POST /v1/objects/:object/records`                | Create a record                                                             |
-| `POST /v1/objects/:object/query`                  | Filter records                                                              |
+| `POST /v1/objects/:object/query`                  | Filter, sort and page records; optional object-scoped keyword lookup        |
 | `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)  |
 | `GET` · `PATCH` · `DELETE /v1/records/:id`        | One record                                                                  |
+| `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                       |
+| `GET /v1/records/:id/interactions`                | Paginated interactions for a record                                         |
+| `GET /v1/assertions/:id`                          | One assertion, including status and review details                          |
+| `GET /v1/interactions/:id/claims`                 | Paginated assertions and facts citing an interaction                        |
 | `GET /v1/records/:id/context`                     | Context pack                                                                |
 | `POST /v1/records/:id/merge`                      | Merge another record into this one                                          |
 | `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                      |
@@ -629,6 +636,11 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)        |
 | `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                              |
 | `POST /v1/search`                                 | Keyword search (5.1)                                                        |
+
+Web sign-in and sign-out use `POST` and `DELETE /auth/session`, outside
+`/v1`; see section 7 for cookie and CSRF rules. Record reads optionally include
+winning provenance, pending previews and relation references. Review responses
+include totals and separate cursors for each collection (FRONTEND.md 9.1).
 
 The OpenAPI document is generated per workspace from its schema.
 
@@ -804,6 +816,28 @@ A context pack is assembled by fixed rules (5):
 
 ## 7. Tenancy and auth
 
+The optional web app signs in at `POST /auth/session`, which turns a person's
+API key into an HTTP-only `retainer_session` cookie (`SameSite=Strict`, path
+`/`, 30-day max age, Secure except on localhost). The cookie contains the key;
+revocation is checked on every request. `DELETE /auth/session` clears it.
+`GET /v1/me` returns the workspace, actor and scopes. Explicit bearer headers
+win over cookies, including when the header is invalid. Cookie-authenticated
+mutations require `X-Retainer-Client: web` and reject a mismatched Origin;
+this applies to the shared REST/MCP authentication middleware. Sign-in and
+sign-out also require the header. The browser stores no key in local storage.
+
+For TLS termination at a reverse proxy, set `RETAINER_PUBLIC_ORIGIN` to the
+external origin (for example `https://retainer.example`). CSRF checks compare
+the browser Origin to this configured value; forwarded headers are not trusted.
+The setting also controls the cookie's public host and Secure handling.
+
+Web read routes add paginated assertion history, record interactions,
+interaction claims, review totals/cursors, and optional winning provenance
+and batched relation references. Object queries accept an optional `search`
+keyword string for full-text lookup within one object; global search remains
+in step 4. All use the same runtime role and RLS as
+other routes. They do not change the assertion-backed write rules.
+
 - Every row has `workspace_id`. Postgres row-level security uses a
   per-transaction `app.workspace_id` setting as a second line of defense
   behind the application's own checks. Runtime roles must not own tables or
@@ -881,6 +915,7 @@ enforcement. Until then, new code keeps that path open:
 | `packages/shared` | MIT      | Field types, composite shapes, actor, schema types  |
 | `packages/server` | AGPL-3.0 | API, MCP endpoint, workers, schema engine, database |
 | `packages/sdk`    | MIT      | TypeScript client                                   |
+| `packages/web`    | MIT      | Optional static React app for people                |
 | `packages/mcp`    | MIT      | stdio bridge to the hosted MCP endpoint             |
 | `docker/`         | AGPL-3.0 | Dockerfile and Compose file                         |
 
@@ -888,6 +923,9 @@ enforcement. Until then, new code keeps that path open:
 
 TypeScript on Node 22, pnpm workspaces, Hono, Drizzle ORM and drizzle-kit
 migrations, Zod, pg-boss, and the official MCP TypeScript SDK. No LLM SDK.
+The optional web package uses Vite, React 19, TanStack Router/Query, Tailwind
+CSS 4 and shadcn-style UI primitives. Static files are served by Hono at
+`/app` when `RETAINER_WEB_DIR` is set; the Docker image includes the build.
 
 ## 10. Build order
 
@@ -991,13 +1029,17 @@ Every build step lands with its tests. Nothing is "done" until the layers
 below that apply to it pass locally and in CI. Retainer has no language
 model inside it, so every layer except 5 is deterministic.
 
-| Layer                   | What it proves                                                                                                                                                                      | How                                                                                                 | Runs                   |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
-| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                        | Vitest, no database                                                                                 | Every PR               |
-| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget`        | Vitest against real Postgres; each test gets a fresh database                                       | Every PR               |
-| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                                  | The Hono app called in-process against a real database                                              | Every PR               |
-| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context                | A runner starts Postgres and the server, then drives them through the MCP client and REST           | Every PR (from step 2) |
-| 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation                | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
+| Layer                   | What it proves                                                                                                                                                               | How                                                                                                 | Runs                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
+| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                 | Vitest, no database                                                                                 | Every PR               |
+| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget` | Vitest against real Postgres; each test gets a fresh database                                       | Every PR               |
+| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                           | The Hono app called in-process against a real database                                              | Every PR               |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context         | A runner starts Postgres and the server, then drives them through the MCP client and REST           | Every PR (from step 2) |
+| 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation         | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
+
+Browser tests use Playwright against the built app and real Postgres, with a
+fresh database cloned from a migrated template per test. Run `pnpm build`
+then `pnpm test:web`; CI runs these after the existing test layers.
 
 ### Rules
 

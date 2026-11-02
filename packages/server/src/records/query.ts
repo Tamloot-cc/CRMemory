@@ -1,12 +1,19 @@
-import type { FieldType } from '@retainer/shared';
+import {
+  FILTER_OPERATORS,
+  type FieldType,
+  type FilterOperator,
+  type RecordPage,
+  SORTABLE_TYPES,
+} from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
+import { relationReferences } from '../web/reads.js';
 import { normalizeDomain, normalizeEmail, normalizePhone } from './derive.js';
-import { type PresentedRecord, presentRecords, RECORD_COLUMNS, type RecordRow } from './read.js';
+import { presentRecords, RECORD_COLUMNS, type RecordRow } from './read.js';
 import { normalizeFieldValue } from './values.js';
 
 /**
@@ -16,38 +23,20 @@ import { normalizeFieldValue } from './values.js';
  */
 export type Filter = { and?: Filter[]; or?: Filter[]; not?: Filter } & Record<string, unknown>;
 
-const OPERATORS = ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte', 'contains', 'isNull'] as const;
-type Operator = (typeof OPERATORS)[number];
-
-/** Operators each type supports. Every type also supports isNull. */
-const OPERATORS_BY_TYPE: Record<FieldType, readonly Operator[]> = {
-  text: ['eq', 'neq', 'in', 'contains'],
-  number: ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'],
-  boolean: ['eq', 'neq'],
-  date: ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'],
-  date_time: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'],
-  select: ['eq', 'neq', 'in'],
-  multi_select: ['contains'],
-  money: ['gt', 'gte', 'lt', 'lte'],
-  emails: ['eq'],
-  phones: ['eq'],
-  links: ['eq'],
-  full_name: ['contains'],
-  address: ['contains'],
-  relation: ['eq', 'in'],
-  json: [],
-};
-
-const SORTABLE: ReadonlySet<FieldType> = new Set([
-  'text',
-  'number',
-  'boolean',
-  'date',
-  'date_time',
-  'select',
-]);
+type Operator = FilterOperator;
+const OPERATORS_BY_TYPE = FILTER_OPERATORS;
+const SORTABLE: ReadonlySet<FieldType> = new Set(SORTABLE_TYPES);
 
 export const queryInputSchema = z.strictObject({
+  search: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      'Keywords within this object only, matched by Postgres full-text search over its label and searchable fields.',
+    ),
   filter: z.record(z.string(), z.unknown()).optional(),
   sort: z
     .array(z.strictObject({ field: z.string(), direction: z.enum(['asc', 'desc']).default('asc') }))
@@ -55,6 +44,7 @@ export const queryInputSchema = z.strictObject({
     .optional(),
   limit: z.number().int().min(1).max(200).default(50),
   cursor: z.string().optional(),
+  include: z.array(z.enum(['relationReferences'])).optional(),
 });
 export type QueryInput = z.infer<typeof queryInputSchema>;
 
@@ -351,7 +341,7 @@ export async function queryRecords(
   schema: CompiledSchema,
   object: CompiledObject,
   input: QueryInput,
-): Promise<{ records: PresentedRecord[]; nextCursor: string | null }> {
+): Promise<RecordPage> {
   const where = input.filter ? compileFilter(tx, object, input.filter) : tx`true`;
   const offset = decodeCursor(input.cursor);
   const columns = RECORD_COLUMNS.map((c) => `r.${c}`);
@@ -359,11 +349,17 @@ export async function queryRecords(
     select ${tx.unsafe(columns.join(', '))} from records r
     where r.workspace_id = ${workspaceId} and r.object_type_id = ${object.id}
       and r.deleted_at is null and ${where}
+      ${input.search ? tx`and r.search @@ plainto_tsquery('simple', ${input.search})` : tx``}
     order by ${compileSort(tx, object, input.sort)}
     limit ${input.limit + 1} offset ${offset}`;
   const page = rows.slice(0, input.limit);
+  const records = await presentRecords(tx, schema, page);
+  const refs = input.include?.includes('relationReferences')
+    ? await relationReferences(tx, schema, records)
+    : undefined;
   return {
-    records: await presentRecords(tx, schema, page),
+    records,
+    ...(refs ? { relationReferences: refs } : {}),
     nextCursor: rows.length > input.limit ? encodeCursor(offset + input.limit) : null,
   };
 }

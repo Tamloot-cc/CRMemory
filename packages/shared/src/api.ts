@@ -1,0 +1,266 @@
+import type { Actor } from './actor.js';
+import type { FieldType } from './field-types.js';
+import type {
+  FieldDefinition,
+  FieldSettings,
+  ObjectDefinition,
+  SchemaOwner,
+  SelectOption,
+} from './schema.js';
+export type Scope = 'read' | 'write' | 'schema:write' | 'admin';
+export type Session = {
+  workspace: { id: string; name: string; slug: string };
+  actor: Actor;
+  scopes: Scope[];
+};
+export type FieldView = Omit<FieldDefinition, 'description' | 'settings'> & {
+  description: string | null;
+  settings: FieldSettings;
+  readOnly: boolean;
+  owner: SchemaOwner;
+  isNullable: boolean;
+  isUnique: boolean;
+  isFilterable: boolean;
+  isSearchable: boolean;
+};
+export type ObjectView = {
+  nameSingular: string;
+  namePlural: string;
+  labelSingular: string;
+  labelPlural: string;
+  description: string | null;
+  labelField: string | null;
+  owner: SchemaOwner;
+  fields: FieldView[];
+};
+export type SchemaDescription = {
+  workspace: Session['workspace'] & {
+    schemaVersion: number;
+    initialized: boolean;
+    templates: { name: string; version: number; appliedAt: string }[];
+  };
+  objects: ObjectView[];
+};
+export type RecordReference = { id: string; object: string; label: string | null };
+export type SourceReference = { id: string; title: string | null; occurredAt: string };
+export type AssertionView = {
+  id: string;
+  recordId: string;
+  object: string;
+  recordLabel: string | null;
+  field: string;
+  value: unknown;
+  currentValue: unknown;
+  status: 'active' | 'superseded' | 'pending_review' | 'rejected' | 'retracted';
+  reason: 'outranked' | 'low_confidence' | 'unique_conflict' | null;
+  actor: Actor;
+  confidence: number;
+  sourceInteractionId: string | null;
+  observedAt: string;
+  createdAt: string;
+  source: SourceReference | null;
+  conflictingRecord: RecordReference | null;
+  relationReferences?: Record<string, RecordReference>;
+  reviewedBy: Actor | null;
+  reviewedAt: string | null;
+};
+export type Provenance = {
+  pendingAssertion?: AssertionView | null;
+  assertion: AssertionView | null;
+  pendingAssertionIds: string[];
+};
+export type PresentedRecord = {
+  id: string;
+  object: string;
+  label: string | null;
+  fields: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: Actor;
+  updatedBy: Actor;
+  provenance?: Record<string, Provenance>;
+  relationReferences?: Record<string, RecordReference>;
+};
+export type WriteResponse = {
+  id: string;
+  created: boolean;
+  fields: Record<string, 'applied' | 'pending_review' | 'superseded'>;
+  record: PresentedRecord;
+};
+export type QueryInput = {
+  search?: string;
+  filter?: Record<string, unknown>;
+  sort?: { field: string; direction: 'asc' | 'desc' }[];
+  limit?: number;
+  cursor?: string;
+  include?: string[];
+};
+export type RecordPage = {
+  records: PresentedRecord[];
+  nextCursor: string | null;
+  relationReferences?: Record<string, RecordReference>;
+};
+export type DecisionResult = {
+  assertionId: string;
+  status: 'accepted' | 'rejected';
+  fields?: WriteResponse['fields'];
+  record: PresentedRecord;
+};
+export type UnresolvedParticipant = {
+  interactionId: string;
+  position: number;
+  handle: string | null;
+  role: string | null;
+  occurredAt: string;
+  title: string | null;
+  deletedRecordIds: string[];
+};
+export type MergeSuggestion = {
+  id: string;
+  recordIds: [string, string];
+  reason: string;
+  createdAt: string;
+};
+export type ReviewCollection = 'pendingAssertions' | 'unresolvedParticipants' | 'mergeSuggestions';
+export type ReviewQueue = {
+  pendingAssertions: AssertionView[];
+  unresolvedParticipants: UnresolvedParticipant[];
+  mergeSuggestions: MergeSuggestion[];
+  totals: Record<ReviewCollection, number>;
+  nextCursors: Record<ReviewCollection, string | null>;
+};
+export type Page<T> = { items: T[]; nextCursor: string | null };
+export type PresentedFact = {
+  status?: 'current' | 'retracted' | 'superseded' | 'ended';
+  id: string;
+  record: string;
+  content: string;
+  kind: 'stated' | 'inferred';
+  validFrom: string;
+  validTo: string | null;
+  writtenBy: Actor;
+  sources: { interaction: string; quote: string | null }[];
+};
+export type InteractionKind = 'meeting' | 'call' | 'email' | 'message' | 'note';
+export type UnmatchedReason = 'no_match' | 'phone_only' | 'deleted_record' | 'ambiguous';
+export type MatchedParticipant = { handle: string | null; role: string | null; recordId: string };
+export type UnmatchedParticipant = {
+  handle: string | null;
+  role: string | null;
+  reason: UnmatchedReason;
+  candidates?: string[];
+};
+export type Participant = MatchedParticipant | UnmatchedParticipant;
+export type Participants = { matched: MatchedParticipant[]; unmatched: UnmatchedParticipant[] };
+export type PresentedInteraction = {
+  id: string;
+  kind: InteractionKind;
+  channel: string;
+  externalId: string | null;
+  occurredAt: string;
+  title: string | null;
+  summary: string | null;
+  participants: Participants;
+  createdBy: Actor;
+  createdAt: string;
+};
+export type RetractInteractionResult = {
+  id: string;
+  deleted: true;
+  retractedAssertions: number;
+  recomputedRecordIds: string[];
+  hiddenFactIds: string[];
+};
+export type SchemaChange = {
+  id: string;
+  status: SchemaChangeStatus;
+  operations: { kind: string; [key: string]: unknown }[];
+  request: SchemaOperation[];
+  isDestructive: boolean;
+  reason: string | null;
+  requestedBy: Actor;
+  decidedBy: Actor | null;
+  appliedVersion: number | null;
+  error: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+};
+export type SchemaChangeStatus = 'applied' | 'proposed' | 'rejected' | 'failed';
+/** Public request operations; the schema engine remains the validator. */
+export type SchemaOperation =
+  | { op: 'create_object'; object: ObjectDefinition }
+  | {
+      op: 'update_object';
+      object: string;
+      labelSingular?: string;
+      labelPlural?: string;
+      description?: string | null;
+      labelField?: string;
+    }
+  | { op: 'rename_object'; object: string; nameSingular: string; namePlural: string }
+  | { op: 'delete_object'; object: string }
+  | { op: 'create_field'; object: string; field: FieldDefinition }
+  | ({ op: 'update_field'; object: string; field: string; description?: string | null } & Partial<
+      Pick<
+        FieldDefinition,
+        'label' | 'isNullable' | 'isUnique' | 'isFilterable' | 'isSearchable' | 'type'
+      >
+    >)
+  | { op: 'rename_field'; object: string; field: string; name: string }
+  | { op: 'delete_field'; object: string; field: string }
+  | { op: 'add_option'; object: string; field: string; option: SelectOption }
+  | { op: 'update_option'; object: string; field: string; value: string; label: string }
+  | { op: 'remove_option'; object: string; field: string; value: string };
+export type SchemaChangeResult = {
+  status: SchemaChangeStatus | 'unchanged';
+  change: SchemaChange | null;
+  schemaVersion: number;
+  recordIds?: string[];
+  alreadyApplied?: boolean;
+};
+export type TemplateView = {
+  name: string;
+  version: number;
+  label: string;
+  description: string;
+  applied: boolean;
+  adds: {
+    objects: { name: string; fields: string[] }[];
+    fields: { object: string; field: string }[];
+  };
+};
+export const SORTABLE_TYPES: readonly FieldType[] = [
+  'text',
+  'number',
+  'boolean',
+  'date',
+  'date_time',
+  'select',
+];
+export type FilterOperator =
+  | 'eq'
+  | 'neq'
+  | 'in'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'contains'
+  | 'isNull';
+export const FILTER_OPERATORS: Record<FieldType, readonly FilterOperator[]> = {
+  text: ['eq', 'neq', 'in', 'contains'],
+  number: ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'],
+  boolean: ['eq', 'neq'],
+  date: ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'],
+  date_time: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'],
+  select: ['eq', 'neq', 'in'],
+  multi_select: ['contains'],
+  money: ['gt', 'gte', 'lt', 'lte'],
+  emails: ['eq'],
+  phones: ['eq'],
+  links: ['eq'],
+  full_name: ['contains'],
+  address: ['contains'],
+  relation: ['eq', 'in'],
+  json: [],
+};

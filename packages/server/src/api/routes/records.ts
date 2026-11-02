@@ -11,14 +11,13 @@ import {
   patchInputSchema,
   patchRecord,
   readRecord,
-  reviewQueue,
   sourceSchema,
   upsertInputSchema,
   upsertRecord,
   valuesSchema,
 } from '../../records/service.js';
 import type { AppEnv } from '../http.js';
-import { idParam, limitParam, readBody } from '../request.js';
+import { idParam, readBody } from '../request.js';
 
 const createSchema = z.strictObject({ values: valuesSchema, source: sourceSchema.optional() });
 
@@ -56,11 +55,6 @@ export function recordRoutes(app: Hono<AppEnv>, sql: Sql) {
 
   app.delete('/records/:id', requireScope('write'), async (c) =>
     c.json(await deleteRecord(sql, c.get('caller'), idParam(c))),
-  );
-
-  /** Pending assertions, suggested merges and unresolved participants (6.1). */
-  app.get('/review', requireScope('read'), async (c) =>
-    c.json(await reviewQueue(sql, c.get('caller'), limitParam(c, 100, 500))),
   );
 
   for (const decision of ['accept', 'reject'] as const) {

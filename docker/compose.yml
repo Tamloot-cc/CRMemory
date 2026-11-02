@@ -24,6 +24,7 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       DATABASE_URL: postgres://retainer:retainer@postgres:5432/retainer
+      RETAINER_PUBLIC_ORIGIN: "${RETAINER_PUBLIC_ORIGIN:-}"
       RETAINER_ROLE: all
       PORT: "8787"
     ports:

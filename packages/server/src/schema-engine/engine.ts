@@ -1,4 +1,4 @@
-import type { Actor, SchemaOwner } from '@retainer/shared';
+import type { Actor, SchemaChange as SchemaChangeView, SchemaOwner } from '@retainer/shared';
 import type { ApiKeyScope, SchemaChangeStatus } from '../db/schema.js';
 import { jsonValue, lockSchemaExclusive, type Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
@@ -28,20 +28,7 @@ export type SchemaChangeRequest = {
   trusted?: boolean;
 };
 
-export type SchemaChangeView = {
-  id: string;
-  status: SchemaChangeStatus;
-  operations: DiffOp[];
-  request: SchemaOperation[];
-  isDestructive: boolean;
-  reason: string | null;
-  requestedBy: Actor;
-  decidedBy: Actor | null;
-  appliedVersion: number | null;
-  error: string | null;
-  createdAt: string;
-  decidedAt: string | null;
-};
+export type { SchemaChange as SchemaChangeView } from '@retainer/shared';
 
 export type SchemaChangeResult = {
   /** `unchanged` when the schema already matches the request. */

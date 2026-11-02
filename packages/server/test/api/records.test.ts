@@ -274,6 +274,12 @@ describe('review', () => {
       ],
       mergeSuggestions: [],
       unresolvedParticipants: [],
+      totals: { pendingAssertions: 1, mergeSuggestions: 0, unresolvedParticipants: 0 },
+      nextCursors: {
+        pendingAssertions: null,
+        mergeSuggestions: null,
+        unresolvedParticipants: null,
+      },
     });
     const assertionId = review.body.pendingAssertions[0].id;
 

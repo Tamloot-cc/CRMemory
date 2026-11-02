@@ -1,34 +1,280 @@
+import type {
+  AssertionView,
+  DecisionResult,
+  Page,
+  PresentedFact,
+  PresentedInteraction,
+  PresentedRecord,
+  QueryInput,
+  RecordPage,
+  RetractInteractionResult,
+  ReviewCollection,
+  ReviewQueue,
+  SchemaChange,
+  SchemaChangeResult,
+  SchemaDescription,
+  SchemaOperation,
+  Session,
+  TemplateView,
+  WriteResponse,
+} from '@retainer/shared';
 export type RetainerClientOptions = {
-  /** e.g. "http://localhost:8787" */
   baseUrl: string;
   apiKey?: string;
+  credentials?: 'omit' | 'same-origin' | 'include';
   fetch?: typeof fetch;
+  onUnauthorized?: () => void;
 };
-
 export type HealthResponse = {
   status: 'ok' | 'error';
   version: string;
   database: 'ok' | 'unreachable';
 };
-
+export class RetainerApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'RetainerApiError';
+  }
+}
+export type PageOptions = { limit?: number; cursor?: string; signal?: AbortSignal };
+export type PatchInput = {
+  values: Record<string, unknown>;
+  expectedUpdatedAt?: string;
+  source?: string;
+};
+export type UpsertInput = PatchInput & {
+  id?: string;
+  match?: Record<string, unknown>;
+  ifMissing?: 'fail' | 'create';
+};
+export type LogInteractionInput = {
+  kind: 'meeting' | 'call' | 'email' | 'message' | 'note';
+  channel: string;
+  occurredAt: string;
+  externalId?: string;
+  title?: string;
+  summary?: string;
+  participants?: { handle?: string; recordId?: string; role?: string }[];
+};
 export class RetainerClient {
   private readonly baseUrl: string;
-  private readonly apiKey: string | undefined;
   private readonly fetchImpl: typeof fetch;
-
-  constructor(options: RetainerClientOptions) {
+  constructor(private readonly options: RetainerClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
-    this.apiKey = options.apiKey;
-    this.fetchImpl = options.fetch ?? fetch;
+    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
-
-  /** Server and database status. Does not need an API key. */
+  protected headers(): Record<string, string> {
+    return this.options.apiKey
+      ? { authorization: `Bearer ${this.options.apiKey}` }
+      : { 'X-Retainer-Client': 'web' };
+  }
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      ...init,
+      credentials: this.options.credentials ?? 'same-origin',
+      headers: {
+        ...this.headers(),
+        ...(init.body ? { 'content-type': 'application/json' } : {}),
+        ...init.headers,
+      },
+    });
+    const body = (await response.json()) as {
+      error?: { code?: string; message?: string; details?: Record<string, unknown> };
+    };
+    if (!response.ok) {
+      if (response.status === 401 && path !== '/auth/session') this.options.onUnauthorized?.();
+      throw new RetainerApiError(
+        response.status,
+        body.error?.code ?? 'request_failed',
+        body.error?.message ?? response.statusText,
+        body.error?.details,
+      );
+    }
+    return body as T;
+  }
+  private query(path: string, params: Record<string, unknown>, signal?: AbortSignal) {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined) qs.set(k, String(v));
+    return { path: `${path}${qs.size ? `?${qs}` : ''}`, signal };
+  }
+  private get<T>(path: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
+    const q = this.query(path, params, signal);
+    return this.request<T>(q.path, { signal });
+  }
+  private post<T>(path: string, body?: unknown, signal?: AbortSignal, idempotencyKey?: string) {
+    return this.request<T>(path, {
+      method: 'POST',
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+      headers: idempotencyKey ? { 'idempotency-key': idempotencyKey } : {},
+    });
+  }
+  /** Health reports database outages in its response body, including HTTP 503. */
   async health(): Promise<HealthResponse> {
     const response = await this.fetchImpl(`${this.baseUrl}/health`);
     return (await response.json()) as HealthResponse;
   }
-
-  protected headers(): Record<string, string> {
-    return this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {};
+  signIn(key: string) {
+    return this.post<Session>('/auth/session', { key });
+  }
+  signOut() {
+    return this.request<{ signedOut: true }>('/auth/session', { method: 'DELETE' });
+  }
+  me(signal?: AbortSignal) {
+    return this.get<Session>('/v1/me', {}, signal);
+  }
+  schema(signal?: AbortSignal) {
+    return this.get<SchemaDescription>('/v1/schema', {}, signal);
+  }
+  templates(signal?: AbortSignal) {
+    return this.get<{ templates: TemplateView[] }>('/v1/templates', {}, signal);
+  }
+  applyTemplate(name: string) {
+    return this.post<SchemaChangeResult>(`/v1/templates/${encodeURIComponent(name)}/apply`);
+  }
+  queryRecords(object: string, input: QueryInput = {}, signal?: AbortSignal) {
+    return this.post<RecordPage>(`/v1/objects/${encodeURIComponent(object)}/query`, input, signal);
+  }
+  record(
+    id: string,
+    include: string[] = ['provenance', 'relationReferences'],
+    signal?: AbortSignal,
+  ) {
+    return this.get<PresentedRecord>(
+      `/v1/records/${encodeURIComponent(id)}`,
+      { include: include.join(',') },
+      signal,
+    );
+  }
+  createRecord(
+    object: string,
+    input: { values: Record<string, unknown>; source?: string },
+    idempotencyKey?: string,
+  ) {
+    return this.post<WriteResponse>(
+      `/v1/objects/${encodeURIComponent(object)}/records`,
+      input,
+      undefined,
+      idempotencyKey,
+    );
+  }
+  upsertRecord(object: string, input: UpsertInput) {
+    return this.post<WriteResponse>(`/v1/objects/${encodeURIComponent(object)}/upsert`, input);
+  }
+  patchRecord(id: string, input: PatchInput) {
+    return this.request<WriteResponse>(`/v1/records/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  }
+  deleteRecord(id: string) {
+    return this.request<{ id: string; deleted: true; deletedRecordIds: string[] }>(
+      `/v1/records/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+  }
+  review(
+    options: Omit<PageOptions, 'cursor'> &
+      Partial<Record<`${ReviewCollection}Cursor`, string>> = {},
+  ) {
+    const { signal, ...params } = options;
+    return this.get<ReviewQueue>('/v1/review', params, signal);
+  }
+  assertion(id: string, signal?: AbortSignal) {
+    return this.get<AssertionView>(`/v1/assertions/${encodeURIComponent(id)}`, {}, signal);
+  }
+  decideAssertion(id: string, decision: 'accept' | 'reject') {
+    return this.post<DecisionResult>(`/v1/assertions/${encodeURIComponent(id)}/${decision}`);
+  }
+  assertions(id: string, options: PageOptions & { field?: string } = {}) {
+    const { signal, ...params } = options;
+    return this.get<Page<AssertionView>>(
+      `/v1/records/${encodeURIComponent(id)}/assertions`,
+      params,
+      signal,
+    );
+  }
+  recordInteractions(id: string, options: PageOptions = {}) {
+    const { signal, ...params } = options;
+    return this.get<Page<PresentedInteraction>>(
+      `/v1/records/${encodeURIComponent(id)}/interactions`,
+      params,
+      signal,
+    );
+  }
+  facts(id: string, options: PageOptions = {}) {
+    const { signal, ...params } = options;
+    return this.get<{ record: string; facts: PresentedFact[]; nextCursor: string | null }>(
+      `/v1/records/${encodeURIComponent(id)}/facts`,
+      params,
+      signal,
+    );
+  }
+  remember(
+    id: string,
+    input: { text: string; source?: string; quote?: string },
+    idempotencyKey?: string,
+  ) {
+    return this.post<{ fact: PresentedFact; noteInteraction: string | null }>(
+      `/v1/records/${encodeURIComponent(id)}/facts`,
+      input,
+      undefined,
+      idempotencyKey,
+    );
+  }
+  retractFact(id: string) {
+    return this.request<{ id: string; deleted: true }>(`/v1/facts/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+  interaction(id: string, signal?: AbortSignal) {
+    return this.get<PresentedInteraction>(`/v1/interactions/${encodeURIComponent(id)}`, {}, signal);
+  }
+  logInteraction(input: LogInteractionInput) {
+    return this.post<{
+      id: string;
+      created: boolean;
+      participants: PresentedInteraction['participants'];
+    }>('/v1/interactions', input);
+  }
+  retractInteraction(id: string) {
+    return this.request<RetractInteractionResult>(`/v1/interactions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+  claims(
+    id: string,
+    options: Omit<PageOptions, 'cursor'> & { assertionsCursor?: string; factsCursor?: string } = {},
+  ) {
+    const { signal, ...params } = options;
+    return this.get<{
+      assertions: AssertionView[];
+      facts: PresentedFact[];
+      nextCursors: { assertions: string | null; facts: string | null };
+    }>(`/v1/interactions/${encodeURIComponent(id)}/claims`, params, signal);
+  }
+  schemaChanges(options: PageOptions & { status?: string } = {}) {
+    const { signal, ...params } = options;
+    return this.get<{ changes: SchemaChange[]; total: number; nextCursor: string | null }>(
+      '/v1/schema/changes',
+      params,
+      signal,
+    );
+  }
+  schemaChange(id: string, signal?: AbortSignal) {
+    return this.get<SchemaChange>(`/v1/schema/changes/${encodeURIComponent(id)}`, {}, signal);
+  }
+  proposeSchemaChange(operations: SchemaOperation[], reason?: string) {
+    return this.post<SchemaChangeResult>('/v1/schema/changes', { operations, reason });
+  }
+  decideSchemaChange(id: string, decision: 'approve' | 'reject') {
+    return this.post<SchemaChangeResult>(
+      `/v1/schema/changes/${encodeURIComponent(id)}/${decision}`,
+    );
   }
 }

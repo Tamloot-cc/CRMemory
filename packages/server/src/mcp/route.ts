@@ -12,7 +12,7 @@ import { createMcpServer } from './server.js';
  * the handler's auth info, never through the request body. Serving is
  * stateless: each request gets a server built for its caller.
  */
-export function mcpRoute(app: Hono<AppEnv>, sql: Sql) {
+export function mcpRoute(app: Hono<AppEnv>, sql: Sql, publicOrigin?: string) {
   const handler = createMcpHandler(
     ({ authInfo }) => {
       const caller = authInfo?.extra?.caller as Caller | undefined;
@@ -23,7 +23,7 @@ export function mcpRoute(app: Hono<AppEnv>, sql: Sql) {
     { onerror: (error) => console.error(error) },
   );
 
-  app.use('/mcp', authenticate(sql));
+  app.use('/mcp', authenticate(sql, publicOrigin));
   app.all('/mcp', (c) => {
     const caller = c.get('caller');
     const authInfo: AuthInfo = {
