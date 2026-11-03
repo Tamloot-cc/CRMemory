@@ -3,6 +3,7 @@ import type {
   ContextInput,
   ContextPack,
   DecisionResult,
+  DeleteImpact,
   ForgetResult,
   MergeInput,
   MergeResult,
@@ -179,6 +180,14 @@ export class RetainerClient {
       method: 'PATCH',
       body: JSON.stringify(input),
     });
+  }
+  /** What deleting the record would delete with it; changes nothing. */
+  deleteImpact(id: string, signal?: AbortSignal) {
+    return this.get<DeleteImpact>(
+      `/v1/records/${encodeURIComponent(id)}/delete-impact`,
+      {},
+      signal,
+    );
   }
   deleteRecord(id: string) {
     return this.request<{ id: string; deleted: true; deletedRecordIds: string[] }>(

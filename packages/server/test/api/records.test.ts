@@ -110,7 +110,13 @@ describe('POST /v1/objects/:object/records', () => {
     expect(second.status).toBe(409);
     expect(second.body.error).toMatchObject({
       code: 'unique_conflict',
-      details: { field: 'emails', recordId: first.body.id, candidates: [first.body.id] },
+      details: {
+        field: 'emails',
+        recordId: first.body.id,
+        candidates: [first.body.id],
+        // The same per-field shape as invalid_values, without the value.
+        errors: [{ field: 'emails', message: 'already belongs to another record' }],
+      },
     });
   });
 

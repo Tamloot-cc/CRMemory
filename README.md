@@ -69,10 +69,10 @@ external origin (for example `https://retainer.example`). CSRF checks compare
 the browser Origin to this configured value; forwarded headers are not trusted.
 The setting also controls the cookie's public host and Secure handling.
 
-Non-user keys can browse read-only. Merge suggestions are listed by
-`GET /v1/review` but not yet shown in the app; merging, dismissing and
-`forget` are available over the REST API only. Global search and record
-creation in the app are deferred.
+Non-user keys can browse read-only. People with a `write` key can create,
+delete and merge records and review suggested merges; erasing a person for a
+privacy request (`forget`) needs an `admin` key. ⌘K searches records, facts
+and interactions across the workspace.
 
 ## Connect an agent
 

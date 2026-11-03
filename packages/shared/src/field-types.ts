@@ -83,6 +83,12 @@ export type LinksValue = z.infer<typeof linksValueSchema>;
 export type FullNameValue = z.infer<typeof fullNameValueSchema>;
 export type AddressValue = z.infer<typeof addressValueSchema>;
 
+/**
+ * Field types holding a list of values (a primary plus `additional`): they
+ * take `maxValues`, and a merge combines both records' lists.
+ */
+export const MULTI_VALUE_TYPES: ReadonlySet<FieldType> = new Set(['emails', 'phones', 'links']);
+
 /** Field types whose value is an object with several parts. */
 export const COMPOSITE_FIELD_TYPES = [
   'money',

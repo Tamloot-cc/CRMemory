@@ -20,6 +20,7 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
+import { MergeSuggestionCard } from './merge.js';
 import { describeOperation } from './schema-model.js';
 import { QueryError, useView } from './state.js';
 
@@ -85,7 +86,12 @@ export function ReviewPage() {
   const { session, schema } = useWorkspace(),
     client = useQueryClient(),
     { search, setSearch } = useView();
-  const tab = ['pendingAssertions', 'schema', 'unresolvedParticipants'].includes(search.tab ?? '')
+  const tab = [
+    'pendingAssertions',
+    'schema',
+    'mergeSuggestions',
+    'unresolvedParticipants',
+  ].includes(search.tab ?? '')
     ? (search.tab ?? 'pendingAssertions')
     : 'pendingAssertions';
   const cursor = search.cursor;
@@ -242,6 +248,11 @@ export function ReviewPage() {
             count: review.data?.totals.pendingAssertions,
           },
           { value: 'schema', label: 'Schema changes', count: changes.data?.total },
+          {
+            value: 'mergeSuggestions',
+            label: 'Suggested merges',
+            count: review.data?.totals.mergeSuggestions,
+          },
           {
             value: 'unresolvedParticipants',
             label: 'Unresolved participants',
@@ -420,6 +431,19 @@ export function ReviewPage() {
             <Empty
               title="No schema changes to review"
               description="Agent proposals that need approval will appear here."
+            />
+          ) : null}
+        </Stack>
+      ) : null}
+      {tab === 'mergeSuggestions' ? (
+        <Stack>
+          {review.data?.mergeSuggestions.map((suggestion) => (
+            <MergeSuggestionCard key={suggestion.id} suggestion={suggestion} />
+          ))}
+          {review.data && !review.data.mergeSuggestions.length ? (
+            <Empty
+              title="No suggested merges"
+              description="Records that look like duplicates of each other will appear here."
             />
           ) : null}
         </Stack>

@@ -29,7 +29,9 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
+import { RecordActions } from './record-actions.js';
 import { QueryError } from './state.js';
+import { isWritable } from './write-model.js';
 
 export function AssertionCard({ assertion }: { assertion: AssertionView }) {
   const { schema } = useWorkspace();
@@ -100,16 +102,19 @@ export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }
       title={r ? r.label || 'Untitled record' : 'Record'}
       description="Record details. Click a value to edit it."
       actions={
-        <Button asChild variant="ghost" size="icon">
-          <Link
-            to="/r/$id"
-            params={{ id: r?.id ?? id }}
-            aria-label="Open full page"
-            title="Open full page"
-          >
-            <Maximize2 size={15} />
-          </Link>
-        </Button>
+        <>
+          {r ? <RecordActions record={r} requestedId={id} onGone={onClose} /> : null}
+          <Button asChild variant="ghost" size="icon">
+            <Link
+              to="/r/$id"
+              params={{ id: r?.id ?? id }}
+              aria-label="Open full page"
+              title="Open full page"
+            >
+              <Maximize2 size={15} />
+            </Link>
+          </Button>
+        </>
       }
     >
       {r ? (
@@ -223,7 +228,7 @@ export function RecordView({
               key={f.name}
               record={r}
               field={f}
-              editable={canWrite && !f.readOnly && f.type !== 'json'}
+              editable={canWrite && isWritable(f)}
               onHistory={() => {
                 setHistory(f);
                 setHistoryCursor(undefined);

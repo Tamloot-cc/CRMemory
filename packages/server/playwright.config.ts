@@ -1,4 +1,7 @@
 import { defineConfig } from '@playwright/test';
+
+// `forget` needs a suppression key; browser tests run the server in process.
+process.env.RETAINER_SUPPRESSION_KEY ??= 'browser-test-suppression-key-0123456789abcdef';
 export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/setup.ts',

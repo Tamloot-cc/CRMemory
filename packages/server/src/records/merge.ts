@@ -1,11 +1,10 @@
 import type { MergeResult, MergeSuggestionDecision } from '@retainer/shared';
-import { FieldValueError } from '@retainer/shared';
+import { FieldValueError, MULTI_VALUE_TYPES } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
-import { MULTI_VALUE_TYPES } from '../schema-engine/validate.js';
 import { getRecord } from './read.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 import { sameValue } from './winner.js';

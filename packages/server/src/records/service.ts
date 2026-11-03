@@ -1,4 +1,10 @@
-import type { Actor, ForgetResult, MergeResult, MergeSuggestionDecision } from '@retainer/shared';
+import type {
+  Actor,
+  DeleteImpact,
+  ForgetResult,
+  MergeResult,
+  MergeSuggestionDecision,
+} from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
@@ -22,6 +28,7 @@ import {
 } from './review.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 import {
+  cascadeSet,
   type FieldWriteStatus,
   insertRecord,
   lockRecord,
@@ -361,6 +368,32 @@ export async function patchRecord(
       created: false,
       fields,
       record: await getRecord(tx, caller.workspaceId, context.schema, record.id),
+    };
+  });
+}
+
+/**
+ * What deleting a record would delete with it through cascading relations,
+ * counted by object, at any depth and without changing anything.
+ */
+export async function deleteImpact(sql: Sql, caller: Caller, id: string): Promise<DeleteImpact> {
+  return withRead(sql, caller, async (tx, schema) => {
+    const record = await getRecord(tx, caller.workspaceId, schema, id);
+    const ids = await cascadeSet(tx, schema, record.id);
+    ids.delete(record.id);
+    const rows = ids.size
+      ? await tx<{ object_type_id: string; count: number }[]>`
+          select object_type_id, count(*)::int as count from records
+          where id = any(${[...ids]}::uuid[]) group by object_type_id`
+      : [];
+    return {
+      id: record.id,
+      records: rows
+        .map((r) => ({
+          object: schema.objectsById.get(r.object_type_id)?.name ?? 'unknown',
+          count: r.count,
+        }))
+        .sort((a, b) => a.object.localeCompare(b.object)),
     };
   });
 }

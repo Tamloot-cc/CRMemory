@@ -1,6 +1,7 @@
 import type { Actor, PresentedFact, ReviewQueue, UnresolvedParticipant } from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import type { Tx } from '../db/tx.js';
+import { references } from '../records/references.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { after, page } from './pagination.js';
 import { assertions } from './reads.js';
@@ -46,16 +47,27 @@ export async function reviewPage(
   const m = page(suggestions, limit),
     u = page(unresolved, limit);
   const handles = u.items.flatMap((r) => (r.handle ? [r.handle] : []));
-  const deleted = handles.length
-    ? await tx<
-        { value: string; record_id: string }[]
-      >`select distinct x.value, x.record_id from record_identifiers x join records r on r.id = x.record_id where x.kind = 'email' and x.is_claim and x.value = any(${handles}) and r.deleted_at is not null and r.merged_into_id is null`
-    : [];
+  const [labels, deleted] = await Promise.all([
+    references(
+      tx,
+      schema,
+      m.items.flatMap((r) => [r.record_a_id, r.record_b_id]),
+    ),
+    handles.length
+      ? tx<
+          { value: string; record_id: string }[]
+        >`select distinct x.value, x.record_id from record_identifiers x join records r on r.id = x.record_id where x.kind = 'email' and x.is_claim and x.value = any(${handles}) and r.deleted_at is not null and r.merged_into_id is null`
+      : [],
+  ]);
   return {
     pendingAssertions: pending.items,
     mergeSuggestions: m.items.map((r) => ({
       id: r.id,
       recordIds: [r.record_a_id, r.record_b_id],
+      records: [r.record_a_id, r.record_b_id].flatMap((id) => {
+        const reference = labels[id];
+        return reference ? [reference] : [];
+      }),
       reason: r.reason,
       createdAt: r.created_at.toISOString(),
     })),

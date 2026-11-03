@@ -155,7 +155,10 @@ describe('forget (2.1)', () => {
 
     await expect(
       createRecord(app, as(AGENT), 'person', { emails: 'GONE@forget.test' }),
-    ).rejects.toMatchObject({ code: 'suppressed', details: { field: 'emails' } });
+    ).rejects.toMatchObject({
+      code: 'suppressed',
+      details: { field: 'emails', errors: [{ field: 'emails' }] },
+    });
     await expect(
       createRecord(app, as(AGENT), 'person', { emails: email(), phones: '+1 (415) 555-0199' }),
     ).rejects.toMatchObject({ code: 'suppressed', details: { field: 'phones' } });

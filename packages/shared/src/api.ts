@@ -119,6 +119,8 @@ export type UnresolvedParticipant = {
 export type MergeSuggestion = {
   id: string;
   recordIds: [string, string];
+  /** The two records' object and label, for live records only (7.2, rule 3). */
+  records: RecordReference[];
   reason: string;
   createdAt: string;
 };
@@ -133,6 +135,12 @@ export type MergeResult = {
   /** Other records whose relations to the merged record now point at the survivor. */
   recomputedRecordIds: string[];
   record: PresentedRecord;
+};
+/** `GET /v1/records/:id/delete-impact`: the other records a delete would take with it. */
+export type DeleteImpact = {
+  id: string;
+  /** Records deleted through cascading relations, at any depth, counted by object. */
+  records: { object: string; count: number }[];
 };
 /** `POST /v1/review/merges/:id/dismiss`. */
 export type MergeSuggestionDecision = {

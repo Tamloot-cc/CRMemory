@@ -56,7 +56,9 @@ export function cardinality(object: ObjectView, target: ObjectView | null, many:
   return `Each ${object.labelSingular.toLowerCase()} has ${what}`;
 }
 
-const isManyToOne = (f: FieldView) => f.settings.relationCardinality !== 'one_to_many';
+/** The one-to-many side of a relation: a read-only list of the records pointing back. */
+export const isInverseRelation = (f: FieldView) => f.settings.relationCardinality === 'one_to_many';
+const isManyToOne = (f: FieldView) => !isInverseRelation(f);
 
 /**
  * Every relation once, as a line from the many side's field to the one

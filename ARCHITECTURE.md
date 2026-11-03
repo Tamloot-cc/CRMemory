@@ -716,6 +716,7 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `POST /v1/objects/:object/query`                  | Filter, sort and page records; optional object-scoped keyword lookup        |
 | `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)  |
 | `GET` · `PATCH` · `DELETE /v1/records/:id`        | One record                                                                  |
+| `GET /v1/records/:id/delete-impact`               | Records a delete would cascade to, at any depth, counted by object          |
 | `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                       |
 | `GET /v1/records/:id/interactions`                | Paginated interactions for a record                                         |
 | `GET /v1/assertions/:id`                          | One assertion, including status and review details                          |
