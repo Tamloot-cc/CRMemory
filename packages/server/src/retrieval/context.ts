@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { NOTE_CHANNEL } from '../memory/interactions.js';
 import { getRecord } from '../records/read.js';
+import { references } from '../records/references.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { BASE_FIELD_IDS, BASE_OBJECT_IDS } from '../templates/base.js';
 import { CHARS_PER_TOKEN, estimateTokens, fitSections, jsonLength } from './budget.js';
@@ -158,10 +159,8 @@ async function openTasks(
   const notDone = status ? tx`and (t.data ->> ${status.key}) is distinct from 'done'` : tx``;
   const dueOrder = dueDate ? tx`(t.data ->> ${dueDate.key}) asc nulls last,` : tx``;
 
-  const rows = await tx<
-    { id: string; label: string | null; status: unknown; due_date: unknown; total: string }[]
-  >`
-    select t.id, t.label, ${statusValue} as status, ${dueValue} as due_date,
+  const rows = await tx<{ id: string; status: unknown; due_date: unknown; total: string }[]>`
+    select t.id, ${statusValue} as status, ${dueValue} as due_date,
       count(*) over () as total
     from records t
     where t.workspace_id = ${workspaceId} and t.object_type_id = ${task.id}
@@ -174,13 +173,25 @@ async function openTasks(
       ${notDone}
     order by ${dueOrder} t.created_at, t.id
     limit ${limit}`;
+  // Tasks are other records, so their titles come through references() (7.2).
+  const refs = await references(
+    tx,
+    schema,
+    rows.map((row) => row.id),
+  );
   return {
-    items: rows.map((row) => ({
-      id: row.id,
-      title: row.label,
-      status: row.status ?? null,
-      dueDate: row.due_date ?? null,
-    })),
+    items: rows.flatMap((row) => {
+      const ref = refs[row.id];
+      if (!ref) return [];
+      return [
+        {
+          id: row.id,
+          title: ref.label,
+          status: row.status ?? null,
+          dueDate: row.due_date ?? null,
+        },
+      ];
+    }),
     total: Number(rows[0]?.total ?? 0),
   };
 }

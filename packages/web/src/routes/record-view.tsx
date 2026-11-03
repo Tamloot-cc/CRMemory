@@ -291,7 +291,7 @@ export function RecordView({
             {facts.data && !facts.data.facts.length ? <Empty title="No facts yet" /> : null}
             {facts.data?.nextCursor ? (
               <Button onClick={() => nav.set({ cursor: facts.data?.nextCursor ?? undefined })}>
-                Load more facts
+                Next page of facts
               </Button>
             ) : null}
           </Stack>
@@ -331,7 +331,7 @@ export function RecordView({
               <Button
                 onClick={() => nav.set({ cursor: interactions.data?.nextCursor ?? undefined })}
               >
-                Load more interactions
+                Next page of interactions
               </Button>
             ) : null}
           </Stack>
@@ -354,14 +354,12 @@ export function RecordView({
             ) : null}
             {tasks.data?.nextCursor ? (
               <Button onClick={() => nav.set({ cursor: tasks.data?.nextCursor ?? undefined })}>
-                Load more tasks
+                Next page of tasks
               </Button>
             ) : null}
           </Stack>
         ) : null}
-        {cursor ? (
-          <Button onClick={() => nav.set({ cursor: undefined })}>Back to first page</Button>
-        ) : null}
+        {cursor ? <Button onClick={() => nav.set({ cursor: undefined })}>First page</Button> : null}
       </Stack>
       <Dialog
         open={!!history}
@@ -385,7 +383,7 @@ export function RecordView({
             ) : null}
             {hist.data?.nextCursor ? (
               <Button onClick={() => setHistoryCursor(hist.data?.nextCursor ?? undefined)}>
-                Load more history
+                Next page of history
               </Button>
             ) : null}
           </Row>

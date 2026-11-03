@@ -339,7 +339,7 @@ describe('scheduling (4.2)', () => {
       sql: app,
       intervalMinutes: 60,
       tickMs: 60_000,
-      log: (line) => lines.push(line),
+      log: { info: (line) => lines.push(String(line)), error: (line) => lines.push(String(line)) },
     });
     await worker.tick();
     await worker.stop();

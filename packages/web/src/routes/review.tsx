@@ -444,9 +444,9 @@ export function ReviewPage() {
       ) : null}
       <Row>
         {cursor ? (
-          <Button onClick={() => void setSearch({ cursor: undefined })}>Back to first page</Button>
+          <Button onClick={() => void setSearch({ cursor: undefined })}>First page</Button>
         ) : null}
-        {next ? <Button onClick={() => void setSearch({ cursor: next })}>Load more</Button> : null}
+        {next ? <Button onClick={() => void setSearch({ cursor: next })}>Next page</Button> : null}
       </Row>
     </Page>
   );

@@ -6,6 +6,7 @@ import { meRoute, sessionRoutes } from '../auth/session.js';
 import { publicOriginSchema } from '../config.js';
 import type { Sql } from '../db/client.js';
 import { AppError } from '../errors.js';
+import { log } from '../log.js';
 import { mcpRoute } from '../mcp/route.js';
 import { VERSION } from '../version.js';
 import { type AppEnv, errorResponse, toAppError } from './http.js';
@@ -30,7 +31,7 @@ export function createApp(deps: AppDeps) {
   app.onError((error, c) => {
     const known = toAppError(error);
     if (known) return errorResponse(c, known);
-    console.error(error);
+    log.error(error);
     return errorResponse(c, new AppError(500, 'internal', 'internal server error'));
   });
 

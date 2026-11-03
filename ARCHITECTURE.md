@@ -1011,7 +1011,9 @@ enforcement. Until then, new code keeps that path open:
 2. Per-request database context is set in one place (`inWorkspace`).
 3. A response mentions another record (conflict errors, merge candidates,
    relation labels, review items, context) only through one shared
-   function, so a visibility check can be added there later.
+   function, `references()`, so a visibility check can be added there
+   later. The records a response is about, such as search hits or the
+   record under review, come from their own RLS-bound queries.
 4. Identifier claims are unique per workspace. If audiences arrive, claims
    become per audience and promoting a record becomes a merge. That cost is
    accepted.

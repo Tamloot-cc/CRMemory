@@ -5,6 +5,7 @@ import { missingScope } from '../auth/middleware.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
+import { log } from '../log.js';
 import { rememberInputSchema } from '../memory/facts.js';
 import {
   logInteractionInputSchema,
@@ -108,7 +109,7 @@ async function run(
   } catch (error) {
     const known = toAppError(error);
     if (known) return failure(known);
-    console.error(error);
+    log.error(error);
     return failure(new AppError(500, 'internal', 'internal server error'));
   }
 }
