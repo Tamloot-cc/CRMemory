@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { after, page } from '../../db/pagination.js';
 import { SCHEMA_CHANGE_STATUSES } from '../../db/schema.js';
 import { inWorkspace } from '../../db/tx.js';
 import { AppError } from '../../errors.js';
@@ -14,7 +15,6 @@ import {
   requestSchemaChange,
   schemaChangeRequestSchema,
 } from '../../schema-engine/service.js';
-import { after, page } from '../../web/pagination.js';
 import type { AppEnv } from '../http.js';
 import { idParam, limitParam, readBody } from '../request.js';
 

@@ -59,6 +59,7 @@ describe('merging records (4.2)', () => {
       channel: 'zoom',
       occurredAt: '2026-10-01T10:00:00Z',
       participants: [{ recordId: b.id }],
+      about: [],
     });
     await remember(app, as(AGENT), b.id, { text: 'Prefers email', source: call.id });
 

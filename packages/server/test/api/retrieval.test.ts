@@ -296,6 +296,7 @@ describe('GET /v1/records/:id/context', () => {
         occurredAt: '2026-10-25T09:00:00.000Z',
         title: 'Follow-up',
         summary: null,
+        via: 'participant',
       },
       {
         id: demo,
@@ -303,6 +304,7 @@ describe('GET /v1/records/:id/context', () => {
         occurredAt: '2026-10-21T09:00:00.000Z',
         title: 'Demo',
         summary: 'Showed the data platform.',
+        via: 'participant',
       },
     ]);
     expect(pack.omitted).toEqual({ openTasks: 0, facts: 0, recentInteractions: 0 });

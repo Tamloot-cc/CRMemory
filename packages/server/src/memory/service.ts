@@ -1,3 +1,4 @@
+import type { InteractionQueryResult } from '@retainer/shared';
 import type { Sql } from '../db/client.js';
 import { claimIdempotencyKey, storeIdempotentResult } from '../idempotency.js';
 import { type Caller, withRead, withWrite } from '../records/service.js';
@@ -11,14 +12,19 @@ import {
   retractFact,
 } from './facts.js';
 import {
+  type AddedLinks,
+  type AddLinksInput,
+  addInteractionLinks,
   getInteraction,
   type LogInteractionInput,
   type LogInteractionResult,
   logInteraction,
   type PresentedInteraction,
   type RetractInteractionResult,
+  removeLink,
   retractInteraction,
 } from './interactions.js';
+import { type InteractionQuery, queryInteractions } from './query-interactions.js';
 
 /**
  * Memory writes and reads for one caller, shared by REST and MCP so both
@@ -39,6 +45,33 @@ export async function readInteraction(
   id: string,
 ): Promise<PresentedInteraction> {
   return withRead(sql, caller, (tx) => getInteraction(tx, caller.workspaceId, id));
+}
+
+export async function queryInteractionsFor(
+  sql: Sql,
+  caller: Caller,
+  input: InteractionQuery,
+): Promise<InteractionQueryResult> {
+  return withRead(sql, caller, (tx) => queryInteractions(tx, caller.workspaceId, input));
+}
+
+export async function addInteractionLinksFor(
+  sql: Sql,
+  caller: Caller,
+  id: string,
+  input: AddLinksInput,
+): Promise<PresentedInteraction & { added: AddedLinks }> {
+  return withWrite(sql, caller, (tx, context) => addInteractionLinks(tx, context, id, input));
+}
+
+/** Removes a participant, or a record from the `about` list; a person only. */
+export async function removeLinkFor(
+  sql: Sql,
+  caller: Caller,
+  id: string,
+  target: { participant: string } | { about: string },
+): Promise<PresentedInteraction> {
+  return withWrite(sql, caller, (tx, context) => removeLink(tx, context, id, target));
 }
 
 export async function retractInteractionFor(

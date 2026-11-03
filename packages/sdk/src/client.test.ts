@@ -39,6 +39,26 @@ describe('REST transport', () => {
     });
     expect(headers).toMatchObject({ authorization: 'Bearer rtn_test' });
   });
+  it('returns a failed schema change with its reason, but throws other conflicts', async () => {
+    const failed = {
+      status: 'failed',
+      change: { id: 'c1', error: 'jobTitle has duplicate values' },
+      schemaVersion: 3,
+      recordIds: ['r1', 'r2'],
+    };
+    let reply: unknown = failed;
+    const client = new RetainerClient({
+      baseUrl: 'http://localhost',
+      fetch: async () => Response.json(reply, { status: 409 }),
+    });
+    expect(await client.decideSchemaChange('c1', 'approve')).toEqual(failed);
+    expect(await client.proposeSchemaChange([])).toEqual(failed);
+    reply = { error: { code: 'already_decided', message: 'this change is already applied' } };
+    await expect(client.decideSchemaChange('c1', 'approve')).rejects.toMatchObject({
+      status: 409,
+      code: 'already_decided',
+    });
+  });
 });
 
 it('builds the retrieval, merge and forget requests', async () => {

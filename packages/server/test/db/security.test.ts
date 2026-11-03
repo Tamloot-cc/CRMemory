@@ -119,9 +119,8 @@ describe('row-level security', () => {
 describe('tenant foreign keys', () => {
   it('rejects a reference to a row in another workspace', async () => {
     const [interaction] = await db.owner<{ id: string }[]>`
-      insert into interactions (workspace_id, kind, channel, occurred_at, summary, request_hash,
-        created_by)
-      values (${workspaceB}, 'note', 'api', now(), 'hello', 'test',
+      insert into interactions (workspace_id, kind, channel, occurred_at, summary, created_by)
+      values (${workspaceB}, 'note', 'api', now(), 'hello',
         ${db.owner.json({ type: 'system', id: 'test' })})
       returning id`;
     await expect(

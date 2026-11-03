@@ -17,6 +17,7 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
+import { CandidateRecord } from './record-actions.js';
 import { AssertionCard } from './record-view.js';
 import { QueryError, useView } from './state.js';
 export function InteractionPage() {
@@ -88,13 +89,13 @@ export function InteractionPage() {
       <Panel title="Participants">
         <Stack>
           {i.participants.matched.map((p) => (
-            <Row key={`${p.recordId}:${p.role}:${p.handle}`}>
+            <Row key={p.id}>
               <RecordLink id={p.recordId ?? ''}>{p.handle || 'Matched participant'}</RecordLink>
               {p.role ? <Badge>{p.role}</Badge> : null}
             </Row>
           ))}
           {i.participants.unmatched.map((p) => (
-            <Row key={`${p.role}:${p.handle}:${p.reason}`}>
+            <Row key={p.id}>
               <span>{p.handle || 'Unknown participant'}</span>
               <Badge tone="pending">{p.reason}</Badge>
               {p.role ? <Badge>{p.role}</Badge> : null}
@@ -110,6 +111,15 @@ export function InteractionPage() {
           ) : null}
         </Stack>
       </Panel>
+      {i.about.length ? (
+        <Panel title="About">
+          <Stack>
+            {i.about.map((id) => (
+              <CandidateRecord key={id} id={id} />
+            ))}
+          </Stack>
+        </Panel>
+      ) : null}
       <Tabs
         value={tab}
         onChange={(tab) => void setSearch({ tab, cursor: undefined })}

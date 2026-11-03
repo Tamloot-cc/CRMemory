@@ -2,6 +2,7 @@ import type { ForgetResult } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { requireUser } from '../errors.js';
 import { type Handle, parseHandle } from '../memory/handles.js';
+import { isNote } from '../memory/interactions.js';
 import { inboundRelationFields } from '../records/merge.js';
 import {
   lockRecordsForUpdate,
@@ -26,7 +27,9 @@ const CANDIDATE_LIMIT = 100;
  * - the record and every record merged into it;
  * - its emails and phones, from current identifiers, every past email or
  *   phone claim, and the handles of interactions it was matched in;
- * - the interactions it took part in, by record or by handle;
+ * - the interactions it took part in, by record or by handle, and the
+ *   notes `remember` wrote about it (interactions only `about` it stay,
+ *   without the link);
  * - candidates for human review: other live records, facts and
  *   interactions that mention its name or handles.
  *
@@ -84,10 +87,17 @@ export async function forgetRecord(
   for (const row of matched) addHandle(parseHandle(row.handle));
   const handleValues = [...handles.values()].map((h) => h.value);
 
+  // Interactions the record took part in, and the notes remember wrote about
+  // it. An interaction that is only `about` the record (a meeting about a
+  // company) is someone else's conversation: it stays, without the link.
   const interactions = await tx<{ id: string }[]>`
-    select distinct interaction_id as id from interaction_participants
-    where workspace_id = ${workspaceId}
-      and (record_id = any(${recordIds}::uuid[]) or handle = any(${handleValues}::text[]))
+    select distinct p.interaction_id as id from interaction_participants p
+    join interactions i on i.id = p.interaction_id
+    where p.workspace_id = ${workspaceId}
+      and ((p.link = 'participant'
+          and (p.record_id = any(${recordIds}::uuid[]) or p.handle = any(${handleValues}::text[])))
+        or (p.link = 'about' and p.record_id = any(${recordIds}::uuid[])
+          and ${isNote(tx)}))
     order by 1`;
   const interactionIds = interactions.map((r) => r.id);
 
@@ -156,6 +166,10 @@ export async function forgetRecord(
     returning f.id`;
 
   await tx`delete from interactions where id = any(${interactionIds}::uuid[])`;
+  await tx`
+    delete from interaction_participants
+    where workspace_id = ${workspaceId} and link = 'about'
+      and record_id = any(${recordIds}::uuid[])`;
   await tx`delete from records where id = any(${recordIds}::uuid[])`;
 
   // Stored responses mentioning any erased row are erased too.

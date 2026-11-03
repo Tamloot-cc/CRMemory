@@ -1,7 +1,6 @@
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
-import { requestHash } from '../../src/idempotency.js';
 import type { LogInteractionInput } from '../../src/memory/interactions.js';
 import { factsOf, logInteractionFor, readInteraction, remember } from '../../src/memory/service.js';
 import { SUPPRESSION_KEY_ENV } from '../../src/privacy/suppression.js';
@@ -44,6 +43,7 @@ const log = (input: Partial<LogInteractionInput> = {}) =>
     channel: 'zoom',
     occurredAt: '2026-10-29T14:00:00+02:00',
     participants: [],
+    about: [],
     ...input,
   });
 
@@ -175,7 +175,7 @@ describe('forget (2.1)', () => {
     };
     const logged = await log(input);
     expect(logged.participants.unmatched).toEqual([
-      { handle: null, role: 'customer', reason: 'suppressed' },
+      { id: expect.any(String), handle: null, role: 'customer', reason: 'suppressed' },
     ]);
     expect(
       await count(
@@ -183,43 +183,29 @@ describe('forget (2.1)', () => {
       ),
     ).toBe(0);
 
-    // The stored request hash does not cover the plain handle, so a dump
-    // cannot confirm a guess; a retry with the same input still matches.
-    const [stored] = await db.owner<{ request_hash: string }[]>`
-      select request_hash from interactions where id = ${logged.id}`;
-    const plain = requestHash({
-      kind: 'call',
-      channel: 'zoom',
-      externalId: 'after-forget-1',
-      occurredAt: new Date('2026-10-29T14:00:00+02:00').toISOString(),
-      title: null,
-      summary: null,
-      participants: [
-        { handle: 'gone@forget.test', recordId: null, role: 'customer' },
-        { handle: null, recordId: someone.id, role: null },
-      ],
+    // No hash of the input is stored, so nothing can confirm a guessed
+    // handle; a retry with the same input matches the erased participant
+    // and adds nothing.
+    expect(await log(input)).toMatchObject({
+      id: logged.id,
+      created: false,
+      added: { participants: { matched: [], unmatched: [] }, about: [] },
     });
-    expect(stored?.request_hash).not.toBe(plain);
-    expect(await log(input)).toMatchObject({ id: logged.id, created: false });
 
-    // Control: for a handle that is not suppressed, the same construction matches.
-    const control = await log({
-      externalId: 'after-forget-2',
-      participants: [{ handle: 'still@forget.test', role: 'customer' }],
+    // Adding the erased handle to an interaction later stores it erased too.
+    await log({ externalId: 'after-forget-3' });
+    const appended = await log({
+      externalId: 'after-forget-3',
+      participants: [{ handle: 'gone@forget.test', role: 'guest' }],
     });
-    const [controlRow] = await db.owner<{ request_hash: string }[]>`
-      select request_hash from interactions where id = ${control.id}`;
-    expect(controlRow?.request_hash).toBe(
-      requestHash({
-        kind: 'call',
-        channel: 'zoom',
-        externalId: 'after-forget-2',
-        occurredAt: new Date('2026-10-29T14:00:00+02:00').toISOString(),
-        title: null,
-        summary: null,
-        participants: [{ handle: 'still@forget.test', recordId: null, role: 'customer' }],
-      }),
-    );
+    expect(appended.added?.participants.unmatched).toEqual([
+      { id: expect.any(String), handle: null, role: 'guest', reason: 'suppressed' },
+    ]);
+    expect(
+      await count(
+        db.owner`select count(*)::int from interaction_participants where handle = 'gone@forget.test'`,
+      ),
+    ).toBe(0);
   });
 
   it('forgets every record merged into the person, and soft-deleted records too', async () => {

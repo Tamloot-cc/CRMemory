@@ -17,8 +17,11 @@ The first release: the whole of build order steps 1 to 6 in
 - Assertion-backed records: every field value is the winner among assertions
   from people, integrations and agents, with precedence, `observed_at`
   ordering and a review queue for agent values that would overwrite people.
-- Interaction log with participant matching on normalized emails, and facts
-  that cite the interactions they came from.
+- Interaction log with participant matching on normalized emails, `about`
+  links to the records an interaction concerns, re-logging that adds the
+  participants and `about` records it was missing, filtering and counting
+  with `query_interactions`, and facts that cite the interactions they came
+  from. `describe_schema` lists interactions and facts as built-ins.
 - Keyword search over records, facts and interactions (Postgres full-text and
   trigram fallback), and token-budgeted context packs.
 - Consolidator: fact deduplication and supersession, merge suggestions,

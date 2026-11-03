@@ -96,8 +96,8 @@ claude mcp add retainer \
 ```
 
 Tools: `describe_schema`, `list_templates`, `apply_template`,
-`query_records`, `get_record`, `search`, `get_context`, `upsert_record`,
-`log_interaction`, `remember` and `propose_schema_change`. See
+`query_records`, `query_interactions`, `get_record`, `search`, `get_context`,
+`upsert_record`, `log_interaction`, `remember` and `propose_schema_change`. See
 [Connecting agents](docs/agents.md) for the workflow an agent should follow,
 and [the SDK guide](docs/sdk.md) to call the REST API from code.
 

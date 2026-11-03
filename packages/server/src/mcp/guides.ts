@@ -16,9 +16,15 @@ const DESIGN_RULES = `### Use what Retainer already has
 
 - Meetings, calls, emails and messages are interactions: log them with
   log_interaction. Never create an object for them, nor a join object for
-  who attended; participants are part of the interaction. A scheduled piece
-  of business with its own status and outcome, such as an appointment or a
-  viewing, can be an object.
+  who attended; participants are part of the interaction. The company,
+  project, deal or tasks a meeting concerns go in its about list, so it
+  shows on those records too; never list them as participants. A scheduled
+  piece of business with its own status and outcome, such as an appointment
+  or a viewing, can be an object.
+- describe_schema lists interactions and facts under builtIns. They are
+  part of every workspace; don't add fields or objects to copy them.
+- To find or count interactions by kind, channel, date or linked record,
+  use query_interactions; there is no need for a field like "meeting count".
 - One-off knowledge ("prefers WhatsApp after 6pm") is a fact: store it with
   remember. A field is for something you would filter, sort or fill in for
   every record.

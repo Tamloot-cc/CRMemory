@@ -1,7 +1,7 @@
 import type { FactHit, InteractionHit, RecordHit, SearchResult } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
-import { NOTE_CHANNEL } from '../memory/interactions.js';
+import { isNote } from '../memory/interactions.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 
 /**
@@ -133,7 +133,7 @@ async function searchInteractions(
         order by p.position) as records
     from interactions i
     where i.workspace_id = ${workspaceId} and i.deleted_at is null and i.search @@ ${query()}
-      and not (i.kind = 'note' and i.channel = ${NOTE_CHANNEL})
+      and not ${isNote(tx)}
     order by ts_rank_cd(i.search, ${query()}, ${RANK_NORMALIZATION}) desc, i.occurred_at desc, i.id
     limit ${input.limit}`;
   return rows.map((row) => ({

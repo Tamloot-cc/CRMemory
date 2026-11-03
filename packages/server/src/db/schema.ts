@@ -357,12 +357,6 @@ export const interactions = pgTable(
     /** The agent's short summary of the interaction. */
     summary: text('summary'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
-    /**
-     * Hash of the normalized input. Logging the same `(channel, external_id)`
-     * again with the same hash returns this row; a different hash is a
-     * conflict (1.3).
-     */
-    requestHash: text('request_hash').notNull(),
     /** Server-computed from title (weighted higher) and summary (5.1). */
     search: tsvector('search'),
     createdBy: jsonb('created_by').$type<Actor>().notNull(),
@@ -393,6 +387,14 @@ export const UNMATCHED_REASONS = [
 ] as const;
 export type UnmatchedReason = (typeof UNMATCHED_REASONS)[number];
 
+/**
+ * How a row links its record to the interaction (1.3). `participant`: who
+ * took part. `about`: a record the interaction concerns, such as the
+ * company or project of a meeting; it carries only `record_id`.
+ */
+export const PARTICIPANT_LINKS = ['participant', 'about'] as const;
+export type ParticipantLink = (typeof PARTICIPANT_LINKS)[number];
+
 export const interactionParticipants = pgTable(
   'interaction_participants',
   {
@@ -410,6 +412,7 @@ export const interactionParticipants = pgTable(
     recordId: uuid('record_id'),
     /** Set when `record_id` is null: why the participant stayed unresolved. */
     unmatchedReason: text('unmatched_reason').$type<UnmatchedReason>(),
+    link: text('link').$type<ParticipantLink>().notNull().default('participant'),
   },
   (t) => [
     tenantFk(
@@ -425,6 +428,14 @@ export const interactionParticipants = pgTable(
     check(
       'interaction_participants_unmatched_reason',
       sql`${t.unmatchedReason} in ('no_match', 'phone_only', 'deleted_record', 'ambiguous', 'suppressed')`,
+    ),
+    check('interaction_participants_link', sql`${t.link} in ('participant', 'about')`),
+    // An about row is only a record link. Its record_id is not required here:
+    // the record FK sets it null when a workspace is deleted, and forget
+    // deletes about rows before it deletes the record.
+    check(
+      'interaction_participants_about_shape',
+      sql`${t.link} = 'participant' or (${t.handle} is null and ${t.role} is null and ${t.unmatchedReason} is null)`,
     ),
   ],
 );

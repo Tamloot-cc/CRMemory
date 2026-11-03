@@ -206,7 +206,9 @@ Tabs:
    words ("Add field _Renewal date_ (date) to _Company_"), the proposing
    actor and time. Approve and Reject for `admin` keys
    (`POST /v1/schema/changes/:id/approve` · `/reject`). Approving refreshes
-   the cached schema (6.3).
+   the cached schema (6.3). An approval that no longer validates shows the
+   engine's reason and links the records in the way (`recordIds`), such as
+   those still holding an option being removed.
 
 3. **Unresolved participants.** Handles from logged interactions that match
    only a deleted record (1.2). Read-only in v1, with links to the
@@ -367,7 +369,8 @@ name matches jump to their list.
 ### 5.6 Interaction — `/app/i/:id`
 
 Source: `GET /v1/interactions/:id`. Kind, channel, time, title, summary,
-participants (matched and unmatched with the reason), and everything that
+participants (matched and unmatched with the reason), the records it is
+about (by label, each a link), and everything that
 cites it: field assertions and facts (9.1). Retract
 (`DELETE /v1/interactions/:id`) shows the server's counts afterwards:
 retracted assertions, recomputed records and hidden facts.
@@ -387,7 +390,10 @@ changes are waiting:
   `workspace`, `agent`). Clicking a field opens it in a side sheet
   (`?field=`): definition, select options, the relation's target,
   cardinality, other side (linked) and delete behaviour, and each flag in
-  words.
+  words. Under the objects, a "Built-in" list holds interactions and facts
+  (`builtIns` from `GET /v1/schema`): each shows its description, its fields
+  with a line on each, and the tools that write and read it, with nothing to
+  edit.
 - **Diagram.** The objects as cards on a React Flow canvas (`@xyflow/react`)
   that pans, zooms and lets cards be dragged. Each card lists the field that
   names its records and its relation fields, with what each links to ("One

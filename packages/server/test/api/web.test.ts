@@ -2,8 +2,8 @@ import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { revokeApiKey } from '../../src/auth/keys.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
+import { interactionPage } from '../../src/memory/interactions.js';
 import { withRead } from '../../src/records/service.js';
-import { interactionPage } from '../../src/web/reads.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.js';
 

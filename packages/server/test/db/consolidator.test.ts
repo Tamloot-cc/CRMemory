@@ -40,6 +40,7 @@ async function call(ws: string, occurredAt = '2026-10-01T10:00:00Z') {
     channel: 'zoom',
     occurredAt,
     participants: [],
+    about: [],
   });
 }
 

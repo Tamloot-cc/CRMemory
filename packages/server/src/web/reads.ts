@@ -1,14 +1,13 @@
 import type { Actor, AssertionView, Provenance, RecordReference } from '@retainer/shared';
 import type { Fragment } from 'postgres';
+import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
 import { notFound } from '../errors.js';
-import { type InteractionRow, presentInteractions } from '../memory/interactions.js';
 import { identifiersFor } from '../records/derive.js';
 import { getRecord, type PresentedRecord } from '../records/read.js';
 import { references } from '../records/references.js';
 import { normalizeFieldValue } from '../records/values.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { after, page } from './pagination.js';
 
 export async function relationReferences(
   tx: Tx,
@@ -180,20 +179,4 @@ export async function enrichedRecord(
     );
   }
   return result;
-}
-export async function interactionPage(
-  tx: Tx,
-  workspaceId: string,
-  where: Fragment,
-  limit: number,
-  cursor?: string,
-) {
-  const rows = await tx<
-    (InteractionRow & { stamp: string })[]
-  >`select i.*, i.occurred_at::text as stamp from interactions i where i.deleted_at is null and ${where} and ${after(tx, tx`i.occurred_at`, tx`i.id`, cursor, true)} order by i.occurred_at desc, i.id desc limit ${limit + 1}`;
-  const result = page(rows, limit);
-  return {
-    items: await presentInteractions(tx, workspaceId, result.items),
-    nextCursor: result.nextCursor,
-  };
 }

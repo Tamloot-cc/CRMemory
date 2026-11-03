@@ -1,0 +1,4 @@
+ALTER TABLE "interaction_participants" ADD COLUMN "link" text DEFAULT 'participant' NOT NULL;--> statement-breakpoint
+ALTER TABLE "interactions" DROP COLUMN "request_hash";--> statement-breakpoint
+ALTER TABLE "interaction_participants" ADD CONSTRAINT "interaction_participants_link" CHECK ("interaction_participants"."link" in ('participant', 'about'));--> statement-breakpoint
+ALTER TABLE "interaction_participants" ADD CONSTRAINT "interaction_participants_about_shape" CHECK ("interaction_participants"."link" = 'participant' or ("interaction_participants"."handle" is null and "interaction_participants"."role" is null and "interaction_participants"."unmatched_reason" is null));

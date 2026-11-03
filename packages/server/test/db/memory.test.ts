@@ -60,6 +60,7 @@ const log = (input: Partial<LogInteractionInput> = {}, actor = AGENT, ws = works
     channel: 'zoom',
     occurredAt: '2026-10-29T14:00:00+02:00',
     participants: [],
+    about: [],
     ...input,
   });
 
@@ -93,12 +94,20 @@ describe('log_interaction: participant matching (4.1)', () => {
       id: expect.any(String),
       created: true,
       participants: {
-        matched: [{ handle: danaEmail, role: 'customer', recordId: dana.id }],
+        matched: [
+          { id: expect.any(String), handle: danaEmail, role: 'customer', recordId: dana.id },
+        ],
         unmatched: [
-          { handle: 'ron.peretz@acme.test', role: 'customer', reason: 'no_match' },
-          { handle: '+972541234567', role: null, reason: 'phone_only' },
+          {
+            id: expect.any(String),
+            handle: 'ron.peretz@acme.test',
+            role: 'customer',
+            reason: 'no_match',
+          },
+          { id: expect.any(String), handle: '+972541234567', role: null, reason: 'phone_only' },
         ],
       },
+      about: [],
     });
   });
 
@@ -106,12 +115,12 @@ describe('log_interaction: participant matching (4.1)', () => {
     const holder = await person({ phones: { primary: { number: '+14155550199' } } });
     const result = await log({ participants: [{ handle: '+1 415 555 0199' }] });
     expect(result.participants.unmatched).toEqual([
-      { handle: '+14155550199', role: null, reason: 'phone_only' },
+      { id: expect.any(String), handle: '+14155550199', role: null, reason: 'phone_only' },
     ]);
     // The agent can link it by passing the record ID.
     const linked = await log({ participants: [{ handle: '+14155550199', recordId: holder.id }] });
     expect(linked.participants.matched).toEqual([
-      { handle: '+14155550199', role: null, recordId: holder.id },
+      { id: expect.any(String), handle: '+14155550199', role: null, recordId: holder.id },
     ]);
   });
 
@@ -125,7 +134,9 @@ describe('log_interaction: participant matching (4.1)', () => {
     });
     expect(result.participants).toEqual({
       matched: [],
-      unmatched: [{ handle: goneEmail, role: null, reason: 'deleted_record' }],
+      unmatched: [
+        { id: expect.any(String), handle: goneEmail, role: null, reason: 'deleted_record' },
+      ],
     });
     const review = await reviewQueue(app, as(USER), 100);
     expect(review.unresolvedParticipants).toContainEqual({
@@ -154,8 +165,8 @@ describe('log_interaction: participant matching (4.1)', () => {
       participants: [{ handle: mergedEmail }, { recordId: merged.id, role: 'attendee' }],
     });
     expect(result.participants.matched).toEqual([
-      { handle: mergedEmail, role: null, recordId: survivor.id },
-      { handle: null, role: 'attendee', recordId: survivor.id },
+      { id: expect.any(String), handle: mergedEmail, role: null, recordId: survivor.id },
+      { id: expect.any(String), handle: null, role: 'attendee', recordId: survivor.id },
     ]);
   });
 
@@ -192,6 +203,7 @@ describe('log_interaction: participant matching (4.1)', () => {
     const result = await log({ externalId: externalId(), participants: [{ handle: shared }] });
     expect(result.participants.unmatched).toEqual([
       {
+        id: expect.any(String),
         handle: shared,
         role: null,
         reason: 'ambiguous',
@@ -240,7 +252,7 @@ describe('log_interaction: participant matching (4.1)', () => {
     const theirEmail = (theirs.record.fields.emails as { primary: string }).primary;
     const result = await log({ participants: [{ handle: theirEmail }] });
     expect(result.participants.unmatched).toEqual([
-      { handle: theirEmail, role: null, reason: 'no_match' },
+      { id: expect.any(String), handle: theirEmail, role: null, reason: 'no_match' },
     ]);
     await expect(log({ participants: [{ recordId: theirs.id }] })).rejects.toMatchObject({
       code: 'invalid_participants',
@@ -274,7 +286,11 @@ describe('log_interaction: external IDs (1.3)', () => {
         { handle: 'X@nowhere.test' },
       ],
     });
-    expect(again).toEqual({ ...first, created: false });
+    expect(again).toEqual({
+      ...first,
+      created: false,
+      added: { participants: { matched: [], unmatched: [] }, about: [] },
+    });
     const [{ count }] = (await db.owner`
       select count(*)::int as count from interactions where external_id = ${id}`) as [
       { count: number },
@@ -325,7 +341,7 @@ describe('log_interaction: external IDs (1.3)', () => {
     expect(results.filter((r) => r.created)).toHaveLength(1);
     for (const result of results) {
       expect(result.participants.matched).toEqual([
-        { handle: danaEmail, role: 'customer', recordId: dana.id },
+        { id: expect.any(String), handle: danaEmail, role: 'customer', recordId: dana.id },
       ]);
     }
     const participants = await db.owner`
@@ -363,9 +379,10 @@ describe('reading and retracting interactions', () => {
       title: 'Demo',
       summary: 'Showed the data platform',
       participants: {
-        matched: [{ handle: null, role: 'attendee', recordId: dana.id }],
+        matched: [{ id: expect.any(String), handle: null, role: 'attendee', recordId: dana.id }],
         unmatched: [],
       },
+      about: [],
       createdBy: AGENT,
       createdAt: expect.any(String),
     });
@@ -536,10 +553,10 @@ describe('retracting an interaction (2.1, rule 2.4)', () => {
 
     await retractInteractionFor(app, as(AGENT), call.id);
     expect((await log({ participants: [{ handle: newEmail }] })).participants.unmatched).toEqual([
-      { handle: newEmail, role: null, reason: 'no_match' },
+      { id: expect.any(String), handle: newEmail, role: null, reason: 'no_match' },
     ]);
     expect((await log({ participants: [{ handle: oldEmail }] })).participants.matched).toEqual([
-      { handle: oldEmail, role: null, recordId: dana.id },
+      { id: expect.any(String), handle: oldEmail, role: null, recordId: dana.id },
     ]);
   });
 
@@ -570,7 +587,7 @@ describe('retracting an interaction (2.1, rule 2.4)', () => {
       [],
     );
     expect((await log({ participants: [{ handle: aliceOld }] })).participants.matched).toEqual([
-      { handle: aliceOld, role: null, recordId: alice.id },
+      { id: expect.any(String), handle: aliceOld, role: null, recordId: alice.id },
     ]);
   });
 
@@ -775,7 +792,8 @@ describe('remember (6.2, rule 2.6)', () => {
       channel: 'retainer',
       summary: 'Prefers WhatsApp.',
       occurredAt: result.fact.validFrom,
-      participants: { matched: [{ handle: null, role: 'subject', recordId: dana.id }] },
+      participants: { matched: [], unmatched: [] },
+      about: [dana.id],
     });
   });
 
