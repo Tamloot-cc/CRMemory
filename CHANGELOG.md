@@ -27,8 +27,13 @@ The first release: the whole of build order steps 1 to 6 in
 - REST API under `/v1`, MCP over Streamable HTTP at `/mcp`, API keys with
   scopes and actors, row-level security between workspaces, and the operator
   CLI for workspaces and keys.
-- Optional web app at `/app` for reviewing pending values, schema changes and
-  merge suggestions, and for browsing and editing records with provenance.
+- Optional web app at `/app`, signed in with a personal API key: a review
+  inbox for pending values, proposed schema changes and unresolved
+  participants; record tables with filters, sorting and resizable,
+  reorderable columns; records in a side sheet or a full page, with
+  provenance, inline field editing and retraction of facts and interactions;
+  and a schema page with objects, fields and change history. Merging,
+  dismissing merge suggestions and `forget` are REST-only for now.
 
 ### `@retainer/sdk`
 

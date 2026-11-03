@@ -31,23 +31,25 @@ Errors are JSON with a stable `code`, a readable `message`, and sometimes
 { "error": { "code": "stale_write", "message": "the record changed since expectedUpdatedAt", "details": { … } } }
 ```
 
-| Status | Typical codes and meaning                                                                                    |
-| ------ | ------------------------------------------------------------------------------------------------------------ |
-| 400    | `invalid_request`: the body or a filter does not have the expected shape                                     |
-| 401    | Missing, unknown or revoked key                                                                              |
-| 403    | The key lacks the scope, or the action needs a `user` actor                                                  |
-| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                            |
-| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted |
-| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                  |
-| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `idempotency_key_reused`       |
-| 503    | The database is unreachable                                                                                  |
+| Status | Typical codes and meaning                                                                                                |
+| ------ | ------------------------------------------------------------------------------------------------------------------------ |
+| 400    | `invalid_request`: the body or a filter does not have the expected shape                                                 |
+| 401    | Missing, unknown or revoked key                                                                                          |
+| 403    | The key lacks the scope, or the action needs a `user` actor                                                              |
+| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                                        |
+| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted             |
+| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                              |
+| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `idempotency_key_reused` |
+| 503    | The database is unreachable, or `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`                            |
 
 ## Pagination
 
 List routes take `limit` and `cursor` and return `nextCursor`, which is `null`
 on the last page. `GET /v1/review` pages each collection separately with
 `pendingAssertionsCursor`, `unresolvedParticipantsCursor` and
-`mergeSuggestionsCursor`, and returns `totals` for each.
+`mergeSuggestionsCursor`, and returns `nextCursors` and `totals` for each.
+`GET /v1/interactions/:id/claims` does the same for assertions and facts with
+`assertionsCursor` and `factsCursor`.
 
 ## Idempotency
 

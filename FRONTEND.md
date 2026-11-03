@@ -1,9 +1,9 @@
 # Retainer web app
 
 Status: web steps 1–4 are implemented and verified locally. Server build
-step 5 has landed (merge, dismiss and `forget` routes; merge suggestions in
-`GET /v1/review`), but web step 5 and the product questions in section 13
-remain deferred. Read
+steps 4 and 5 have landed (`POST /v1/search` and context packs; merge,
+dismiss and `forget` routes; merge suggestions in `GET /v1/review`), but web
+step 5 and the product questions in section 13 remain deferred. Read
 `ARCHITECTURE.md` first; this document uses its section numbers.
 
 Retainer is used by agents through REST and MCP. The web app is for the
@@ -17,10 +17,10 @@ no pipelines, dashboards, email sync or agent chat.
 
 | Decision      | Choice                                                                                                                            |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Package       | `packages/web`, published as `@retainer/web`, **MIT**                                                                             |
+| Package       | `packages/web`, the private (unpublished) `@retainer/web`, **MIT**                                                                |
 | Data source   | `@retainer/sdk` over the REST API only. Never imports `packages/server`                                                           |
 | Data model    | Every list, form and filter is built at runtime from `GET /v1/schema`; nothing is written per object                              |
-| UI kit        | shadcn/ui on Tailwind CSS 4, React 19                                                                                             |
+| UI kit        | Own components on Radix primitives and Tailwind CSS 4 (Button adapted from shadcn/ui), React 19                                   |
 | App shape     | Single-page app built with Vite; TanStack Router for routes, TanStack Query for server state                                      |
 | Hosting       | Static files served by the Retainer server at `/app`, same origin as the API, so the image stays one process and there is no CORS |
 | Auth          | A person signs in with their own `user`-actor API key; the server turns it into an httpOnly cookie (4)                            |
@@ -66,16 +66,17 @@ served by the existing Hono server keeps self-hosting at one container.
 packages/web/
   index.html
   vite.config.ts
+  vitest.config.ts
   THIRD_PARTY.md
   src/
-    main.tsx            router, query client, theme
-    api/                SDK client, query keys, hooks per route
-    auth/               sign-in, session, scope checks
-    schema/             schema cache, object and field lookups
-    fields/             one folder per field type (6)
-    provenance/         actor badges, sourced values, assertion history
-    routes/             one file per screen (5)
-    ui/                 shadcn components: the only source of UI (8)
+    main.tsx            router, query client, session, schema query, ⌘K, theme
+    style.css           Tailwind theme tokens, light and dark
+    api/                SDK client, session transport, workspace context, scope checks
+    auth/               sign-in screen
+    fields/             one folder per field type (6), shared code in common.tsx
+    provenance/         actor badges, sourced values, pending markers
+    routes/             one file per screen (5), plus list, record and schema helpers
+    ui/                 the only source of UI (8): shell, data grid, sheet, popovers
 ```
 
 The Vite dev server proxies `/v1`, `/auth` and `/health` to `pnpm dev`, so
@@ -141,7 +142,7 @@ which actors the REST and MCP APIs allow to edit or retract data.
 | Edit fields, retract facts and interactions, accept or reject pending values | `write` and a `user` actor        |
 | Approve or reject schema changes                                             | `admin` and a `user` actor        |
 | Apply a template                                                             | `schema:write` and a `user` actor |
-| `forget` (conditional step 5)                                                | `admin` and a `user` actor        |
+| `forget` (web step 5, not built yet)                                         | `admin` and a `user` actor        |
 
 A key with a non-`user` actor can sign in read-only, with a banner saying
 why actions are missing.
@@ -211,8 +212,10 @@ Tabs:
    only a deleted record (1.2). Read-only in v1, with links to the
    interaction.
 
-4. **Suggested merges.** Shown when build step 5 lands: the two records side
-   by side, field by field, with a Merge button (`POST /v1/records/:id/merge`).
+4. **Suggested merges.** Not built yet (web step 5), although server build
+   step 5 returns `mergeSuggestions` in `GET /v1/review`. Planned: the two
+   records side by side, field by field, with a Merge button
+   (`POST /v1/records/:id/merge`).
 
 ### 5.3 Object list — `/app/o/:object`
 
@@ -283,16 +286,18 @@ Three areas:
   - _Facts_: `GET /v1/records/:id/facts`. Content, `validFrom`, writer, and
     each source with its quote. Retract (`DELETE /v1/facts/:id`) asks for
     confirmation.
-  - _Interactions_: newest first (9.1). Kind icon, title, date, summary,
+  - _Interactions_: newest first (9.1). Kind badge, title, date, summary,
     and participants, matched ones linked.
   - _Tasks_: open tasks linked to the record, from the standard `task`
     object.
 
 ### 5.5 Search — `⌘K`
 
-Available once build step 4 ships `POST /v1/search`. Results grouped by
-object, then facts and interactions. Before that, `⌘K` jumps between
-objects and searches the current list only.
+Build step 4 shipped `POST /v1/search`, but the app does not use it yet
+(web step 5). Planned: results grouped by object, then facts and
+interactions. Today `⌘K` jumps between objects and, on an object list,
+searches that object's records by keyword (`search` on
+`POST /v1/objects/:object/query`).
 
 ### 5.6 Interaction — `/app/i/:id`
 
@@ -329,7 +334,8 @@ A workspace with no template applied shows the template list
 
 Creating or editing objects and fields in the UI, kanban and pipeline views,
 dashboards, workspace and key management (operator CLI only, 7.1), several workspaces per session,
-and `forget` (until build step 5). Record creation and the release boundary
+and `forget` (web step 5; the server route shipped in build step 5).
+Record creation and the release boundary
 for step 5 remain explicit open decisions (13); no label-only creation flow
 is specified by this document.
 
@@ -371,7 +377,7 @@ The last column is where to read how Twenty behaves (2). Paths are under
 | `date`         | Date in the viewer's locale                              | Date picker                                                             | `DateDisplay`                                 |
 | `date_time`    | Date and time in the viewer's time zone, ISO on hover    | Date and time picker                                                    | `DateTimeDisplay`                             |
 | `select`       | Option label as a badge                                  | Combobox of `settings.options`                                          | `SelectDisplay`, `SelectFieldInput`           |
-| `multi_select` | Badges, overflow as "+n"                                 | Multi-select combobox                                                   | `MultiSelectDisplay`, `MultiSelectFieldInput` |
+| `multi_select` | Badges, overflow as "+n"                                 | A checkbox per option                                                   | `MultiSelectDisplay`, `MultiSelectFieldInput` |
 | `money`        | Amount from `amountMicros` with `currency`               | Amount plus currency picker; converts to micros without floats          | `CurrencyDisplay`, `CurrencyFieldInput`       |
 | `emails`       | Primary, "+n" for additional                             | List editor: add, remove, set primary; at most `settings.maxValues`     | `EmailsDisplay`, `EmailsFieldInput`           |
 | `phones`       | Primary with country, "+n"                               | List editor with country code                                           | `PhonesDisplay`, `PhonesFieldInput`           |
@@ -387,10 +393,10 @@ complete value, not a diff.
 ### 6.3 Schema cache
 
 `GET /v1/schema` returns `workspace.schemaVersion`. The schema is cached in
-TanStack Query under `[workspaceId, 'schema', schemaVersion]` and re-read on
-window focus and after any schema approval. A `404` for an object or field
-that the cached schema still has triggers one refetch before showing an
-error.
+TanStack Query under `[workspaceId, 'schema']`, with a copy under
+`[workspaceId, 'schema', schemaVersion]`, and re-read on window focus and
+after any schema approval. A `404` on any API read triggers one schema
+refetch and one retry of the request before showing an error.
 
 ### 6.4 Mutation and session cache rules
 
@@ -427,8 +433,8 @@ way.
   `id`) next to it.
 - **Sourced value.** A value written by anyone other than the viewer has a
   dotted underline. Hovering or focusing it shows: who wrote it, when it was
-  observed, the source interaction's title and date, and the quote when
-  there is one. This follows Comp AI's `SourcedValue` and `Provenance`
+  observed and the source interaction's title and date (field assertions
+  carry no quote). This follows Comp AI's `SourcedValue` and `Provenance`
   components, which may be copied (2).
 - **Pending marker.** A field with a pending assertion shows a small badge
   with the proposed value on hover and a link to review it.
@@ -516,8 +522,9 @@ Each route lands with API-layer tests (12, layer 3). The cookie and CSRF
 rules get tests for: cookie only, header only, both, revoked key, and a
 cookie-authenticated write without the CSRF header.
 
-Already planned routes the app picks up when they ship: `POST /v1/search`
-and `GET /v1/records/:id/context` (step 4), merges and `forget` (step 5).
+Routes that have shipped but the app does not use yet (web step 5):
+`POST /v1/search` and `GET /v1/records/:id/context` (step 4), merges,
+merge-suggestion dismissal and `forget` (step 5).
 
 ### 9.2 SDK (MIT)
 
@@ -545,11 +552,11 @@ when switching the server to the shared helpers.
 
 Same rules as `ARCHITECTURE.md` section 12: a real database, never a mock.
 
-| Layer      | Covers                                                                                                                  | How                                                                                                                     |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness                 | Vitest                                                                                                                  |
-| Component  | Displays and inputs per type, provenance tooltip, review row states                                                     | Vitest and Testing Library                                                                                              |
-| End to end | Sign in, review inbox accept and reject, schema approval, record edit with a stale precondition, retract an interaction | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API as an agent key |
+| Layer      | Covers                                                                                                                                                                                                            | How                                                                                                                              |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns and paging; schema page descriptions                                             | Vitest                                                                                                                           |
+| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                               | Vitest and Testing Library                                                                                                       |
+| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; ⌘K; retracting an interaction; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
 
 Add coverage for inboxes larger than one page (including decisions between
 page loads), accurate totals and off-page review links; acceptance that leaves
@@ -581,6 +588,8 @@ Each step lands with its tests (10).
 ---
 
 ## 12. Documents to update when this is built
+
+All of these have been updated.
 
 - `CLAUDE.md` and `AGENTS.md`: "No UI" becomes "No UI except the optional web
   app in `packages/web`", plus its commands.

@@ -18,7 +18,8 @@ provenance, edit fields, and retract facts and interactions.
   history and makes it searchable.
 - **Self-hosted**: one Docker image and Postgres.
 
-Status: 0.1.0, the first release; see the [changelog](CHANGELOG.md). Guides
+Status: 0.1.0, the first release, is not yet published to npm or GitHub
+Container Registry; see the [changelog](CHANGELOG.md). Guides
 are in [docs/](docs/README.md); the design is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -68,9 +69,10 @@ external origin (for example `https://retainer.example`). CSRF checks compare
 the browser Origin to this configured value; forwarded headers are not trusted.
 The setting also controls the cookie's public host and Secure handling.
 
-Non-user keys can browse read-only. Merge suggestions appear in the review
-inbox; merging, dismissing and `forget` are available over the REST API but
-not yet in the app. Global search and record creation in the app are deferred.
+Non-user keys can browse read-only. Merge suggestions are listed by
+`GET /v1/review` but not yet shown in the app; merging, dismissing and
+`forget` are available over the REST API only. Global search and record
+creation in the app are deferred.
 
 ## Connect an agent
 
@@ -83,7 +85,9 @@ claude mcp add --transport http retainer http://localhost:8787/mcp \
   --header "Authorization: Bearer <key>"
 ```
 
-For clients that only speak stdio, use the `@retainer/mcp` bridge:
+For clients that only speak stdio, use the `@retainer/mcp` bridge (once it is
+published to npm; until then, run it from a checkout as
+[Connecting agents](docs/agents.md#over-stdio) describes):
 
 ```sh
 claude mcp add retainer \

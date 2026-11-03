@@ -23,8 +23,8 @@ See `ARCHITECTURE.md` section 12 for the six test layers.
 
 - Every feature lands with unit tests and, if it touches the database,
   integration tests against real Postgres. Never mock the database.
-- Each test gets its own fresh database cloned from a migrated template;
-  never share rows between tests.
+- Each test file gets its own fresh database cloned from a migrated
+  template; never share rows between test files.
 - Rules described as serialized, atomic or idempotent need a test that runs
   the competing operations concurrently.
 
@@ -38,7 +38,7 @@ See `ARCHITECTURE.md` section 12 for the six test layers.
 - Retainer never calls a language model or embedding provider. Agents decide
   what to write; the server validates, stores and retrieves.
 - No embeddings or semantic search: search is Postgres full-text only.
-- Server code is AGPL-3.0; `shared`, `sdk` and `mcp` are MIT. Don't import
-  server code into the MIT packages.
+- Server code is AGPL-3.0; `shared`, `sdk`, `mcp` and `web` are MIT. Don't
+  import server code into the MIT packages.
 - TypeScript 7: `types: ["node"]` is set in `tsconfig.base.json` because TS no
   longer includes `@types/*` by default.

@@ -64,7 +64,8 @@ claude mcp add retainer \
   -- npx -y @retainer/mcp
 ```
 
-From a checkout instead of npm, build it (`pnpm build`) and use
+From a checkout instead of npm (the only option until the first release is
+published), build it (`pnpm build`) and use
 `node /path/to/Retainer/packages/mcp/dist/index.js` as the command.
 
 The bridge writes diagnostics to stderr only. If the server rejects the key or

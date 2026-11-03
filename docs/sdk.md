@@ -8,6 +8,9 @@ and is MIT-licensed. Response and schema types come from `@retainer/shared`.
 npm install @retainer/sdk
 ```
 
+The package is not on npm until the first release is published; see
+[Releasing](releasing.md).
+
 ## Create a client
 
 ```ts
@@ -131,4 +134,4 @@ try {
 `createRecord`, `remember` and `mergeRecords` take an optional idempotency key
 as their last argument. A retry with the same key returns the original result;
 reusing a key with a different payload fails. Read methods take an
-`AbortSignal` as their last argument.
+`AbortSignal`, as their last argument or as `signal` in their options.

@@ -52,7 +52,7 @@ workspace a call acts on and who its writes are attributed to.
 | `read`         | Reading the schema, records, facts, interactions, search and context packs |
 | `write`        | Creating and updating records, logging interactions, `remember`, review    |
 | `schema:write` | Applying templates and requesting schema changes                           |
-| `admin`        | Approving or rejecting proposed schema changes, and `forget`               |
+| `admin`        | Everything above, plus deciding proposed schema changes and `forget`       |
 
 The actor type matters as much as the scope:
 

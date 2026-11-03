@@ -40,13 +40,11 @@ Every schema row carries:
 
 - `universal_id`: a stable UUID that is the same for a standard object or
   field in every workspace, so upgrades can find it.
-- `owner`: `system` (shipped with Retainer), `workspace` (added by a person),
-  or `agent` (added by an agent).
+- `owner`: `system` (shipped with Retainer), `workspace` (added by a user or
+  integration), or `agent` (added by an agent).
 - `status`: `active` or `deprecated`. A proposed change lives only in
   `schema_changes` until it is approved; nothing half-exists in the live
   schema.
-  The scaffold and shared `SCHEMA_STATUSES` still allow `proposed` on live
-  metadata rows; remove that unused state when implementing the engine.
 - `key` (fields only): a short, permanent ID used as the JSON key in
   `records.data`. Renaming a field changes `name`, never `key`, so a rename
   never touches the data. Keys are never reused, even after a field is
@@ -78,7 +76,6 @@ has emails stores them the same way.
 `updated_by`, `merged_into_id` (set when the record was merged into another,
 so IDs that agents kept still resolve). These are real columns on `records`,
 not schema fields.
-`merged_into_id` is a required scaffold addition for merges (4.2).
 
 #### Relations
 
@@ -87,22 +84,26 @@ The one-to-many side (`company.people`) is its inverse, read from the same
 `record_links` rows. Setting a link is a field assertion whose value is the
 target record's ID, so links follow the same write rules as other fields;
 `record_links` is derived from those assertions, like `records.data`. The
-field's `onDelete` setting (`set_null` or `cascade`) is applied by the
-application when the target is soft-deleted; the database cascade only
-covers hard deletes of edges, not the asserted relation values. A many-to-one
-field permits at most one edge per `(source_record_id, field_id)`; inverse
-fields are read-only. Validate the source object, target object and workspace
-before accepting a relation assertion. Required scaffold addition: a unique
-index on `record_links (source_record_id, field_id)`; today only the full
-edge is unique. Hard deletion invalidates relation assertions that point at
-the deleted record (2.1, step 3), so a rebuild cannot recreate dangling links.
+field's `onDelete` setting is applied by the application when the target is
+soft-deleted: `cascade` soft-deletes the source records too; `set_null` (the
+default) keeps the edge and the assertion, and reads skip the deleted
+target. The database cascade only covers hard deletes of edges, not the
+asserted relation values. A many-to-one field permits at most one edge per
+`(source_record_id, field_id)`, enforced by a unique index on `record_links
+(source_record_id, field_id)`; inverse fields are read-only. A relation
+assertion is accepted only when the target is a live record of the target
+object in the same workspace. Hard deletion deletes relation assertions that
+point at the deleted record (2.1, step 3), so a rebuild cannot recreate
+dangling links.
 
 #### Actor
 
 Every write carries an actor: `{ type, id, name? }` where `type` is `user`,
 `agent`, `integration`, or `system`. The API key decides the actor; callers
-cannot claim to be someone else. Server maintenance (consolidation, merge
-bookkeeping) uses a server-owned `system` actor.
+cannot claim to be someone else. The server's own `system` actor
+(`retainer`) seeds base objects and applies a template chosen at workspace
+creation; merges are attributed to the merging user, and the consolidator
+writes no actor-stamped rows.
 
 ### 1.2 Records
 
@@ -122,21 +123,21 @@ transaction that recomputes `records.data`.
 `data->>'<key>'` cannot see or enforce. It is used for participant matching,
 for uniqueness, and for finding duplicates, and its unique constraint is what
 stops two concurrent writes from creating the same person twice.
-This is a required addition to the scaffold. Store a canonical value and an
-explicit uniqueness claim on each identifier row; a fixed partial unique
-index over claims enforces `(workspace_id, field_id, value)` without
+Each identifier row stores a canonical value and an explicit uniqueness
+claim (`is_claim`); a fixed partial unique index over claims enforces `(workspace_id, field_id, value)` without
 per-field DDL. Null values create no claim. Normalization is shared by
 writes and lookup; generic unique values retain their JSON type so number
-`1` and text `"1"` do not collide. Unsupported unique field types are rejected
-by the schema engine.
+`1` and text `"1"` do not collide. Only `text`, `number`, `date` and
+`emails` fields can be unique; the schema engine rejects the rest.
 
 Only an exact identifier declared unique can automatically select a record.
 Non-unique phones, shared inboxes, domains and name similarity produce
 candidates. If supplied identifiers point to different records, return a
 conflict with candidate IDs; never pick the first match or merge implicitly.
 A losing concurrent create rolls back the entire provisional record and
-retries lookup. Soft-deleted records retain uniqueness claims until restored
-or explicitly purged, so writes cannot silently recreate them. A match on a
+retries lookup. Soft-deleted records retain uniqueness claims until purged
+with `forget` (restoring a record is not in v1), so writes cannot silently
+recreate them. A match on a
 soft-deleted record follows `merged_into_id` when set; otherwise the
 participant stays unresolved and is listed in `GET /v1/review`, rather than
 attaching new interactions to a hidden record.
@@ -183,9 +184,10 @@ install can add them later as an opt-in.
 | `facts`                    | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                   |
 | `fact_sources`             | What a fact rests on: an interaction (with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                              |
 
-Required scaffold addition: `field_assertions.observed_at`. Replace
-the unconditional `facts.valid_from = now()` default with source-derived
-validity (rule 2.6), so backfilled facts do not appear newly true.
+`field_assertions.observed_at` and `facts.valid_from` come from the source
+(rules 2.2 and 2.6); `valid_from` has no `now()` default, so backfilled
+facts do not appear newly true. No v1 write path creates `inferred` facts,
+premise-fact sources or `valid_to`; those columns are reserved.
 
 Retainer stores what the agent chose to record, not the conversation itself.
 A summary or quote is stored like any other value, so an agent should not put
@@ -252,7 +254,8 @@ the old interaction (`DELETE /v1/interactions/:id`).
    `pending_review` (reason `unique_conflict`) and the next one wins, so a
    retraction always takes effect.
 5. **Writes to one record are serialized.** A write locks the record row
-   (`SELECT … FOR UPDATE`), inserts its assertions, recomputes only the
+   (`SELECT … FOR NO KEY UPDATE`; merges, deletes and retraction take
+   `FOR UPDATE`), inserts its assertions, recomputes only the
    touched keys, and updates `data`, `record_links` and `record_identifiers`
    in the same short transaction. Nothing does read-modify-write on `data`
    outside that lock, so two agents writing the same record never lose each
@@ -261,11 +264,12 @@ the old interaction (`DELETE /v1/interactions/:id`).
    direct edits; serialization alone does not detect a stale agent's intent.
 6. **Facts are never deleted by the system, only superseded.** Two times are
    kept apart: `valid_from` / `valid_to` say when a fact was true in the
-   world; `created_at` says when it was recorded. Use an explicit effective
-   date in the source when available, otherwise `occurred_at`. Supersession
+   world; `created_at` says when it was recorded. `valid_from` is the cited
+   interaction's `occurred_at`, or the write time for the `note` that
+   `remember` creates; v1 takes no separate effective date. Supersession
    records a correction and preserves provenance. A person can retract a
    fact (soft delete) or hard-delete data for privacy (2.1). Exact historical
-   belief snapshots are deferred: the scaffold has no supersession-event
+   belief snapshots are deferred: the schema has no supersession-event
    timestamp or append-only history of validity edits.
 
 ### 2.1 Deletion and privacy
@@ -279,7 +283,8 @@ A write citing an interaction (including accepting a pending claim from it)
 locks it in share mode before locking any record, and retraction locks it
 exclusively before locking the affected records, so a claim either commits before the retraction (and is retracted
 with the rest) or sees the source retracted and fails.
-Restoring a source must revalidate its derived claims before exposing them.
+Restoring a source is not in v1; when added, it must revalidate its derived
+claims before exposing them.
 
 `forget` (admin scope) is the hard delete for privacy requests. First collect
 the record's identifiers, participant interactions, dependent facts,
@@ -364,10 +369,12 @@ person or agent). Same pattern as Twenty's migration engine:
    values, type rules.
 4. **Diff** current against desired into a list of operations.
 5. **Classify** each operation:
-   - Additive: create object, create field, add select option, change
-     label/description, mark a field filterable/searchable.
-   - Destructive: rename, remove option, delete field or object, make a
-     field required or unique.
+   - Additive: create object, create an optional non-unique field, add or
+     relabel a select option, change a label, description or label field,
+     mark a field filterable/searchable.
+   - Destructive: everything else: rename, remove option, delete field or
+     object, add a required or unique field, change a field's required or
+     unique flag either way, unmark filterable/searchable.
    - Not supported in the first release: changing a field's type. Create a
      new field and deprecate the old one instead.
 6. **Apply or propose** (any change needs the `schema:write` scope):
@@ -396,18 +403,22 @@ churn, and schema changes also update that row (`schema_version`). Unique
 claims are populated atomically when uniqueness is enabled.
 
 In v1, deleting schema metadata means deprecating it and hiding it from new
-writes, not cascading away assertions. Removing options or changing relation
-target/cardinality/delete behavior also needs an explicit plan for existing
-values and human approval; unsupported transformations are rejected.
+writes, not cascading away assertions. Deleting an object also deprecates
+relations that point at it; base objects and an object's label field cannot
+be deleted. Removing an option needs approval and fails while live records
+use it. A relation's target, cardinality and `onDelete` are fixed once
+created; there is no operation to change them.
 
 Standard objects ship as code (definitions with fixed `universal_id`s) and
-are applied through the same engine when a workspace is created or upgraded.
+are applied through the same engine, on its trusted path, when a workspace
+is created. Upgrading existing workspaces to newer definitions is not built
+yet; the fixed `universal_id`s are what such an upgrade will match on.
 
 ### 3.1 Base objects and templates
 
 Every workspace is created with three base objects: `person` (name, emails,
 phones, address, job title, company), `company` (name, domain, address,
-people) and `task` (title, status, due date, assignee, related records).
+people) and `task` (title, status, due date, assignee, person, company).
 Nobody builds a workspace from scratch.
 
 Templates add the objects and fields a kind of business needs. They ship
@@ -416,17 +427,17 @@ like the base objects, and are applied through the schema engine as owner
 `system`. Every template operation is additive, so applying one never needs
 approval.
 
-| Template      | For                                     | Adds                                                                                                       |
-| ------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `sales`       | B2B sales teams, founders selling       | `deal` (stage, amount, close date, company, point of contact); `company` gets industry and employee count  |
-| `services`    | Agencies, consultants, freelancers      | `project` (status, budget, start and end dates, company, contacts); `proposal` (status, amount, sent date) |
-| `clinic`      | Clinics, therapists, wellness practices | `appointment` (date and time, type, status, person); `person` gets date of birth and preferred channel     |
-| `real_estate` | Agents and brokers                      | `property` (address, type, price, status); `viewing` (date, property, person, feedback)                    |
-| `recruiting`  | Recruiters, hiring teams                | `job` (title, status, company); `application` (person, job, stage, source)                                 |
-| `blank`       | Anything else                           | Nothing; the agent extends the base objects itself                                                         |
+| Template      | For                                     | Adds                                                                                                                                |
+| ------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `sales`       | B2B sales teams, founders selling       | `deal` (stage, amount, close date, company, point of contact); `company` gets industry and employee count                           |
+| `services`    | Agencies, consultants, freelancers      | `project` (status, budget, start and end dates, company, primary contact); `proposal` (status, amount, sent date, company, project) |
+| `clinic`      | Clinics, therapists, wellness practices | `appointment` (date and time, type, status, person); `person` gets date of birth and preferred channel                              |
+| `real_estate` | Agents and brokers                      | `property` (address, type, price, status); `viewing` (date, property, person, feedback)                                             |
+| `recruiting`  | Recruiters, hiring teams                | `job` (title, status, company); `application` (person, job, stage, source)                                                          |
+| `blank`       | Anything else                           | Nothing; the agent extends the base objects itself                                                                                  |
 
-**Choosing a template on init.** A new workspace has no template applied,
-and `describe_schema` says so (`initialized: false`). An agent that sees this
+**Choosing a template on init.** A new workspace has no template applied
+unless the operator passed `--template` (7.1), and `describe_schema` says so (`initialized: false`). An agent that sees this
 calls `list_templates`, picks the closest one from what it knows about the
 business, or asks its user when it is unsure, and calls
 `apply_template`. Choosing `blank` marks the workspace initialized without
@@ -436,9 +447,9 @@ work without a template, and a template can be applied later.
 **Later.** Templates are additive, so a workspace can apply a second one
 later (a consultancy that starts recruiting). If a template's object or field
 name collides with an existing custom one, applying it fails validation and
-the error lists the collisions; nothing is half-applied. Template updates in
-new Retainer releases reach workspaces through the same upgrade path as base
-objects, matched by `universal_id`.
+the error lists the collisions; nothing is half-applied. Applying a template
+the workspace already has is a no-op, whatever its version; template updates
+in new releases have no upgrade path yet (3).
 
 The workspace records which templates it has applied, with their versions
 (`workspaces.templates`).
@@ -515,8 +526,8 @@ so an agent that stops halfway leaves consistent data; it can resume, and
   in 3). Suggestions are stored as rows (`merge_suggestions`: the two
   record IDs, reason, status) so `GET /v1/review` can list them.
 
-Required scaffold addition: `merge_suggestions`. Flagging stale field values
-is deferred: "stale" has no definition yet and nothing reads the flag.
+Flagging stale field values is deferred: "stale" has no definition yet and
+nothing reads the flag.
 
 How this is built:
 
@@ -604,13 +615,13 @@ deterministic and testable.
 
 ## 5. Read paths
 
-| Operation                           | What it returns                                                                                                |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `describe_schema`                   | The workspace (ID, name, applied templates, `initialized`) and a compact list of its objects and fields        |
-| `query_records`                     | Structured filter, sort and pagination over one object                                                         |
-| `get_record`                        | One record with its fields and links                                                                           |
-| `search`                            | Keyword search (Postgres full-text) across records, facts and interactions                                     |
-| `get_context(record, token_budget)` | A ready-to-use pack: key fields, current facts, open tasks, recent interaction summaries, fitted to the budget |
+| Operation                          | What it returns                                                                                                |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`) and a compact list of its objects and fields        |
+| `query_records`                    | Structured filter, sort and pagination over one object                                                         |
+| `get_record`                       | One record with its fields and links                                                                           |
+| `search`                           | Keyword search (Postgres full-text) across records, facts and interactions                                     |
+| `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent interaction summaries, fitted to the budget |
 
 Every read hides soft-deleted parents/rows and superseded facts by default.
 An explicit history mode can list retained assertions and facts with their
@@ -722,11 +733,14 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `POST /v1/search`                                 | Keyword search (5.1)                                                        |
 
 Web sign-in and sign-out use `POST` and `DELETE /auth/session`, outside
-`/v1`; see section 7 for cookie and CSRF rules. Record reads optionally include
+`/v1`; see section 7 for cookie and CSRF rules. `GET /health`, also outside
+`/v1` and needing no key, reports the version and database status (503
+when the database is unreachable). Record reads optionally include
 winning provenance, pending previews and relation references. Review responses
 include totals and separate cursors for each collection (FRONTEND.md 9.1).
 
-The OpenAPI document is generated per workspace from its schema.
+An OpenAPI document generated per workspace from its schema is planned but
+not built yet; docs/rest-api.md lists every route.
 
 ### 6.2 MCP
 
@@ -784,12 +798,13 @@ the `match` value is written to the new record.
     "object": "person",
     "match":  { "emails": "dana@acme.com" },
     "values": { "address": { "street1": "12 Rothschild Blvd", "city": "Tel Aviv" } } }
-← { "id": "rec_9f2…", "created": false, "fields": { "address": "applied" } }
+← { "id": "rec_9f2…", "created": false, "fields": { "address": "applied" }, "record": { … } }
 ```
 
 The response reports each field as `applied`, `pending_review` or
 `superseded` (rule 2.3), so an agent can tell its user that an update is
-waiting for approval rather than claim it is done.
+waiting for approval rather than claim it is done. `record` is the record
+after the write, as `get_record` returns it.
 
 An agent that knows only a name or a phone number searches first
 (`search` or `query_records`), then updates by `id`. With several
@@ -802,9 +817,9 @@ hash and result atomically with the mutation; retries return the original
 result, and reuse with a different payload fails. Identifier matching alone
 does not make note creation or assertion history idempotent. A merge
 request is already idempotent by state (B already merged into A is a
-no-op). Required scaffold addition: an `idempotency_keys` table (workspace,
-operation, key, request hash, result, expiry); `interactions.external_id`
-only covers logging interactions.
+no-op). Keys are stored in `idempotency_keys` (workspace, operation, key,
+request hash, result, expiry); `interactions.external_id` only covers
+logging interactions.
 
 Several agents can share a workspace. Each uses its own API key, so every
 write is attributed to the agent that made it; between agents the latest
@@ -813,7 +828,8 @@ write is attributed to the agent that made it; between agents the latest
 #### Responses of the memory tools
 
 Record writes return the shape shown above. `log_interaction`, `remember`
-and `get_context` return the following.
+and `get_context` return the following. IDs are UUIDs; the examples shorten
+them and add a type prefix for readability.
 
 ```
 → log_interaction {
@@ -862,8 +878,9 @@ the fact to cite, and `validFrom` is the write time. The note has channel
 participant with role `subject`. The `retainer` channel is reserved for these
 notes: `log_interaction` rejects it, so retrieval can tell them apart. A `quote` needs a `source`. A retry with the
 same idempotency key returns the same response.
-`GET /v1/records/:id/facts` returns `{ record, facts }` with facts in this
-shape, newest `validFrom` first, listing only live sources.
+`GET /v1/records/:id/facts` returns `{ record, facts, nextCursor }` with facts
+in this shape, newest `validFrom` first, listing only live sources. It pages
+with `limit` (default 100, at most 500) and `cursor`.
 
 ```
 → get_context { "record": "rec_5a1…", "tokenBudget": 1500 }
@@ -925,9 +942,9 @@ The setting also controls the cookie's public host and Secure handling.
 Web read routes add paginated assertion history, record interactions,
 interaction claims, review totals/cursors, and optional winning provenance
 and batched relation references. Object queries accept an optional `search`
-keyword string for full-text lookup within one object; global search remains
-in step 4. All use the same runtime role and RLS as
-other routes. They do not change the assertion-backed write rules.
+keyword string for full-text lookup within one object; workspace-wide search
+is `POST /v1/search` (5.1). All use the same runtime role and RLS as other
+routes. They do not change the assertion-backed write rules.
 
 - Every row has `workspace_id`. Postgres row-level security uses a
   per-transaction `app.workspace_id` setting as a second line of defense
@@ -936,11 +953,9 @@ other routes. They do not change the assertion-backed write rules.
   include `workspace_id` (or equivalent enforced checks), since independent
   UUID foreign keys do not prevent cross-workspace references. Validate
   field/object compatibility in addition to tenant membership.
-  Required scaffold additions: `workspace_id` on `interaction_participants`
-  and `fact_sources`; composite foreign keys
-  `(workspace_id, parent_id)` referencing a unique `(workspace_id, id)` on
-  each parent (today's independent FKs allow cross-workspace references);
-  and RLS policies (absent from the initial migration).
+  `interaction_participants` and `fact_sources` carry `workspace_id`, and
+  tenant tables use composite foreign keys `(workspace_id, parent_id)`
+  referencing a unique `(workspace_id, id)` on each parent.
 - API-key lookup happens before the workspace is known, so `api_keys` is
   read through one narrow `SECURITY DEFINER` function that takes a key hash
   and returns the workspace, scopes and actor; the runtime role has no other
@@ -949,7 +964,8 @@ other routes. They do not change the assertion-backed write rules.
 - Background jobs carry their `workspace_id` and set the same setting, so
   workers are held to the same isolation as API requests.
 - API keys are stored hashed, belong to one workspace, and carry scopes
-  (`read`, `write`, `schema:write`, `admin`) and the actor they write as.
+  (`read`, `write`, `schema:write`, `admin`; `admin` implies the other
+  three) and the actor they write as.
   Key provisioning/rotation is a trusted administrative operation; agent
   credentials cannot mint a key claiming a `user` actor to bypass approval.
 - A self-hosted install starts with one default workspace and an admin key
@@ -967,10 +983,12 @@ docker compose exec retainer retainer workspace create --name "Acme Clinic" --te
 docker compose exec retainer retainer workspace list
 docker compose exec retainer retainer key create --workspace acme-clinic \
   --name "Front-desk agent" --actor agent:front-desk --scopes read,write,schema:write
+docker compose exec retainer retainer key list --workspace acme-clinic
 docker compose exec retainer retainer key revoke <key-id>
 ```
 
 `--template` is optional; without it, the first agent chooses one (3.1).
+`--slug` overrides the slug made from the name; `--json` prints JSON.
 `key create` prints the key once and stores only its hash. The hosted cloud
 provisions workspaces and keys through its own service, outside this
 repository, using the same database operations. There is no instance-wide
@@ -986,9 +1004,10 @@ rules stored in tables and enforced by a restrictive RLS policy
 code would only add clearer errors and pre-checks; it is never the
 enforcement. Until then, new code keeps that path open:
 
-1. Every read and write runs as `retainer_app` under RLS. The API-key lookup
-   is the only `SECURITY DEFINER` function; no read takes a shortcut around
-   RLS, including search and context.
+1. Every read and write runs as `retainer_app` under RLS. The only
+   `SECURITY DEFINER` functions are the API-key lookup and
+   `retainer_workspaces_due` (4.2), which returns workspace IDs only; no read
+   takes a shortcut around RLS, including search and context.
 2. Per-request database context is set in one place (`inWorkspace`).
 3. A response mentions another record (conflict errors, merge candidates,
    relation labels, review items, context) only through one shared
@@ -1009,11 +1028,14 @@ enforcement. Until then, new code keeps that path open:
 | `packages/web`    | MIT      | Optional static React app for people                |
 | `packages/mcp`    | MIT      | stdio bridge to the hosted MCP endpoint             |
 | `docker/`         | AGPL-3.0 | Dockerfile and Compose file                         |
+| `docs/`           | AGPL-3.0 | Guides: self-hosting, agents, SDK, REST, releasing  |
 
 ## 9. Stack
 
-TypeScript on Node 22, pnpm workspaces, Hono, Drizzle ORM and drizzle-kit
-migrations, Zod, pg-boss, and the official MCP TypeScript SDK. No LLM SDK.
+TypeScript on Node 22, pnpm workspaces, Hono, postgres.js with plain SQL,
+Drizzle for table definitions and drizzle-kit migrations, Zod, and the
+official MCP TypeScript SDK. The job queue is Postgres itself (4.2), with
+no queue library. No LLM SDK.
 The optional web package uses Vite, React 19, TanStack Router/Query, Tailwind
 CSS 4 and shadcn-style UI primitives. Static files are served by Hono at
 `/app` when `RETAINER_WEB_DIR` is set; the Docker image includes the build.
@@ -1037,8 +1059,12 @@ CSS 4 and shadcn-style UI primitives. Static files are served by Hono at
    queue, `forget`.
 6. SDK, stdio bridge, docs, first release.
 
+All six steps are merged. The 0.1.0 release tooling is in place
+(`.github/workflows/release.yml`, docs/releasing.md); the release itself is
+not cut yet.
+
 Each step lands with its tests (12). Step 1 also sets up the test harness:
-fresh database per test, a helper that starts the server, and the CI
+fresh database per test file, a helper that starts the server, and the CI
 workflow.
 
 Not planned: embeddings and semantic search, and any language model inside
@@ -1052,67 +1078,67 @@ automatic record merges, stale-field flags, exact historical belief
 snapshots, versioned re-logging of edited sources, partial redaction on
 `forget`, and agents connected to more than one workspace.
 
-## 11. Schema checklist before build step 1
+## 11. Schema checklist for build step 1
 
-Changes to `packages/server/src/db/schema.ts` that this document requires and
-the initial migration does not have yet. They are the first part of build
-step 1.
+Changes to `packages/server/src/db/schema.ts` that this document required
+and the original scaffold lacked. All of them landed in build step 1
+(`drizzle/0000_init.sql` and `0001_security.sql`).
 
 **New tables**
 
-- [ ] `record_identifiers`: normalized identifier per record, with a canonical
+- [x] `record_identifiers`: normalized identifier per record, with a canonical
   value and a uniqueness claim; a partial unique index on
   `(workspace_id, field_id, value)` over claims (1.2)
-- [ ] `merge_suggestions`: the two record IDs, reason, status (4.2)
-- [ ] `idempotency_keys`: workspace, operation, key, request hash, result,
+- [x] `merge_suggestions`: the two record IDs, reason, status (4.2)
+- [x] `idempotency_keys`: workspace, operation, key, request hash, result,
   expiry (6.2)
-- [ ] Suppression list: workspace, keyed HMAC of a normalized email or phone
+- [x] Suppression list: workspace, keyed HMAC of a normalized email or phone
   (2.1)
-- [ ] Deletion audit log: actor ID, time, counts only (2.1)
+- [x] Deletion audit log: actor ID, time, counts only (2.1)
 
 **New columns**
 
-- [ ] `workspaces.templates jsonb` (applied template names and versions) and
+- [x] `workspaces.templates jsonb` (applied template names and versions) and
   `workspaces.initialized_at` (3.1)
-- [ ] `records.merged_into_id` (1.1, 4.2)
-- [ ] `field_assertions.observed_at` (1.3, rule 2.2)
-- [ ] `search tsvector` on `facts` and `interactions` (title and summary),
+- [x] `records.merged_into_id` (1.1, 4.2)
+- [x] `field_assertions.observed_at` (1.3, rule 2.2)
+- [x] `search tsvector` on `facts` and `interactions` (title and summary),
   computed by the server like `records.search` (5.1)
-- [ ] `records.label text`: the label field as plain text, for fuzzy name
+- [x] `records.label text`: the label field as plain text, for fuzzy name
   lookup (5.1)
-- [ ] `workspace_id` on `interaction_participants` and `fact_sources` (7)
+- [x] `workspace_id` on `interaction_participants` and `fact_sources` (7)
 
 **Agent-written memory (4.1, 4.3)**
 
-- [ ] `interactions`: replace `content`, `content_format`, `ingest_status`
+- [x] `interactions`: replace `content`, `content_format`, `ingest_status`
   and `ingest_error` with `summary text`
-- [ ] Drop the `record_cards` table
+- [x] Drop the `record_cards` table
 
 **Changed constraints and defaults**
 
-- [ ] Unique index on `record_links (source_record_id, field_id)`, so a
+- [x] Unique index on `record_links (source_record_id, field_id)`, so a
   many-to-one field has at most one edge per record (1.1)
-- [ ] `facts.valid_from`: no `now()` default; set from the source (1.3,
+- [x] `facts.valid_from`: no `now()` default; set from the source (1.3,
   rule 2.6)
-- [ ] Remove `proposed` from live `object_types` / `fields` status and from
+- [x] Remove `proposed` from live `object_types` / `fields` status and from
   `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
-- [ ] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
+- [x] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
   `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
 
 **Extensions and search indexes**
 
-- [ ] The migration runner creates `pg_trgm` and `btree_gin` (5.1)
-- [ ] Replace `records_search_gin` with a GIN index on
+- [x] The migration runner creates `pg_trgm` and `btree_gin` (5.1)
+- [x] Replace `records_search_gin` with a GIN index on
   `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
-- [ ] Trigram GIN index on `records (workspace_id, label)` (5.1)
+- [x] Trigram GIN index on `records (workspace_id, label)` (5.1)
 
 **Security**
 
-- [ ] Row-level security policies on every tenant table, keyed on the
+- [x] Row-level security policies on every tenant table, keyed on the
   per-transaction `app.workspace_id` setting (7)
-- [ ] Separate migration and runtime roles; the runtime role does not own
+- [x] Separate migration and runtime roles; the runtime role does not own
   tables and has no `BYPASSRLS` (7)
-- [ ] The `SECURITY DEFINER` function for API-key lookup (7)
+- [x] The `SECURITY DEFINER` function for API-key lookup (7)
 
 ## 12. Testing
 
@@ -1123,9 +1149,9 @@ model inside it, so every layer except 5 is deterministic.
 | Layer                   | What it proves                                                                                                                                                               | How                                                                                                 | Runs                   |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
 | 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                 | Vitest, no database                                                                                 | Every PR               |
-| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget` | Vitest against real Postgres; each test gets a fresh database                                       | Every PR               |
+| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget` | Vitest against real Postgres; each test file gets a fresh database                                  | Every PR               |
 | 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                           | The Hono app called in-process against a real database                                              | Every PR               |
-| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context         | A runner starts Postgres and the server, then drives them through the MCP client and REST           | Every PR (from step 2) |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context         | The MCP client, directly and through the stdio bridge, and REST, against the app and real Postgres  | Every PR (from step 2) |
 | 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation         | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
 
 Browser tests use Playwright against the built app and real Postgres, with a
@@ -1134,10 +1160,10 @@ then `pnpm test:web`; CI runs these after the existing test layers.
 
 ### Rules
 
-- **Fresh database per test.** Migrations run once into a template
+- **Fresh database per test file.** Migrations run once into a template
   database; each test file clones it (`CREATE DATABASE … TEMPLATE …`) and
-  drops it after. Tests never share rows, so they run in parallel without
-  flaking.
+  drops it after. Files never share rows, so they run in parallel without
+  flaking. Browser tests clone one per test.
 - **Real Postgres, never a mock,** for anything that touches the database.
   Locking, row-level security and unique constraints are the point of
   layers 2 and 3.
@@ -1149,6 +1175,8 @@ then `pnpm test:web`; CI runs these after the existing test layers.
 
 ### CI
 
-A GitHub Actions workflow runs on every PR and on `main`: lint, typecheck,
-then layers 1–4, with Postgres as a service container. Retainer calls no
-model, so CI needs no API keys.
+A GitHub Actions workflow runs on every PR and on `main`: lint, build,
+typecheck, layers 1–4, then the browser tests, with Postgres as a service
+container. Pushing a `v*` tag runs the release workflow, which reruns CI
+before publishing (docs/releasing.md). Retainer calls no model, so CI needs
+no API keys.
