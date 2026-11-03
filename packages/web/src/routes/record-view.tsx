@@ -481,7 +481,7 @@ function FieldProperty({
  * Saves one field with the record's `updatedAt` as the precondition. A stale
  * write keeps the draft open beside the latest value; retrying is explicit.
  */
-function InlineEditor({
+export function InlineEditor({
   record,
   field,
   onDone,

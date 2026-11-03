@@ -22,7 +22,11 @@ export const api = new RetainerClient({
     const url = new URL(
       typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
     );
-    const read = !init?.method || init.method === 'GET' || url.pathname.endsWith('/query');
+    // POST reads take a body: queries, totals and delete impact.
+    const read =
+      !init?.method ||
+      init.method === 'GET' ||
+      /\/(query|aggregate|delete-impact)$/.test(url.pathname);
     // A 404 may mean the cached schema names an object that no longer exists;
     // a deleted record is a plain answer, so it skips the schema refresh.
     if (

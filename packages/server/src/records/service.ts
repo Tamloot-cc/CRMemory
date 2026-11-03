@@ -1,5 +1,7 @@
 import type {
   Actor,
+  AggregateResult,
+  BulkDeleteImpact,
   DeleteImpact,
   ForgetResult,
   MergeResult,
@@ -15,6 +17,7 @@ import { lockSource } from '../memory/interactions.js';
 import { forgetRecord } from '../privacy/forget.js';
 import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
+import { type AggregateInput, aggregateRecords } from './aggregate.js';
 import { identifiersFor, lookupValue } from './derive.js';
 import { dismissMergeSuggestion, type MergeInput, MergeRaceError, mergeRecords } from './merge.js';
 import { type QueryInput, queryRecords } from './query.js';
@@ -32,6 +35,7 @@ import {
   type FieldWriteStatus,
   insertRecord,
   lockRecord,
+  MAX_MERGE_HOPS,
   objectOf,
   resolveRecordId,
   softDeleteRecord,
@@ -372,6 +376,27 @@ export async function patchRecord(
   });
 }
 
+/** Records outside `roots` that deleting them would take along, counted by object. */
+async function cascadeCounts(
+  tx: Tx,
+  schema: CompiledSchema,
+  roots: string[],
+): Promise<DeleteImpact['records']> {
+  const ids = await cascadeSet(tx, schema, roots);
+  for (const id of roots) ids.delete(id);
+  const rows = ids.size
+    ? await tx<{ object_type_id: string; count: number }[]>`
+        select object_type_id, count(*)::int as count from records
+        where id = any(${[...ids]}::uuid[]) group by object_type_id`
+    : [];
+  return rows
+    .map((r) => ({
+      object: schema.objectsById.get(r.object_type_id)?.name ?? 'unknown',
+      count: r.count,
+    }))
+    .sort((a, b) => a.object.localeCompare(b.object));
+}
+
 /**
  * What deleting a record would delete with it through cascading relations,
  * counted by object, at any depth and without changing anything.
@@ -379,23 +404,55 @@ export async function patchRecord(
 export async function deleteImpact(sql: Sql, caller: Caller, id: string): Promise<DeleteImpact> {
   return withRead(sql, caller, async (tx, schema) => {
     const record = await getRecord(tx, caller.workspaceId, schema, id);
-    const ids = await cascadeSet(tx, schema, record.id);
-    ids.delete(record.id);
-    const rows = ids.size
-      ? await tx<{ object_type_id: string; count: number }[]>`
-          select object_type_id, count(*)::int as count from records
-          where id = any(${[...ids]}::uuid[]) group by object_type_id`
-      : [];
-    return {
-      id: record.id,
-      records: rows
-        .map((r) => ({
-          object: schema.objectsById.get(r.object_type_id)?.name ?? 'unknown',
-          count: r.count,
-        }))
-        .sort((a, b) => a.object.localeCompare(b.object)),
-    };
+    return { id: record.id, records: await cascadeCounts(tx, schema, [record.id]) };
   });
+}
+
+export const bulkDeleteImpactSchema = z.strictObject({
+  ids: z.array(z.string().uuid()).min(1).max(200),
+});
+/** The same for several records deleted together: overlaps count once. */
+export async function bulkDeleteImpact(
+  sql: Sql,
+  caller: Caller,
+  input: z.infer<typeof bulkDeleteImpactSchema>,
+): Promise<BulkDeleteImpact> {
+  return withRead(sql, caller, async (tx, schema) => {
+    // Each ID follows its merges to the live record, all in one query.
+    const rows = await tx<{ start: string; id: string; deleted_at: Date | null }[]>`
+      with recursive chain (start, id, merged_into_id, deleted_at, hops) as (
+        select id, id, merged_into_id, deleted_at, 0 from records
+        where id = any(${input.ids}::uuid[]) and workspace_id = ${caller.workspaceId}
+        union all
+        select c.start, r.id, r.merged_into_id, r.deleted_at, c.hops + 1
+        from chain c join records r on r.id = c.merged_into_id
+        where r.workspace_id = ${caller.workspaceId} and c.hops < ${MAX_MERGE_HOPS})
+      select start, id, deleted_at from chain where merged_into_id is null`;
+    const byStart = new Map(rows.map((r) => [r.start, r]));
+    const roots = new Set<string>();
+    for (const id of input.ids) {
+      const row = byStart.get(id);
+      if (!row) throw notFound('record', { id });
+      if (row.deleted_at)
+        throw new AppError(404, 'record_deleted', `record ${row.id} was deleted`, {
+          recordId: row.id,
+        });
+      roots.add(row.id);
+    }
+    return { ids: [...roots], records: await cascadeCounts(tx, schema, [...roots]) };
+  });
+}
+
+/** Totals over the records a filter matches, for a list's footer. */
+export async function aggregate(
+  sql: Sql,
+  caller: Caller,
+  objectName: string,
+  input: AggregateInput,
+): Promise<AggregateResult> {
+  return withRead(sql, caller, (tx, schema) =>
+    aggregateRecords(tx, caller.workspaceId, requireObject(schema, objectName), input),
+  );
 }
 
 export async function deleteRecord(

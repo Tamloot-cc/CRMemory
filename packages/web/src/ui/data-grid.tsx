@@ -1,5 +1,7 @@
-import { ArrowDown, ArrowUp, X } from 'lucide-react';
+import * as PopoverPrimitive from '@radix-ui/react-popover';
+import { ArrowDown, ArrowUp, Pencil, X } from 'lucide-react';
 import {
+  type ComponentProps,
   memo,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -18,7 +20,18 @@ export type GridColumn = {
   /** Pinned to the left edge; can't be dragged or dropped on. */
   pinned?: boolean;
 };
-export type GridRow = { id: string; cells: ReactNode[] };
+/** `label` names the row for its checkbox: "Select Acme". */
+export type GridRow = { id: string; label?: string; cells: ReactNode[] };
+/** Row checkboxes: which rows are selected, and how to change that. */
+export type GridSelection = {
+  selected: ReadonlySet<string>;
+  onToggle: (row: string) => void;
+  /** Selects every row shown, or clears the selection when all are selected. */
+  onToggleAll: () => void;
+};
+
+/** The checkbox column's width; the pinned label column sits right after it. */
+const CHECK_WIDTH = 40;
 
 export const MIN_COLUMN_WIDTH = 80;
 export const MAX_COLUMN_WIDTH = 640;
@@ -41,10 +54,15 @@ export function DataGrid({
   onReorder,
   onOpenRow,
   selectedRow,
+  selection,
+  footer,
 }: {
   label: string;
   columns: GridColumn[];
   rows: GridRow[];
+  selection?: GridSelection;
+  /** One cell per column under the rows, e.g. column totals. */
+  footer?: ReactNode[];
   /** The row whose record is open beside the grid; it stays highlighted. */
   selectedRow?: string;
   sort?: { column: string; direction: 'asc' | 'desc' };
@@ -58,7 +76,10 @@ export function DataGrid({
     [over, setOver] = useState<string | null>(null);
   const resizing = useRef(false);
   const widthOf = (c: GridColumn) => (draft?.id === c.id ? draft.width : c.width);
-  const total = columns.reduce((sum, c) => sum + widthOf(c), 0);
+  const pinLeft = selection ? CHECK_WIDTH : 0;
+  const total = columns.reduce((sum, c) => sum + widthOf(c), pinLeft);
+  const all = rows.length > 0 && rows.every((r) => selection?.selected.has(r.id));
+  const some = !all && rows.some((r) => selection?.selected.has(r.id));
 
   function startResize(e: ReactPointerEvent<HTMLDivElement>, column: GridColumn) {
     e.preventDefault();
@@ -101,6 +122,7 @@ export function DataGrid({
         style={{ tableLayout: 'fixed', width: `max(100%, ${total}px)` }}
       >
         <colgroup>
+          {selection ? <col style={{ width: CHECK_WIDTH }} /> : null}
           {columns.map((c) => (
             <col key={c.id} style={{ width: widthOf(c) }} />
           ))}
@@ -108,6 +130,25 @@ export function DataGrid({
         </colgroup>
         <thead>
           <tr>
+            {selection ? (
+              <th
+                scope="col"
+                className="sticky left-0 top-0 z-20 h-9 border-b border-border bg-sidebar p-0"
+              >
+                <div className="flex h-9 items-center justify-center">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all rows on this page"
+                    className="h-4 w-4 accent-primary"
+                    checked={all}
+                    ref={(el) => {
+                      if (el) el.indeterminate = some;
+                    }}
+                    onChange={selection.onToggleAll}
+                  />
+                </div>
+              </th>
+            ) : null}
             {columns.map((c) => {
               const sorted = sort?.column === c.id ? sort.direction : undefined;
               const canDrag = !!onReorder && !c.pinned;
@@ -119,6 +160,7 @@ export function DataGrid({
                     sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : undefined
                   }
                   draggable={canDrag}
+                  style={c.pinned ? { left: pinLeft } : undefined}
                   onDragStart={(e) => {
                     if (resizing.current) return e.preventDefault();
                     e.dataTransfer.effectAllowed = 'move';
@@ -144,7 +186,7 @@ export function DataGrid({
                   }}
                   className={cn(
                     'group/th sticky top-0 z-10 h-9 border-b border-r border-border bg-sidebar p-0 text-left text-xs font-medium text-muted-foreground',
-                    c.pinned && 'left-0 z-20',
+                    c.pinned && 'z-20',
                     canDrag && 'cursor-grab active:cursor-grabbing',
                     dragging === c.id && 'opacity-50',
                     over === c.id && 'shadow-[inset_2px_0_0_var(--color-primary)]',
@@ -201,7 +243,33 @@ export function DataGrid({
             <th aria-hidden className="sticky top-0 z-10 border-b border-border bg-sidebar" />
           </tr>
         </thead>
-        <GridBody rows={rows} columns={columns} onOpenRow={onOpenRow} selectedRow={selectedRow} />
+        <GridBody
+          rows={rows}
+          columns={columns}
+          onOpenRow={onOpenRow}
+          selectedRow={selectedRow}
+          selection={selection}
+          pinLeft={pinLeft}
+        />
+        {footer ? (
+          <tfoot>
+            <tr>
+              {selection ? <td className={`${FOOT} left-0 z-20`} /> : null}
+              {footer.map((cell, i) => (
+                <td
+                  key={columns[i]?.id ?? i}
+                  className={cn(FOOT, columns[i]?.pinned && 'z-20')}
+                  style={columns[i]?.pinned ? { left: pinLeft } : undefined}
+                >
+                  <div className="flex h-9 items-center overflow-hidden whitespace-nowrap px-1">
+                    {cell}
+                  </div>
+                </td>
+              ))}
+              <td aria-hidden className={FOOT} />
+            </tr>
+          </tfoot>
+        ) : null}
       </table>
     </section>
   );
@@ -209,7 +277,8 @@ export function DataGrid({
 
 const ROW_BG = `bg-background ${ROW_STATE}`;
 const CELL = `border-b border-r border-border p-0 ${ROW_BG}`;
-const PINNED_CELL = `${CELL} sticky left-0 z-[5]`;
+const PINNED_CELL = `${CELL} sticky z-[5]`;
+const FOOT = 'sticky bottom-0 z-10 border-t border-r border-border bg-sidebar p-0';
 
 /** Rows re-render only when their data changes, not while a column is resized or dragged. */
 const GridBody = memo(function GridBody({
@@ -217,11 +286,15 @@ const GridBody = memo(function GridBody({
   columns,
   onOpenRow,
   selectedRow,
+  selection,
+  pinLeft,
 }: {
   rows: GridRow[];
   columns: GridColumn[];
   onOpenRow?: (row: string) => void;
   selectedRow?: string;
+  selection?: GridSelection;
+  pinLeft: number;
 }) {
   function openRow(e: ReactMouseEvent, id: string) {
     if (onOpenRow && isPlainClick(e)) onOpenRow(id);
@@ -232,11 +305,28 @@ const GridBody = memo(function GridBody({
         <tr
           key={r.id}
           onClick={(e) => openRow(e, r.id)}
-          data-selected={r.id === selectedRow || undefined}
+          data-selected={r.id === selectedRow || selection?.selected.has(r.id) || undefined}
           className={onOpenRow ? 'group cursor-pointer' : 'group'}
         >
+          {selection ? (
+            <td className={`${CELL} sticky left-0 z-[5]`}>
+              <div className="flex h-9 items-center justify-center">
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${r.label ?? 'row'}`}
+                  className="h-4 w-4 accent-primary"
+                  checked={selection.selected.has(r.id)}
+                  onChange={() => selection.onToggle(r.id)}
+                />
+              </div>
+            </td>
+          ) : null}
           {r.cells.map((cell, i) => (
-            <td key={columns[i]?.id ?? i} className={columns[i]?.pinned ? PINNED_CELL : CELL}>
+            <td
+              key={columns[i]?.id ?? i}
+              className={columns[i]?.pinned ? PINNED_CELL : CELL}
+              style={columns[i]?.pinned ? { left: pinLeft } : undefined}
+            >
               <div className="flex h-9 items-center gap-1 overflow-hidden whitespace-nowrap px-3 [&>*]:min-w-0">
                 {cell}
               </div>
@@ -248,6 +338,67 @@ const GridBody = memo(function GridBody({
     </tbody>
   );
 });
+
+/**
+ * A grid cell a person can edit: its value, and a pencil that shows on hover
+ * or focus and opens `editor` in a layer anchored to the cell.
+ */
+export function EditableCell({
+  label,
+  editor,
+  children,
+}: {
+  label: string;
+  /** The editor, rendered only while open; `close` dismisses it. */
+  editor: (close: () => void) => ReactNode;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      <PopoverPrimitive.Anchor asChild>
+        <span className="flex min-w-0 flex-1 items-center gap-1">
+          <span className="min-w-0 flex-1 truncate">{children}</span>
+          <PopoverPrimitive.Trigger asChild>
+            <button
+              type="button"
+              aria-label={`Edit ${label}`}
+              title="Edit"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 hover:bg-hover hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 data-[state=open]:opacity-100"
+            >
+              <Pencil size={12} />
+            </button>
+          </PopoverPrimitive.Trigger>
+        </span>
+      </PopoverPrimitive.Anchor>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Content
+          align="start"
+          sideOffset={4}
+          collisionPadding={12}
+          // The editor takes focus itself.
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          className="z-50 w-[min(92vw,22rem)]"
+        >
+          {editor(() => setOpen(false))}
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  );
+}
+
+/** A footer cell's menu trigger: what the column computes, or "Calculate". */
+export function FooterButton({ children, ...props }: ComponentProps<'button'>) {
+  return (
+    <button
+      type="button"
+      {...props}
+      className="flex h-7 min-w-0 max-w-full items-center rounded-sm px-2 text-xs text-muted-foreground hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="truncate">{children}</span>
+    </button>
+  );
+}
 
 /** The bar above a grid: filters on the left, view controls on the right. */
 export function Toolbar({ children, end }: { children: ReactNode; end?: ReactNode }) {

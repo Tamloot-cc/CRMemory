@@ -16,8 +16,11 @@ export const ROW_STATE = 'group-hover:bg-hover group-data-selected:bg-muted';
  * selection. Tooltip triggers (`role="button"`) wrap most values, so they
  * count as the area.
  */
-export function isPlainClick(e: { target: EventTarget | null }) {
+export function isPlainClick(e: { target: EventTarget | null; currentTarget: EventTarget | null }) {
   const target = e.target instanceof Element ? e.target : null;
+  // React bubbles events from portals (popovers, dialogs) through their owner;
+  // a click in a layer outside this element isn't a click on it.
+  if (target && e.currentTarget instanceof Node && !e.currentTarget.contains(target)) return false;
   if (target?.closest('a,button,input,select,textarea,label,[role="switch"]')) return false;
   return !window.getSelection()?.toString();
 }

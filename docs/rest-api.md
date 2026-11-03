@@ -31,16 +31,16 @@ Errors are JSON with a stable `code`, a readable `message`, and sometimes
 { "error": { "code": "stale_write", "message": "the record changed since expectedUpdatedAt", "details": { … } } }
 ```
 
-| Status | Typical codes and meaning                                                                                                |
-| ------ | ------------------------------------------------------------------------------------------------------------------------ |
-| 400    | `invalid_request`: the body or a filter does not have the expected shape                                                 |
-| 401    | Missing, unknown or revoked key                                                                                          |
-| 403    | The key lacks the scope, or the action needs a `user` actor                                                              |
-| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                                        |
-| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted             |
-| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                              |
-| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `idempotency_key_reused` |
-| 503    | The database is unreachable, or `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`                            |
+| Status | Typical codes and meaning                                                                                                                                                          |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `invalid_request`: the body or a filter does not have the expected shape                                                                                                           |
+| 401    | Missing, unknown or revoked key                                                                                                                                                    |
+| 403    | The key lacks the scope, or the action needs a `user` actor                                                                                                                        |
+| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                                                                                                  |
+| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted                                                                       |
+| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                                                                                        |
+| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `invalid_aggregate` (`details.field`, `details.allowed`); `idempotency_key_reused` |
+| 503    | The database is unreachable, or `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`                                                                                      |
 
 `unique_conflict` and `suppressed` also list the field in `details.errors`,
 in the same shape as `invalid_values`, so a client can show every per-field
@@ -78,9 +78,11 @@ original response; the same key with a different body fails with 422
 | `POST /v1/objects/:object/records`                | `write`          | Create a record                                                      |
 | `POST /v1/objects/:object/upsert`                 | `write`          | Update or create a record found by `id` or `match`, with `ifMissing` |
 | `POST /v1/objects/:object/query`                  | `read`           | Filter, sort and page records of one object                          |
+| `POST /v1/objects/:object/aggregate`              | `read`           | Count, and per-field totals over, the records a filter matches       |
 | `GET /v1/records/:id`                             | `read`           | One record; `?include=provenance,relationReferences`                 |
 | `PATCH /v1/records/:id`                           | `write`          | Update fields; optional `source` and `expectedUpdatedAt`             |
 | `GET /v1/records/:id/delete-impact`               | `read`           | What a delete would take with it through cascades, counted by object |
+| `POST /v1/records/delete-impact`                  | `read`           | The same for `{ "ids": [...] }` (at most 200) deleted together       |
 | `DELETE /v1/records/:id`                          | `write`          | Soft-delete a record                                                 |
 | `GET /v1/records/:id/assertions`                  | `read`           | Per-field history; `?field=`                                         |
 | `GET /v1/records/:id/interactions`                | `read`           | Interactions the record took part in                                 |
@@ -102,3 +104,12 @@ original response; the same key with a different body fails with 422
 scope. Request and response shapes are exported as TypeScript types from
 `@retainer/shared`, and [ARCHITECTURE.md section 6](../ARCHITECTURE.md#6-interfaces)
 shows annotated examples.
+
+`POST /v1/objects/:object/aggregate` takes the same `filter` and `search` as
+a query, plus `aggregates: [{ "field": "amount", "op": "sum" }]` (at most 50),
+and returns `{ "total": 42, "values": [{ "field", "op", "value" }] }`. The
+operations are `countEmpty`, `countNotEmpty`, `percentEmpty`,
+`percentNotEmpty`, `countUnique`, `sum`, `avg`, `min` and `max`;
+`aggregateOps(field)` in `@retainer/shared` says which a field supports.
+Money totals are `{ amountMicros, currency }`, or `null` with
+`"mixedCurrencies": true` when the matching records use several currencies.

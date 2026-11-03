@@ -30,7 +30,9 @@ The first release: the whole of build order steps 1 to 6 in
 - Optional web app at `/app`, signed in with a personal API key: a review
   inbox for pending values, proposed schema changes and unresolved
   participants; record tables with filters, sorting and resizable,
-  reorderable columns; records in a side sheet or a full page, with
+  reorderable columns, a total count, per-column calculations (empty,
+  unique, sum, average, min, max), row selection with bulk delete and merge,
+  and editing cells in place; records in a side sheet or a full page, with
   provenance, inline field editing and retraction of facts and interactions;
   a schema page with objects, fields and change history; record creation
   from a schema-driven form; delete, merge (with a field-by-field comparison)
@@ -40,7 +42,8 @@ The first release: the whole of build order steps 1 to 6 in
 ### `@retainer/sdk`
 
 - Typed client for every REST route, including search, context packs,
-  merges, merge-suggestion dismissal and `forget`; typed `RetainerApiError`.
+  aggregates, merges, merge-suggestion dismissal and `forget`; typed
+  `RetainerApiError`.
 
 ### `@retainer/mcp`
 

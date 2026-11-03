@@ -632,15 +632,15 @@ export async function computeDataFromAssertions(
 export async function cascadeSet(
   tx: Tx,
   schema: CompiledSchema,
-  rootId: string,
+  roots: readonly string[],
 ): Promise<Set<string>> {
   const cascadeFieldIds = schema.state.objects.flatMap((o) =>
     o.fields
       .filter((f) => f.status === 'active' && f.settings.onDelete === 'cascade')
       .map((f) => f.id as string),
   );
-  const ids = new Set([rootId]);
-  let frontier = [rootId];
+  const ids = new Set(roots);
+  let frontier = [...ids];
   while (frontier.length > 0 && cascadeFieldIds.length > 0) {
     const rows = await tx<{ id: string }[]>`
       select distinct l.source_record_id as id from record_links l
@@ -667,7 +667,7 @@ export async function softDeleteRecord(
 ): Promise<string[]> {
   const rootId = await resolveRecordId(tx, context.workspaceId, id);
   // Collect first, then lock everything in sorted order.
-  const sorted = [...(await cascadeSet(tx, context.schema, rootId))].sort();
+  const sorted = [...(await cascadeSet(tx, context.schema, [rootId]))].sort();
   const locked = await lockRecordsForUpdate(tx, context.workspaceId, sorted);
   if (locked.find((r) => r.id === rootId)?.deleted_at) {
     throw new AppError(409, 'record_deleted', `record ${rootId} is already deleted`, {

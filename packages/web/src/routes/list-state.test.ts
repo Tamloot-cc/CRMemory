@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { clampWidth, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from '../ui/data-grid.js';
 import {
   addClause,
+  aggregateLabel,
   columnsKey,
   describeClause,
   encodeFilter,
   type FilterClause,
+  formatAggregate,
   loadColumnPrefs,
   moveColumn,
   nextSort,
@@ -229,5 +231,46 @@ describe('paging', () => {
     expect(pageRange(trail, 'c2', 7, 50)).toBe('101–107');
     expect(pageRange(trail, 'unknown', 1, 50)).toBe('1 record');
     expect(pageRange(trail, undefined, 0, 50)).toBe('No records');
+    expect(pageRange(trail, 'c2', 7, 50, 107)).toBe('101–107 of 107');
+    expect(pageRange(trail, 'unknown', 1, 50, 1)).toBe('1 record of 1');
+  });
+});
+
+describe('column totals', () => {
+  it('keeps only known footer operations from saved preferences', () => {
+    const s = storage({
+      [columnsKey('w', 'deal')]: JSON.stringify({
+        order: [],
+        widths: {},
+        aggregates: { amount: 'sum', stage: 'median', name: 3 },
+      }),
+    });
+    expect(loadColumnPrefs(s, 'w', 'deal')?.aggregates).toEqual({ amount: 'sum' });
+  });
+
+  it('reads like a sentence in the footer', () => {
+    const amount = field('amount', { type: 'money' });
+    const close = field('closeDate', { type: 'date' });
+    const count = field('employees', { type: 'number' });
+    const usd = (amountMicros: number) => ({ amountMicros, currency: 'USD' });
+    expect(formatAggregate(count, { field: 'employees', op: 'percentEmpty', value: 100 / 3 })).toBe(
+      'Empty 33%',
+    );
+    expect(formatAggregate(count, { field: 'employees', op: 'avg', value: 75.456 })).toBe(
+      `Average ${(75.46).toLocaleString()}`,
+    );
+    expect(formatAggregate(amount, { field: 'amount', op: 'sum', value: usd(400_000_000) })).toBe(
+      `Sum ${new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(400)}`,
+    );
+    expect(
+      formatAggregate(amount, { field: 'amount', op: 'sum', value: null, mixedCurrencies: true }),
+    ).toBe('Sum: mixed currencies');
+    expect(formatAggregate(close, { field: 'closeDate', op: 'max', value: '2026-05-15' })).toBe(
+      `Latest ${new Date(2026, 4, 15).toLocaleDateString()}`,
+    );
+    expect(formatAggregate(close, { field: 'closeDate', op: 'min', value: null })).toBe(
+      'Earliest —',
+    );
+    expect(aggregateLabel(count, 'countUnique')).toBe('Unique values');
   });
 });
