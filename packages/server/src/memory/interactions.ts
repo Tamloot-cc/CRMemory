@@ -7,6 +7,7 @@ import type {
 } from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { z } from 'zod';
+import { after, page } from '../db/pagination.js';
 import {
   INTERACTION_KINDS,
   type InteractionKind,
@@ -14,12 +15,12 @@ import {
   type UnmatchedReason,
 } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
-import { after, page } from '../db/pagination.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import { isSuppressed, suppressedOf } from '../privacy/suppression.js';
 import { searchVector } from '../records/search-sql.js';
 import {
   lockRecordsForUpdate,
+  lockTargets,
   MAX_MERGE_HOPS,
   type RemovedClaim,
   releaseAndRecompute,
@@ -201,26 +202,12 @@ type Resolution = { recordId: string } | { reason: UnmatchedReason; candidates?:
  * only by deleted records stays unresolved for review (1.2), and one claimed
  * by several live records is ambiguous rather than matched to the first.
  */
-async function resolveParticipants(
-  tx: Tx,
-  workspaceId: string,
+function resolveParticipants(
   participants: readonly NormalizedParticipant[],
-  /** The caller's lookup of these participants' record IDs, when it has one. */
-  known?: Map<string, CanonicalRecord>,
-): Promise<Resolution[]> {
-  const explicit = [...new Set(participants.flatMap((p) => (p.recordId ? [p.recordId] : [])))];
-  const emails = [
-    ...new Set(
-      participants.flatMap((p) =>
-        !p.recordId && p.handle?.kind === 'email' ? [p.handle.value] : [],
-      ),
-    ),
-  ];
-  const [records, emailMatches] = await Promise.all([
-    known ?? canonicalRecords(tx, workspaceId, explicit),
-    matchEmails(tx, workspaceId, emails),
-  ]);
-
+  /** The participants' record IDs, following merges. Unknown IDs are absent. */
+  records: Map<string, CanonicalRecord>,
+  emailMatches: Map<string, EmailMatch>,
+): Resolution[] {
   const errors: { index: number; recordId: string; message: string }[] = [];
   const resolutions = participants.map((p, index): Resolution => {
     if (p.recordId) {
@@ -236,7 +223,7 @@ async function resolveParticipants(
     const match = emailMatches.get(p.handle.value);
     if (!match) return { reason: 'no_match' };
     const [only, ...others] = match.live;
-    if (only && others.length === 0) return { recordId: only };
+    if (only && others.length === 0) return { recordId: records.get(only)?.id ?? only };
     if (only) return { reason: 'ambiguous', candidates: match.live };
     return { reason: 'deleted_record' };
   });
@@ -334,12 +321,17 @@ function participantKey(role: string | null, handle: string | null, recordId: st
 
 /**
  * Adds participants and `about` records to an interaction whose links are
- * `stored` (1.3), and returns the rows it inserted. A participant already
- * stored (by handle, or by record when it has none) is not added again, so a
- * retry or a re-log adds nothing; nothing stored is ever removed here. An
- * `about` record already linked to the interaction, as an attendee or as
- * `about`, is skipped. The caller holds the interaction row lock (or has
- * just inserted it), so positions never clash.
+ * `stored` (1.3). A participant already stored (by handle, or by record when
+ * it has none) is not added again, so a retry or a re-log adds nothing. An
+ * `about` record already linked to the interaction is skipped, and a record
+ * added as a participant replaces its `about` link: a record is linked once.
+ *
+ * The caller holds the interaction row lock (or has just inserted it), so
+ * positions never clash. Every record involved is locked `FOR KEY SHARE`
+ * before links are compared or written, as relation writes do: a merge
+ * locks the record it removes `FOR UPDATE`, so it either commits first and
+ * the link goes to the survivor, or waits and then moves the new link too.
+ * Returns the interaction's links after the write and the rows inserted.
  */
 async function addLinks(
   tx: Tx,
@@ -347,54 +339,71 @@ async function addLinks(
   interactionId: string,
   stored: readonly StoredRow[],
   input: { participants: readonly NormalizedParticipant[]; about: readonly string[] },
-): Promise<ParticipantRow[]> {
+): Promise<{ rows: ParticipantRow[]; inserted: ParticipantRow[] }> {
   // A handle erased by forget is never stored again (2.1). The caller holds
   // the privacy lock in shared mode, so forget cannot run between this check
   // and the commit.
-  const given = [
-    ...new Set([
-      ...input.participants.flatMap((p) => (p.recordId ? [p.recordId] : [])),
-      ...input.about,
-    ]),
-  ];
-  const [suppressed, canonical] = await Promise.all([
+  const [suppressed, emailMatches] = await Promise.all([
     suppressedOf(
       tx,
       workspaceId,
       input.participants.flatMap((p) => (p.handle ? [p.handle] : [])),
     ),
-    canonicalRecords(tx, workspaceId, given),
+    matchEmails(tx, workspaceId, [
+      ...new Set(
+        input.participants.flatMap((p) =>
+          !p.recordId && p.handle?.kind === 'email' ? [p.handle.value] : [],
+        ),
+      ),
+    ]),
   ]);
   const kept = input.participants.map((p) =>
     p.handle && isSuppressed(suppressed, p.handle)
       ? { ...p, handle: null, erased: true }
       : { ...p, erased: false },
   );
+  const records = await lockRecords(tx, workspaceId, [
+    ...kept.flatMap((p) => (p.recordId ? [p.recordId] : [])),
+    ...input.about,
+    ...stored.flatMap((r) => (r.record_id ? [r.record_id] : [])),
+    ...[...emailMatches.values()].flatMap((m) => m.live),
+  ]);
+  const survivor = (id: string | null) => (id ? (records.get(id)?.id ?? id) : null);
 
   // Participants not stored yet. Matching counts duplicates, so a list that
   // names the same handle twice keeps both, as when it was first logged.
   const remaining = new Map<string, number>();
   for (const row of stored) {
     if (row.link !== 'participant') continue;
-    const key = participantKey(row.role, row.handle, row.record_id);
+    const key = participantKey(row.role, row.handle, survivor(row.record_id));
     remaining.set(key, (remaining.get(key) ?? 0) + 1);
   }
   const newParticipants = kept.filter((p) => {
-    const recordId = p.recordId ? (canonical.get(p.recordId)?.id ?? p.recordId) : null;
-    const key = participantKey(p.role, p.handle?.value ?? null, recordId);
+    const key = participantKey(p.role, p.handle?.value ?? null, survivor(p.recordId));
     const left = remaining.get(key) ?? 0;
     if (left > 0) remaining.set(key, left - 1);
     return left === 0;
   });
-  const resolutions = await resolveParticipants(tx, workspaceId, newParticipants, canonical);
+  const resolutions = resolveParticipants(newParticipants, records, emailMatches);
+  const attending = new Set(resolutions.flatMap((r) => ('recordId' in r ? [r.recordId] : [])));
+
+  // A record that now takes part loses its about link.
+  const replaced = stored.filter(
+    (r) => r.link === 'about' && attending.has(survivor(r.record_id) as string),
+  );
+  if (replaced.length > 0) {
+    await tx`delete from interaction_participants where id = any(${replaced.map((r) => r.id)}::uuid[])`;
+  }
 
   // About records: known and live, not linked already, each once.
-  const linked = new Set(stored.flatMap((r) => (r.record_id ? [r.record_id] : [])));
-  for (const r of resolutions) if ('recordId' in r) linked.add(r.recordId);
+  const linked = new Set([
+    ...stored.flatMap((r) => (r.record_id ? [survivor(r.record_id) as string] : [])),
+    ...attending,
+  ]);
   const errors: { index: number; recordId: string; message: string }[] = [];
   const newAbout: string[] = [];
   input.about.forEach((id, index) => {
-    const record = canonical.get(id);
+    const record = records.get(id);
     if (!record) {
       errors.push({ index, recordId: id, message: 'no record with this ID' });
       return;
@@ -438,10 +447,32 @@ async function addLinks(
       link: 'about',
     })),
   ];
-  if (inserts.length === 0) return [];
-  return tx<ParticipantRow[]>`
-    insert into interaction_participants ${tx(inserts)}
-    returning id, handle, role, record_id, unmatched_reason, link`;
+  const inserted =
+    inserts.length > 0
+      ? await tx<ParticipantRow[]>`
+          insert into interaction_participants ${tx(inserts)}
+          returning id, handle, role, record_id, unmatched_reason, link`
+      : [];
+  const gone = new Set(replaced.map((r) => r.id));
+  return { rows: [...stored.filter((r) => !gone.has(r.id)), ...inserted], inserted };
+}
+
+/**
+ * Locks records `FOR KEY SHARE` in sorted order, following merges (4.2), and
+ * reports each one's survivor and whether it is deleted. Unknown IDs, and
+ * merge chains too long to follow, are absent.
+ */
+async function lockRecords(
+  tx: Tx,
+  workspaceId: string,
+  ids: readonly string[],
+): Promise<Map<string, CanonicalRecord>> {
+  const targets = await lockTargets(tx, workspaceId, [...new Set(ids)]);
+  const records = new Map<string, CanonicalRecord>();
+  for (const [id, row] of targets) {
+    if (row) records.set(id, { id: row.id, deleted: row.deleted_at !== null });
+  }
+  return records;
 }
 
 /**
@@ -480,11 +511,11 @@ export async function logInteraction(
     returning id`;
   const id = inserted?.id ?? (await lockExisting(tx, context.workspaceId, input, occurredAt));
   const stored = inserted ? [] : await loadRows(tx, context.workspaceId, id);
-  const added = await addLinks(tx, context.workspaceId, id, stored, {
+  const { rows, inserted: added } = await addLinks(tx, context.workspaceId, id, stored, {
     participants,
     about: input.about,
   });
-  const links = await presentLinks(tx, context.workspaceId, [...stored, ...added], added);
+  const links = await presentLinks(tx, context.workspaceId, rows, added);
   return {
     id,
     created: inserted !== undefined,
@@ -551,11 +582,11 @@ export async function addInteractionLinks(
   const participants = normalizeParticipants(input.participants);
   const row = await loadInteraction(tx, context.workspaceId, id, true);
   const stored = await loadRows(tx, context.workspaceId, id);
-  const added = await addLinks(tx, context.workspaceId, id, stored, {
+  const { rows, inserted: added } = await addLinks(tx, context.workspaceId, id, stored, {
     participants,
     about: input.about,
   });
-  const links = await presentLinks(tx, context.workspaceId, [...stored, ...added], added);
+  const links = await presentLinks(tx, context.workspaceId, rows, added);
   return { ...presentInteraction(row, links.participants, links.about), added: links.added };
 }
 

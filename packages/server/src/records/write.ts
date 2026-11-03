@@ -161,7 +161,7 @@ type TargetRow = {
  * waits for it; READ COMMITTED then sees the merged row, and the value
  * moves to the survivor.
  */
-async function lockTargets(
+export async function lockTargets(
   tx: Tx,
   workspaceId: string,
   ids: readonly string[],

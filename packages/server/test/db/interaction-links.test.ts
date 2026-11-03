@@ -250,6 +250,80 @@ describe('about records (1.3)', () => {
     expect((await log({ about: [b.id] })).about).toEqual([a.id]);
   });
 
+  it('replaces an about link when the record is added as a participant', async () => {
+    const dana = await person();
+    const id = externalId();
+    const first = await log({ externalId: id, about: [dana.id] });
+    const again = await log({ externalId: id, participants: [{ recordId: dana.id }] });
+    expect(again.about).toEqual([]);
+    expect(again.participants.matched.map((p) => p.recordId)).toEqual([dana.id]);
+    expect(
+      await db.owner`
+        select link from interaction_participants where interaction_id = ${first.id}`,
+    ).toEqual([{ link: 'participant' }]);
+  });
+
+  it('waits for a merge in progress and links to its survivor', async () => {
+    const a = await company();
+    const b = await company();
+    const id = externalId();
+    const logged = await log({ externalId: id });
+    // A merge of B into A, held open after it has moved B's links and before it commits.
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let moved = () => {};
+    const holding = new Promise<void>((resolve) => {
+      moved = resolve;
+    });
+    const merge = db.owner.begin(async (t) => {
+      await t`select id from records where id = ${b.id} for update`;
+      await t`update interaction_participants set record_id = ${a.id} where record_id = ${b.id}`;
+      await t`update records set merged_into_id = ${a.id}, deleted_at = now() where id = ${b.id}`;
+      moved();
+      await gate;
+    });
+    await holding;
+    const relog = log({ externalId: id, about: [b.id] });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    release();
+    await merge;
+    expect((await relog).about).toEqual([a.id]);
+    expect(
+      await db.owner`
+        select record_id from interaction_participants where interaction_id = ${logged.id}`,
+    ).toEqual([{ record_id: a.id }]);
+  });
+
+  it('links to the survivor when a merge runs at the same time', async () => {
+    for (let round = 0; round < 8; round++) {
+      const a = await company();
+      const b = await company();
+      const dana = await person();
+      const id = externalId();
+      const logged = await log({ externalId: id, participants: [{ recordId: b.id }] });
+      const [merged, relogged] = await Promise.allSettled([
+        mergeRecord(app, as(USER), a.id, { recordId: b.id }),
+        log({
+          externalId: id,
+          participants: [{ recordId: b.id }, { recordId: dana.id }],
+          about: [b.id],
+        }),
+      ]);
+      expect(merged.status).toBe('fulfilled');
+      expect(relogged.status).toBe('fulfilled');
+      // B's participant row moved to A, nothing points at B, and no link repeats.
+      const rows = await db.owner<{ record_id: string; link: string }[]>`
+        select record_id, link from interaction_participants
+        where interaction_id = ${logged.id} order by position`;
+      expect(rows).toEqual([
+        { record_id: a.id, link: 'participant' },
+        { record_id: dana.id, link: 'participant' },
+      ]);
+    }
+  });
+
   it('keeps one link per record when a merge would repeat it', async () => {
     const a = await company();
     const b = await company();

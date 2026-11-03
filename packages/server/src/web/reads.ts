@@ -1,5 +1,6 @@
 import type { Actor, AssertionView, Provenance, RecordReference } from '@retainer/shared';
 import type { Fragment } from 'postgres';
+import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
 import { notFound } from '../errors.js';
 import { identifiersFor } from '../records/derive.js';
@@ -7,7 +8,6 @@ import { getRecord, type PresentedRecord } from '../records/read.js';
 import { references } from '../records/references.js';
 import { normalizeFieldValue } from '../records/values.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { after, page } from '../db/pagination.js';
 
 export async function relationReferences(
   tx: Tx,

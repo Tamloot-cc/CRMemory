@@ -200,8 +200,12 @@ context packs, searches and interaction queries; only participants are
 attendees. The agent names `about` records explicitly. Retainer does not
 infer them, for example from a participant's company, since that would move
 old meetings when a person changes jobs. A record is linked once per
-interaction: `about` skips a record already linked, and a merge drops the
-`about` link that would repeat another.
+interaction: `about` skips a record already linked, a record added as a
+participant replaces its `about` link, and a merge drops the `about` link
+that would repeat another. Adding links locks every record involved
+`FOR KEY SHARE`, as relation writes do (4.2), so a concurrent merge either
+commits first and the link goes to the survivor, or waits and then moves
+the new link with the rest.
 
 Logging an interaction again with the same `(workspace_id, channel,
 external_id)` returns the existing one when its kind, `occurred_at` instant,

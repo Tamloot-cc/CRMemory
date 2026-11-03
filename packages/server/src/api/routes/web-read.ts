@@ -1,9 +1,9 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { getInteraction, interactionPage } from '../../memory/interactions.js';
 import { getRecord } from '../../records/read.js';
 import { withRead } from '../../records/service.js';
-import { getInteraction, interactionPage } from '../../memory/interactions.js';
 import { assertionById, assertions, enrichedRecord } from '../../web/reads.js';
 import { factsPage, reviewPage } from '../../web/review.js';
 import type { AppEnv } from '../http.js';
