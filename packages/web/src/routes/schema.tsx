@@ -35,6 +35,7 @@ import {
   DiagramKey,
   Empty,
   EntityHeader,
+  IconLabel,
   Input,
   Muted,
   NavItem,
@@ -47,7 +48,7 @@ import {
   PropertyList,
   Row,
   Section,
-  Select,
+  SelectMenu,
   Sheet,
   SplitView,
   Stack,
@@ -611,20 +612,19 @@ function HistoryTab() {
   return (
     <Stack>
       <Row>
-        <Select
-          aria-label="Status"
+        <SelectMenu
+          label="Status"
           value={status ?? ''}
-          onChange={(e) =>
-            void setSearch({ status: e.target.value || undefined, cursor: undefined })
-          }
-        >
-          <option value="">All statuses</option>
-          {SCHEMA_CHANGE_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {STATUS[s].label}
-            </option>
-          ))}
-        </Select>
+          options={[
+            { value: '', label: 'All statuses' },
+            ...SCHEMA_CHANGE_STATUSES.map((s) => ({
+              value: s,
+              label: STATUS[s].label,
+              content: <IconLabel icon={STATUS[s].icon}>{STATUS[s].label}</IconLabel>,
+            })),
+          ]}
+          onChange={(next) => void setSearch({ status: next || undefined, cursor: undefined })}
+        />
         {changes.data ? (
           <Muted>
             {changes.data.total} {changes.data.total === 1 ? 'change' : 'changes'}

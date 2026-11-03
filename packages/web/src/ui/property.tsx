@@ -1,6 +1,16 @@
 import { DismissableLayer } from '@radix-ui/react-dismissable-layer';
-import { type MouseEvent as ReactMouseEvent, type ReactNode, useLayoutEffect, useRef } from 'react';
-import { cn, isPlainClick } from './core.js';
+import {
+  createContext,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+  type RefObject,
+  useContext,
+  useLayoutEffect,
+  useRef,
+} from 'react';
+import { cn, focusFirst, isPlainClick, PANEL } from './core.js';
+import { PanelBody } from './popover.js';
 
 /** A titled group on a record: fields, relations. */
 export function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -71,40 +81,93 @@ export function Property({
   );
 }
 
+export type EditorHandlers = { outside: () => void; cancel: () => void };
+/**
+ * Given by a layer an editor opens in (a grid cell's popover): the editor
+ * keeps what a click outside and Escape mean in this ref, and the layer calls
+ * those instead of closing on its own. The layer may get Escape first, since
+ * it can be the topmost dismissable layer when both mount together.
+ */
+export const EditorHostContext = createContext<RefObject<EditorHandlers | null> | null>(null);
+
 /**
  * The editing state of a `Property`: a small form that focuses its first
- * control, saves on Enter or submit, and cancels on Escape. It is its own
- * dismissable layer, so Escape reaches it before an enclosing sheet or
- * dialog, wherever focus is inside it.
+ * control, saves on Enter in a text box (or ⌘/Ctrl+Enter anywhere in it) and
+ * cancels on Escape. A click outside it calls `onOutside`, by default
+ * cancelling. It is its own dismissable layer, so Escape reaches it before an
+ * enclosing sheet or dialog, wherever focus is inside it.
+ *
+ * `kind="picker"` is for a list to choose from: no padding, so the search box
+ * and options run to the edges. `footer` (at the end) and `footerStart` sit
+ * in a bar under the body.
  */
 export function PropertyEditor({
+  kind = 'form',
   onSave,
   onCancel,
+  onOutside,
+  footer,
+  footerStart,
+  busy = false,
   children,
 }: {
+  kind?: 'form' | 'picker';
   onSave: () => void;
   onCancel: () => void;
+  onOutside?: () => void;
+  footer?: ReactNode;
+  footerStart?: ReactNode;
+  busy?: boolean;
   children: ReactNode;
 }) {
   const form = useRef<HTMLFormElement>(null);
+  const outside = onOutside ?? onCancel;
+  const host = useContext(EditorHostContext);
+  // Keep the host's handlers current; drop them when the editor goes.
   useLayoutEffect(() => {
-    const first = form.current?.querySelector<HTMLElement>(
-      'input:not([type=hidden]):not(:disabled),select,textarea,button',
-    );
-    first?.focus();
-    if (first instanceof HTMLInputElement && first.type === 'text') first.select();
-  }, []);
+    if (host) host.current = { outside, cancel: onCancel };
+  });
+  useLayoutEffect(
+    () => () => {
+      if (host) host.current = null;
+    },
+    [host],
+  );
+  useLayoutEffect(() => focusFirst(form.current), []);
+  function onKeyDown(e: KeyboardEvent<HTMLFormElement>) {
+    if (e.key !== 'Enter' || e.defaultPrevented || e.nativeEvent.isComposing) return;
+    // React bubbles keys from portals (a picker opened inside) through here.
+    if (!(e.target instanceof Node) || !e.currentTarget.contains(e.target)) return;
+    const inTextBox =
+      e.target instanceof HTMLInputElement && !['checkbox', 'radio'].includes(e.target.type);
+    if (e.metaKey || e.ctrlKey || inTextBox) {
+      e.preventDefault();
+      onSave();
+    }
+  }
   return (
-    <DismissableLayer asChild onEscapeKeyDown={onCancel}>
+    <DismissableLayer
+      asChild
+      onEscapeKeyDown={onCancel}
+      onPointerDownOutside={host ? undefined : outside}
+    >
       <form
         ref={form}
+        aria-busy={busy || undefined}
+        onKeyDown={onKeyDown}
         onSubmit={(e) => {
           e.preventDefault();
           onSave();
         }}
-        className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3 shadow-sm ring-2 ring-ring/25"
+        className={cn(PANEL, 'flex min-w-0 flex-col overflow-hidden')}
       >
-        {children}
+        {kind === 'form' ? <PanelBody>{children}</PanelBody> : children}
+        {footer || footerStart ? (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1 border-t border-border px-2 py-1.5">
+            {footerStart ? <div className="mr-auto flex items-center">{footerStart}</div> : null}
+            {footer}
+          </div>
+        ) : null}
       </form>
     </DismissableLayer>
   );

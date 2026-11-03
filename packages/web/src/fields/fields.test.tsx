@@ -2,9 +2,93 @@ import { FIELD_TYPES, type FieldView, validateFieldValue } from '@retainer/share
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { describe, expect, it } from 'vitest';
-import { decimalToMicros, FieldDisplay, FieldInput, microsToDecimal } from './common.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  decimalToMicros,
+  FieldDisplay,
+  FieldInput,
+  FieldPicker,
+  filterValue,
+  microsToDecimal,
+  PICKERS,
+} from './common.js';
 import { fields } from './index.js';
+
+describe('pickers', () => {
+  const stage = {
+    ...f('select'),
+    label: 'Stage',
+    settings: {
+      options: [
+        { value: 'new', label: 'New' },
+        { value: 'ready', label: 'Ready' },
+      ],
+    },
+  };
+  it('gives every type edited from a list a list, not the form fallback', () => {
+    // Relation lists load records through the workspace; its own e2e covers it.
+    const types = (Object.keys(PICKERS) as FieldView['type'][]).filter((t) => t !== 'relation');
+    expect(types.sort()).toEqual(['boolean', 'multi_select', 'select']);
+    for (const type of types) {
+      const { unmount } = render(
+        <FieldPicker field={{ ...stage, type }} value={null} onChange={vi.fn()} />,
+      );
+      expect(screen.getByRole('listbox')).toBeTruthy();
+      unmount();
+    }
+  });
+  it('picks one option as its badge, or clears a nullable field', async () => {
+    const onChange = vi.fn();
+    render(<FieldPicker field={stage} value="new" onChange={onChange} />);
+    expect(screen.getByRole('option', { name: 'New' }).getAttribute('aria-selected')).toBe('true');
+    await userEvent.click(screen.getByRole('option', { name: 'Ready' }));
+    expect(onChange).toHaveBeenLastCalledWith('ready');
+    await userEvent.click(screen.getByRole('option', { name: 'No stage' }));
+    expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+  it('picks the typed match with Enter, not the clearing choice', async () => {
+    const onChange = vi.fn();
+    render(
+      <FieldPicker field={{ ...stage, label: 'Stage area' }} value="new" onChange={onChange} />,
+    );
+    // "No stage area" contains the typed text too; it isn't offered once typing.
+    await userEvent.type(screen.getByRole('combobox', { name: 'Stage area' }), 'a{Enter}');
+    expect(onChange).toHaveBeenLastCalledWith('ready');
+  });
+  it('toggles options of a multi select as a whole new set', async () => {
+    const onChange = vi.fn();
+    render(
+      <FieldPicker
+        field={{ ...stage, type: 'multi_select', label: 'Topics' }}
+        value={['new']}
+        onChange={onChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole('option', { name: 'Ready' }));
+    expect(onChange).toHaveBeenLastCalledWith(['new', 'ready']);
+    await userEvent.click(screen.getByRole('option', { name: 'New' }));
+    expect(onChange).toHaveBeenLastCalledWith([]);
+  });
+  it('answers a boolean with Yes or No', async () => {
+    const onChange = vi.fn();
+    render(
+      <FieldPicker
+        field={{ ...f('boolean'), label: 'Active', isNullable: false }}
+        value={null}
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['Yes', 'No']);
+    await userEvent.click(screen.getByRole('option', { name: 'No' }));
+    expect(onChange).toHaveBeenLastCalledWith(false);
+  });
+  it('filters a select by several options from a list, not JSON', () => {
+    expect(filterValue(stage, 'in', ['new', 'ready'])).toEqual(['new', 'ready']);
+    expect(() => filterValue(stage, 'in', [])).toThrow('Choose at least one option');
+    expect(() => filterValue(stage, 'in', '')).toThrow('Choose at least one option');
+    expect(filterValue(f('text'), 'in', '["a"]')).toEqual(['a']);
+  });
+});
 
 const f = (type: FieldView['type']): FieldView => ({
   type,

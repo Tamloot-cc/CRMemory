@@ -14,7 +14,7 @@ import {
   Panel,
   RecordLink,
   Row,
-  Select,
+  SelectMenu,
   Stack,
   Table,
   Td,
@@ -183,22 +183,25 @@ export function MergeDialog({
                       </Td>
                       <Td>
                         {row.conflict ? (
-                          <Select
-                            aria-label={`Value for ${row.field.label}`}
+                          <SelectMenu
+                            label={`Value for ${row.field.label}`}
+                            size="small"
                             value={choices[row.field.name] ?? 'auto'}
-                            onChange={(e) =>
+                            options={[
+                              {
+                                value: 'auto',
+                                label: row.combined ? 'Combine both' : 'Newest wins',
+                              },
+                              { value: 'keep', label: 'Kept record’s' },
+                              { value: 'merge', label: 'Merged record’s' },
+                            ]}
+                            onChange={(next) =>
                               setChoices((c) => ({
                                 ...c,
-                                [row.field.name]: e.target.value as MergeChoice,
+                                [row.field.name]: next as MergeChoice,
                               }))
                             }
-                          >
-                            <option value="auto">
-                              {row.combined ? 'Combine both' : 'Newest wins'}
-                            </option>
-                            <option value="keep">Kept record’s</option>
-                            <option value="merge">Merged record’s</option>
-                          </Select>
+                          />
                         ) : (
                           <Muted>Keeps the only value</Muted>
                         )}

@@ -9,7 +9,6 @@ import {
   type InputHTMLAttributes,
   lazy,
   type ReactNode,
-  type SelectHTMLAttributes,
   useContext,
 } from 'react';
 import { cn, isPlainClick, NavigationContext, ROW_STATE, type Tone } from './core.js';
@@ -61,18 +60,14 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={
-        props.type === 'checkbox' || props.type === 'radio'
-          ? 'h-4 w-4 shrink-0 accent-primary'
-          : 'h-8 w-full min-w-0 rounded-md border border-input bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring disabled:opacity-50'
+        props.type === 'checkbox'
+          ? props.role === 'switch'
+            ? 'ui-switch'
+            : 'ui-checkbox'
+          : props.type === 'radio'
+            ? 'ui-radio'
+            : 'h-8 w-full min-w-0 rounded-md border border-input bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring disabled:opacity-50'
       }
-    />
-  );
-}
-export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      {...props}
-      className="h-8 max-w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
     />
   );
 }
@@ -84,15 +79,49 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
     />
   );
 }
-export function Stack({ children }: { children: ReactNode }) {
-  return <div className="flex flex-col gap-3">{children}</div>;
+export function Stack({
+  children,
+  gap = 'default',
+}: {
+  children: ReactNode;
+  gap?: 'default' | 'small';
+}) {
+  return <div className={cn('flex flex-col', gap === 'small' ? 'gap-2' : 'gap-3')}>{children}</div>;
 }
-export function Row({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center gap-2">{children}</div>;
-}
-export function Label({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
+/** Items side by side; `nowrap` keeps them on one line, inputs taking the room. */
+export function Row({ children, nowrap = false }: { children: ReactNode; nowrap?: boolean }) {
   return (
-    <label htmlFor={htmlFor} className="flex flex-col gap-1.5 text-sm font-medium">
+    <div className={cn('flex items-center', nowrap ? 'gap-1' : 'flex-wrap gap-2')}>{children}</div>
+  );
+}
+/** Two equal columns, for the parts of one value (first and last name). */
+export function Columns({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-2">{children}</div>;
+}
+/** Holds a short control at a fixed width in a `Row`: `xs` for a code, `sm` for a label. */
+export function Fixed({ size, children }: { size: 'xs' | 'sm'; children: ReactNode }) {
+  return <div className={cn('shrink-0', size === 'xs' ? 'w-14' : 'w-28')}>{children}</div>;
+}
+/** A control under its name. `quiet` for the small parts of one value (city, amount). */
+export function Label({
+  children,
+  htmlFor,
+  quiet = false,
+}: {
+  children: ReactNode;
+  htmlFor?: string;
+  quiet?: boolean;
+}) {
+  return (
+    <label
+      htmlFor={htmlFor}
+      className={cn(
+        'flex min-w-0 flex-col',
+        quiet
+          ? 'gap-1 text-xs font-medium text-muted-foreground [&>*]:text-foreground'
+          : 'gap-1.5 text-sm font-medium',
+      )}
+    >
       {children}
     </label>
   );
@@ -110,8 +139,10 @@ export function CheckLabel({ children }: { children: ReactNode }) {
 export function Truncate({ children }: { children: ReactNode }) {
   return <span className="min-w-0 truncate">{children}</span>;
 }
-export function Muted({ children }: { children: ReactNode }) {
-  return <span className="text-sm text-muted-foreground">{children}</span>;
+export function Muted({ children, small = false }: { children: ReactNode; small?: boolean }) {
+  return (
+    <span className={cn('text-muted-foreground', small ? 'text-xs' : 'text-sm')}>{children}</span>
+  );
 }
 export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: Tone }) {
   return (
@@ -560,12 +591,23 @@ export {
   Timeline,
   TimelineItem,
 } from './layout.js';
+export { Menu, MenuAction, MenuChoice, MenuChoices, MenuSeparator } from './menu.js';
+export {
+  IconLabel,
+  OptionList,
+  type PickerOption,
+  Segmented,
+  SelectMenu,
+  toggleValue,
+} from './picker.js';
 export {
   Form,
-  MenuButton,
-  MenuHeader,
   MenuItem,
+  MenuLabel,
   MenuList,
+  PanelBody,
+  PanelFooter,
+  PanelHeader,
   Popover,
 } from './popover.js';
 export { Property, PropertyEditor, PropertyList, Section } from './property.js';
