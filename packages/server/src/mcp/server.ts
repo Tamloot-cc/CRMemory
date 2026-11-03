@@ -452,7 +452,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'description changes are applied at once. Renames, deletions, removing options and ' +
         'making a field required or unique are only proposed: a person with admin access ' +
         'approves them, and the response says "proposed". Field types cannot be changed; ' +
-        'create a new field instead. Give a short reason. Needs the schema:write scope.',
+        'create a new field instead. Fields are not searchable unless you set isSearchable: ' +
+        'set it on text fields people will look records up by (the label field is always ' +
+        'searchable). Give a short reason. Needs the schema:write scope.',
       inputSchema: schemaChangeRequestSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },
