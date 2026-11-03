@@ -15,6 +15,7 @@ import {
   rangeCondition,
   sortParam,
   toggleHidden,
+  ViewSaves,
   viewColumns,
   weekStartsOn,
 } from './views-state.js';
@@ -127,6 +128,31 @@ describe('a saved view and the address', () => {
     expect(andFilter(undefined, { a: 1 })).toEqual({ a: 1 });
     expect(andFilter({}, { a: 1 })).toEqual({ a: 1 });
     expect(andFilter({ b: 2 }, { a: 1 })).toEqual({ and: [{ b: 2 }, { a: 1 }] });
+  });
+});
+
+describe('saving a view', () => {
+  it("uses a lone save's reply", () => {
+    const saves = new ViewSaves();
+    saves.start();
+    expect(saves.settle(true)).toBe('use');
+  });
+
+  it('reads the view again after overlapping saves, whatever order they finish in', () => {
+    const saves = new ViewSaves();
+    saves.start();
+    saves.start();
+    expect(saves.settle(true)).toBe('wait');
+    expect(saves.settle(true)).toBe('refetch');
+    // The next save on its own is trusted again.
+    saves.start();
+    expect(saves.settle(true)).toBe('use');
+  });
+
+  it('reads the view again after a failed save', () => {
+    const saves = new ViewSaves();
+    saves.start();
+    expect(saves.settle(false)).toBe('refetch');
   });
 });
 

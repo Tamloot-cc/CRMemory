@@ -19,6 +19,7 @@ import {
   resolveColumns,
   setColumnVisible,
   shiftColumn,
+  shownColumnPrefs,
 } from './list-state.js';
 
 const field = (name: string, extra: Partial<FieldView> = {}) =>
@@ -61,6 +62,23 @@ describe('columns', () => {
   it('follows the saved order and drops fields that left the schema', () => {
     const prefs = { order: ['company', 'gone', 'name', 'email', 'company'], widths: {} };
     expect(resolveColumns(object, prefs).map((f) => f.name)).toEqual(['name', 'company', 'email']);
+  });
+
+  it('keeps only what the grid shows of preferences that name removed fields', () => {
+    const prefs = {
+      order: ['company', 'gone', 'email', 'company'],
+      widths: { name: 200, gone: 300 },
+      aggregates: { email: 'countUnique' as const, gone: 'sum' as const, company: 'sum' as const },
+    };
+    expect(shownColumnPrefs(object, prefs)).toEqual({
+      order: ['company', 'email'],
+      widths: { name: 200 },
+      aggregates: { email: 'countUnique' },
+    });
+    expect(shownColumnPrefs(object, undefined)).toEqual({
+      order: ['email', 'company'],
+      widths: {},
+    });
   });
 
   it('migrates the v1 visible-columns list and ignores corrupt storage', () => {

@@ -84,6 +84,30 @@ export const viewColumns = (saved: SavedView) => parseColumnPrefs(saved.columns)
 /** The query key of an object's saved views. */
 export const viewsKey = (workspace: string, object: string) => [workspace, 'views', object];
 
+/**
+ * Overlapping saves of one view can finish in any order, and the server
+ * merges them under a row lock, so no single reply is known to be the final
+ * state. As each save settles this says what to do: wait for the rest, use a
+ * lone save's reply, or read the views again once the last of several (or
+ * after a failure) is done.
+ */
+export class ViewSaves {
+  private count = 0;
+  private overlapped = false;
+  start(): void {
+    if (this.count > 0) this.overlapped = true;
+    this.count++;
+  }
+  settle(ok: boolean): 'wait' | 'use' | 'refetch' {
+    this.count--;
+    if (!ok) this.overlapped = true;
+    if (this.count > 0) return 'wait';
+    const next = this.overlapped ? 'refetch' : 'use';
+    this.overlapped = false;
+    return next;
+  }
+}
+
 export const KIND_LABELS: Record<SavedViewKind, string> = {
   table: 'Table',
   board: 'Board',

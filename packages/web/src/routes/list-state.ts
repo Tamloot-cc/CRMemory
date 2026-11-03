@@ -7,7 +7,7 @@ import type {
   ObjectView,
   QueryInput,
 } from '@retainer/shared';
-import { AGGREGATE_OPS, SORTABLE_TYPES } from '@retainer/shared';
+import { AGGREGATE_OPS, aggregateOps, SORTABLE_TYPES } from '@retainer/shared';
 import { dateText, microsToDecimal, moneyText } from '../fields/common.js';
 import { clampWidth } from '../ui/data-grid.js';
 
@@ -97,6 +97,28 @@ export function resolveColumns(object: ObjectView, prefs: ColumnPrefs | undefine
     .map((n) => byName.get(n))
     .filter((f): f is FieldView => !!f);
   return label ? [label, ...rest] : rest;
+}
+
+/**
+ * Preferences as the grid shows them: the resolved column order, and widths
+ * and calculations only for fields the object has now (with ops they still
+ * support). Stored preferences can name fields that were renamed or removed.
+ */
+export function shownColumnPrefs(object: ObjectView, prefs: ColumnPrefs | undefined): ColumnPrefs {
+  const byName = new Map(object.fields.map((f) => [f.name, f]));
+  const order = resolveColumns(object, prefs)
+    .filter((f) => f.name !== object.labelField)
+    .map((f) => f.name);
+  const widths = Object.fromEntries(
+    Object.entries(prefs?.widths ?? {}).filter(([name]) => byName.has(name)),
+  );
+  const aggregates = Object.fromEntries(
+    Object.entries(prefs?.aggregates ?? {}).filter(([name, op]) => {
+      const field = byName.get(name);
+      return field && aggregateOps(field).includes(op);
+    }),
+  );
+  return { order, widths, ...(Object.keys(aggregates).length ? { aggregates } : {}) };
 }
 
 export function setColumnVisible(order: string[], name: string, visible: boolean): string[] {

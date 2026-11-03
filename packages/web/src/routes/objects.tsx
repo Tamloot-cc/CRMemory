@@ -94,6 +94,7 @@ import {
   saveColumnPrefs,
   setColumnVisible,
   shiftColumn,
+  shownColumnPrefs,
 } from './list-state.js';
 import { MergeDialog } from './merge.js';
 import { BulkDeleteDialog } from './record-actions.js';
@@ -106,6 +107,7 @@ import {
   filterParam,
   hasChanges,
   sortParam,
+  ViewSaves,
   viewColumns,
   viewsKey,
 } from './views-state.js';
@@ -330,27 +332,32 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   ));
   const openRow = useCallback((id: string) => void setSearch({ record: id }), [setSearch]);
 
-  // Changes to a saved view show at once; the latest server copy replaces them.
-  const latestChange = useRef(0);
+  // Changes to a saved view show at once; the server's copy replaces them
+  // once it is known to be the final one (`ViewSaves`).
+  const saves = useRef(new ViewSaves());
   async function changeView(change: UpdateViewInput): Promise<boolean> {
     if (!saved) return false;
-    const id = saved.id,
-      n = ++latestChange.current;
+    const id = saved.id;
     const replace = (update: (v: SavedView) => SavedView) =>
       client.setQueryData<{ views: SavedView[] }>(
         viewsKey(workspace, name),
         (old) => old && { views: old.views.map((v) => (v.id === id ? update(v) : v)) },
       );
     replace((v) => applyChange(v, change));
+    saves.current.start();
+    let updated: SavedView | undefined;
     try {
-      const updated = await api.updateView(id, change);
-      if (n === latestChange.current) replace(() => updated);
-      return true;
+      updated = await api.updateView(id, change);
     } catch (e) {
       setError(`The view could not be saved: ${(e as Error).message}`);
-      void client.invalidateQueries({ queryKey: viewsKey(workspace, name) });
-      return false;
     }
+    const next = saves.current.settle(!!updated);
+    if (next === 'use' && updated) {
+      const reply = updated;
+      replace(() => reply);
+    } else if (next === 'refetch')
+      void client.invalidateQueries({ queryKey: viewsKey(workspace, name) });
+    return !!updated;
   }
 
   function savePrefs(next: ColumnPrefs) {
@@ -657,7 +664,8 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           base={{
             filter: view.query.filter,
             sort: view.query.sort,
-            columns: prefs ?? { order, widths: {} },
+            // As the grid shows them: stored ones can name fields that are gone.
+            columns: shownColumnPrefs(object, prefs),
           }}
           onClose={() => setViewDialog(null)}
           onSaved={(next) => {
