@@ -15,6 +15,7 @@ import { recordRoutes } from './routes/records.js';
 import { retrievalRoutes } from './routes/retrieval.js';
 import { schemaRoutes } from './routes/schema.js';
 import { templateRoutes } from './routes/templates.js';
+import { viewRoutes } from './routes/views.js';
 import { webReadRoutes } from './routes/web-read.js';
 
 export type AppDeps = {
@@ -58,6 +59,7 @@ export function createApp(deps: AppDeps) {
   recordRoutes(v1, deps.sql);
   memoryRoutes(v1, deps.sql);
   retrievalRoutes(v1, deps.sql);
+  viewRoutes(v1, deps.sql);
   app.route('/v1', v1);
 
   mcpRoute(app, deps.sql, publicOrigin);

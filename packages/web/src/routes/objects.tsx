@@ -5,14 +5,17 @@ import type {
   FieldView,
   ObjectView,
   QueryInput,
+  SavedView,
+  UpdateViewInput,
 } from '@retainer/shared';
 import { aggregateOps } from '@retainer/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
 import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  BookmarkPlus,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -21,10 +24,11 @@ import {
   Combine,
   ListFilter,
   Plus,
+  Save,
   Trash2,
   X,
 } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { filterValue, operatorsFor, PICKERS } from '../fields/common.js';
 import { fields } from '../fields/index.js';
@@ -61,6 +65,8 @@ import {
   SelectMenu,
   Toolbar,
 } from '../ui/index.js';
+import { BoardView } from './board-view.js';
+import { CalendarView } from './calendar-view.js';
 import { CreateRecordDialog } from './create-record.js';
 import {
   addClause,
@@ -92,7 +98,17 @@ import {
 import { MergeDialog } from './merge.js';
 import { BulkDeleteDialog } from './record-actions.js';
 import { InlineEditor, RecordSheet } from './record-view.js';
-import { QueryError, recordTitle, useView } from './state.js';
+import { QueryError, recordTitle, useView, type ViewSearch } from './state.js';
+import { DeleteViewDialog, ViewDialog, ViewOptions, ViewSwitcher } from './view-bar.js';
+import {
+  changesToSave,
+  effectiveSearch,
+  filterParam,
+  hasChanges,
+  sortParam,
+  viewColumns,
+  viewsKey,
+} from './views-state.js';
 import { isWritable } from './write-model.js';
 
 const PAGE_SIZE = 50;
@@ -117,15 +133,53 @@ export function ObjectPage() {
 
 function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const { session } = useWorkspace();
+  const client = useQueryClient();
   const { search, setSearch } = useView();
   const workspace = session.workspace.id;
   const [error, setError] = useState(''),
     [creating, setCreating] = useState(false),
-    [bulk, setBulk] = useState<'merge' | 'delete' | null>(null);
+    [bulk, setBulk] = useState<'merge' | 'delete' | null>(null),
+    [viewDialog, setViewDialog] = useState<'new' | 'edit' | 'delete' | null>(null);
   const writable = canMutate(session);
-  const [prefs, setPrefs] = useState(() => loadColumnPrefs(() => localStorage, workspace, name));
+  const [localPrefs, setLocalPrefs] = useState(() =>
+    loadColumnPrefs(() => localStorage, workspace, name),
+  );
+  // Column changes to a saved view this key cannot save, kept for the visit.
+  const [unsaved, setUnsaved] = useState<Record<string, ColumnPrefs>>({});
 
-  const view = parseListSearch(search);
+  // Saved views (ARCHITECTURE.md 1.4): `?view=` picks one; without it, all records.
+  const views = useQuery({
+    queryKey: viewsKey(workspace, name),
+    queryFn: ({ signal }) => api.views(name, signal),
+  });
+  const saved = search.view ? views.data?.views.find((v) => v.id === search.view) : undefined;
+  const missingView = !!search.view && views.isSuccess && !saved;
+  const kind = saved?.kind ?? 'table';
+  const selectView = useCallback(
+    (id: string | undefined, options: { replace?: boolean } = {}) => {
+      rememberView(workspace, name, id);
+      void setSearch(
+        { view: id, filter: undefined, sort: undefined, cursor: undefined, month: undefined },
+        options,
+      );
+    },
+    [workspace, name, setSearch],
+  );
+  const opening = useLastView(
+    workspace,
+    name,
+    search,
+    // If views fail to load, all records it is.
+    views.data?.views ?? (views.isError ? [] : undefined),
+    selectView,
+  );
+  // Until the view is known, nothing loads, so the wrong records never flash.
+  const resolving = opening || (!!search.view && views.isPending);
+
+  // The URL's filter and sort are unsaved changes on top of the view.
+  const effective = effectiveSearch(saved, search);
+  const changed = hasChanges(saved, search);
+  const view = parseListSearch(effective);
   const { clauses, custom, sort } = view;
   const input: QueryInput = {
     limit: PAGE_SIZE,
@@ -136,11 +190,14 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const query = useQuery({
     queryKey: [workspace, 'records', name, input],
     queryFn: ({ signal }) => api.queryRecords(name, input, signal),
-    enabled: !view.error,
+    enabled: !view.error && !resolving && kind === 'table',
   });
+  // Built once per copy of the view, so the grid's memos hold across renders.
+  const viewPrefs = useMemo(() => saved && viewColumns(saved), [saved]);
+  const prefs = saved ? (unsaved[saved.id] ?? viewPrefs) : localPrefs;
 
   // Cursors only go forward; remember each page's predecessor for "Previous".
-  const viewKey = `${search.filter ?? ''}|${search.sort ?? ''}`;
+  const viewKey = `${search.view ?? ''}|${effective.filter ?? ''}|${effective.sort ?? ''}`;
   const [trail, setTrail] = useState<{ key: string; pages: PageTrail }>({
     key: viewKey,
     pages: {},
@@ -163,7 +220,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const totals = useQuery({
     queryKey: [workspace, 'aggregate', name, aggregateInput],
     queryFn: ({ signal }) => api.aggregate(name, aggregateInput, signal),
-    enabled: !view.error,
+    enabled: !view.error && !resolving && kind === 'table',
     placeholderData: (previous) => previous,
   });
 
@@ -273,8 +330,37 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   ));
   const openRow = useCallback((id: string) => void setSearch({ record: id }), [setSearch]);
 
+  // Changes to a saved view show at once; the latest server copy replaces them.
+  const latestChange = useRef(0);
+  async function changeView(change: UpdateViewInput): Promise<boolean> {
+    if (!saved) return false;
+    const id = saved.id,
+      n = ++latestChange.current;
+    const replace = (update: (v: SavedView) => SavedView) =>
+      client.setQueryData<{ views: SavedView[] }>(
+        viewsKey(workspace, name),
+        (old) => old && { views: old.views.map((v) => (v.id === id ? update(v) : v)) },
+      );
+    replace((v) => applyChange(v, change));
+    try {
+      const updated = await api.updateView(id, change);
+      if (n === latestChange.current) replace(() => updated);
+      return true;
+    } catch (e) {
+      setError(`The view could not be saved: ${(e as Error).message}`);
+      void client.invalidateQueries({ queryKey: viewsKey(workspace, name) });
+      return false;
+    }
+  }
+
   function savePrefs(next: ColumnPrefs) {
-    setPrefs(next);
+    if (saved) {
+      // A view's columns are part of the view; a key that can't save keeps them for the visit.
+      if (!writable) return setUnsaved((u) => ({ ...u, [saved.id]: next }));
+      void changeView({ columns: next });
+      return;
+    }
+    setLocalPrefs(next);
     if (!saveColumnPrefs(() => localStorage, workspace, name, next))
       setError('Column preferences could not be saved in this browser');
   }
@@ -283,7 +369,15 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
     savePrefs({ order, widths: {}, ...prefs, ...patch });
   const saveOrder = (next: string[]) => patchPrefs({ order: next });
   const setFilter = (next: FilterParts | undefined) =>
-    void setSearch({ filter: next && encodeFilter(next), cursor: undefined });
+    void setSearch({ filter: filterParam(next && encodeFilter(next), saved), cursor: undefined });
+  const setSort = (next: string | undefined) =>
+    void setSearch({ sort: sortParam(next, saved), cursor: undefined });
+  const resetChanges = () =>
+    void setSearch({ filter: undefined, sort: undefined, cursor: undefined });
+  async function saveChanges() {
+    // Unsaved changes stay in the address until the view has them.
+    if (saved && (await changeView(changesToSave(saved, search)))) resetChanges();
+  }
   const nextCursor = query.data?.nextCursor;
   const previous = search.cursor ? pages[search.cursor] : undefined;
 
@@ -294,13 +388,16 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       title={object.labelPlural}
       actions={
         <>
-          <ColumnsMenu
-            object={object}
-            columns={columns}
-            order={order}
-            onChange={saveOrder}
-            onReset={() => savePrefs({ order: defaultColumnOrder(object), widths: {} })}
-          />
+          {kind !== 'calendar' ? (
+            <ColumnsMenu
+              title={kind === 'board' ? 'Card fields' : 'Columns'}
+              object={object}
+              columns={columns}
+              order={order}
+              onChange={saveOrder}
+              onReset={() => savePrefs({ order: defaultColumnOrder(object), widths: {} })}
+            />
+          ) : null}
           {writable ? (
             <Button variant="primary" size="small" onClick={() => setCreating(true)}>
               <Plus size={14} />
@@ -310,7 +407,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
         </>
       }
     >
-      {selectedIds.length ? (
+      {selectedIds.length && kind === 'table' ? (
         <Toolbar
           end={
             <Button variant="ghost" size="small" onClick={() => selectRows([])}>
@@ -333,13 +430,46 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       ) : (
         <Toolbar
           end={
-            <SortMenu
-              object={object}
-              sort={sort}
-              onChange={(next) => void setSearch({ sort: encodeSort(next), cursor: undefined })}
-            />
+            <>
+              {changed ? (
+                <>
+                  <Button variant="ghost" size="small" onClick={resetChanges}>
+                    Reset
+                  </Button>
+                  {writable && !view.error ? (
+                    <Button size="small" onClick={() => void saveChanges()}>
+                      <Save size={14} />
+                      Save view
+                    </Button>
+                  ) : null}
+                </>
+              ) : !saved && writable && (effective.filter || effective.sort) ? (
+                <Button variant="ghost" size="small" onClick={() => setViewDialog('new')}>
+                  <BookmarkPlus size={14} />
+                  Save as view…
+                </Button>
+              ) : null}
+              {saved && saved.kind !== 'table' && writable ? (
+                <ViewOptions object={object} view={saved} onChange={(c) => void changeView(c)} />
+              ) : null}
+              <SortMenu
+                object={object}
+                sort={sort}
+                onChange={(next) => setSort(encodeSort(next))}
+              />
+            </>
           }
         >
+          <ViewSwitcher
+            object={object}
+            views={views.data?.views ?? []}
+            current={saved}
+            writable={writable}
+            onSelect={(id) => selectView(id)}
+            onNew={() => setViewDialog('new')}
+            onEdit={() => setViewDialog('edit')}
+            onDelete={() => setViewDialog('delete')}
+          />
           {clauses.map((c, i) => (
             <FilterChip
               key={`${c.field}:${c.operator}:${JSON.stringify(c.value)}`}
@@ -376,15 +506,57 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           ) : null}
         </Toolbar>
       )}
-      {error || view.error || query.error ? (
+      {error || view.error || query.error || missingView || saved?.issues.length ? (
         <Inset>
-          {error || view.error ? <Notice error>{error || view.error}</Notice> : null}
+          {error || view.error ? (
+            <Notice error onDismiss={error ? () => setError('') : undefined}>
+              {error || view.error}
+            </Notice>
+          ) : null}
+          {missingView ? (
+            <Notice onDismiss={() => selectView(undefined, { replace: true })}>
+              This view was deleted, or only the person who made it can see it. Showing all{' '}
+              {object.labelPlural.toLowerCase()}.
+            </Notice>
+          ) : null}
+          {saved?.issues.length ? (
+            <Notice>{saved.issues.join('. ')}. Save the view to keep it this way.</Notice>
+          ) : null}
           {query.error ? (
             <QueryError error={query.error} retry={() => void query.refetch()} />
           ) : null}
         </Inset>
       ) : null}
-      {query.isPending && !view.error ? (
+      {resolving ? (
+        <Inset>
+          <Notice>Loading view…</Notice>
+        </Inset>
+      ) : saved?.kind === 'board' && !view.error ? (
+        <BoardView
+          object={object}
+          view={saved}
+          filter={view.query.filter}
+          sort={view.query.sort}
+          order={prefs?.order}
+          writable={writable}
+          selected={search.record}
+          onOpen={openRow}
+          onChangeView={(c) => void changeView(c)}
+        />
+      ) : saved?.kind === 'calendar' && !view.error ? (
+        <CalendarView
+          object={object}
+          view={saved}
+          filter={view.query.filter}
+          sort={view.query.sort}
+          month={search.month}
+          writable={writable}
+          selected={search.record}
+          onOpen={openRow}
+          onMonth={(month) => void setSearch({ month })}
+          onChangeView={(c) => void changeView(c)}
+        />
+      ) : kind !== 'table' ? null : query.isPending && !view.error ? (
         <Inset>
           <Notice>Loading records…</Notice>
         </Inset>
@@ -393,7 +565,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           label={object.labelPlural}
           columns={gridColumns}
           sort={sort ? { column: sort.field, direction: sort.direction } : undefined}
-          onSort={(column) => void setSearch({ sort: nextSort(sort, column), cursor: undefined })}
+          onSort={(column) => setSort(nextSort(sort, column))}
           onResize={(column, width) =>
             patchPrefs({ widths: { ...prefs?.widths, [column]: width } })
           }
@@ -409,14 +581,14 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           <Empty
             title="No records found"
             description={
-              search.filter
+              effective.filter
                 ? 'No records match these filters.'
                 : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
             }
           />
         </Inset>
       ) : null}
-      {query.data ? (
+      {query.data && kind === 'table' ? (
         <GridFooter
           end={
             <>
@@ -478,11 +650,87 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           }}
         />
       ) : null}
+      {viewDialog === 'new' || (viewDialog === 'edit' && saved) ? (
+        <ViewDialog
+          object={object}
+          view={viewDialog === 'edit' ? saved : undefined}
+          base={{
+            filter: view.query.filter,
+            sort: view.query.sort,
+            columns: prefs ?? { order, widths: {} },
+          }}
+          onClose={() => setViewDialog(null)}
+          onSaved={(next) => {
+            setViewDialog(null);
+            if (next.id !== saved?.id) selectView(next.id);
+          }}
+        />
+      ) : null}
+      {viewDialog === 'delete' && saved ? (
+        <DeleteViewDialog
+          object={object}
+          view={saved}
+          onClose={() => setViewDialog(null)}
+          onDeleted={() => {
+            setViewDialog(null);
+            selectView(undefined, { replace: true });
+          }}
+        />
+      ) : null}
       {search.record ? (
         <RecordSheet id={search.record} onClose={() => void setSearch({ record: undefined })} />
       ) : null}
     </Page>
   );
+}
+
+/** A view change as it will read back, shown before the server answers. */
+function applyChange(view: SavedView, change: UpdateViewInput): SavedView {
+  const next = { ...view } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(change))
+    if (value !== undefined) next[key] = key === 'hiddenGroups' ? (value ?? []) : value;
+  return next as SavedView;
+}
+
+/** Remembers the view last shown for an object; `''` for all records. */
+const lastViewKey = (workspace: string, object: string) =>
+  `retainer:view:v1:${workspace}:${object}`;
+function rememberView(workspace: string, object: string, id: string | undefined) {
+  try {
+    localStorage.setItem(lastViewKey(workspace, object), id ?? '');
+  } catch {
+    /* Not remembering is fine. */
+  }
+}
+
+/**
+ * Opening an object without `?view=` (from the sidebar, say) shows the view
+ * last shown here, if it still exists. Only once per visit, and never over
+ * an address that has its own filter or sort.
+ */
+function useLastView(
+  workspace: string,
+  object: string,
+  search: ViewSearch,
+  views: SavedView[] | undefined,
+  select: (id: string | undefined, options: { replace?: boolean }) => void,
+): boolean {
+  const [last] = useState(() => {
+    if (search.view || search.filter || search.sort) return '';
+    try {
+      return localStorage.getItem(lastViewKey(workspace, object)) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const [done, setDone] = useState(!last);
+  useEffect(() => {
+    if (done || !views) return;
+    setDone(true);
+    if (!search.view && views.some((v) => v.id === last)) select(last, { replace: true });
+  }, [done, views, last, search.view, select]);
+  // True until it knows whether to switch, so all records don't flash first.
+  return !done;
 }
 
 /** A column's footer: what it computes over the whole view, chosen from a menu. */
@@ -694,12 +942,15 @@ function FilterMenu({
 
 /** `columns` is what the grid shows, label first; `order` is the rest by name. */
 function ColumnsMenu({
+  title,
   object,
   columns,
   order,
   onChange,
   onReset,
 }: {
+  /** "Columns" for a table, "Card fields" for a board. */
+  title: string;
   object: ObjectView;
   columns: FieldView[];
   order: string[];
@@ -713,17 +964,17 @@ function ColumnsMenu({
   );
   return (
     <Popover
-      label="Visible columns"
+      label={title === 'Columns' ? 'Visible columns' : title}
       align="end"
       trigger={
         <Button size="small">
           <Columns3 size={14} />
-          Columns
+          {title}
         </Button>
       }
     >
       <PanelHeader
-        title="Columns"
+        title={title}
         action={
           <Button variant="ghost" size="small" onClick={onReset}>
             Reset

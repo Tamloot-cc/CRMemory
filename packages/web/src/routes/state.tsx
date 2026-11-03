@@ -10,6 +10,10 @@ export type ViewSearch = {
   assertion?: string;
   /** A record open in the side sheet over an object list. */
   record?: string;
+  /** Object list: the saved view shown; absent for all records. */
+  view?: string;
+  /** Calendar view: the month shown, `yyyy-MM`. */
+  month?: string;
   /** Schema page: the selected object (singular API name). */
   object?: string;
   /** Schema page: the field open in the side sheet. */
@@ -37,9 +41,10 @@ export function useView() {
   const search = useSearch({ strict: false }) as ViewSearch;
   const navigate = useNavigate();
   // Stable, so it can be a dependency of memoized callbacks.
+  // `replace` changes the address without a new history entry.
   const setSearch = useCallback(
-    (change: Partial<ViewSearch>) =>
-      navigate({ search: (prev) => ({ ...prev, ...change }) as never }),
+    (change: Partial<ViewSearch>, options: { replace?: boolean } = {}) =>
+      navigate({ search: (prev) => ({ ...prev, ...change }) as never, ...options }),
     [navigate],
   );
   return { search, setSearch };

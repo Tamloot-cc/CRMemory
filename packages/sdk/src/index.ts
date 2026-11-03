@@ -6,6 +6,7 @@ import type {
   BulkDeleteImpact,
   ContextInput,
   ContextPack,
+  CreateViewInput,
   DecisionResult,
   DeleteImpact,
   ForgetResult,
@@ -24,6 +25,7 @@ import type {
   RetractInteractionResult,
   ReviewCollection,
   ReviewQueue,
+  SavedView,
   SchemaChange,
   SchemaChangeResult,
   SchemaDescription,
@@ -32,6 +34,7 @@ import type {
   SearchResult,
   Session,
   TemplateView,
+  UpdateViewInput,
   WriteResponse,
 } from '@retainer/shared';
 export type RetainerClientOptions = {
@@ -224,6 +227,32 @@ export class RetainerClient {
       `/v1/records/${encodeURIComponent(id)}`,
       { method: 'DELETE' },
     );
+  }
+  /** The object's saved views the caller can see, in their saved order. */
+  views(object: string, signal?: AbortSignal) {
+    return this.get<{ views: SavedView[] }>(
+      `/v1/objects/${encodeURIComponent(object)}/views`,
+      {},
+      signal,
+    );
+  }
+  view(id: string, signal?: AbortSignal) {
+    return this.get<SavedView>(`/v1/views/${encodeURIComponent(id)}`, {}, signal);
+  }
+  createView(object: string, input: CreateViewInput) {
+    return this.post<SavedView>(`/v1/objects/${encodeURIComponent(object)}/views`, input);
+  }
+  /** Changes only the keys given; `null` clears a setting. */
+  updateView(id: string, input: UpdateViewInput) {
+    return this.request<SavedView>(`/v1/views/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
+  }
+  deleteView(id: string) {
+    return this.request<{ id: string; deleted: true }>(`/v1/views/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
   }
   /** Merges `input.recordId` into `id`, which survives. Retrying with the same key is safe. */
   mergeRecords(id: string, input: MergeInput, idempotencyKey?: string) {

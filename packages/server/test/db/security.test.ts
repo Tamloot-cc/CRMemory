@@ -22,6 +22,7 @@ const TENANT_TABLES = [
   'idempotency_keys',
   'suppressions',
   'deletion_audit_log',
+  'views',
 ];
 
 let app: Sql;

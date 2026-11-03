@@ -105,11 +105,18 @@ export function DataGrid({
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   }
+  // Arrow keys resize a step per press, and save once the key is let go,
+  // as a pointer does: holding a key repeats without a save per step.
   function keyResize(e: ReactKeyboardEvent, column: GridColumn) {
     const by = e.key === 'ArrowLeft' ? -STEP : e.key === 'ArrowRight' ? STEP : 0;
     if (!by) return;
     e.preventDefault();
-    onResize?.(column.id, clampWidth(column.width + by));
+    setDraft({ id: column.id, width: clampWidth(widthOf(column) + by) });
+  }
+  function endKeyResize(column: GridColumn) {
+    if (resizing.current || draft?.id !== column.id) return;
+    setDraft(null);
+    if (draft.width !== column.width) onResize?.(column.id, draft.width);
   }
   return (
     <section
@@ -230,6 +237,8 @@ export function DataGrid({
                         draggable={false}
                         onPointerDown={(e) => startResize(e, c)}
                         onKeyDown={(e) => keyResize(e, c)}
+                        onKeyUp={() => endKeyResize(c)}
+                        onBlur={() => endKeyResize(c)}
                         onDragStart={(e) => e.preventDefault()}
                         className={cn(
                           'absolute -right-px top-0 z-10 h-full w-1.5 cursor-col-resize touch-none hover:bg-primary/50 focus-visible:bg-primary focus-visible:outline-none',

@@ -118,6 +118,8 @@ function validateSearch(raw: Record<string, unknown>): ViewSearch {
     'sort',
     'assertion',
     'record',
+    'view',
+    'month',
     'object',
     'field',
     'status',

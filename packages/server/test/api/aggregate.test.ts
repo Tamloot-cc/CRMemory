@@ -148,6 +148,44 @@ describe('POST /v1/objects/:object/aggregate', () => {
     expect(badFilter.body.error.code).toBe('invalid_filter');
   });
 
+  it('splits the total and aggregates by a select field with groupBy', async () => {
+    const sum = { field: 'amount', op: 'sum' } as const;
+    const res = await aggregate('deal', {
+      groupBy: 'stage',
+      aggregates: [sum],
+      filter: { name: { in: ['Renewal', 'Upsell', 'Pilot', 'Unsized'] } },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(4);
+    const byValue = Object.fromEntries(
+      res.body.groups.map((g: { value: string; total: number; values: { value: unknown }[] }) => [
+        g.value,
+        { total: g.total, sum: g.values[0]?.value },
+      ]),
+    );
+    expect(byValue).toEqual({
+      won: { total: 2, sum: { amountMicros: 400_000_000, currency: 'USD' } },
+      lead: { total: 2, sum: { amountMicros: 50_000_000, currency: 'USD' } },
+    });
+
+    // Records without a value are their own group, `null`.
+    await create('deal', { name: 'Unstaged' });
+    const withEmpty = await aggregate('deal', { groupBy: 'stage', filter: { name: 'Unstaged' } });
+    expect(withEmpty.body).toEqual({
+      total: 1,
+      values: [],
+      groups: [{ value: null, total: 1, values: [] }],
+    });
+
+    // The filter applies to every group, and no match still has a total.
+    const none = await aggregate('deal', { groupBy: 'stage', filter: { name: 'Nothing' } });
+    expect(none.body).toEqual({ total: 0, values: [], groups: [] });
+
+    const bad = await aggregate('deal', { groupBy: 'name' });
+    expect(bad.status).toBe(422);
+    expect(bad.body.error).toMatchObject({ code: 'invalid_aggregate', details: { field: 'name' } });
+  });
+
   it('sees only its own workspace', async () => {
     const res = await aggregate('company', {}, otherKey);
     expect(res.body.total).toBe(0);

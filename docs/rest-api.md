@@ -31,16 +31,16 @@ Errors are JSON with a stable `code`, a readable `message`, and sometimes
 { "error": { "code": "stale_write", "message": "the record changed since expectedUpdatedAt", "details": { … } } }
 ```
 
-| Status | Typical codes and meaning                                                                                                                                                          |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `invalid_request`: the body or a filter does not have the expected shape                                                                                                           |
-| 401    | Missing, unknown or revoked key                                                                                                                                                    |
-| 403    | The key lacks the scope, or the action needs a `user` actor                                                                                                                        |
-| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                                                                                                  |
-| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted                                                                       |
-| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                                                                                        |
-| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `invalid_aggregate` (`details.field`, `details.allowed`); `idempotency_key_reused` |
-| 503    | The database is unreachable, or `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`                                                                                      |
+| Status | Typical codes and meaning                                                                                                                                                                          |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `invalid_request`: the body or a filter does not have the expected shape                                                                                                                           |
+| 401    | Missing, unknown or revoked key                                                                                                                                                                    |
+| 403    | The key lacks the scope, or the action needs a `user` actor                                                                                                                                        |
+| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                                                                                                                  |
+| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted                                                                                       |
+| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                                                                                                        |
+| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `invalid_aggregate` (`details.field`, `details.allowed`); `invalid_view`; `idempotency_key_reused` |
+| 503    | The database is unreachable, or `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`                                                                                                      |
 
 `unique_conflict` and `suppressed` also list the field in `details.errors`,
 in the same shape as `invalid_values`, so a client can show every per-field
@@ -83,6 +83,8 @@ or summary is a 409 `interaction_conflict`.
 | `POST /v1/objects/:object/upsert`                 | `write`          | Update or create a record found by `id` or `match`, with `ifMissing` |
 | `POST /v1/objects/:object/query`                  | `read`           | Filter, sort and page records of one object                          |
 | `POST /v1/objects/:object/aggregate`              | `read`           | Count, and per-field totals over, the records a filter matches       |
+| `GET` · `POST /v1/objects/:object/views`          | `read` · `write` | List the saved views the caller can see, or save one                 |
+| `GET` · `PATCH` · `DELETE /v1/views/:id`          | `read` · `write` | Read, change or delete a saved view                                  |
 | `GET /v1/records/:id`                             | `read`           | One record; `?include=provenance,relationReferences`                 |
 | `PATCH /v1/records/:id`                           | `write`          | Update fields; optional `source` and `expectedUpdatedAt`             |
 | `GET /v1/records/:id/delete-impact`               | `read`           | What a delete would take with it through cascades, counted by object |
@@ -121,6 +123,36 @@ operations are `countEmpty`, `countNotEmpty`, `percentEmpty`,
 `aggregateOps(field)` in `@retainer/shared` says which a field supports.
 Money totals are `{ amountMicros, currency }`, or `null` with
 `"mixedCurrencies": true` when the matching records use several currencies.
+With `"groupBy": "stage"` (a filterable single-select field) it also returns
+`groups: [{ "value", "total", "values" }]`, one per value the matching
+records hold, with `null` for records that have none.
+
+A saved view is a named filter, sort and column set for one object, shown
+as a `table`, a `board` (needs `groupBy`, a single-select field) or a
+`calendar` (needs `dateField`, a date or date-time field):
+
+```json
+{
+  "name": "Pipeline",
+  "kind": "board",
+  "groupBy": "stage",
+  "filter": { "amount": { "gte": 10000000000 } },
+  "sort": [{ "field": "closeDate", "direction": "asc" }],
+  "columns": { "order": ["name", "amount"], "aggregates": { "amount": "sum" } },
+  "hiddenGroups": ["lost"],
+  "groupAggregate": { "field": "amount", "op": "sum" },
+  "visibility": "workspace"
+}
+```
+
+Fields are named as in the schema; the filter and sort are checked like a
+query's, and a bad one fails with 422 `invalid_filter` or `invalid_view`.
+`PATCH` changes only the keys sent, and `null` clears one. A `private` view
+is visible only to the key's actor that created it (others get 404), and
+only that actor can change `visibility` (403 otherwise). A view follows a
+renamed field; a removed field is dropped from it on read and named in the
+view's `issues`. Saved views are display settings: they never change
+records, and moving a board card is a record `PATCH`.
 
 `POST /v1/interactions/query` reads the interaction log, which is not a
 record object. Its `filter` takes `kind` and `channel` (one value or a

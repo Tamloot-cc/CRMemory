@@ -457,6 +457,8 @@ export type AggregateInput = {
   search?: string;
   filter?: Record<string, unknown>;
   aggregates?: { field: string; op: AggregateOp }[];
+  /** A filterable `select` field: also compute the total and aggregates per option. */
+  groupBy?: string;
 };
 export type AggregateValue = {
   field: string;
@@ -470,7 +472,90 @@ export type AggregateValue = {
   /** Money values in several currencies are not added up. */
   mixedCurrencies?: true;
 };
-export type AggregateResult = { total: number; values: AggregateValue[] };
+/** One option's share of a grouped aggregate; `value` is null for records with no value. */
+export type AggregateGroup = { value: string | null; total: number; values: AggregateValue[] };
+export type AggregateResult = {
+  total: number;
+  values: AggregateValue[];
+  /** With `groupBy`: every value that at least one matching record has. */
+  groups?: AggregateGroup[];
+};
+
+// ---------------------------------------------------------------------------
+// Saved views (ARCHITECTURE.md 1.4): a table, board or calendar over one
+// object. Display settings only; fields are named as in the schema.
+// ---------------------------------------------------------------------------
+
+export const SAVED_VIEW_KINDS = ['table', 'board', 'calendar'] as const;
+export type SavedViewKind = (typeof SAVED_VIEW_KINDS)[number];
+export const SAVED_VIEW_VISIBILITIES = ['workspace', 'private'] as const;
+export type SavedViewVisibility = (typeof SAVED_VIEW_VISIBILITIES)[number];
+
+type KindFieldCandidate = { type: FieldType; isFilterable: boolean };
+/** A board groups by a filterable single select; its options are the columns. */
+export const canGroupBy = (field: KindFieldCandidate) =>
+  field.type === 'select' && field.isFilterable;
+/** A calendar places records by a filterable date or date-time. */
+export const canPlaceBy = (field: KindFieldCandidate) =>
+  (field.type === 'date' || field.type === 'date_time') && field.isFilterable;
+
+export type ViewColumns = {
+  /** Visible fields after the label field, in order. */
+  order: string[];
+  widths?: Record<string, number>;
+  /** Each column's footer calculation. */
+  aggregates?: Record<string, AggregateOp>;
+};
+export type ViewSort = { field: string; direction: 'asc' | 'desc' };
+/** What a view shows; every key is optional and `null` clears it on update. */
+export type ViewConfig = {
+  filter?: Record<string, unknown> | null;
+  sort?: ViewSort[] | null;
+  columns?: ViewColumns | null;
+  /** Board: the `select` field whose options are the columns. */
+  groupBy?: string | null;
+  /** Board: option values whose columns are hidden; `null` is "no value". */
+  hiddenGroups?: (string | null)[] | null;
+  /** Board: shown in each column's header. */
+  groupAggregate?: { field: string; op: AggregateOp } | null;
+  /** Calendar: the `date` or `date_time` field records are placed by. */
+  dateField?: string | null;
+};
+export type SavedView = {
+  id: string;
+  object: string;
+  name: string;
+  kind: SavedViewKind;
+  visibility: SavedViewVisibility;
+  position: number;
+  filter: Record<string, unknown> | null;
+  sort: ViewSort[] | null;
+  columns: ViewColumns | null;
+  groupBy: string | null;
+  hiddenGroups: (string | null)[];
+  groupAggregate: { field: string; op: AggregateOp } | null;
+  dateField: string | null;
+  createdBy: Actor;
+  updatedBy: Actor;
+  createdAt: string;
+  updatedAt: string;
+  /** References to fields that are no longer active, dropped from what is returned. */
+  issues: string[];
+};
+/** `POST /v1/objects/:object/views`. */
+export type CreateViewInput = ViewConfig & {
+  name: string;
+  kind: SavedViewKind;
+  visibility?: SavedViewVisibility;
+  position?: number;
+};
+/** `PATCH /v1/views/:id`: only the keys given change. */
+export type UpdateViewInput = ViewConfig & {
+  name?: string;
+  kind?: SavedViewKind;
+  visibility?: SavedViewVisibility;
+  position?: number;
+};
 
 export const SORTABLE_TYPES: readonly FieldType[] = [
   'text',

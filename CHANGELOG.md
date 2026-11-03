@@ -40,7 +40,15 @@ The first release: the whole of build order steps 1 to 6 in
   a schema page with objects, fields and change history; record creation
   from a schema-driven form; delete, merge (with a field-by-field comparison)
   and erase-for-privacy from a record's actions menu; suggested merges in the
-  review inbox; and ⌘K search across records, facts and interactions.
+  review inbox; ⌘K search across records, facts and interactions; and
+  saved views shown as a table, a board grouped by a single-select field
+  (with per-column counts and totals) or a month calendar, where cards and
+  records move between columns and days by mouse, touch or keyboard.
+- Saved views: `GET`/`POST /v1/objects/:object/views` and
+  `GET`/`PATCH`/`DELETE /v1/views/:id`, with workspace or private
+  visibility; fields are stored by key, so views follow renames.
+- `groupBy` on `POST /v1/objects/:object/aggregate`: the same totals per
+  value of a single-select field.
 
 ### `@retainer/sdk`
 
