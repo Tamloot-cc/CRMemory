@@ -6,6 +6,7 @@ import {
   type SchemaOperation,
 } from '@retainer/shared';
 import { fields } from '../fields/index.js';
+import type { DiagramEdge } from '../ui/index.js';
 
 export function findObject(objects: ObjectView[], name: string | undefined) {
   return objects.find((o) => o.nameSingular === name) ?? null;
@@ -37,6 +38,50 @@ export function matchesField(field: FieldView, query: string) {
   if (!q) return true;
   return [field.label, field.name, fields[field.type].label, field.type].some((v) =>
     v.toLowerCase().includes(q),
+  );
+}
+
+/** A relation field's target object and, when it exists, the field on the other side. */
+export function relationEnds(field: FieldView, objects: ObjectView[]) {
+  const target = findObject(objects, field.settings.targetObject);
+  const inverse = target?.fields.find((f) => f.name === field.settings.inverseField);
+  return { target, inverse };
+}
+
+/** "Each person has one company", or "… has many people" for the many side. */
+export function cardinality(object: ObjectView, target: ObjectView | null, many: boolean) {
+  const what = many
+    ? `many ${target?.labelPlural.toLowerCase() ?? 'records'}`
+    : `one ${target?.labelSingular.toLowerCase() ?? 'record'}`;
+  return `Each ${object.labelSingular.toLowerCase()} has ${what}`;
+}
+
+const isManyToOne = (f: FieldView) => f.settings.relationCardinality !== 'one_to_many';
+
+/**
+ * Every relation once, as a line from the many side's field to the one
+ * side's. A relation has a field on each side (Person → Company and Company
+ * → People): it is drawn from the many-to-one field, and a one-to-many field
+ * only when that other side is missing. Relations to objects that no longer
+ * exist are left out.
+ */
+export function relationEdges(objects: ObjectView[]): DiagramEdge[] {
+  return objects.flatMap((object) =>
+    object.fields.flatMap((field): DiagramEdge[] => {
+      if (field.type !== 'relation') return [];
+      const { target, inverse } = relationEnds(field, objects);
+      if (!target || (!isManyToOne(field) && inverse && isManyToOne(inverse))) return [];
+      const own = { node: object.nameSingular, row: field.name },
+        other = { node: target.nameSingular, row: inverse?.name };
+      const [many, one] = isManyToOne(field) ? [object, target] : [target, object];
+      return [
+        {
+          id: `${object.nameSingular}.${field.name}`,
+          ...(isManyToOne(field) ? { from: own, to: other } : { from: other, to: own }),
+          description: `${field.label}: ${cardinality(many, one, false)}. ${cardinality(one, many, true)}.`,
+        },
+      ];
+    }),
   );
 }
 

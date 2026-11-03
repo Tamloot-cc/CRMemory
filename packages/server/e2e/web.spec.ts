@@ -125,6 +125,30 @@ test('approves a schema proposal and refreshes the schema', async ({ page, retai
       .fields.find((f: any) => f.name === 'jobTitle').isUnique,
   ).toBe(true);
 });
+test('draws the objects and relations and opens them from the diagram', async ({
+  page,
+  retainer: r,
+}) => {
+  await r.request('/templates/sales/apply', {});
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/schema?tab=diagram`);
+  const diagram = page.getByRole('figure', { name: 'Objects and their relations' });
+  await expect(page.getByText(/^5 relations\./)).toBeVisible();
+  // Cards list the label field and the relations, not every field.
+  const deals = diagram.locator('.react-flow__node[data-id="deal"]');
+  await expect(deals.getByRole('button', { name: /^Point of contact/ })).toBeVisible();
+  await expect(deals.getByText('Amount')).toHaveCount(0);
+  // A relation row opens its field in the Objects tab.
+  await deals.getByRole('button', { name: /^Point of contact/ }).click();
+  await expect(page.getByRole('heading', { name: 'Deals', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Point of contact' })).toBeVisible();
+  await expect(page).toHaveURL(/object=deal&field=pointOfContact/);
+  // A card's header opens the object.
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Diagram', exact: true }).click();
+  await diagram.locator('.react-flow__node[data-id="company"]').getByRole('button').first().click();
+  await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
+});
 test('retracts an interaction and refreshes the affected memory', async ({ page, retainer: r }) => {
   const record = (await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }))
     .record;

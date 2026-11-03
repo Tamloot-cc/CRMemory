@@ -309,7 +309,7 @@ retracted assertions, recomputed records and hidden facts.
 
 ### 5.7 Schema — `/app/schema`
 
-Read-only in v1. Agents change the schema; people approve (5.2). Two tabs
+Read-only in v1. Agents change the schema; people approve (5.2). Three tabs
 (`?tab=`), with a "N proposed" link to the review inbox in the top bar when
 changes are waiting:
 
@@ -323,6 +323,20 @@ changes are waiting:
   (`?field=`): definition, select options, the relation's target,
   cardinality, other side (linked) and delete behaviour, and each flag in
   words.
+- **Diagram.** The objects as cards on a React Flow canvas (`@xyflow/react`)
+  that pans, zooms and lets cards be dragged. Each card lists the field that
+  names its records and its relation fields, with what each links to ("One
+  Company", "Many People"). Each relation is one line from the many side's
+  row to the one side's row (an unmatched one-to-many field still gets one),
+  ending in a crow's foot on the many side and a bar on the one side.
+  dagre (`@dagrejs/dagre`, MIT) lays the cards out in columns, with what is
+  linked to on the left; a line that skips a column runs above or below the
+  cards in it, and lines between two columns get their own lanes. Dragging a
+  card switches the lines to plain stepped paths. Hovering a card or a line
+  highlights its lines. Clicking a card's header opens the object in the
+  Objects tab, and clicking a row or a line opens that field there. React
+  Flow and dagre load only when the tab is first opened (`Diagram` in
+  `src/ui` is lazy).
 - **Change history.** `GET /v1/schema/changes` as a timeline, filterable by
   status (`?status=`): each change's operations in words, reason, proposer,
   who decided, and the schema version it produced.

@@ -17,6 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@dagrejs/dagre": "3.1.1",
     "@radix-ui/react-dialog": "^1.1.0",
     "@radix-ui/react-dismissable-layer": "^1.2.1",
     "@radix-ui/react-popover": "^1.3.1",
@@ -26,6 +27,7 @@
     "@retainer/shared": "workspace:*",
     "@tanstack/react-query": "^5.0.0",
     "@tanstack/react-router": "^1.0.0",
+    "@xyflow/react": "12.12.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
