@@ -7,6 +7,7 @@ import { History, Maximize2, Pencil } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { api, canMutate, useWorkspace } from '../api/client.js';
+import { FieldPicker, PICKERS } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge, AssertionSource, SourcedValue } from '../provenance/index.js';
 import {
@@ -19,6 +20,7 @@ import {
   Notice,
   ObjectLink,
   Panel,
+  PanelBody,
   Property,
   PropertyEditor,
   PropertyList,
@@ -426,10 +428,11 @@ function FieldProperty({
   const [editing, setEditing] = useState(false);
   const editButton = useRef<HTMLButtonElement>(null);
   const Display = fields[field.type].Display;
-  function done() {
-    // Commit the close first, so the Edit button exists to take focus back.
+  function done(outside = false) {
+    // Commit the close first, so the Edit button exists to take focus back;
+    // after a click elsewhere, focus stays where the click put it.
     flushSync(() => setEditing(false));
-    editButton.current?.focus();
+    if (!outside) editButton.current?.focus();
   }
   return (
     <Property
@@ -480,6 +483,12 @@ function FieldProperty({
 /**
  * Saves one field with the record's `updatedAt` as the precondition. A stale
  * write keeps the draft open beside the latest value; retrying is explicit.
+ *
+ * Fields chosen from a list open on the list: one choice saves on the pick,
+ * several when the list is left (a click outside, Enter with nothing
+ * highlighted, or ⌘/Ctrl+Enter). Other fields open a small form. Either way a
+ * click outside saves a changed draft, and Escape drops it. `onDone` is told
+ * whether a click outside closed the editor, so focus can stay where it went.
  */
 export function InlineEditor({
   record,
@@ -488,16 +497,17 @@ export function InlineEditor({
 }: {
   record: PresentedRecord;
   field: FieldView;
-  onDone: () => void;
+  onDone: (outside?: boolean) => void;
 }) {
   const { session } = useWorkspace(),
     client = useQueryClient();
-  const [draft, setDraft] = useState<unknown>(record.fields[field.name] ?? null),
+  const current = record.fields[field.name] ?? null;
+  const [draft, setDraft] = useState<unknown>(current),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [stale, setStale] = useState(false);
-  const Input = fields[field.type].Input,
-    Display = fields[field.type].Display;
+  const { Input, Display } = fields[field.type];
+  const picker = PICKERS[field.type];
   // Wait only for the record (the next save's precondition); the rest of the
   // workspace, including the list behind a sheet, refreshes in the background.
   async function refresh() {
@@ -507,11 +517,13 @@ export function InlineEditor({
     });
     await client.invalidateQueries({ queryKey: [session.workspace.id, 'record'] });
   }
-  async function save() {
+  async function save(next: unknown = draft, outside = false) {
     if (busy) return;
+    // Nothing to write: leave without adding to the field's history.
+    if (JSON.stringify(next ?? null) === JSON.stringify(current)) return onDone(outside);
     setBusy(true);
     try {
-      const value = validateFieldValue(field, draft);
+      const value = validateFieldValue(field, next);
       const result = await api.patchRecord(record.id, {
         values: { [field.name]: value },
         expectedUpdatedAt: record.updatedAt,
@@ -519,7 +531,7 @@ export function InlineEditor({
       await refresh();
       if (result.fields[field.name] !== 'applied') {
         setError('Saved to history; the current value was not replaced.');
-      } else onDone();
+      } else onDone(outside);
     } catch (e) {
       if (e instanceof RetainerApiError && e.status === 412) {
         setStale(true);
@@ -532,38 +544,80 @@ export function InlineEditor({
       setBusy(false);
     }
   }
+  const problems =
+    error || stale ? (
+      <>
+        {error ? <Notice error>{error}</Notice> : null}
+        {stale ? (
+          <Panel title="Current value">
+            <Display field={field} value={current} references={record.relationReferences} />
+          </Panel>
+        ) : null}
+      </>
+    ) : null;
+  const saveLabel = busy ? 'Saving…' : stale ? 'Retry with latest version' : 'Save';
   return (
     <PropertyEditor
+      kind={picker ? 'picker' : 'form'}
+      busy={busy}
       onSave={() => void save()}
       onCancel={() => {
         if (!busy) onDone();
       }}
-    >
-      {error ? <Notice error>{error}</Notice> : null}
-      {stale ? (
-        <Panel title="Current value">
-          <Display
-            field={field}
-            value={record.fields[field.name]}
-            references={record.relationReferences}
-          />
-        </Panel>
-      ) : null}
-      <Input field={field} value={draft} onChange={setDraft} />
-      <Row>
-        <Button type="submit" variant="primary" size="small" disabled={busy}>
-          {busy ? 'Saving…' : stale ? 'Retry with latest version' : 'Save'}
-        </Button>
-        <Button size="small" variant="ghost" disabled={busy} onClick={onDone}>
-          Cancel
-        </Button>
-        {field.isNullable ? (
+      onOutside={() => void save(draft, true)}
+      footerStart={
+        !picker && field.isNullable ? (
           <Button size="small" variant="ghost" disabled={busy} onClick={() => setDraft(null)}>
-            Clear value
+            Clear
           </Button>
-        ) : null}
-        <Muted>Enter to save · Esc to cancel</Muted>
-      </Row>
+        ) : null
+      }
+      footer={
+        // A list saves by being picked from; it shows a button only to retry.
+        picker && !stale ? null : (
+          <>
+            {picker ? null : (
+              <Button
+                size="small"
+                variant="ghost"
+                disabled={busy}
+                title="Esc"
+                onClick={() => onDone()}
+              >
+                Cancel
+              </Button>
+            )}
+            <Button type="submit" variant="primary" size="small" disabled={busy} title="Enter">
+              {saveLabel}
+            </Button>
+          </>
+        )
+      }
+    >
+      {picker ? (
+        <>
+          {problems ? <PanelBody>{problems}</PanelBody> : null}
+          <FieldPicker
+            field={field}
+            value={draft}
+            references={record.relationReferences}
+            onChange={(next) => {
+              setDraft(next);
+              if (picker === 'one') void save(next);
+            }}
+          />
+        </>
+      ) : (
+        <>
+          {problems}
+          <Input
+            field={field}
+            value={draft}
+            references={record.relationReferences}
+            onChange={setDraft}
+          />
+        </>
+      )}
     </PropertyEditor>
   );
 }

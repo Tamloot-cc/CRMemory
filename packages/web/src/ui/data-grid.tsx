@@ -10,7 +10,8 @@ import {
   useRef,
   useState,
 } from 'react';
-import { cn, isPlainClick, ROW_STATE } from './core.js';
+import { cn, isPlainClick, PLACEMENT, ROW_STATE } from './core.js';
+import { type EditorHandlers, EditorHostContext } from './property.js';
 
 export type GridColumn = {
   id: string;
@@ -139,7 +140,7 @@ export function DataGrid({
                   <input
                     type="checkbox"
                     aria-label="Select all rows on this page"
-                    className="h-4 w-4 accent-primary"
+                    className="ui-checkbox"
                     checked={all}
                     ref={(el) => {
                       if (el) el.indeterminate = some;
@@ -314,7 +315,7 @@ const GridBody = memo(function GridBody({
                 <input
                   type="checkbox"
                   aria-label={`Select ${r.label ?? 'row'}`}
-                  className="h-4 w-4 accent-primary"
+                  className="ui-checkbox"
                   checked={selection.selected.has(r.id)}
                   onChange={() => selection.onToggle(r.id)}
                 />
@@ -346,16 +347,28 @@ const GridBody = memo(function GridBody({
 export function EditableCell({
   label,
   editor,
+  wide = false,
   children,
 }: {
   label: string;
   /** The editor, rendered only while open; `close` dismisses it. */
   editor: (close: () => void) => ReactNode;
+  /** Room for a form of several controls, rather than a list to pick from. */
+  wide?: boolean;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  // The editor inside decides what a click outside (save) and Escape (drop
+  // the draft) mean, and closes itself when it's done.
+  const handlers = useRef<EditorHandlers | null>(null);
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+    <PopoverPrimitive.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && handlers.current) handlers.current.outside();
+        else setOpen(next);
+      }}
+    >
       <PopoverPrimitive.Anchor asChild>
         <span className="flex min-w-0 flex-1 items-center gap-1">
           <span className="min-w-0 flex-1 truncate">{children}</span>
@@ -374,13 +387,19 @@ export function EditableCell({
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content
           align="start"
-          sideOffset={4}
-          collisionPadding={12}
+          {...PLACEMENT}
           // The editor takes focus itself.
           onOpenAutoFocus={(e) => e.preventDefault()}
-          className="z-50 w-[min(92vw,22rem)]"
+          onEscapeKeyDown={(e) => {
+            if (!handlers.current) return;
+            e.preventDefault();
+            handlers.current.cancel();
+          }}
+          className={cn('z-50', wide ? 'w-[min(92vw,22rem)]' : 'w-[min(92vw,16rem)]')}
         >
-          {editor(() => setOpen(false))}
+          <EditorHostContext.Provider value={handlers}>
+            {editor(() => setOpen(false))}
+          </EditorHostContext.Provider>
         </PopoverPrimitive.Content>
       </PopoverPrimitive.Portal>
     </PopoverPrimitive.Root>

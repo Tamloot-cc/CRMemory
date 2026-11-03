@@ -116,7 +116,8 @@ test('approves a schema proposal and refreshes the schema', async ({ page, retai
   await page.getByRole('button', { name: /Change history/ }).click();
   const history = page.getByRole('list', { name: 'Schema changes' });
   await expect(history.getByText('Change Person → Job title: unique')).toBeVisible();
-  await page.getByRole('combobox', { name: 'Status' }).selectOption('rejected');
+  await page.getByRole('button', { name: 'Status All statuses' }).click();
+  await page.getByRole('option', { name: 'Rejected' }).click();
   await expect(page.getByText('No rejected changes')).toBeVisible();
   const schema = await r.request('/schema');
   expect(
@@ -329,7 +330,8 @@ test('searches the workspace with the command palette and keeps list filters in 
   await signIn(page, r.url, r.keys.user);
   await page.getByRole('link', { name: 'People', exact: true }).click();
   await page.getByRole('button', { name: 'Filter', exact: true }).click();
-  await page.getByLabel('Filter field').selectOption('jobTitle');
+  await page.getByRole('combobox', { name: 'Filter by' }).fill('job');
+  await page.getByRole('option', { name: 'Job title' }).click();
   await page.getByLabel('Job title', { exact: true }).fill('CTO');
   await page.getByRole('button', { name: 'Apply filter' }).click();
   await expect(page.getByRole('link', { name: 'Dana Levi' })).toBeVisible();
@@ -486,8 +488,14 @@ test('edits schema-driven scalar and composite fields through the real API', asy
     // The button reads "Saving…" while in flight; the editor closes once the write lands.
     await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
   }
+  // Fields chosen from a list save on the pick and close; the list goes away.
+  async function pick(label: string, option: string) {
+    await page.getByRole('button', { name: `Edit ${label}`, exact: true }).click();
+    await page.getByRole('option', { name: option, exact: true }).click();
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+  }
   await edit('Score', () => page.getByLabel('Score', { exact: true }).fill('42.5'));
-  await edit('Active', () => page.getByRole('switch').check());
+  await pick('Active', 'Yes');
   await edit('Renewal date', () =>
     page.getByLabel('Renewal date', { exact: true }).fill('2026-12-01'),
   );
@@ -496,10 +504,21 @@ test('edits schema-driven scalar and composite fields through the real API', asy
   );
   await edit('Budget', async () => {
     await page.getByLabel('Amount', { exact: true }).fill('0.000001');
-    await page.getByLabel('Currency', { exact: true }).selectOption('ILS');
+    await page.getByRole('button', { name: 'Currency USD' }).click();
+    await page.getByRole('combobox', { name: 'Search currency' }).fill('shekel');
+    await page.getByRole('option', { name: 'ILS', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Currency ILS' })).toBeVisible();
   });
-  await edit('Stage', () => page.getByLabel('Stage', { exact: true }).selectOption('ready'));
-  await edit('Topics', () => page.getByRole('checkbox', { name: 'Security', exact: true }).check());
+  await pick('Stage', 'Ready');
+  // Several choices are kept until the list is left: here with ⌘/Ctrl+Enter.
+  await page.getByRole('button', { name: 'Edit Topics', exact: true }).click();
+  await page.getByRole('option', { name: 'Security', exact: true }).click();
+  await expect(page.getByRole('option', { name: 'Security', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(page.getByRole('listbox')).toHaveCount(0);
   await edit('Emails', async () => {
     await page.getByRole('button', { name: 'Add email' }).click();
     await page.getByLabel('Email 1', { exact: true }).fill('Dana@acme.test');
@@ -514,13 +533,13 @@ test('edits schema-driven scalar and composite fields through the real API', asy
     await page.getByLabel('URL 1', { exact: true }).fill('https://acme.test');
     await page.getByLabel('Link label 1', { exact: true }).fill('Website');
   });
-  await edit('Address', () => page.getByLabel('city', { exact: true }).fill('Tel Aviv'));
+  await edit('Address', () => page.getByLabel('City', { exact: true }).fill('Tel Aviv'));
   await edit('Name', () => page.getByLabel('First name', { exact: true }).fill('Danielle'));
-  await edit('Company', async () => {
-    await page.getByLabel('Search related records').fill('Acme');
-    await expect(page.getByRole('option', { name: 'Acme Company' })).toHaveCount(1);
-    await page.getByLabel('Company', { exact: true }).selectOption(company.id);
-  });
+  await page.getByRole('button', { name: 'Edit Company', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Company', exact: true }).fill('Acme');
+  await expect(page.getByRole('option', { name: 'Acme Company' })).toHaveCount(1);
+  await page.getByRole('option', { name: 'Acme Company' }).click();
+  await expect(page.getByRole('listbox')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Edit Metadata', exact: true })).not.toBeVisible();
   const updated = await r.request(`/records/${record.id}`);
   expect(updated.fields).toMatchObject({
@@ -654,7 +673,7 @@ test('deletes a record from its sheet and reports it', async ({ page, retainer: 
   await page.goto(`${r.url}/app/o/person?record=${record.id}`);
   const sheet = page.getByRole('dialog', { name: 'Dana Levi' });
   await sheet.getByRole('button', { name: 'Record actions' }).click();
-  await page.getByRole('button', { name: 'Delete…' }).click();
+  await page.getByRole('menuitem', { name: 'Delete…' }).click();
   const confirm = page.getByRole('dialog', { name: 'Delete Dana Levi?' });
   await confirm.getByRole('button', { name: 'Delete record', exact: true }).click();
   await expect(page.getByText('Deleted Dana Levi.')).toBeVisible();
@@ -689,7 +708,7 @@ test('warns before a delete that cascades to linked records', async ({ page, ret
   await signIn(page, r.url, r.keys.user);
   await page.goto(`${r.url}/app/r/${acme.id}`);
   await page.getByRole('button', { name: 'Record actions' }).click();
-  await page.getByRole('button', { name: 'Delete…' }).click();
+  await page.getByRole('menuitem', { name: 'Delete…' }).click();
   const confirm = page.getByRole('dialog', { name: 'Delete Acme?' });
   await expect(confirm.getByText('Deleting it also deletes 1 person linked to it.')).toBeVisible();
   await confirm.getByRole('button', { name: 'Delete record', exact: true }).click();
@@ -789,10 +808,10 @@ test('totals columns over the whole list and edits a cell from the grid', async 
   await expect(page.getByText('1–3 of 3')).toBeVisible();
 
   await grid.getByRole('button', { name: 'Calculate Job title' }).click();
-  await page.getByRole('button', { name: 'Percent empty' }).click();
+  await page.getByRole('menuitemradio', { name: 'Percent empty' }).click();
   await expect(grid.getByRole('button', { name: 'Calculate Job title' })).toHaveText('Empty 33%');
   await grid.getByRole('button', { name: 'Calculate Name' }).click();
-  await page.getByRole('button', { name: 'Not empty', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Not empty', exact: true }).click();
   await expect(grid.getByRole('button', { name: 'Calculate Name' })).toHaveText('Not empty 3');
 
   // The pencil edits in place, without opening the record, and the total follows.
@@ -843,8 +862,12 @@ test('merges a suggested duplicate, choosing the value to keep', async ({ page, 
   const dialog = page.getByRole('dialog', { name: 'Merge duplicate records' });
   // The older record survives by default; emails are combined unless chosen.
   await expect(dialog.getByRole('radio', { name: /Yael Mizrahi/ })).toBeChecked();
-  await expect(dialog.getByLabel('Value for Emails')).toHaveValue('auto');
-  await dialog.getByLabel('Value for Job title').selectOption('merge');
+  await expect(dialog.getByRole('button', { name: 'Value for Emails' })).toHaveText('Combine both');
+  await dialog.getByRole('button', { name: 'Value for Job title' }).click();
+  await page.getByRole('option', { name: 'Merged record’s' }).click();
+  await expect(dialog.getByRole('button', { name: 'Value for Job title' })).toHaveText(
+    'Merged record’s',
+  );
   await dialog.getByRole('button', { name: 'Merge into Yael Mizrahi' }).click();
   await expect(page.getByText('Merged Yael Mizrachi into')).toBeVisible();
   await expect(page.getByText('No suggested merges')).toBeVisible();
@@ -880,7 +903,7 @@ test('dismisses a suggestion, and merges a duplicate found from the record', asy
 
   await page.goto(`${r.url}/app/r/${keep.id}`);
   await page.getByRole('button', { name: 'Record actions' }).click();
-  await page.getByRole('button', { name: 'Merge a duplicate…' }).click();
+  await page.getByRole('menuitem', { name: 'Merge a duplicate…' }).click();
   const picker = page.getByRole('dialog', { name: 'Merge a duplicate into Avi Cohen' });
   // The search starts from the record's own name, and the record itself is not offered.
   await expect(picker.getByRole('button', { name: 'Avi Cohen' })).toHaveCount(1);
@@ -913,7 +936,7 @@ test('erases a person for a privacy request after typed confirmation', async ({
   await signIn(page, r.url, r.keys.user);
   await page.goto(`${r.url}/app/r/${person.id}`);
   await page.getByRole('button', { name: 'Record actions' }).click();
-  await page.getByRole('button', { name: 'Erase for privacy…' }).click();
+  await page.getByRole('menuitem', { name: 'Erase for privacy…' }).click();
   const confirm = page.getByRole('dialog', { name: 'Erase Avi Erased permanently?' });
   const erase = confirm.getByRole('button', { name: 'Erase permanently' });
   await expect(erase).toBeDisabled();
@@ -937,8 +960,8 @@ test('offers erasing only to admin user keys', async ({ page, retainer: r }) => 
   await signIn(page, r.url, r.keys.writer);
   await page.goto(`${r.url}/app/r/${person.id}`);
   await page.getByRole('button', { name: 'Record actions' }).click();
-  await expect(page.getByRole('button', { name: 'Delete…' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Erase for privacy…' })).not.toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Delete…' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Erase for privacy…' })).not.toBeVisible();
 });
 
 test('finds records, facts and interactions across objects with the command palette', async ({

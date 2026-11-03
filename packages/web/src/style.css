@@ -68,3 +68,86 @@ button:not(:disabled) {
 ::selection {
   background: #5965d833;
 }
+/* Checkboxes, radios and switches, drawn here so every browser matches. */
+.ui-checkbox,
+.ui-radio,
+.ui-switch {
+  appearance: none;
+  flex-shrink: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  background-color: var(--card);
+  cursor: pointer;
+  transition:
+    background-color 120ms,
+    border-color 120ms;
+}
+.ui-checkbox:disabled,
+.ui-radio:disabled,
+.ui-switch:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.ui-checkbox:focus-visible,
+.ui-radio:focus-visible,
+.ui-switch:focus-visible {
+  outline: 2px solid #5965d8;
+  outline-offset: 2px;
+}
+.ui-checkbox:hover:not(:disabled),
+.ui-radio:hover:not(:disabled) {
+  border-color: var(--muted-foreground);
+}
+.ui-checkbox {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 4px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 0.75rem;
+}
+.ui-checkbox:checked,
+.ui-checkbox:indeterminate {
+  border-color: #5965d8;
+  background-color: #5965d8;
+}
+.ui-checkbox:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+}
+.ui-checkbox:indeterminate {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round'%3E%3Cpath d='M6 12h12'/%3E%3C/svg%3E");
+}
+.ui-radio {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+}
+.ui-radio:checked {
+  border: 5px solid #5965d8;
+}
+.ui-switch {
+  position: relative;
+  width: 1.75rem;
+  height: 1rem;
+  border: 0;
+  border-radius: 9999px;
+  background-color: var(--border);
+}
+.ui-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+  transition: transform 120ms;
+}
+.ui-switch:checked {
+  background-color: #5965d8;
+}
+.ui-switch:checked::before {
+  transform: translateX(0.75rem);
+}

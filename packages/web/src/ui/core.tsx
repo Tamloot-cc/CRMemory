@@ -7,6 +7,20 @@ export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 /** The status colours a badge or a timeline icon can take. */
 export type Tone = 'neutral' | 'pending' | 'success' | 'error';
 
+/** The look of every floating panel: popovers, pickers, menus and in-place editors. */
+export const PANEL = 'z-50 rounded-lg border border-border bg-popover text-foreground shadow-lg';
+/** Where floating panels sit against their trigger. */
+export const PLACEMENT = { sideOffset: 4, collisionPadding: 12 } as const;
+
+/** Focuses the first control in `root`, selecting a text box's contents. */
+export function focusFirst(root: HTMLElement | null) {
+  const first = root?.querySelector<HTMLElement>(
+    'input:not([type=hidden]):not(:disabled),select:not(:disabled),textarea:not(:disabled),button:not(:disabled),[tabindex="0"]',
+  );
+  first?.focus();
+  if (first instanceof HTMLInputElement && first.type === 'text') first.select();
+}
+
 /** Hover and selected backgrounds for the cells of a clickable row (`group` on the row). */
 export const ROW_STATE = 'group-hover:bg-hover group-data-selected:bg-muted';
 

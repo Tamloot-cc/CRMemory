@@ -11,22 +11,30 @@ import type {
 import { FILTER_OPERATORS, normalizeFieldValue } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
+import { Plus, Star, X } from 'lucide-react';
 import { type ComponentType, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
+import { recordTitle, useDebounced } from '../routes/state.js';
 import {
   Badge,
   Button,
   Check,
+  CheckLabel,
+  Columns,
   ExternalLink,
+  Fixed,
   Input,
   Label,
   Muted,
+  OptionList,
+  type PickerOption,
   RecordLink,
   Row,
-  Select,
+  SelectMenu,
   Stack,
   Textarea,
   Tooltip,
+  toggleValue,
 } from '../ui/index.js';
 export type DisplayProps = {
   field: FieldView;
@@ -34,15 +42,32 @@ export type DisplayProps = {
   compact?: boolean;
   references?: Record<string, RecordReference>;
 };
-export type InputProps = { field: FieldView; value: unknown; onChange: (value: unknown) => void };
+export type InputProps = {
+  field: FieldView;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  /** Labels for relation IDs the value already holds. */
+  references?: Record<string, RecordReference>;
+};
 export type FieldModule = {
   /** The type's name where the schema itself is shown, e.g. "Single select". */
   label: string;
   icon: LucideIcon;
   Display: ComponentType<DisplayProps>;
+  /** The value as a form control, for create forms and filters. */
   Input: ComponentType<InputProps>;
   Filter: ComponentType<InputProps & { operator: string }>;
   isEmpty: (value: unknown) => boolean;
+};
+/**
+ * Types edited in place by choosing from a list (`FieldPicker`) rather than in
+ * a form: `one` saves on the pick, `many` when the list is left.
+ */
+export const PICKERS: Partial<Record<FieldView['type'], 'one' | 'many'>> = {
+  select: 'one',
+  multi_select: 'many',
+  relation: 'one',
+  boolean: 'one',
 };
 export function isEmptyFor(type: FieldView['type'], value: unknown): boolean {
   if (value === null || value === undefined || value === '') return true;
@@ -226,14 +251,225 @@ export function microsToDecimal(n: number): string {
     '0'
   );
 }
+
+/** A select field's options, each shown as the badge the grid shows. */
+export function selectOptions(field: FieldView): PickerOption[] {
+  return (field.settings.options ?? []).map((o) => ({
+    value: o.value,
+    label: o.label,
+    content: <Badge>{o.label}</Badge>,
+  }));
+}
+/**
+ * The choice that clears a field, "No stage" (its value is the empty string),
+ * as a list of one when `show` (by default, when the field may be empty).
+ */
+function clearOption(field: FieldView, show = field.isNullable): PickerOption[] {
+  const label = `No ${field.label.toLowerCase()}`;
+  return show ? [{ value: '', label, content: <Muted>{label}</Muted> }] : [];
+}
+/** A select field's options in a menu: one choice, or several. */
+function OptionsMenu({
+  field,
+  value,
+  onChange,
+  multiple = false,
+  clearable = false,
+}: InputProps & { multiple?: boolean; clearable?: boolean }) {
+  return multiple ? (
+    <SelectMenu
+      label={field.label}
+      fill
+      multiple
+      placeholder="Choose options"
+      options={selectOptions(field)}
+      value={Array.isArray(value) ? (value as string[]) : []}
+      onChange={onChange}
+    />
+  ) : (
+    <SelectMenu
+      label={field.label}
+      fill
+      placeholder="Choose an option"
+      options={[...clearOption(field, clearable && !!value), ...selectOptions(field)]}
+      value={typeof value === 'string' && value ? value : null}
+      onChange={(v) => onChange(v || null)}
+    />
+  );
+}
+const BOOLEAN_OPTIONS: PickerOption[] = [
+  { value: 'true', label: 'Yes' },
+  { value: 'false', label: 'No' },
+];
+
+let currencies: PickerOption[] | undefined;
+/** Every ISO currency, searchable by code or name. */
+function currencyOptions(current: string): PickerOption[] {
+  if (!currencies) {
+    const names = new Intl.DisplayNames(undefined, { type: 'currency' });
+    currencies = Intl.supportedValuesOf('currency').map((code) => {
+      const name = names.of(code);
+      return { value: code, label: code, hint: name, keywords: name };
+    });
+  }
+  return currencies.some((c) => c.value === current)
+    ? currencies
+    : [{ value: current, label: current }, ...currencies];
+}
+
+/**
+ * Records of a relation's target object matching a search, as options. The
+ * current value stays listed even when the search doesn't return it. Fetches
+ * only while `enabled` (the list is open), once typing pauses.
+ */
+function useRelationOptions(
+  field: FieldView,
+  value: unknown,
+  references: Record<string, RecordReference> | undefined,
+  enabled = true,
+) {
+  const workspace = useWorkspace();
+  const [search, setSearch] = useState('');
+  const query = useDebounced(search.trim());
+  const target = workspace.schema.objects.find(
+    (o) => o.nameSingular === field.settings.targetObject,
+  );
+  const results = useQuery({
+    queryKey: [workspace.session.workspace.id, 'relationPicker', target?.nameSingular, query],
+    queryFn: ({ signal }) =>
+      api.queryRecords(
+        target?.nameSingular ?? '',
+        { search: query || undefined, limit: 50 },
+        signal,
+      ),
+    enabled: !!target && enabled,
+    placeholderData: (previous) => previous,
+  });
+  // Remember labels of records seen, so the chosen one keeps its name.
+  const [seen, setSeen] = useState<Record<string, string>>({});
+  const records = results.data?.records ?? [];
+  const options: PickerOption[] = records.map((r) => ({ value: r.id, label: recordTitle(r) }));
+  const current = typeof value === 'string' && value ? value : null;
+  const currentLabel = current
+    ? (references?.[current]?.label ?? seen[current] ?? 'Current record')
+    : null;
+  if (current && currentLabel && !options.some((o) => o.value === current) && !query)
+    options.unshift({ value: current, label: currentLabel });
+  const remember = (id: string) => {
+    const label = options.find((o) => o.value === id)?.label;
+    if (label) setSeen((s) => ({ ...s, [id]: label }));
+  };
+  const status = results.error
+    ? results.error.message
+    : results.isFetching && !results.data
+      ? 'Searching…'
+      : undefined;
+  return {
+    options,
+    status,
+    setSearch,
+    remember,
+    currentLabel,
+    noun: target?.labelPlural.toLowerCase() ?? 'records',
+  };
+}
+
+/**
+ * A field edited by choosing from a list: the list itself, open, for an
+ * editor that already sits in a popover or a record's row. `onChange` gets
+ * each pick: the new value for one choice, the whole new set for many.
+ */
+export function FieldPicker(props: InputProps) {
+  const { field, value, onChange } = props;
+  switch (field.type) {
+    case 'select':
+      return (
+        <OptionList
+          label={field.label}
+          placeholder={`Search ${field.label.toLowerCase()}…`}
+          options={[...clearOption(field), ...selectOptions(field)]}
+          selected={[typeof value === 'string' ? value : '']}
+          onPick={(v) => onChange(v || null)}
+        />
+      );
+    case 'multi_select': {
+      const values = Array.isArray(value) ? (value as string[]) : [];
+      return (
+        <OptionList
+          label={field.label}
+          placeholder={`Search ${field.label.toLowerCase()}…`}
+          multiple
+          options={selectOptions(field)}
+          selected={values}
+          onPick={(v) => onChange(toggleValue(values, v))}
+        />
+      );
+    }
+    case 'boolean':
+      return (
+        <OptionList
+          label={field.label}
+          searchable={false}
+          options={[...BOOLEAN_OPTIONS, ...clearOption(field)]}
+          selected={[value === true ? 'true' : value === false ? 'false' : '']}
+          onPick={(v) => onChange(v === '' ? null : v === 'true')}
+        />
+      );
+    case 'relation':
+      return <RelationPicker {...props} />;
+    default:
+      return <FieldInput {...props} />;
+  }
+}
+function RelationPicker({ field, value, onChange, references }: InputProps) {
+  const r = useRelationOptions(field, value, references);
+  return (
+    <OptionList
+      label={field.label}
+      placeholder={`Search ${r.noun}…`}
+      options={[...clearOption(field), ...r.options]}
+      selected={[typeof value === 'string' ? value : '']}
+      onSearchChange={r.setSearch}
+      status={r.status}
+      empty={`No ${r.noun} found`}
+      onPick={(v) => onChange(v || null)}
+    />
+  );
+}
+function RelationInput({ field, value, onChange, references }: InputProps) {
+  const [open, setOpen] = useState(false);
+  const r = useRelationOptions(field, value, references, open);
+  return (
+    <SelectMenu
+      label={field.label}
+      fill
+      placeholder={`Choose a ${field.label.toLowerCase()}`}
+      options={[...clearOption(field, field.isNullable && !!value), ...r.options]}
+      value={typeof value === 'string' ? value : null}
+      fallback={r.currentLabel}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // The list's search box starts empty each time; so does the query.
+        if (!next) r.setSearch('');
+      }}
+      onSearchChange={r.setSearch}
+      status={r.status}
+      onChange={(v) => {
+        r.remember(v);
+        onChange(v || null);
+      }}
+    />
+  );
+}
+
 function MoneyInput({ value, onChange }: InputProps) {
   const v = (value ?? { amountMicros: 0, currency: 'USD' }) as MoneyValue;
   const [amount, setAmount] = useState(microsToDecimal(v.amountMicros));
   const [error, setError] = useState('');
   return (
     <Stack>
-      <Row>
-        <Label>
+      <Columns>
+        <Label quiet>
           Amount
           <Input
             aria-invalid={!!error}
@@ -252,66 +488,23 @@ function MoneyInput({ value, onChange }: InputProps) {
             }}
           />
         </Label>
-        <Label>
+        <Label quiet>
           Currency
-          <Select
-            aria-label="Currency"
+          <SelectMenu
+            label="Currency"
+            fill
             value={v.currency}
-            onChange={(e) => onChange({ ...v, currency: e.target.value })}
-          >
-            {Array.from(new Set([v.currency, ...Intl.supportedValuesOf('currency')])).map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </Select>
+            options={currencyOptions(v.currency)}
+            onChange={(currency) => onChange({ ...v, currency })}
+          />
         </Label>
-      </Row>
-      {error ? <Muted>{error}</Muted> : null}
+      </Columns>
+      {error ? <Muted small>{error}</Muted> : null}
     </Stack>
   );
 }
-function RelationInput({ field, value, onChange }: InputProps) {
-  const workspace = useWorkspace();
-  const [search, setSearch] = useState('');
-  const target = workspace.schema.objects.find(
-    (o) => o.nameSingular === field.settings.targetObject,
-  );
-  const query = useQuery({
-    queryKey: [workspace.session.workspace.id, 'relationPicker', target?.nameSingular, search],
-    queryFn: ({ signal }) =>
-      api.queryRecords(
-        target?.nameSingular ?? '',
-        { search: search.trim() || undefined, limit: 50 },
-        signal,
-      ),
-    enabled: !!target,
-  });
-  return (
-    <Stack>
-      <Input
-        aria-label="Search related records"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search records…"
-      />
-      <Select
-        aria-label={field.label}
-        value={typeof value === 'string' ? value : ''}
-        onChange={(e) => onChange(e.target.value || null)}
-      >
-        <option value="">Choose a record</option>
-        {value && !query.data?.records.some((r) => r.id === value) ? (
-          <option value={String(value)}>Current record</option>
-        ) : null}
-        {query.data?.records.map((r) => (
-          <option key={r.id} value={r.id}>
-            {r.label || r.id}
-          </option>
-        ))}
-      </Select>
-      {query.error ? <Muted>{query.error.message}</Muted> : null}
-    </Stack>
-  );
-}
+
+const LIST_NOUN = { emails: 'email', phones: 'phone', links: 'link' } as const;
 function ListInput({ field, value, onChange }: InputProps) {
   type Item = string | { number: string; countryCode?: string } | { url: string; label?: string };
   const v = (value ?? { primary: null, additional: [] }) as {
@@ -319,19 +512,20 @@ function ListInput({ field, value, onChange }: InputProps) {
     additional: Item[];
   };
   const values = [...(v.primary !== null ? [v.primary] : []), ...v.additional];
+  const noun = LIST_NOUN[field.type as keyof typeof LIST_NOUN];
   const commit = (items: Item[]) =>
     onChange({ primary: items[0] ?? null, additional: items.slice(1) });
   const edit = (i: number, raw: Item) => commit(values.map((v, n) => (n === i ? raw : v)));
   return (
-    <Stack>
+    <Stack gap="small">
       {values.map((item, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: Controlled positional list; all values live in the parent editor.
-        <Row key={i}>
-          <Badge>{i === 0 ? 'Primary' : i + 1}</Badge>
+        <Row key={i} nowrap>
           {typeof item === 'string' ? (
             <Input
               aria-label={`Email ${i + 1}`}
               type="email"
+              placeholder="name@company.com"
               value={item}
               onChange={(e) => edit(i, e.target.value)}
             />
@@ -340,16 +534,19 @@ function ListInput({ field, value, onChange }: InputProps) {
               <Input
                 aria-label={`Phone ${i + 1}`}
                 type="tel"
+                placeholder="+1 555 000 0000"
                 value={item.number}
                 onChange={(e) => edit(i, { ...item, number: e.target.value })}
               />
-              <Input
-                aria-label={`Country code ${i + 1}`}
-                placeholder="IL"
-                maxLength={2}
-                value={item.countryCode ?? ''}
-                onChange={(e) => edit(i, { ...item, countryCode: e.target.value || undefined })}
-              />
+              <Fixed size="xs">
+                <Input
+                  aria-label={`Country code ${i + 1}`}
+                  placeholder="US"
+                  maxLength={2}
+                  value={item.countryCode ?? ''}
+                  onChange={(e) => edit(i, { ...item, countryCode: e.target.value || undefined })}
+                />
+              </Fixed>
             </>
           ) : (
             <>
@@ -359,41 +556,70 @@ function ListInput({ field, value, onChange }: InputProps) {
                 placeholder="https://"
                 onChange={(e) => edit(i, { ...item, url: e.target.value })}
               />
-              <Input
-                aria-label={`Link label ${i + 1}`}
-                value={item.label ?? ''}
-                onChange={(e) => edit(i, { ...item, label: e.target.value })}
-              />
+              <Fixed size="sm">
+                <Input
+                  aria-label={`Link label ${i + 1}`}
+                  placeholder="Label"
+                  value={item.label ?? ''}
+                  onChange={(e) => edit(i, { ...item, label: e.target.value })}
+                />
+              </Fixed>
             </>
           )}
-          {i > 0 ? (
-            <Button onClick={() => commit([item, ...values.filter((_, n) => n !== i)])}>
-              Set primary
+          {values.length > 1 ? (
+            <Button
+              variant="ghost"
+              size="iconSmall"
+              aria-label={i === 0 ? 'Primary' : 'Set primary'}
+              title={i === 0 ? 'Primary' : 'Set primary'}
+              disabled={i === 0}
+              onClick={() => commit([item, ...values.filter((_, n) => n !== i)])}
+            >
+              <Star size={13} fill={i === 0 ? 'currentColor' : 'none'} />
             </Button>
           ) : null}
-          <Button onClick={() => commit(values.filter((_, n) => n !== i))}>Remove</Button>
+          <Button
+            variant="ghost"
+            size="iconSmall"
+            aria-label={`Remove ${noun} ${i + 1}`}
+            title="Remove"
+            onClick={() => commit(values.filter((_, n) => n !== i))}
+          >
+            <X size={13} />
+          </Button>
         </Row>
       ))}
-      <Button
-        disabled={
-          field.settings.maxValues !== undefined && values.length >= field.settings.maxValues
-        }
-        onClick={() =>
-          commit([
-            ...values,
-            field.type === 'emails'
-              ? ''
-              : field.type === 'phones'
-                ? { number: '' }
-                : { url: '', label: '' },
-          ])
-        }
-      >
-        Add {field.type === 'emails' ? 'email' : field.type === 'phones' ? 'phone' : 'link'}
-      </Button>
+      <Row>
+        <Button
+          variant="ghost"
+          size="small"
+          disabled={
+            field.settings.maxValues !== undefined && values.length >= field.settings.maxValues
+          }
+          onClick={() =>
+            commit([
+              ...values,
+              field.type === 'emails'
+                ? ''
+                : field.type === 'phones'
+                  ? { number: '' }
+                  : { url: '', label: '' },
+            ])
+          }
+        >
+          <Plus size={14} />
+          Add {noun}
+        </Button>
+      </Row>
     </Stack>
   );
 }
+const ADDRESS_PARTS = [
+  ['city', 'City'],
+  ['state', 'State or region'],
+  ['postcode', 'Postal code'],
+  ['country', 'Country'],
+] as const;
 export function FieldInput(props: InputProps) {
   const { field, value, onChange } = props;
   switch (field.type) {
@@ -401,15 +627,16 @@ export function FieldInput(props: InputProps) {
       return <FieldDisplay field={field} value={value} />;
     case 'boolean':
       return (
-        <Label>
+        <CheckLabel>
           <Input
             type="checkbox"
             role="switch"
+            aria-label={field.label}
             checked={value === true}
             onChange={(e) => onChange(e.target.checked)}
           />
-          {field.label}
-        </Label>
+          <span>{value === true ? 'Yes' : 'No'}</span>
+        </CheckLabel>
       );
     case 'number':
       return (
@@ -454,65 +681,42 @@ export function FieldInput(props: InputProps) {
       );
     }
     case 'select':
-      return (
-        <Select
-          aria-label={field.label}
-          value={String(value ?? '')}
-          onChange={(e) => onChange(e.target.value || null)}
-        >
-          <option value="">Choose an option</option>
-          {field.settings.options?.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </Select>
-      );
+      return <OptionsMenu {...props} clearable={field.isNullable} />;
     case 'multi_select':
-      return (
-        <Stack>
-          {field.settings.options?.map((o) => (
-            <Label key={o.value}>
-              <Input
-                type="checkbox"
-                checked={Array.isArray(value) && value.includes(o.value)}
-                onChange={(e) => {
-                  const old = (value ?? []) as string[];
-                  onChange(e.target.checked ? [...old, o.value] : old.filter((v) => v !== o.value));
-                }}
-              />
-              {o.label}
-            </Label>
-          ))}
-        </Stack>
-      );
+      return <OptionsMenu {...props} multiple />;
     case 'full_name': {
       const v = (value ?? { first: '', last: '' }) as FullNameValue;
       return (
-        <Row>
-          <Label>
+        <Columns>
+          <Label quiet>
             First name
             <Input value={v.first} onChange={(e) => onChange({ ...v, first: e.target.value })} />
           </Label>
-          <Label>
+          <Label quiet>
             Last name
             <Input value={v.last} onChange={(e) => onChange({ ...v, last: e.target.value })} />
           </Label>
-        </Row>
+        </Columns>
       );
     }
     case 'address': {
       const v = (value ?? {}) as AddressValue;
+      const part = (k: keyof AddressValue & string, label: string) => (
+        <Label quiet key={k}>
+          {label}
+          <Input
+            value={String(v[k] ?? '')}
+            onChange={(e) => onChange({ ...v, [k]: e.target.value })}
+          />
+        </Label>
+      );
       return (
-        <Stack>
-          {(['street1', 'street2', 'city', 'state', 'postcode', 'country'] as const).map((k) => (
-            <Label key={k}>
-              {k}
-              <Input value={v[k] ?? ''} onChange={(e) => onChange({ ...v, [k]: e.target.value })} />
-            </Label>
-          ))}
+        <Stack gap="small">
+          {part('street1', 'Street')}
+          {part('street2', 'Street line 2')}
+          <Columns>{ADDRESS_PARTS.map(([k, label]) => part(k, label))}</Columns>
           {v.lat !== undefined || v.lng !== undefined ? (
-            <Muted>
+            <Muted small>
               Coordinates: {v.lat}, {v.lng}
             </Muted>
           ) : null}
@@ -537,14 +741,16 @@ export function FieldFilter({
 }: InputProps & { operator: string }) {
   if (operator === 'isNull')
     return (
-      <Select
-        aria-label="Is empty"
+      <SelectMenu
+        label="Is empty"
+        fill
+        options={[
+          { value: 'true', label: 'Is empty' },
+          { value: 'false', label: 'Is not empty' },
+        ]}
         value={value === false ? 'false' : 'true'}
-        onChange={(e) => onChange(e.target.value === 'true')}
-      >
-        <option value="true">Is empty</option>
-        <option value="false">Is not empty</option>
-      </Select>
+        onChange={(v) => onChange(v === 'true')}
+      />
     );
   if (field.type === 'money')
     return (
@@ -555,6 +761,11 @@ export function FieldFilter({
         onChange={(e) => onChange(e.target.value)}
       />
     );
+  // Several options of a select; one option a multi select contains.
+  if (field.type === 'select' && operator === 'in')
+    return <OptionsMenu field={field} value={value} onChange={onChange} multiple />;
+  if (field.type === 'multi_select')
+    return <OptionsMenu field={field} value={value} onChange={onChange} />;
   if (operator === 'in')
     return (
       <Textarea
@@ -563,10 +774,7 @@ export function FieldFilter({
         onChange={(e) => onChange(e.target.value)}
       />
     );
-  if (
-    ['emails', 'phones', 'links', 'full_name', 'address'].includes(field.type) ||
-    field.type === 'multi_select'
-  )
+  if (['emails', 'phones', 'links', 'full_name', 'address'].includes(field.type))
     return (
       <Input
         aria-label="Filter value"
@@ -580,10 +788,18 @@ export function filterValue(field: FieldView, operator: string, value: unknown):
   if (operator === 'isNull') return value !== false;
   if (field.type === 'money') return decimalToMicros(String(value));
   if (operator === 'in') {
-    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-    if (!Array.isArray(parsed) || !parsed.length) throw new Error('Use a nonempty JSON array');
+    const parsed = Array.isArray(value)
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? JSON.parse(value)
+        : [];
+    if (!Array.isArray(parsed) || !parsed.length)
+      throw new Error(
+        field.type === 'select' ? 'Choose at least one option' : 'Use a nonempty JSON array',
+      );
     return parsed;
   }
+  if (field.type === 'multi_select' && !value) throw new Error('Choose an option');
   if (['emails', 'phones', 'links', 'full_name', 'address', 'multi_select'].includes(field.type))
     return value;
   return normalizeFieldValue(field, value);

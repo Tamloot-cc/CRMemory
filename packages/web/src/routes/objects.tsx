@@ -10,18 +10,23 @@ import { aggregateOps } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
 import {
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Columns3,
   Combine,
   ListFilter,
   Plus,
   Trash2,
+  X,
 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
-import { filterValue, operatorsFor } from '../fields/common.js';
+import { filterValue, operatorsFor, PICKERS } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import {
   Button,
@@ -34,19 +39,26 @@ import {
   Form,
   GridFooter,
   type GridSelection,
+  IconLabel,
   Input,
   Inset,
-  Label,
-  MenuButton,
-  MenuHeader,
+  Menu,
+  MenuChoice,
+  MenuChoices,
   MenuItem,
+  MenuLabel,
   MenuList,
   Muted,
   Notice,
+  OptionList,
   Page,
+  PanelBody,
+  PanelFooter,
+  PanelHeader,
   Popover,
   RecordLink,
-  Select,
+  Segmented,
+  SelectMenu,
   Toolbar,
 } from '../ui/index.js';
 import { CreateRecordDialog } from './create-record.js';
@@ -203,6 +215,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               <EditableCell
                 key={f.name}
                 label={`${f.label} of ${label}`}
+                wide={!PICKERS[f.type]}
                 editor={(close) => (
                   <InlineEditor
                     record={{ ...r, relationReferences: references }}
@@ -484,37 +497,44 @@ function FooterCell({
   result: AggregateResult | undefined;
   onChange: (op: AggregateOp | undefined) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const ops = aggregateOps(field);
   if (!ops.length) return null;
   const value = op ? result?.values.find((v) => v.field === field.name && v.op === op) : undefined;
-  const choose = (next: AggregateOp | undefined) => {
-    setOpen(false);
-    onChange(next);
-  };
   return (
-    <Popover
+    <Menu
       label={`Calculate ${field.label}`}
-      open={open}
-      onOpenChange={setOpen}
       trigger={
         <FooterButton aria-label={`Calculate ${field.label}`}>
           {!op ? 'Calculate' : value ? formatAggregate(field, value) : aggregateLabel(field, op)}
         </FooterButton>
       }
     >
-      <MenuList>
-        <MenuButton onClick={() => choose(undefined)}>None</MenuButton>
+      <MenuChoices
+        value={op ?? 'none'}
+        onChange={(next) => onChange(next === 'none' ? undefined : (next as AggregateOp))}
+      >
+        <MenuChoice value="none">None</MenuChoice>
         {ops.map((o) => (
-          <MenuButton key={o} onClick={() => choose(o)}>
+          <MenuChoice key={o} value={o}>
             {aggregateLabel(field, o)}
-          </MenuButton>
+          </MenuChoice>
         ))}
-      </MenuList>
-    </Popover>
+      </MenuChoices>
+    </Menu>
   );
 }
 
+/** A field's name with its type's icon. */
+function FieldLabel({ field }: { field: FieldView }) {
+  return <IconLabel icon={fields[field.type].icon}>{field.label}</IconLabel>;
+}
+const fieldOption = (f: FieldView) => ({
+  value: f.name,
+  label: f.label,
+  content: <FieldLabel field={f} />,
+});
+
+/** Pick a field to sort by; the direction applies to whichever is chosen. */
 function SortMenu({
   object,
   sort,
@@ -524,15 +544,20 @@ function SortMenu({
   sort: SortState | undefined;
   onChange: (sort: SortState | undefined) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [direction, setDirection] = useState<'asc' | 'desc'>('asc');
   const options = [
-    ...object.fields.filter(isSortable).map((f) => ({ name: f.name, label: f.label })),
-    ...BUILT_IN_SORTS,
+    ...object.fields.filter(isSortable).map(fieldOption),
+    ...BUILT_IN_SORTS.map((s) => ({ value: s.name, label: s.label })),
   ];
-  const current = sort ? (options.find((o) => o.name === sort.field)?.label ?? sort.field) : '';
+  const current = sort ? (options.find((o) => o.value === sort.field)?.label ?? sort.field) : '';
+  const shownDirection = sort?.direction ?? direction;
   return (
     <Popover
       label="Sort records"
       align="end"
+      open={open}
+      onOpenChange={setOpen}
       trigger={
         <Button variant="ghost" size="small">
           <ArrowUpDown size={14} />
@@ -540,35 +565,42 @@ function SortMenu({
         </Button>
       }
     >
-      <Label>
-        Sort by
-        <Select
-          aria-label="Sort records"
-          value={sort ? `${sort.field}:${sort.direction}` : ''}
-          onChange={(e) => {
-            const [field = '', direction] = e.target.value.split(':');
-            onChange(
-              field && (direction === 'asc' || direction === 'desc')
-                ? { field, direction }
-                : undefined,
-            );
+      <OptionList
+        label="Sort by"
+        placeholder="Search fields…"
+        searchable={options.length > 7}
+        options={options}
+        selected={sort ? [sort.field] : []}
+        onPick={(field) => {
+          onChange({ field, direction: shownDirection });
+          setOpen(false);
+        }}
+      />
+      <PanelFooter>
+        <Segmented
+          label="Sort direction"
+          value={shownDirection}
+          options={[
+            { value: 'asc', label: 'Ascending', icon: <ArrowUp size={12} /> },
+            { value: 'desc', label: 'Descending', icon: <ArrowDown size={12} /> },
+          ]}
+          onChange={(next) => {
+            setDirection(next);
+            if (sort) onChange({ field: sort.field, direction: next });
           }}
-        >
-          <option value="">Default order</option>
-          {options.flatMap((f) =>
-            (['asc', 'desc'] as const).map((direction) => (
-              <option key={`${f.name}:${direction}`} value={`${f.name}:${direction}`}>
-                {f.label} · {direction === 'asc' ? 'ascending' : 'descending'}
-              </option>
-            )),
-          )}
-        </Select>
-      </Label>
-      <Muted>Or click a column header to sort by it.</Muted>
+        />
+        {sort ? (
+          <Button variant="ghost" size="small" onClick={() => onChange(undefined)}>
+            <X size={14} />
+            Clear
+          </Button>
+        ) : null}
+      </PanelFooter>
     </Popover>
   );
 }
 
+/** First the field to filter on, from a searchable list; then its condition and value. */
 function FilterMenu({
   object,
   onApply,
@@ -583,6 +615,12 @@ function FilterMenu({
     [operator, setOperator] = useState('eq'),
     [value, setValue] = useState<unknown>('');
   const selected = object.fields.find((f) => f.name === field);
+  function choose(name: string) {
+    const f = object.fields.find((f) => f.name === name);
+    setField(name);
+    setOperator(f ? (operatorsFor(f)[0] ?? 'isNull') : 'eq');
+    setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : '');
+  }
   function apply() {
     if (!selected) return;
     try {
@@ -597,7 +635,10 @@ function FilterMenu({
     <Popover
       label="Add a filter"
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setField('');
+      }}
       trigger={
         <Button variant="ghost" size="small">
           <ListFilter size={14} />
@@ -605,55 +646,48 @@ function FilterMenu({
         </Button>
       }
     >
-      <Form onSubmit={apply}>
-        <Label>
-          Field
-          <Select
-            aria-label="Filter field"
-            value={field}
-            onChange={(e) => {
-              const f = object.fields.find((f) => f.name === e.target.value);
-              setField(e.target.value);
-              setOperator(f ? (operatorsFor(f)[0] ?? 'isNull') : 'eq');
-              setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : '');
-            }}
-          >
-            <option value="">Choose a field…</option>
-            {object.fields
-              .filter((f) => f.isFilterable)
-              .map((f) => (
-                <option key={f.name} value={f.name}>
-                  {f.label}
-                </option>
-              ))}
-          </Select>
-        </Label>
-        {selected ? (
-          <>
-            <Label>
-              Condition
-              <Select
-                aria-label="Filter operator"
+      {selected ? (
+        <>
+          <PanelHeader
+            title={<FieldLabel field={selected} />}
+            back={{ label: 'Choose another field', onClick: () => setField('') }}
+          />
+          <PanelBody>
+            <Form onSubmit={apply} autoFocus>
+              <SelectMenu
+                label="Filter operator"
+                fill
                 value={operator}
-                onChange={(e) => {
-                  setOperator(e.target.value);
-                  setValue(e.target.value === 'isNull' ? true : '');
+                options={operatorsFor(selected).map((o) => ({
+                  value: o,
+                  label: operatorLabel(o),
+                }))}
+                onChange={(next) => {
+                  setOperator(next);
+                  setValue(next === 'isNull' ? true : '');
                 }}
-              >
-                {operatorsFor(selected).map((o) => (
-                  <option key={o} value={o}>
-                    {operatorLabel(o)}
-                  </option>
-                ))}
-              </Select>
-            </Label>
-            <FilterControl field={selected} value={value} operator={operator} onChange={setValue} />
-            <Button type="submit" variant="primary">
-              Apply filter
-            </Button>
-          </>
-        ) : null}
-      </Form>
+              />
+              <FilterControl
+                field={selected}
+                value={value}
+                operator={operator}
+                onChange={setValue}
+              />
+              <Button type="submit" variant="primary">
+                Apply filter
+              </Button>
+            </Form>
+          </PanelBody>
+        </>
+      ) : (
+        <OptionList
+          label="Filter by"
+          placeholder="Search fields…"
+          options={object.fields.filter((f) => f.isFilterable).map(fieldOption)}
+          empty="No fields match"
+          onPick={choose}
+        />
+      )}
     </Popover>
   );
 }
@@ -688,8 +722,8 @@ function ColumnsMenu({
         </Button>
       }
     >
-      <MenuHeader
-        title="Visible columns"
+      <PanelHeader
+        title="Columns"
         action={
           <Button variant="ghost" size="small" onClick={onReset}>
             Reset
@@ -697,44 +731,54 @@ function ColumnsMenu({
         }
       />
       <MenuList>
+        <MenuLabel>Shown</MenuLabel>
         {label ? (
           <MenuItem>
             <CheckLabel>
               <Input type="checkbox" checked disabled />
-              <span>{label.label}</span>
+              <FieldLabel field={label} />
             </CheckLabel>
           </MenuItem>
         ) : null}
         {shown.map((f, i) => (
-          <MenuItem key={f.name}>
+          <MenuItem
+            key={f.name}
+            actions={
+              <>
+                <Button
+                  variant="ghost"
+                  size="iconSmall"
+                  aria-label={`Move ${f.label} left`}
+                  title="Move left"
+                  disabled={i === 0}
+                  onClick={() => onChange(shiftColumn(order, f.name, -1))}
+                >
+                  <ChevronUp size={14} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="iconSmall"
+                  aria-label={`Move ${f.label} right`}
+                  title="Move right"
+                  disabled={i === shown.length - 1}
+                  onClick={() => onChange(shiftColumn(order, f.name, 1))}
+                >
+                  <ChevronDown size={14} />
+                </Button>
+              </>
+            }
+          >
             <CheckLabel>
               <Input
                 type="checkbox"
                 checked
                 onChange={() => onChange(setColumnVisible(order, f.name, false))}
               />
-              <span>{f.label}</span>
+              <FieldLabel field={f} />
             </CheckLabel>
-            <Button
-              variant="ghost"
-              size="small"
-              aria-label={`Move ${f.label} left`}
-              disabled={i === 0}
-              onClick={() => onChange(shiftColumn(order, f.name, -1))}
-            >
-              <ChevronLeft size={14} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="small"
-              aria-label={`Move ${f.label} right`}
-              disabled={i === shown.length - 1}
-              onClick={() => onChange(shiftColumn(order, f.name, 1))}
-            >
-              <ChevronRight size={14} />
-            </Button>
           </MenuItem>
         ))}
+        {hidden.length ? <MenuLabel>Hidden</MenuLabel> : null}
         {hidden.map((f) => (
           <MenuItem key={f.name} muted>
             <CheckLabel>
@@ -743,7 +787,7 @@ function ColumnsMenu({
                 checked={false}
                 onChange={() => onChange(setColumnVisible(order, f.name, true))}
               />
-              <span>{f.label}</span>
+              <FieldLabel field={f} />
             </CheckLabel>
           </MenuItem>
         ))}

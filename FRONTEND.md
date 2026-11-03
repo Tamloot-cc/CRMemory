@@ -446,26 +446,33 @@ uniqueness, relation targets, scopes, concurrency and other database checks.
 The last column is where to read how Twenty behaves (2). Paths are under
 `packages/twenty-front/src/modules/`.
 
-| Type           | Display                                                  | Input                                                                   | Twenty reference                              |
-| -------------- | -------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------- |
-| `text`         | Single line, full text on hover                          | Text field                                                              | `ui/field/display/components/TextDisplay`     |
-| `number`       | Locale formatting                                        | Numeric field                                                           | `NumberFieldInput`                            |
-| `boolean`      | Check or dash                                            | Switch                                                                  | `BooleanDisplay`                              |
-| `date`         | Date in the viewer's locale                              | Date picker                                                             | `DateDisplay`                                 |
-| `date_time`    | Date and time in the viewer's time zone, ISO on hover    | Date and time picker                                                    | `DateTimeDisplay`                             |
-| `select`       | Option label as a badge                                  | Combobox of `settings.options`                                          | `SelectDisplay`, `SelectFieldInput`           |
-| `multi_select` | Badges, overflow as "+n"                                 | A checkbox per option                                                   | `MultiSelectDisplay`, `MultiSelectFieldInput` |
-| `money`        | Amount from `amountMicros` with `currency`               | Amount plus currency picker; converts to micros without floats          | `CurrencyDisplay`, `CurrencyFieldInput`       |
-| `emails`       | Primary, "+n" for additional                             | List editor: add, remove, set primary; at most `settings.maxValues`     | `EmailsDisplay`, `EmailsFieldInput`           |
-| `phones`       | Primary with country, "+n"                               | List editor with country code                                           | `PhonesDisplay`, `PhonesFieldInput`           |
-| `links`        | Primary label or host, "+n"                              | List editor of URL and label                                            | `LinksDisplay`, `LinksFieldInput`             |
-| `full_name`    | "First Last"                                             | Two fields                                                              | `FullNameFieldInput`                          |
-| `address`      | One line: city, country; full address on the record page | Grouped fields; `lat`/`lng` shown, not edited                           | `AddressFieldInput`                           |
-| `relation`     | Target record's label as a link                          | Record picker searching the target object; inverse fields are read-only | `RelationManyToOneFieldInput`                 |
-| `json`         | Collapsed preview, formatted on the record page          | Read-only in v1                                                         | `JsonDisplay`                                 |
+| Type           | Display                                                  | Input                                                                 | Twenty reference                              |
+| -------------- | -------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------- |
+| `text`         | Single line, full text on hover                          | Text field                                                            | `ui/field/display/components/TextDisplay`     |
+| `number`       | Locale formatting                                        | Numeric field                                                         | `NumberFieldInput`                            |
+| `boolean`      | Check or dash                                            | Yes / No list in place; a switch in forms                             | `BooleanDisplay`                              |
+| `date`         | Date in the viewer's locale                              | Date picker                                                           | `DateDisplay`                                 |
+| `date_time`    | Date and time in the viewer's time zone, ISO on hover    | Date and time picker                                                  | `DateTimeDisplay`                             |
+| `select`       | Option label as a badge                                  | Searchable list of `settings.options`; saves on the pick              | `SelectDisplay`, `SelectFieldInput`           |
+| `multi_select` | Badges, overflow as "+n"                                 | Searchable list, a check per option; saves when the list is left      | `MultiSelectDisplay`, `MultiSelectFieldInput` |
+| `money`        | Amount from `amountMicros` with `currency`               | Amount plus searchable currency picker; micros without floats         | `CurrencyDisplay`, `CurrencyFieldInput`       |
+| `emails`       | Primary, "+n" for additional                             | List editor: add, remove, set primary; at most `settings.maxValues`   | `EmailsDisplay`, `EmailsFieldInput`           |
+| `phones`       | Primary with country, "+n"                               | List editor with country code                                         | `PhonesDisplay`, `PhonesFieldInput`           |
+| `links`        | Primary label or host, "+n"                              | List editor of URL and label                                          | `LinksDisplay`, `LinksFieldInput`             |
+| `full_name`    | "First Last"                                             | Two fields                                                            | `FullNameFieldInput`                          |
+| `address`      | One line: city, country; full address on the record page | Grouped fields; `lat`/`lng` shown, not edited                         | `AddressFieldInput`                           |
+| `relation`     | Target record's label as a link                          | Record list searching the target object; inverse fields are read-only | `RelationManyToOneFieldInput`                 |
+| `json`         | Collapsed preview, formatted on the record page          | Read-only in v1                                                       | `JsonDisplay`                                 |
 
 Composite values are replaced whole (rule 2.2), so list editors send the
 complete value, not a diff.
+
+Editing in place (a grid cell or a record's field) opens the list itself
+for `select`, `multi_select`, `relation` and `boolean` (`FieldPicker`), and
+a small form for the rest. A click outside saves a changed draft, Escape
+drops it, and an unchanged value is never written, so it adds nothing to
+the field's history. A multi select keeps its picks until the list is left:
+a click outside, Enter with no option highlighted, or ⌘/Ctrl+Enter.
 
 ### 6.3 Schema cache
 
@@ -537,6 +544,11 @@ this:
 - Light and dark themes from the start, following the system setting.
 - Keyboard first on the review inbox: `j`/`k` to move, `a` to accept,
   `r` to reject, `x` to select.
+- No native `<select>`. A choice is a `SelectMenu` (a button opening a
+  searchable `OptionList`); a list of actions or of one-of-many settings is
+  a `Menu`. Lists move with the arrow keys and pick with Enter.
+- Checkboxes, radios and switches use the drawn `ui-checkbox`, `ui-radio`
+  and `ui-switch` styles in `style.css`, never the browser's.
 
 ---
 

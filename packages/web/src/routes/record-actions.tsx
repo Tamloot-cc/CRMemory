@@ -11,11 +11,11 @@ import {
   FormField,
   Input,
   InteractionLink,
-  MenuButton,
-  MenuList,
+  Menu,
+  MenuAction,
+  MenuSeparator,
   Muted,
   Notice,
-  Popover,
   RecordLink,
   Row,
   Stack,
@@ -41,15 +41,10 @@ export function RecordActions({
 }) {
   const { session } = useWorkspace(),
     client = useQueryClient();
-  const [menu, setMenu] = useState(false),
-    [action, setAction] = useState<'merge' | 'delete' | 'forget' | null>(null);
+  const [action, setAction] = useState<'merge' | 'delete' | 'forget' | null>(null);
   const canWrite = canMutate(session),
     canErase = canMutate(session, 'admin');
   if (!canWrite) return null;
-  const choose = (next: typeof action) => {
-    setMenu(false);
-    setAction(next);
-  };
   const close = () => setAction(null);
   // Leave first, then drop the record's queries (under both IDs) so nothing
   // refetches a record that no longer exists, and refresh the rest.
@@ -62,34 +57,31 @@ export function RecordActions({
   };
   return (
     <>
-      <Popover
+      <Menu
         label="Record actions"
         align="end"
-        open={menu}
-        onOpenChange={setMenu}
         trigger={
           <Button variant="ghost" size="icon" aria-label="Record actions" title="Record actions">
             <MoreHorizontal size={16} />
           </Button>
         }
       >
-        <MenuList>
-          <MenuButton onClick={() => choose('merge')}>
-            <Combine size={14} />
-            Merge a duplicate…
-          </MenuButton>
-          <MenuButton destructive onClick={() => choose('delete')}>
-            <Trash2 size={14} />
-            Delete…
-          </MenuButton>
-          {canErase ? (
-            <MenuButton destructive onClick={() => choose('forget')}>
-              <ShieldX size={14} />
-              Erase for privacy…
-            </MenuButton>
-          ) : null}
-        </MenuList>
-      </Popover>
+        <MenuAction onSelect={() => setAction('merge')}>
+          <Combine size={14} />
+          Merge a duplicate…
+        </MenuAction>
+        <MenuSeparator />
+        <MenuAction destructive onSelect={() => setAction('delete')}>
+          <Trash2 size={14} />
+          Delete…
+        </MenuAction>
+        {canErase ? (
+          <MenuAction destructive onSelect={() => setAction('forget')}>
+            <ShieldX size={14} />
+            Erase for privacy…
+          </MenuAction>
+        ) : null}
+      </Menu>
       {action === 'merge' ? <MergePicker record={record} onClose={close} /> : null}
       {action === 'delete' ? <DeleteDialog record={record} onClose={close} onGone={leave} /> : null}
       {action === 'forget' ? <ForgetDialog record={record} onClose={close} onGone={leave} /> : null}
