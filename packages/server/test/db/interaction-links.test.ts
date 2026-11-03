@@ -296,6 +296,38 @@ describe('about records (1.3)', () => {
     ).toEqual([{ record_id: a.id }]);
   });
 
+  it('removes an about link that a merge in progress is moving', async () => {
+    const a = await company();
+    const b = await company();
+    const logged = await log({ about: [b.id] });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked = () => {};
+    const holding = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    // A merge of B into A, held open after it has moved B's links and before it commits.
+    const merge = db.owner.begin(async (t) => {
+      await t`select id from records where id = ${b.id} for update`;
+      await t`update interaction_participants set record_id = ${a.id} where record_id = ${b.id}`;
+      await t`update records set merged_into_id = ${a.id}, deleted_at = now() where id = ${b.id}`;
+      locked();
+      await gate;
+    });
+    await holding;
+    const removal = removeLinkFor(app, as(USER), logged.id, { about: b.id });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    release();
+    await merge;
+    expect((await removal).about).toEqual([]);
+    expect(
+      await count(db.owner`
+        select count(*)::int from interaction_participants where interaction_id = ${logged.id}`),
+    ).toBe(0);
+  });
+
   it('links to the survivor when a merge runs at the same time', async () => {
     for (let round = 0; round < 8; round++) {
       const a = await company();

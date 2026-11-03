@@ -603,11 +603,13 @@ export async function removeLink(
 ): Promise<PresentedInteraction> {
   requireUser(context.actor, 'remove a participant or an about record');
   await loadInteraction(tx, context.workspaceId, id, true);
+  // The about record is locked and followed through merges, as in addLinks,
+  // so a merge cannot move its link to the survivor before the delete runs.
   const match =
     'participant' in target
       ? tx`link = 'participant' and id = ${target.participant}`
       : tx`link = 'about' and record_id = ${
-          (await canonicalRecords(tx, context.workspaceId, [target.about])).get(target.about)?.id ??
+          (await lockRecords(tx, context.workspaceId, [target.about])).get(target.about)?.id ??
           target.about
         }`;
   const [removed] = await tx<{ id: string }[]>`
