@@ -33,11 +33,13 @@ import {
 } from '../schema-engine/service.js';
 import { applyTemplateFor, templatesFor } from '../templates/service.js';
 import { VERSION } from '../version.js';
+import { GUIDE_NAMES, GUIDES } from './guides.js';
 
 /**
  * The MCP tools (6.2). They are generic, not one per object, and each calls
  * the same service as its REST route, so both interfaces share validation,
- * write rules and error messages. The workspace and actor come from the API
+ * write rules and error messages; get_guide is the exception, serving static
+ * text that only agents need. The workspace and actor come from the API
  * key, so no tool takes either.
  */
 
@@ -45,8 +47,11 @@ const INSTRUCTIONS = `Retainer is the memory of a CRM workspace: people, compani
 any objects the workspace adds. You are connected to one workspace through one
 API key; every call acts on it, and every write is recorded as yours.
 
-Start with describe_schema. If the workspace is not initialized, pick a
-template with list_templates and apply_template, or ask your user.
+Start with describe_schema. If the workspace is not initialized, read
+get_guide("discover_schema") and follow it: it walks you through exploring
+your user's data, proposing a schema and applying it once they agree. If you
+cannot do that now, pick a template with list_templates and apply_template,
+or ask your user.
 
 Find records with search (keywords across records, facts and interactions)
 or query_records (exact filters on one object). Before working on a person or
@@ -76,8 +81,9 @@ applied at once; removing or renaming waits for a person to approve.
 Errors are JSON { error: { code, message, details } }. Messages say what was
 wrong and what is allowed, so read them and retry.`;
 
-/** A successful result: the JSON as text, and as structured content. */
-function ok(result: object): CallToolResult {
+/** A successful result: the JSON as text, and as structured content; a string as plain text. */
+function ok(result: object | string): CallToolResult {
+  if (typeof result === 'string') return { content: [{ type: 'text', text: result }] };
   return {
     content: [{ type: 'text', text: JSON.stringify(result) }],
     structuredContent: result as Record<string, unknown>,
@@ -98,8 +104,8 @@ function failure(error: AppError): CallToolResult {
 async function run(
   caller: Caller,
   scope: ApiKeyScope,
-  fn: () => Promise<object>,
-  isFailure: (result: object) => boolean = () => false,
+  fn: () => Promise<object | string>,
+  isFailure: (result: object | string) => boolean = () => false,
 ): Promise<CallToolResult> {
   const missing = missingScope(caller.scopes, scope);
   if (missing) return failure(missing);
@@ -250,6 +256,22 @@ const applyTemplateInput = z.strictObject({
   name: z.string().min(1).describe('Template name from list_templates, e.g. "sales" or "blank".'),
 });
 
+const GUIDE_LIST = GUIDE_NAMES.map((name) => `"${name}": ${GUIDES[name].description}`).join(' ');
+
+const getGuideInput = z.strictObject({
+  name: z.enum(GUIDE_NAMES).describe('The guide to read, e.g. "discover_schema".'),
+});
+
+const discoverSchemaArgs = z.object({
+  sources: z
+    .string()
+    .optional()
+    .describe(
+      'Where to start, e.g. "my Gmail and the leads spreadsheet". Without it, the agent ' +
+        'looks at everything its tools can reach.',
+    ),
+});
+
 const noInput = z.strictObject({});
 
 /** Builds the MCP server for one authenticated caller. */
@@ -267,7 +289,8 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'Returns the workspace (id, name, applied templates, initialized, schemaVersion) and ' +
         'every object with its fields: type, options, and whether it is unique, filterable or ' +
         'required. Call it first, and again after a schema change. If initialized is false, ' +
-        'no template has been chosen yet: see list_templates.',
+        'the schema has not been set up yet: follow get_guide("discover_schema"), or see ' +
+        'list_templates.',
       inputSchema: noInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -301,6 +324,44 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
     ({ name }) => run(caller, 'schema:write', () => applyTemplateFor(sql, caller, name)),
+  );
+
+  server.registerTool(
+    'get_guide',
+    {
+      title: 'Read a guide',
+      description:
+        `Returns step-by-step instructions, as markdown, for a task you do rarely. ${GUIDE_LIST} ` +
+        'Read "discover_schema" when describe_schema says initialized: false, or when your ' +
+        'user asks you to set up or redesign the workspace.',
+      inputSchema: getGuideInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ name }) => run(caller, 'read', async () => GUIDES[name].text),
+  );
+
+  server.registerPrompt(
+    'discover_schema',
+    {
+      title: GUIDES.discover_schema.title,
+      description: GUIDES.discover_schema.description,
+      argsSchema: discoverSchemaArgs,
+    },
+    ({ sources }) => ({
+      description: GUIDES.discover_schema.description,
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              "Set up this Retainer workspace's schema from my data. Follow this guide.\n\n" +
+              GUIDES.discover_schema.text +
+              (sources ? `\n\nStart with these sources: ${sources}` : ''),
+          },
+        },
+      ],
+    }),
   );
 
   server.registerTool(

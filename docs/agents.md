@@ -84,6 +84,7 @@ change the tool list.
 | `describe_schema`       | The workspace's objects, fields, types, options and which fields are unique                     | `read`         |
 | `list_templates`        | Templates and what each would add                                                               | `read`         |
 | `apply_template`        | Apply a template to the workspace                                                               | `schema:write` |
+| `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                               | `read`         |
 | `query_records`         | Filter, sort and page the records of one object                                                 | `read`         |
 | `get_record`            | One record by ID; merged IDs resolve to the surviving record                                    | `read`         |
 | `search`                | Keyword search across records, facts and interactions                                           | `read`         |
@@ -95,6 +96,24 @@ change the tool list.
 
 Validation errors name the field and the allowed values, so an agent can
 correct its call and retry.
+
+## Setting up a new workspace
+
+The `discover_schema` guide walks an agent through designing the workspace
+from its user's own data. The agent works out the business from what it
+already knows, finds the sources its own tools reach (an existing CRM,
+spreadsheets, email, calendar), and reads the business's existing records
+first. It asks its user only for what it cannot find. It samples those
+sources and proposes a template plus the objects and fields the data calls
+for, each with the evidence for it. Nothing is applied until the user
+agrees.
+
+An agent reads it with `get_guide`, and the server instructions tell it to
+when `describe_schema` reports `initialized: false`. A person can also start
+it as the MCP prompt `discover_schema`, with an optional `sources` argument
+naming where to start; in Claude Code, with the server added as `retainer`,
+that is `/mcp__retainer__discover_schema`. Applying the schema needs the
+`schema:write` scope.
 
 ## How an agent should write
 

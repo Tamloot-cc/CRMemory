@@ -5,6 +5,7 @@ import { type ServerType, serve } from '@hono/node-server';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { GUIDE_NAMES } from '../../src/mcp/guides.js';
 import { callTool, startTestApp, type TestApp } from '../helpers/app.js';
 import { useTestDatabase } from '../helpers/db.js';
 
@@ -70,6 +71,8 @@ describe('stdio bridge', () => {
     const client = await connect({ RETAINER_URL: baseUrl, RETAINER_API_KEY: agentKey });
     const tools = (await client.listTools()).tools.map((tool) => tool.name).sort();
     expect(tools).toEqual(toolsOverHttp);
+    const prompts = (await client.listPrompts()).prompts.map((prompt) => prompt.name).sort();
+    expect(prompts).toEqual([...GUIDE_NAMES].sort());
 
     const written = await callTool(client, 'upsert_record', {
       object: 'person',

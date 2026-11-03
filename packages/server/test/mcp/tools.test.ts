@@ -1,4 +1,7 @@
+import type { GetPromptResult } from '@modelcontextprotocol/client';
+import { FIELD_TYPES } from '@retainer/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { GUIDE_NAMES } from '../../src/mcp/guides.js';
 import { type McpTestClient, startTestApp, type TestApp } from '../helpers/app.js';
 import { useTestDatabase } from '../helpers/db.js';
 
@@ -19,6 +22,7 @@ const TOOLS = [
   'apply_template',
   'describe_schema',
   'get_context',
+  'get_guide',
   'get_record',
   'list_templates',
   'log_interaction',
@@ -165,6 +169,70 @@ describe('connecting', () => {
     expect(byName.get('upsert_record')?.description).toContain('log_interaction');
     expect(byName.get('remember')?.description).toContain('log_interaction');
     expect(byName.get('log_interaction')?.description).toContain('source');
+  });
+});
+
+describe('the discover_schema guide', () => {
+  it('points a new workspace at the guide from the instructions', () => {
+    expect(fresh.getInstructions()).toContain('get_guide("discover_schema")');
+  });
+
+  it('serves the guide as markdown to any key that can read', async () => {
+    const res = await reader.call<string>('get_guide', { name: 'discover_schema' });
+    expect(res.isError).toBe(false);
+    expect(res.body).toMatch(/^# Discover the schema/);
+    const steps = [
+      'describe_schema',
+      'Propose and wait',
+      'apply_template',
+      'propose_schema_change',
+    ];
+    const positions = steps.map((step) => res.body.indexOf(step));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+
+  it('names only tools and field types that exist', async () => {
+    const res = await agent.call<string>('get_guide', { name: 'discover_schema' });
+    const known = new Set<string>([...TOOLS, ...FIELD_TYPES]);
+    const named = new Set(res.body.match(/\b[a-z]+(?:_[a-z]+)+\b/g));
+    expect(named).toContain('propose_schema_change');
+    expect([...named].filter((word) => !known.has(word))).toEqual([]);
+  });
+
+  it('rejects an unknown guide and lists the known ones', async () => {
+    const res = await agent.call('get_guide', { name: 'import_data' });
+    expect(res.isError).toBe(true);
+    expect(JSON.stringify(res.body)).toContain('discover_schema');
+  });
+
+  it('offers every guide as a prompt of the same name', async () => {
+    const { prompts } = await fresh.listPrompts();
+    expect(prompts.map((prompt) => prompt.name).sort()).toEqual([...GUIDE_NAMES].sort());
+  });
+
+  it('starts discover_schema as a prompt, with the sources the user names', async () => {
+    const promptText = ({ messages: [message] }: GetPromptResult) => {
+      expect(message?.role).toBe('user');
+      return message?.content.type === 'text' ? message.content.text : '';
+    };
+    const { prompts } = await fresh.listPrompts();
+    expect(prompts.find((prompt) => prompt.name === 'discover_schema')?.arguments).toEqual([
+      expect.objectContaining({ name: 'sources', required: false }),
+    ]);
+
+    const guide = await fresh.call<string>('get_guide', { name: 'discover_schema' });
+    const plain = promptText(await fresh.getPrompt({ name: 'discover_schema' }));
+    expect(plain).toContain(guide.body);
+    expect(plain).not.toContain('Start with these sources');
+
+    const named = promptText(
+      await fresh.getPrompt({
+        name: 'discover_schema',
+        arguments: { sources: 'Gmail and the leads spreadsheet' },
+      }),
+    );
+    expect(named).toContain('Start with these sources: Gmail and the leads spreadsheet');
   });
 });
 

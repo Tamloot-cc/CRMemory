@@ -438,9 +438,11 @@ approval.
 
 **Choosing a template on init.** A new workspace has no template applied
 unless the operator passed `--template` (7.1), and `describe_schema` says so (`initialized: false`). An agent that sees this
-calls `list_templates`, picks the closest one from what it knows about the
-business, or asks its user when it is unsure, and calls
-`apply_template`. Choosing `blank` marks the workspace initialized without
+follows the `discover_schema` guide (6.2): it looks at its user's data,
+proposes the closest template plus any additions, and applies them once the
+user agrees. Without that, it calls `list_templates`, picks the closest one
+from what it knows about the business, or asks its user when it is unsure,
+and calls `apply_template`. Choosing `blank` marks the workspace initialized without
 adding anything. An agent that cannot decide should not guess: base objects
 work without a template, and a template can be applied later.
 
@@ -751,9 +753,24 @@ small stdio bridge for local clients that only speak stdio.
 Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
 
-`describe_schema`, `list_templates`, `apply_template`, `query_records`,
-`get_record`, `search`, `get_context`, `upsert_record`, `log_interaction`,
-`remember`, `propose_schema_change`.
+`describe_schema`, `list_templates`, `apply_template`, `get_guide`,
+`query_records`, `get_record`, `search`, `get_context`, `upsert_record`,
+`log_interaction`, `remember`, `propose_schema_change`.
+
+**Guides.** `get_guide(name)` returns step-by-step instructions, as
+markdown, for a task an agent does rarely. Each guide is also an MCP prompt
+of the same name, so a person can start it from their client (a slash
+command in Claude Code); tools reach every agent, prompts only the clients
+that show them. The one guide so far, `discover_schema`, has the agent
+find and sample its user's sources on its own (an existing CRM first, then
+spreadsheets, email and calendar), asking its user only for what it cannot
+find, propose a template and additions tied to that evidence, wait for
+the user's approval, then apply them with `apply_template` and
+`propose_schema_change`. It changes only the schema;
+importing data is a separate step. Guides are static text in
+`packages/server/src/mcp/guides.ts`: Retainer reads none of the user's
+sources and calls no model (4.3). The server instructions point an agent
+at `discover_schema` when the workspace is not initialized.
 
 In v1 an agent is connected to exactly one workspace through one API key.
 Every call acts on that workspace, so no tool takes a workspace parameter.
