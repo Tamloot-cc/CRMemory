@@ -1,4 +1,11 @@
-import type { Actor, FieldSettings, FieldType, SchemaOwner, SchemaStatus } from '@retainer/shared';
+import type {
+  Actor,
+  FieldSettings,
+  FieldType,
+  SchemaChangeStatus,
+  SchemaOwner,
+  SchemaStatus,
+} from '@retainer/shared';
 import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
@@ -181,8 +188,7 @@ export const fields = pgTable(
   ],
 );
 
-export const SCHEMA_CHANGE_STATUSES = ['applied', 'proposed', 'rejected', 'failed'] as const;
-export type SchemaChangeStatus = (typeof SCHEMA_CHANGE_STATUSES)[number];
+export { SCHEMA_CHANGE_STATUSES, type SchemaChangeStatus } from '@retainer/shared';
 
 export const schemaChanges = pgTable(
   'schema_changes',

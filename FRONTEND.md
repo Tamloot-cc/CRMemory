@@ -304,9 +304,24 @@ retracted assertions, recomputed records and hidden facts.
 
 ### 5.7 Schema — `/app/schema`
 
-Read-only in v1. Objects and their fields with type, flags and owner
-(`system`, `workspace`, `agent`), and the change history from
-`GET /v1/schema/changes`. Agents change the schema; people approve (5.2).
+Read-only in v1. Agents change the schema; people approve (5.2). Two tabs
+(`?tab=`), with a "N proposed" link to the review inbox in the top bar when
+changes are waiting:
+
+- **Objects.** A list of objects (standard first, with icon and field count)
+  beside the selected one (`?object=`): its API names, owner, label field,
+  description and a link to its records. Its fields are a table that can be
+  filtered: label and API name, type with an icon and what the settings add
+  ("Single select · 4 options", "Relation · One Company"), checks for
+  Required, Unique, Filterable and Searchable, and the owner (`system`,
+  `workspace`, `agent`). Clicking a field opens it in a side sheet
+  (`?field=`): definition, select options, the relation's target,
+  cardinality, other side (linked) and delete behaviour, and each flag in
+  words.
+- **Change history.** `GET /v1/schema/changes` as a timeline, filterable by
+  status (`?status=`): each change's operations in words, reason, proposer,
+  who decided, and the schema version it produced.
+
 A workspace with no template applied shows the template list
 (`GET /v1/templates`) and an Apply button for `schema:write` keys.
 
@@ -332,6 +347,8 @@ is specified by this document.
 | `Input`   | Editing control; produces a value that passes the type's schema in `@retainer/shared` |
 | `Filter`  | The operators offered in the list filter bar for `isFilterable` fields                |
 | `isEmpty` | Whether a value counts as empty for display                                           |
+| `label`   | The type's name where the schema is shown, e.g. "Single select"                       |
+| `icon`    | The type's icon on the schema page                                                    |
 
 A registry maps every `FieldType` in `@retainer/shared` to its module, and a
 unit test fails when a type has no module. Before implementing inputs,

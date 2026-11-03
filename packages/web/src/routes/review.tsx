@@ -20,6 +20,7 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
+import { describeOperation } from './schema-model.js';
 import { QueryError, useView } from './state.js';
 
 const reasonText = {
@@ -27,7 +28,7 @@ const reasonText = {
   low_confidence: 'Below the workspace’s confidence threshold',
   unique_conflict: 'Another record already has this value',
 };
-export function SchemaChangeCard({
+function SchemaChangeCard({
   change,
   onDecision,
   allowed,
@@ -38,20 +39,22 @@ export function SchemaChangeCard({
   allowed: boolean;
   busy: boolean;
 }) {
+  const { objects } = useWorkspace().schema;
   return (
     <Panel>
       <Stack>
         <Row>
-          <Badge tone={change.status === 'proposed' ? 'pending' : 'neutral'}>{change.status}</Badge>
+          <Badge tone="pending">{change.status}</Badge>
           <ActorBadge actor={change.requestedBy} />
           <Muted>{new Date(change.createdAt).toLocaleString()}</Muted>
         </Row>
-        {change.request.map((op) => (
-          <div key={JSON.stringify(op)}>{describeOperation(op)}</div>
+        {change.request.map((op, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a change's operations never reorder.
+          <div key={i}>{describeOperation(op, objects)}</div>
         ))}
         {change.reason ? <Muted>{change.reason}</Muted> : null}
         {change.error ? <Notice error>{change.error}</Notice> : null}
-        {allowed && change.status === 'proposed' ? (
+        {allowed ? (
           <Row>
             <Button
               variant="primary"
@@ -68,46 +71,6 @@ export function SchemaChangeCard({
       </Stack>
     </Panel>
   );
-}
-function describeOperation(operation: SchemaChange['request'][number]) {
-  const op = operation as unknown as Record<string, unknown>;
-  const field =
-    typeof op.field === 'object' && op.field !== null
-      ? (op.field as Record<string, unknown>)
-      : null;
-  const object =
-    typeof op.object === 'object' && op.object !== null
-      ? (op.object as Record<string, unknown>)
-      : null;
-  if (op.op === 'create_field')
-    return `Add field ${field?.label ?? field?.name ?? ''} (${field?.type ?? ''}) to ${String(op.object)}`;
-  if (op.op === 'create_object')
-    return `Add object ${object?.labelSingular ?? object?.nameSingular ?? ''}`;
-  const labels: Record<string, string> = {
-    isNullable: 'Can be empty',
-    isUnique: 'Unique',
-    isFilterable: 'Filterable',
-    isSearchable: 'Searchable',
-    name: 'New name',
-    nameSingular: 'Singular name',
-    namePlural: 'Plural name',
-    label: 'Label',
-    labelField: 'Label field',
-    labelSingular: 'Singular label',
-    labelPlural: 'Plural label',
-    description: 'Description',
-    option: 'Option',
-    value: 'Option value',
-    type: 'Type',
-  };
-  const changes = Object.entries(op)
-    .filter(([k]) => !['op', 'object', 'field'].includes(k))
-    .map(
-      ([k, v]) =>
-        `${labels[k] ?? k}: ${typeof v === 'boolean' ? (v ? 'yes' : 'no') : typeof v === 'string' ? v : JSON.stringify(v)}`,
-    )
-    .join('; ');
-  return `${String(op.op).replaceAll('_', ' ')} · ${typeof op.object === 'string' ? op.object : ''} ${typeof op.field === 'string' ? op.field : ''}${changes ? ` — ${changes}` : ''}`;
 }
 type ReviewOutcome = {
   id: string;

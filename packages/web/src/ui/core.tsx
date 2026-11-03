@@ -4,6 +4,12 @@ import { twMerge } from 'tailwind-merge';
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
+/** The status colours a badge or a timeline icon can take. */
+export type Tone = 'neutral' | 'pending' | 'success' | 'error';
+
+/** Hover and selected backgrounds for the cells of a clickable row (`group` on the row). */
+export const ROW_STATE = 'group-hover:bg-hover group-data-selected:bg-muted';
+
 /**
  * Whether a click on a clickable area (a grid row, a field value) is meant
  * for the area itself: not on a control inside it, and not ending a text

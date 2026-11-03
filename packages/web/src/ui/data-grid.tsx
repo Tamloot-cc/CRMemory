@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { cn, isPlainClick } from './core.js';
+import { cn, isPlainClick, ROW_STATE } from './core.js';
 
 export type GridColumn = {
   id: string;
@@ -207,7 +207,7 @@ export function DataGrid({
   );
 }
 
-const ROW_BG = 'bg-background group-hover:bg-hover group-data-selected:bg-muted';
+const ROW_BG = `bg-background ${ROW_STATE}`;
 const CELL = `border-b border-r border-border p-0 ${ROW_BG}`;
 const PINNED_CELL = `${CELL} sticky left-0 z-[5]`;
 
