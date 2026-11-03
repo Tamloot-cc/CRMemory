@@ -76,7 +76,8 @@ Each call is its own write, so you can stop and resume; logging the same
 externalId again returns the same interaction.
 
 When a field you need does not exist, use propose_schema_change. Adding is
-applied at once; removing or renaming waits for a person to approve.
+applied at once; removing or renaming waits for a person to approve. Read
+get_guide("schema_design") once before you first add an object.
 
 Errors are JSON { error: { code, message, details } }. Messages say what was
 wrong and what is allowed, so read them and retry.`;
@@ -262,16 +263,6 @@ const getGuideInput = z.strictObject({
   name: z.enum(GUIDE_NAMES).describe('The guide to read, e.g. "discover_schema".'),
 });
 
-const discoverSchemaArgs = z.object({
-  sources: z
-    .string()
-    .optional()
-    .describe(
-      'Where to start, e.g. "my Gmail and the leads spreadsheet". Without it, the agent ' +
-        'looks at everything its tools can reach.',
-    ),
-});
-
 const noInput = z.strictObject({});
 
 /** Builds the MCP server for one authenticated caller. */
@@ -304,7 +295,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       description:
         'Lists the templates a workspace can apply (sales, services, clinic, real_estate, ' +
         'recruiting, blank), what objects and fields each adds, and which are applied. ' +
-        'Pick the one closest to the business; if unsure, ask your user rather than guess.',
+        'Pick the one closest to the business; if unsure, ask your user rather than guess. ' +
+        'Check it before creating an object, even in an initialized workspace: a template ' +
+        'may already define it.',
       inputSchema: noInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -340,29 +333,28 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
     ({ name }) => run(caller, 'read', async () => GUIDES[name].text),
   );
 
-  server.registerPrompt(
-    'discover_schema',
-    {
-      title: GUIDES.discover_schema.title,
-      description: GUIDES.discover_schema.description,
-      argsSchema: discoverSchemaArgs,
-    },
-    ({ sources }) => ({
-      description: GUIDES.discover_schema.description,
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text:
-              "Set up this Retainer workspace's schema from my data. Follow this guide.\n\n" +
-              GUIDES.discover_schema.text +
-              (sources ? `\n\nStart with these sources: ${sources}` : ''),
+  for (const name of GUIDE_NAMES) {
+    const guide = GUIDES[name];
+    const args = 'promptArgs' in guide ? { argsSchema: guide.promptArgs } : {};
+    server.registerPrompt(
+      name,
+      { title: guide.title, description: guide.description, ...args },
+      ({ sources }: { sources?: string }) => ({
+        description: guide.description,
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text:
+                `${guide.promptIntro} Follow this guide.\n\n${guide.text}` +
+                (sources ? `\n\nStart with these sources: ${sources}` : ''),
+            },
           },
-        },
-      ],
-    }),
-  );
+        ],
+      }),
+    );
+  }
 
   server.registerTool(
     'query_records',
@@ -515,7 +507,11 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'approves them, and the response says "proposed". Field types cannot be changed; ' +
         'create a new field instead. Fields are not searchable unless you set isSearchable: ' +
         'set it on text fields people will look records up by (the label field is always ' +
-        'searchable). Give a short reason. Needs the schema:write scope.',
+        'searchable). Give a short reason. Needs the schema:write scope.\n\n' +
+        'Make the smallest change that works: an option before a field, a field before an ' +
+        'object. Meetings, calls, emails and messages are interactions (log_interaction) and ' +
+        'one-off knowledge is a fact (remember), never an object or field. If you have not ' +
+        'yet, read get_guide("schema_design") before creating an object.',
       inputSchema: schemaChangeRequestSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },

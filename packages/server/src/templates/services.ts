@@ -8,7 +8,9 @@ export const services: Template = {
   name: 'services',
   version: 1,
   label: 'Services',
-  description: 'Agencies, consultants and freelancers.',
+  description:
+    'Agencies, consultants, advisors and freelancers: projects or engagements delivered for ' +
+    'clients, and the proposals that win them.',
   operations: [
     {
       op: 'create_object',
