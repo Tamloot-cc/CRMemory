@@ -176,13 +176,13 @@ install can add them later as an opt-in.
 
 ### 1.3 Memory
 
-| Table                      | Holds                                                                                                                                                                                                                                                                                      |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `interactions`             | A log of what happened, written by the agent: `kind` (meeting, call, email, message, note), `channel`, `occurred_at`, `title`, an agent-written `summary`, `external_id` (unique per workspace and channel, so logging the same source twice is a no-op). No transcripts or message bodies |
-| `interaction_participants` | Who took part, in the order logged: a normalized `handle` (email or phone) and/or a `record_id`, a free-text `role`, and an `unmatched_reason` when no record was matched                                                                                                                  |
-| `field_assertions`         | A claimed value for one field of one record: value, actor, source interaction, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`)                                                             |
-| `facts`                    | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                   |
-| `fact_sources`             | What a fact rests on: an interaction (with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                              |
+| Table                      | Holds                                                                                                                                                                                                                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `interactions`             | A log of what happened, written by the agent: `kind` (meeting, call, email, message, note), `channel`, `occurred_at`, `title`, an agent-written `summary`, `external_id` (unique per workspace and channel, so logging the same source twice is a no-op). No transcripts or message bodies            |
+| `interaction_participants` | The records linked to an interaction, in the order logged. `link = 'participant'`: who took part, as a normalized `handle` (email or phone) and/or a `record_id`, a free-text `role`, and an `unmatched_reason` when no record was matched. `link = 'about'`: a record it concerns (only `record_id`) |
+| `field_assertions`         | A claimed value for one field of one record: value, actor, source interaction, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`)                                                                        |
+| `facts`                    | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                              |
+| `fact_sources`             | What a fact rests on: an interaction (with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                                         |
 
 `field_assertions.observed_at` and `facts.valid_from` come from the source
 (rules 2.2 and 2.6); `valid_from` has no `now()` default, so backfilled
@@ -193,18 +193,41 @@ Retainer stores what the agent chose to record, not the conversation itself.
 A summary or quote is stored like any other value, so an agent should not put
 in it what the workspace should not keep.
 
+Participants are who took part. `about` lists the records an interaction
+concerns, of any object: the company, project or tasks of a meeting with Dana
+about the Acme pilot. Both make the interaction show in those records'
+context packs, searches and interaction queries; only participants are
+attendees. The agent names `about` records explicitly. Retainer does not
+infer them, for example from a participant's company, since that would move
+old meetings when a person changes jobs. A record is linked once per
+interaction: `about` skips a record already linked, and a merge drops the
+`about` link that would repeat another.
+
 Logging an interaction again with the same `(workspace_id, channel,
-external_id)` and identical input returns the existing one. Input is compared
-after normalization (handles, the `occurred_at` instant), through a hash of it
-stored on the interaction. A different payload for that identity returns a
-conflict (`interaction_conflict`); it is never silently ignored. Logging the
-identity of a retracted interaction again is also a conflict
+external_id)` returns the existing one when its kind, `occurred_at` instant,
+title and summary are the same. Participants and `about` records it does not
+have yet are added, after the existing ones, and the response lists them in
+`added`; nothing is removed this way, so retries, and syncs that log the
+original list again, are no-ops. A participant is the same one when its role
+and handle match, or its role and record (after merges) when it has no
+handle; an erased handle (2.1) matches another erased handle with the same
+role. Adding a participant changes no field value or fact, only which records
+list the interaction. The interaction row is locked while links are added, so
+concurrent additions each land once. A different kind, time, title or summary
+returns a conflict (`interaction_conflict`); it is never silently ignored.
+Logging the identity of a retracted interaction again is also a conflict
 (`interaction_retracted`): the unique index still holds the retracted row,
-and restoring a source is not in v1. `channel` must distinguish source accounts
-when their external IDs can overlap. Without `external_id`, callers do not
-get deduplication. An edited source needs a new `external_id` in v1;
-creating it does not retract the old source's claims; the caller retracts
-the old interaction (`DELETE /v1/interactions/:id`).
+and restoring a source is not in v1. `channel` must distinguish source
+accounts when their external IDs can overlap. Without `external_id`, callers
+do not get deduplication. An edited source needs a new `external_id` in v1;
+creating it does not retract the old source's claims; a person retracts the
+old interaction (`DELETE /v1/interactions/:id`).
+
+`POST /v1/interactions/:id/participants` adds participants and `about`
+records to a logged interaction by ID, with the same matching. Removing one
+(`DELETE /v1/interactions/:id/participants/:participantId` or
+`/about/:recordId`) is a person's decision, like other changes that hide
+data: an agent's key gets 403.
 
 ---
 
@@ -293,8 +316,11 @@ can erase those dependencies. Then, in a coordinated deletion operation:
 
 1. add normalized emails and phones to a workspace suppression list using a
    keyed HMAC (a plain hash of a guessable email/phone is insufficient);
-2. hard-delete interactions it took part in, with their source quotes, and
-   remove their assertions and facts that have no live source;
+2. hard-delete interactions it took part in and the notes `remember` wrote
+   about it, with their source quotes, and remove their assertions and facts
+   that have no live source. An interaction that is only `about` the record
+   (a meeting about a company) is someone else's conversation: it stays, and
+   only the link is deleted;
 3. invalidate inbound relation assertions and recompute surviving records'
    field values, links, identifiers and search text;
 4. hard-delete the record, its assertions, facts, links and identifiers;
@@ -482,8 +508,9 @@ worth keeping. Retainer only stores, validates and resolves. After a
 meeting, call or email thread, an agent typically:
 
 1. **Logs the interaction** with `log_interaction`: kind, channel, time,
-   title, its own short summary, the source's external ID, and the
-   participants as handles (emails, phones) and/or record IDs.
+   title, its own short summary, the source's external ID, the participants
+   as handles (emails, phones) and/or record IDs, and in `about` the records
+   it concerns (1.3).
 2. **Updates records** with `upsert_record`, citing the interaction as
    `source` so the values carry its date and provenance (rule 2.2).
 3. **Stores facts** with `remember`, citing the same interaction and an
@@ -499,8 +526,9 @@ not unique (numbers are shared and reassigned), so a participant known only
 by phone stays unresolved unless the agent passes its record ID. Matching a
 phone held by exactly one live record is a later option.
 
-A record ID the agent passes is used as given, after following merges; an
-unknown or deleted one fails the call, since the agent named it explicitly.
+A record ID the agent passes, as a participant or in `about`, is used as
+given, after following merges; an unknown or deleted one fails the call,
+since the agent named it explicitly.
 An email claimed by several live records (two unique email fields on
 different objects) is not matched to any of them: it comes back `ambiguous`
 with the candidates (1.2). `occurred_at` must carry a UTC offset and may not
@@ -617,13 +645,23 @@ deterministic and testable.
 
 ## 5. Read paths
 
-| Operation                          | What it returns                                                                                                |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`) and a compact list of its objects and fields        |
-| `query_records`                    | Structured filter, sort and pagination over one object                                                         |
-| `get_record`                       | One record with its fields and links                                                                           |
-| `search`                           | Keyword search (Postgres full-text) across records, facts and interactions                                     |
-| `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent interaction summaries, fitted to the budget |
+| Operation                          | What it returns                                                                                                 |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`), its objects and fields, and `builtIns`              |
+| `query_interactions`               | Interactions by kind, channel, `occurred_at` range and linked record, with totals and counts by kind or channel |
+| `query_records`                    | Structured filter, sort and pagination over one object                                                          |
+| `get_record`                       | One record with its fields and links                                                                            |
+| `search`                           | Keyword search (Postgres full-text) across records, facts and interactions                                      |
+| `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent interaction summaries, fitted to the budget  |
+
+`builtIns` lists interactions and facts, apart from `objects`, so a person
+reading the schema sees that the workspace keeps them and no client mistakes
+them for something `upsert_record` writes. They are not objects: an
+interaction is a source, not a claim, its participants are many-to-many, and
+retraction and `forget` depend on its own table (1.3, 2.1). For the same
+reason `query_interactions` reads the `interactions` table directly rather
+than through the records query. It leaves out retracted interactions and the
+notes `remember` creates, as context packs and search do.
 
 Every read hides soft-deleted parents/rows and superseded facts by default.
 An explicit history mode can list retained assertions and facts with their
@@ -722,7 +760,7 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `GET /v1/records/:id/delete-impact`               | Records a delete would cascade to, at any depth, counted by object               |
 | `POST /v1/records/delete-impact`                  | The same for several records deleted together, overlaps counted once             |
 | `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                            |
-| `GET /v1/records/:id/interactions`                | Paginated interactions for a record                                              |
+| `GET /v1/records/:id/interactions`                | Paginated interactions a record took part in or that are about it                |
 | `GET /v1/assertions/:id`                          | One assertion, including status and review details                               |
 | `GET /v1/interactions/:id/claims`                 | Paginated assertions and facts citing an interaction                             |
 | `GET /v1/records/:id/context`                     | Context pack                                                                     |
@@ -734,7 +772,11 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                                  |
 | `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                       |
 | `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)             |
+| `POST /v1/interactions/query`                     | Filter, count and page interactions (5)                                          |
 | `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                                   |
+| `POST /v1/interactions/:id/participants`          | Add participants and `about` records (1.3)                                       |
+| `DELETE /v1/interactions/:id/participants/:pid`   | Remove a participant (a person only)                                             |
+| `DELETE /v1/interactions/:id/about/:recordId`     | Remove an `about` record (a person only)                                         |
 | `POST /v1/search`                                 | Keyword search (5.1)                                                             |
 
 Web sign-in and sign-out use `POST` and `DELETE /auth/session`, outside
@@ -756,8 +798,10 @@ Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
 
 `describe_schema`, `list_templates`, `apply_template`, `get_guide`,
-`query_records`, `get_record`, `search`, `get_context`, `upsert_record`,
-`log_interaction`, `remember`, `propose_schema_change`.
+`query_records`, `query_interactions`, `get_record`, `search`, `get_context`,
+`upsert_record`, `log_interaction`, `remember`, `propose_schema_change`.
+`query_interactions` is one fixed tool, not one per object, so it keeps the
+list from growing.
 
 **Guides.** `get_guide(name)` returns step-by-step instructions, as
 markdown, for a task an agent does rarely. Each guide is also an MCP prompt
@@ -864,16 +908,21 @@ them and add a type prefix for readability.
     "occurredAt": "2026-10-29T14:00:00+02:00", "title": "Acme renewal call",
     "summary": "…",
     "participants": [ { "handle": "dana@acme.com", "role": "customer" },
-                      { "handle": "ron.peretz@acme.com", "role": "customer" } ] }
+                      { "handle": "ron.peretz@acme.com", "role": "customer" } ],
+    "about": [ "rec_a11…" ] }
 ← { "id": "int_51b…", "created": true,
     "participants": {
-      "matched":   [ { "handle": "dana@acme.com", "role": "customer", "recordId": "rec_9f2…" } ],
-      "unmatched": [ { "handle": "ron.peretz@acme.com", "role": "customer", "reason": "no_match" } ] } }
+      "matched":   [ { "id": "ip_1…", "handle": "dana@acme.com", "role": "customer", "recordId": "rec_9f2…" } ],
+      "unmatched": [ { "id": "ip_2…", "handle": "ron.peretz@acme.com", "role": "customer", "reason": "no_match" } ] },
+    "about": [ "rec_a11…" ] }
 ```
 
 `created` is `false` when the same `(channel, externalId)` was already
-logged with the same input (1.3). Handles come back normalized, in the order
-logged; `handle` or `role` is `null` when not given. An unmatched
+logged with the same kind, time, title and summary (1.3); the response then
+also has `added`, the participants and `about` records this call added, in
+the same shapes. Handles come back normalized, in the order logged; `handle`
+or `role` is `null` when not given. Each participant's `id` names the link,
+for removing it. An unmatched
 participant's `reason` is `no_match`, `phone_only` (phones never resolve a
 participant on their own, 4.1), `deleted_record` (the handle belongs to a
 soft-deleted record that was not merged; it is also listed in
@@ -902,7 +951,7 @@ hiddenFactIds }`, the last being facts whose only live source it was.
 `source`, `noteInteraction` is the ID of the `note` interaction created for
 the fact to cite, and `validFrom` is the write time. The note has channel
 `retainer`, the fact's text as its summary, and the record as its one
-participant with role `subject`. The `retainer` channel is reserved for these
+`about` record, with no participants. The `retainer` channel is reserved for these
 notes: `log_interaction` rejects it, so retrieval can tell them apart. A `quote` needs a `source`. A retry with the
 same idempotency key returns the same response.
 `GET /v1/records/:id/facts` returns `{ record, facts, nextCursor }` with facts
@@ -921,7 +970,7 @@ with `limit` (default 100, at most 500) and `cursor`.
                  "validFrom": "2026-10-21T09:00:00Z", "writtenBy": { "type": "agent", … },
                  "sources": [ "int_9d0…" ] } ],
     "recentInteractions": [ { "id": "int_9d0…", "kind": "meeting", "occurredAt": "2026-10-21T09:00:00Z",
-                              "title": "Globex data-platform demo", "summary": "…" } ],
+                              "title": "Globex data-platform demo", "summary": "…", "via": "participant" } ],
     "omitted": { "openTasks": 0, "facts": 4, "recentInteractions": 11 },
     "tokenEstimate": 1380 }
 ```
@@ -934,8 +983,10 @@ A context pack is assembled by fixed rules (5):
 - The other sections fill in this order until the budget is spent: open
   tasks (tasks linked to the record through an active relation field whose
   status is not `done`, earliest due date first, undated last), current facts (not superseded or retracted,
-  newest `validFrom` first), then recent interactions (newest first, without
-  the notes `remember` created, whose text is already a fact). Items
+  newest `validFrom` first), then recent interactions the record took part in
+  or that are about it (newest first, each with `via: "participant"` or
+  `"about"`, without the notes `remember` created, whose text is already a
+  fact). Items
   are never cut mid-text; a section stops at the last whole item that fits.
 - `omitted` counts the items left out of each section, so the agent knows
   to read more with `search` or the REST routes.

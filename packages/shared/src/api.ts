@@ -41,6 +41,23 @@ export type SchemaDescription = {
     templates: { name: string; version: number; appliedAt: string }[];
   };
   objects: ObjectView[];
+  /**
+   * What Retainer stores besides records (1.3): interactions and facts. Fixed
+   * by Retainer and written only through their own tools, never upsert_record.
+   */
+  builtIns: BuiltInView[];
+};
+/** A built-in part of every workspace's memory, as describe_schema lists it. */
+export type BuiltInView = {
+  name: 'interaction' | 'fact';
+  labelSingular: string;
+  labelPlural: string;
+  description: string;
+  fields: { name: string; type: string; description: string }[];
+  /** The MCP tools (and REST routes) that write it. */
+  writeWith: string[];
+  /** The MCP tools (and REST routes) that read it. */
+  readWith: string[];
 };
 export type RecordReference = { id: string; object: string; label: string | null };
 export type SourceReference = { id: string; title: string | null; occurredAt: string };
@@ -201,8 +218,15 @@ export type UnmatchedReason =
   | 'deleted_record'
   | 'ambiguous'
   | 'suppressed';
-export type MatchedParticipant = { handle: string | null; role: string | null; recordId: string };
+export type MatchedParticipant = {
+  /** The participant link's ID, for `DELETE /v1/interactions/:id/participants/:participantId`. */
+  id: string;
+  handle: string | null;
+  role: string | null;
+  recordId: string;
+};
 export type UnmatchedParticipant = {
+  id: string;
   handle: string | null;
   role: string | null;
   reason: UnmatchedReason;
@@ -218,9 +242,47 @@ export type PresentedInteraction = {
   occurredAt: string;
   title: string | null;
   summary: string | null;
+  /** Who took part. */
   participants: Participants;
+  /** Records the interaction concerns, e.g. a meeting's company or project (1.3). */
+  about: string[];
   createdBy: Actor;
   createdAt: string;
+};
+/** `POST /v1/interactions/query` input (5): filters on the interaction log. */
+export type InteractionQueryInput = {
+  filter?: {
+    kind?: InteractionKind | InteractionKind[];
+    channel?: string | string[];
+    externalId?: string;
+    occurredAt?: { gt?: string; gte?: string; lt?: string; lte?: string };
+    /** Interactions linked to this record, as a participant or `about` it. */
+    record?: string;
+    /** With `record`: only that kind of link. */
+    link?: 'participant' | 'about';
+  };
+  order?: 'newest' | 'oldest';
+  /** Also count every matching interaction by kind or channel. */
+  countBy?: 'kind' | 'channel';
+  limit?: number;
+  cursor?: string;
+};
+export type InteractionQueryResult = {
+  items: PresentedInteraction[];
+  nextCursor: string | null;
+  /** All matching interactions, not only this page. */
+  total: number;
+  counts?: Record<string, number>;
+};
+/** What a write added to an interaction's participants and `about` records. */
+export type AddedLinks = { participants: Participants; about: string[] };
+/** `POST /v1/interactions` result (6.2); `added` is set when it was logged before. */
+export type LogInteractionResult = {
+  id: string;
+  created: boolean;
+  participants: Participants;
+  about: string[];
+  added?: AddedLinks;
 };
 export type RetractInteractionResult = {
   id: string;
@@ -302,7 +364,7 @@ export type InteractionHit = {
   occurredAt: string;
   title: string | null;
   summary: string | null;
-  /** Live records matched to its participants; possibly none or several. */
+  /** Live records linked to it, as participants or `about`; possibly none or several. */
   records: string[];
 };
 /** Each list is ranked on its own; scores are not comparable across lists. */
@@ -335,6 +397,8 @@ export type ContextInteraction = {
   occurredAt: string;
   title: string | null;
   summary: string | null;
+  /** How the record is linked: it took part, or the interaction is about it. */
+  via: 'participant' | 'about';
 };
 export type ContextPack = {
   record: {

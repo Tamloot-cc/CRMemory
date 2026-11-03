@@ -1,4 +1,5 @@
 import {
+  type BuiltInView,
   type FieldView,
   type ObjectView,
   SCHEMA_CHANGE_STATUSES,
@@ -17,8 +18,10 @@ import {
   Clock,
   Cog,
   KeyRound,
+  Lightbulb,
   Lock,
   type LucideIcon,
+  MessagesSquare,
   TriangleAlert,
 } from 'lucide-react';
 import { Suspense, useCallback, useMemo, useState } from 'react';
@@ -187,39 +190,66 @@ export function SchemaPage() {
   );
 }
 
+const BUILT_IN_ICONS: Record<BuiltInView['name'], LucideIcon> = {
+  interaction: MessagesSquare,
+  fact: Lightbulb,
+};
+
 function ObjectsTab() {
   const { session, schema } = useWorkspace(),
     { search, setSearch } = useView();
   const objects = sortObjects(schema.objects);
-  const object = findObject(objects, search.object) ?? objects[0];
+  const builtIns = schema.builtIns ?? [];
+  const builtIn = builtIns.find((b) => b.name === search.object);
+  const object = builtIn ? undefined : (findObject(objects, search.object) ?? objects[0]);
   const field = object?.fields.find((f) => f.name === search.field);
   const select = (object: string, field?: string) => void setSearch({ object, field });
   return (
     <>
       {!schema.workspace.templates.length ? <TemplatePicker /> : null}
-      {object ? (
+      {object || builtIn ? (
         <SplitView
           nav={
-            <NavList label="Objects">
-              {objects.map((o) => (
-                <NavItem
-                  key={o.nameSingular}
-                  icon={objectIcon(o.nameSingular)}
-                  label={o.labelPlural}
-                  meta={o.fields.length}
-                  active={o.nameSingular === object.nameSingular}
-                  onSelect={() => select(o.nameSingular)}
-                />
-              ))}
-            </NavList>
+            <>
+              <NavList label="Objects">
+                {objects.map((o) => (
+                  <NavItem
+                    key={o.nameSingular}
+                    icon={objectIcon(o.nameSingular)}
+                    label={o.labelPlural}
+                    meta={o.fields.length}
+                    active={o.nameSingular === object?.nameSingular}
+                    onSelect={() => select(o.nameSingular)}
+                  />
+                ))}
+              </NavList>
+              {builtIns.length ? (
+                <NavList label="Built-in">
+                  {builtIns.map((b) => (
+                    <NavItem
+                      key={b.name}
+                      icon={BUILT_IN_ICONS[b.name]}
+                      label={b.labelPlural}
+                      meta={b.fields.length}
+                      active={b.name === builtIn?.name}
+                      onSelect={() => select(b.name)}
+                    />
+                  ))}
+                </NavList>
+              ) : null}
+            </>
           }
         >
-          <ObjectDetail
-            key={object.nameSingular}
-            object={object}
-            selectedField={field?.name}
-            onOpenField={(name) => select(object.nameSingular, name)}
-          />
+          {builtIn ? (
+            <BuiltInDetail builtIn={builtIn} />
+          ) : object ? (
+            <ObjectDetail
+              key={object.nameSingular}
+              object={object}
+              selectedField={field?.name}
+              onOpenField={(name) => select(object.nameSingular, name)}
+            />
+          ) : null}
         </SplitView>
       ) : (
         <Empty
@@ -303,6 +333,59 @@ function DiagramTab() {
         }
       />
     </Suspense>
+  );
+}
+
+/**
+ * Interactions or facts: part of every workspace and fixed by Retainer, so
+ * there is nothing to change here; agents write them through their own tools.
+ */
+function BuiltInDetail({ builtIn }: { builtIn: BuiltInView }) {
+  return (
+    <>
+      <EntityHeader
+        icon={BUILT_IN_ICONS[builtIn.name]}
+        title={builtIn.labelPlural}
+        meta={
+          <>
+            <Code>{builtIn.name}</Code>
+            <Badge>Built in</Badge>
+          </>
+        }
+        description={builtIn.description}
+      />
+      <Table headers={[{ label: 'Field' }, { label: 'Type' }, { label: 'Description' }]}>
+        {builtIn.fields.map((f) => (
+          <Tr key={f.name}>
+            <Td first>
+              <Code>{f.name}</Code>
+            </Td>
+            <Td>{f.type}</Td>
+            <Td>
+              <Muted>{f.description}</Muted>
+            </Td>
+          </Tr>
+        ))}
+      </Table>
+      <Section title="How agents use it">
+        <PropertyList>
+          <Property label="Written with">
+            <Row>
+              {builtIn.writeWith.map((tool) => (
+                <Code key={tool}>{tool}</Code>
+              ))}
+            </Row>
+          </Property>
+          <Property label="Read with">
+            <Row>
+              {builtIn.readWith.map((tool) => (
+                <Code key={tool}>{tool}</Code>
+              ))}
+            </Row>
+          </Property>
+        </PropertyList>
+      </Section>
+    </>
   );
 }
 

@@ -36,6 +36,7 @@ attributed to.
 ## Write what happened
 
 ```ts
+const acme = await retainer.createRecord('company', { values: { name: 'Acme' } });
 const dana = await retainer.upsertRecord('person', {
   match: { emails: 'dana@acme.com' },
   ifMissing: 'create',
@@ -50,6 +51,7 @@ const call = await retainer.logInteraction({
   title: 'Acme renewal call',
   summary: 'Dana wants to move the renewal to Q1.',
   participants: [{ handle: 'dana@acme.com', role: 'customer' }],
+  about: [acme.id], // the records it concerns: a company, project, deal or tasks
 });
 
 // Cite the call so the value carries its date and provenance.
@@ -83,6 +85,12 @@ const page = await retainer.queryRecords('company', {
   limit: 50,
 });
 // page.records, page.nextCursor
+
+const calls = await retainer.queryInteractions({
+  filter: { record: acme.id, occurredAt: { gte: '2026-10-01T00:00:00Z' } },
+  countBy: 'kind',
+});
+// calls.items, calls.total, calls.counts ({ call: 4, meeting: 2 }), calls.nextCursor
 ```
 
 A filter maps field names to a value (equality) or to operators, and nests

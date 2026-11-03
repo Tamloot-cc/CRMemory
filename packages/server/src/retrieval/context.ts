@@ -242,7 +242,8 @@ async function currentFacts(
 }
 
 /**
- * Live interactions the record took part in, newest first. The notes
+ * Live interactions the record took part in or that are about it, newest
+ * first, each saying which (`via`; a participant link wins). The notes
  * `remember` creates for uncited facts are left out: their text is the
  * fact's, already in `facts`.
  */
@@ -259,16 +260,20 @@ async function recentInteractions(
       occurred_at: Date;
       title: string | null;
       summary: string | null;
+      via: 'participant' | 'about';
       total: string;
     }[]
   >`
-    select i.id, i.kind, i.occurred_at, i.title, i.summary, count(*) over () as total
-    from interactions i
+    select i.id, i.kind, i.occurred_at, i.title, i.summary, l.via, count(*) over () as total
+    from (
+      -- 'participant' sorts after 'about', so max() prefers it.
+      select p.interaction_id, max(p.link) as via from interaction_participants p
+      where p.workspace_id = ${workspaceId} and p.record_id = ${recordId}
+      group by p.interaction_id
+    ) l
+    join interactions i on i.id = l.interaction_id
     where i.workspace_id = ${workspaceId} and i.deleted_at is null
       and not (i.kind = 'note' and i.channel = ${NOTE_CHANNEL})
-      and exists (
-        select 1 from interaction_participants p
-        where p.interaction_id = i.id and p.record_id = ${recordId})
     order by i.occurred_at desc, i.id
     limit ${limit}`;
   return {
@@ -278,6 +283,7 @@ async function recentInteractions(
       occurredAt: row.occurred_at.toISOString(),
       title: row.title,
       summary: row.summary,
+      via: row.via,
     })),
     total: Number(rows[0]?.total ?? 0),
   };

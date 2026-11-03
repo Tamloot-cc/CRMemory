@@ -61,13 +61,27 @@ describe('POST /v1/interactions', () => {
       id: expect.any(String),
       created: true,
       participants: {
-        matched: [{ handle: dana.email, role: 'customer', recordId: dana.id }],
-        unmatched: [{ handle: 'ron.peretz@acme.test', role: 'customer', reason: 'no_match' }],
+        matched: [
+          { id: expect.any(String), handle: dana.email, role: 'customer', recordId: dana.id },
+        ],
+        unmatched: [
+          {
+            id: expect.any(String),
+            handle: 'ron.peretz@acme.test',
+            role: 'customer',
+            reason: 'no_match',
+          },
+        ],
       },
+      about: [],
     });
     const again = await logCall(body);
     expect(again.status).toBe(200);
-    expect(again.body).toEqual({ ...first.body, created: false });
+    expect(again.body).toEqual({
+      ...first.body,
+      created: false,
+      added: { participants: { matched: [], unmatched: [] }, about: [] },
+    });
 
     const conflict = await logCall({ ...body, summary: 'Something else.' });
     expect(conflict.status).toBe(409);
@@ -145,6 +159,72 @@ describe('GET and DELETE /v1/interactions/:id', () => {
       method: 'DELETE',
     });
     expect(res.status).toBe(403);
+  });
+});
+
+describe('participants and about records of a logged interaction', () => {
+  it('adds them with POST, and lets only a person remove them', async () => {
+    const dana = await createPerson();
+    const acme = await t.request('/v1/objects/company/records', {
+      key: keys.agent,
+      body: { values: { name: 'Acme REST' } },
+    });
+    const call = await logCall({ externalId: `rest-links-${++n}` });
+    const path = `/v1/interactions/${call.body.id}`;
+
+    const added = await t.request(`${path}/participants`, {
+      key: keys.agent,
+      body: { participants: [{ handle: dana.email, role: 'customer' }], about: [acme.body.id] },
+    });
+    expect(added.status).toBe(200);
+    expect(added.body).toMatchObject({ about: [acme.body.id], added: { about: [acme.body.id] } });
+    const participantId = added.body.participants.matched[0].id;
+    expect(added.body.participants.matched[0].recordId).toBe(dana.id);
+
+    const empty = await t.request(`${path}/participants`, { key: keys.agent, body: {} });
+    expect(empty.status).toBe(400);
+    const reader = await t.request(`${path}/participants`, {
+      key: keys.reader,
+      body: { about: [acme.body.id] },
+    });
+    expect(reader.status).toBe(403);
+
+    for (const sub of [`participants/${participantId}`, `about/${acme.body.id}`]) {
+      const byAgent = await t.request(`${path}/${sub}`, { key: keys.agent, method: 'DELETE' });
+      expect(byAgent.status).toBe(403);
+      const byUser = await t.request(`${path}/${sub}`, { key: keys.user, method: 'DELETE' });
+      expect(byUser.status).toBe(200);
+    }
+    const read = await t.request(path, { key: keys.reader });
+    expect(read.body).toMatchObject({ participants: { matched: [], unmatched: [] }, about: [] });
+  });
+});
+
+describe('POST /v1/interactions/query', () => {
+  it('filters, counts and pages the interaction log', async () => {
+    const channel = `rest-query-${++n}`;
+    for (const kind of ['call', 'call', 'email']) {
+      expect((await logCall({ channel, kind })).status).toBe(201);
+    }
+    const res = await t.request('/v1/interactions/query', {
+      key: keys.reader,
+      body: { filter: { channel }, countBy: 'kind', limit: 2 },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ total: 3, counts: { call: 2, email: 1 } });
+    expect(res.body.items).toHaveLength(2);
+    const next = await t.request('/v1/interactions/query', {
+      key: keys.reader,
+      body: { filter: { channel }, limit: 2, cursor: res.body.nextCursor },
+    });
+    expect(next.body.items).toHaveLength(1);
+    expect(next.body.nextCursor).toBeNull();
+
+    const invalid = await t.request('/v1/interactions/query', {
+      key: keys.reader,
+      body: { filter: { kind: 'fax' } },
+    });
+    expect(invalid.status).toBe(400);
   });
 });
 
@@ -269,7 +349,7 @@ describe('GET /v1/review', () => {
     await t.request(`/v1/records/${gone.id}`, { key: keys.agent, method: 'DELETE' });
     const call = await logCall({ title: 'Call', participants: [{ handle: gone.email }] });
     expect(call.body.participants.unmatched).toEqual([
-      { handle: gone.email, role: null, reason: 'deleted_record' },
+      { id: expect.any(String), handle: gone.email, role: null, reason: 'deleted_record' },
     ]);
     const review = await t.request('/v1/review', { key: keys.user });
     expect(review.body.unresolvedParticipants).toContainEqual(

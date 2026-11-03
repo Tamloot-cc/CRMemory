@@ -14,9 +14,6 @@ import { type CitedSource, lockSource, NOTE_CHANNEL } from './interactions.js';
  * superseded and at least one of its sources is live (2.1).
  */
 
-/** The role of the record a note is about, among the note's participants. */
-export const NOTE_SUBJECT_ROLE = 'subject';
-
 export const rememberInputSchema = z.strictObject({
   text: z.string().trim().min(1).max(5_000),
   source: z.uuid().optional(),
@@ -71,17 +68,16 @@ export async function rememberFact(
   let noteInteraction: string | null = null;
   if (!source) {
     const [note] = await tx<{ id: string; occurred_at: Date }[]>`
-      insert into interactions (workspace_id, kind, channel, occurred_at, summary, request_hash,
-        search, created_by)
+      insert into interactions (workspace_id, kind, channel, occurred_at, summary, search,
+        created_by)
       values (${context.workspaceId}, 'note', ${NOTE_CHANNEL}, clock_timestamp(), ${input.text},
-        ${requestHash({ note: input.text })}, ${searchVector(tx, null, input.text)},
-        ${tx.json(context.actor)})
+        ${searchVector(tx, null, input.text)}, ${tx.json(context.actor)})
       returning id, occurred_at`;
     const created = note as { id: string; occurred_at: Date };
     await tx`
-      insert into interaction_participants (workspace_id, interaction_id, position, role,
-        record_id)
-      values (${context.workspaceId}, ${created.id}, 0, ${NOTE_SUBJECT_ROLE}, ${record.id})`;
+      insert into interaction_participants (workspace_id, interaction_id, position, record_id,
+        link)
+      values (${context.workspaceId}, ${created.id}, 0, ${record.id}, 'about')`;
     noteInteraction = created.id;
     source = { id: created.id, occurredAt: created.occurred_at };
   }

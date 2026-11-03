@@ -47,15 +47,6 @@ function hmac(key: string, workspaceId: string, handle: Handle): string {
 
 const handleKey = (handle: Handle) => `${handle.kind}:${handle.value}`;
 
-/**
- * A keyed stand-in for a suppressed handle, for anything that must tell
- * handles apart without storing them, such as an interaction's request
- * hash. A handle can only be suppressed when the key is set.
- */
-export function suppressionDigest(workspaceId: string, handle: Handle): string {
-  return hmac(requireSuppressionKey(), workspaceId, handle);
-}
-
 /** Adds normalized handles to the workspace's suppression list. Returns how many were new. */
 export async function suppress(
   tx: Tx,

@@ -27,6 +27,7 @@ const TOOLS = [
   'list_templates',
   'log_interaction',
   'propose_schema_change',
+  'query_interactions',
   'query_records',
   'remember',
   'search',
@@ -317,6 +318,13 @@ describe('describe_schema, list_templates and apply_template', () => {
     const mcp = await agent.call('describe_schema');
     const rest = await t.request('/v1/schema', { key: salesAgentKey });
     expect(mcp.body).toEqual(rest.body);
+  });
+
+  it('lists interactions and facts as built-ins, apart from the objects', async () => {
+    const res = await agent.call('describe_schema');
+    expect(res.body.builtIns.map((b: { name: string }) => b.name)).toEqual(['interaction', 'fact']);
+    expect(res.body.builtIns[0].writeWith).toContain('log_interaction');
+    expect(res.body.objects.map((o: { name: string }) => o.name)).not.toContain('interaction');
   });
 });
 
@@ -660,13 +668,65 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
       id: expect.any(String),
       created: true,
       participants: {
-        matched: [{ handle: danaEmail.primary, role: 'customer', recordId: dana.id }],
+        matched: [
+          {
+            id: expect.any(String),
+            handle: danaEmail.primary,
+            role: 'customer',
+            recordId: dana.id,
+          },
+        ],
         unmatched: [
-          { handle: 'ron.peretz@acme.test', role: 'customer', reason: 'no_match' },
-          { handle: '+972541234567', role: 'customer', reason: 'phone_only' },
+          {
+            id: expect.any(String),
+            handle: 'ron.peretz@acme.test',
+            role: 'customer',
+            reason: 'no_match',
+          },
+          {
+            id: expect.any(String),
+            handle: '+972541234567',
+            role: 'customer',
+            reason: 'phone_only',
+          },
         ],
       },
+      about: [],
     });
+  });
+
+  it('links the records an interaction is about, and finds it with query_interactions', async () => {
+    const dana = await createPerson();
+    const acme = await agent.call('upsert_record', {
+      object: 'company',
+      values: { name: 'Acme MCP' },
+    });
+    const externalId = `zoom-${++external}`;
+    const first = await logCall({ externalId, participants: [{ recordId: dana.id }] });
+    const again = await logCall({
+      externalId,
+      participants: [{ recordId: dana.id }],
+      about: [acme.body.id],
+    });
+    expect(again.body).toMatchObject({
+      id: first.body.id,
+      created: false,
+      about: [acme.body.id],
+      added: { about: [acme.body.id] },
+    });
+
+    const found = await agent.call('query_interactions', {
+      filter: { record: acme.body.id, link: 'about' },
+      countBy: 'kind',
+    });
+    expect(found.isError).toBe(false);
+    expect(found.body).toMatchObject({ total: 1, counts: { call: 1 }, nextCursor: null });
+    expect(found.body.items.map((i: { id: string }) => i.id)).toEqual([first.body.id]);
+
+    const context = await agent.call('get_context', { record: acme.body.id });
+    expect(context.body.recentInteractions).toEqual([
+      expect.objectContaining({ id: first.body.id, via: 'about' }),
+    ]);
   });
 
   it('returns one interaction for concurrent calls with the same externalId', async () => {
@@ -884,7 +944,7 @@ describe('after a person merges and forgets (4.2, 2.1)', () => {
       participants: [{ handle: emails.primary, role: 'customer' }],
     });
     expect(logged.body.participants.unmatched).toEqual([
-      { handle: null, role: 'customer', reason: 'suppressed' },
+      { id: expect.any(String), handle: null, role: 'customer', reason: 'suppressed' },
     ]);
     const again = await agent.call('upsert_record', {
       object: 'person',

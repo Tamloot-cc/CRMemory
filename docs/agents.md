@@ -81,16 +81,17 @@ change the tool list.
 
 | Tool                    | What it does                                                                                    | Scope          |
 | ----------------------- | ----------------------------------------------------------------------------------------------- | -------------- |
-| `describe_schema`       | The workspace's objects, fields, types, options and which fields are unique                     | `read`         |
+| `describe_schema`       | The workspace's objects and fields, and the built-in interactions and facts                     | `read`         |
 | `list_templates`        | Templates and what each would add                                                               | `read`         |
 | `apply_template`        | Apply a template to the workspace                                                               | `schema:write` |
 | `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                               | `read`         |
 | `query_records`         | Filter, sort and page the records of one object                                                 | `read`         |
+| `query_interactions`    | List and count interactions by kind, channel, time or a record they are linked to               | `read`         |
 | `get_record`            | One record by ID; merged IDs resolve to the surviving record                                    | `read`         |
 | `search`                | Keyword search across records, facts and interactions                                           | `read`         |
 | `get_context`           | A context pack for one record, fitted to a token budget                                         | `read`         |
 | `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                | `write`        |
-| `log_interaction`       | Log a meeting, call, email, message or note, and match its participants to records              | `write`        |
+| `log_interaction`       | Log a meeting, call, email, message or note, with who took part and the records it is about     | `write`        |
 | `remember`              | Store a plain-language fact about a record, citing an interaction                               | `write`        |
 | `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve | `schema:write` |
 
@@ -128,9 +129,10 @@ Retainer does not read conversations; the agent does. After a meeting, call or
 email thread, a well-behaved agent:
 
 1. **Logs the interaction** with `log_interaction`: kind, channel, time (with
-   a UTC offset), title, its own short summary, the source's external ID, and
-   the participants as emails, phones or record IDs. The response lists which
-   participants matched a record and which did not.
+   a UTC offset), title, its own short summary, the source's external ID, the
+   participants as emails, phones or record IDs, and in `about` the IDs of
+   the records it concerns. The response lists which participants matched a
+   record and which did not.
 2. **Updates records** with `upsert_record`, passing the interaction's ID as
    `source`. Cited values carry the interaction's date, so an old email can
    never overwrite a newer value.
@@ -149,9 +151,31 @@ Things worth knowing:
   `pending_review` or `superseded`. An agent's value that would overwrite what
   a person entered waits for review; the agent should say so rather than claim
   the update is done.
+- **Participants and `about`.** Participants are who took part. A meeting
+  with Dana about the Acme pilot lists Dana as a participant and the Acme
+  company and the pilot project in `about`:
+
+  ```json
+  { "kind": "meeting", "channel": "calendar", "externalId": "evt-4410",
+    "occurredAt": "2026-10-29T14:00:00+02:00", "title": "Acme pilot review",
+    "participants": [{ "handle": "dana@acme.com", "role": "customer" }],
+    "about": ["<acme company id>", "<pilot project id>"] }
+  ```
+
+  The meeting then shows in the `get_context`, `search` and
+  `query_interactions` results of every record it is linked to. Don't list a
+  company or project as a participant.
 - **Retries are safe.** Logging the same `(channel, externalId)` again with the
-  same input returns the existing interaction with `created: false`. Writes are independent short transactions, so an agent
-  that stops halfway leaves consistent data and can resume.
+  same kind, time, title and summary returns the existing interaction with
+  `created: false`. Participants and `about` records it did not have yet are
+  added and listed in `added`, so an agent that left the company out can log
+  the same source again with it. Nothing is removed that way; a different
+  title, summary, kind or time is a conflict. Writes are independent short
+  transactions, so an agent that stops halfway leaves consistent data and can
+  resume.
+- **Interactions over time.** `query_interactions` lists and counts
+  interactions by kind, channel, an `occurredAt` range and a linked record,
+  e.g. calls with a company this quarter, counted with `countBy: "kind"`.
 - **Reading back.** `get_context` gives the current values (with who wrote
   each), open tasks, current facts and recent interactions, within
   `tokenBudget` tokens (default 2000, at most 16000). `omitted` counts what

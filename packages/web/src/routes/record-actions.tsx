@@ -367,7 +367,7 @@ function ForgetReport({ label, result }: { label: string; result: ForgetResult }
     </Stack>
   );
 }
-function CandidateRecord({ id }: { id: string }) {
+export function CandidateRecord({ id }: { id: string }) {
   const { session } = useWorkspace();
   const record = useQuery({
     queryKey: [session.workspace.id, 'record', id, 'label'],

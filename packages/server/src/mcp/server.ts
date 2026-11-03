@@ -12,7 +12,8 @@ import {
   MAX_PARTICIPANTS,
   participantInputSchema,
 } from '../memory/interactions.js';
-import { logInteractionFor, remember } from '../memory/service.js';
+import { interactionQuerySchema } from '../memory/query-interactions.js';
+import { logInteractionFor, queryInteractionsFor, remember } from '../memory/service.js';
 import { queryInputSchema } from '../records/query.js';
 import {
   type Caller,
@@ -54,17 +55,19 @@ cannot do that now, pick a template with list_templates and apply_template,
 or ask your user.
 
 Find records with search (keywords across records, facts and interactions)
-or query_records (exact filters on one object). Before working on a person or
-company, read get_context: their current values, open tasks, facts and recent
-interactions in one call. Write records with upsert_record. Write the values you learned; Retainer keeps every claim's
+or query_records (exact filters on one object); list or count interactions by
+kind, channel, date or linked record with query_interactions. Before working on
+a person or company, read get_context: their current values, open tasks, facts
+and recent interactions in one call. Write records with upsert_record. Write the values you learned; Retainer keeps every claim's
 history and decides which value wins. A value a person set outranks yours, so
 your write may come back as pending_review: tell your user it is waiting for
 approval rather than saying it is done.
 
 After a meeting, call, email thread or chat, write what you learned in order:
 1. log_interaction: kind, channel, when it happened, a title, your own short
-   summary, the source's external ID, and the participants' emails or phones
-   (or record IDs). Keep the id it returns. Unmatched participants come back
+   summary, the source's external ID, the participants' emails or phones (or
+   record IDs), and in about the IDs of the company, project or other records
+   it concerns. Keep the id it returns. Unmatched participants come back
    with a reason; create the people worth keeping with upsert_record, or leave
    them. Retainer never creates records on its own.
 2. upsert_record with source set to that interaction id, so the values carry
@@ -73,7 +76,8 @@ After a meeting, call, email thread or chat, write what you learned in order:
    plain-language facts that do not fit a field.
 4. upsert_record for tasks someone committed to, as task records.
 Each call is its own write, so you can stop and resume; logging the same
-externalId again returns the same interaction.
+externalId again returns the same interaction, adding any participants and
+about records it did not have yet.
 
 When a field you need does not exist, use propose_schema_change. Adding is
 applied at once; removing or renaming waits for a person to approve. Read
@@ -138,6 +142,35 @@ const queryRecordsInput = z.strictObject({
       'e.g. { "status": "todo", "dueDate": { "lte": "2026-11-30" } }. Only filterable fields.',
   ),
   cursor: queryInputSchema.shape.cursor.describe('nextCursor from the previous page.'),
+});
+
+const filterShape = interactionQuerySchema.shape.filter.unwrap().shape;
+const queryInteractionsInput = z.strictObject({
+  filter: z
+    .strictObject({
+      kind: filterShape.kind.describe('meeting, call, email, message or note, or a list.'),
+      channel: filterShape.channel.describe('A channel such as "gmail", or a list.'),
+      externalId: filterShape.externalId.describe("The source's own ID."),
+      occurredAt: filterShape.occurredAt.describe(
+        'A time range with gt, gte, lt and lte, ISO 8601 with a UTC offset, e.g. ' +
+          '{ "gte": "2026-10-01T00:00:00Z", "lt": "2026-11-01T00:00:00Z" }.',
+      ),
+      record: filterShape.record.describe(
+        'Only interactions linked to this record, as a participant or about it.',
+      ),
+      link: filterShape.link.describe(
+        'With record: "participant" (it took part) or "about" (it is what they discussed).',
+      ),
+    })
+    .default({}),
+  order: interactionQuerySchema.shape.order.describe('"newest" (default) or "oldest" first.'),
+  countBy: interactionQuerySchema.shape.countBy.describe(
+    'Also count every matching interaction by "kind" or "channel".',
+  ),
+  limit: interactionQuerySchema.shape.limit.describe(
+    'Interactions per page, 50 by default (at most 200). 0 returns only total and counts.',
+  ),
+  cursor: interactionQuerySchema.shape.cursor.describe('nextCursor from the previous page.'),
 });
 
 const upsertRecordInput = z.strictObject({
@@ -211,7 +244,15 @@ const logInteractionInput = z.strictObject({
     )
     .max(MAX_PARTICIPANTS)
     .default([])
-    .describe('Who took part; each needs a handle, a recordId, or both.'),
+    .describe(
+      'Who took part (people only); each needs a handle, a recordId, or both. Records the ' +
+        'interaction concerns, such as a company or project, go in about.',
+    ),
+  about: logInteractionInputSchema.shape.about.describe(
+    'IDs of records the interaction is about, of any object: the company, project, deal or ' +
+      "tasks it concerns. It then shows in those records' get_context and search hits. " +
+      'Unknown or deleted IDs fail the call.',
+  ),
 });
 
 const rememberInput = z.strictObject({
@@ -279,7 +320,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       description:
         'Returns the workspace (id, name, applied templates, initialized, schemaVersion) and ' +
         'every object with its fields: type, options, and whether it is unique, filterable or ' +
-        'required. Call it first, and again after a schema change. If initialized is false, ' +
+        'required. builtIns lists interactions and facts, which every workspace has and which ' +
+        'are written with log_interaction and remember, never upsert_record. Call it first, ' +
+        'and again after a schema change. If initialized is false, ' +
         'the schema has not been set up yet: follow get_guide("discover_schema"), or see ' +
         'list_templates.',
       inputSchema: noInput,
@@ -372,6 +415,22 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
   );
 
   server.registerTool(
+    'query_interactions',
+    {
+      title: 'Query interactions',
+      description:
+        'Lists logged meetings, calls, emails, messages and notes by exact filters: kind, ' +
+        'channel, externalId, a time range on occurredAt, and a record they are linked to ' +
+        '(as a participant or about it). Newest first by default. total counts every match, ' +
+        'and countBy adds counts by kind or channel, e.g. calls with a company this quarter. ' +
+        'For words in titles and summaries, use search.',
+      inputSchema: queryInteractionsInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    (input) => run(caller, 'read', () => queryInteractionsFor(sql, caller, input)),
+  );
+
+  server.registerTool(
     'get_record',
     {
       title: 'Get a record',
@@ -460,8 +519,10 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       title: 'Log an interaction',
       description:
         'Logs a meeting, call, email, message or note: when it happened, a title, your own ' +
-        'short summary and who took part. Do this first after a conversation, then pass the ' +
-        'returned id as source to upsert_record and remember.\n\n' +
+        'short summary, who took part (participants) and the records it concerns (about: ' +
+        'e.g. the company and project of a meeting with Dana about the Acme pilot). Do this ' +
+        'first after a conversation, then pass the returned id as source to upsert_record ' +
+        'and remember.\n\n' +
         'Participants are matched by email to existing records. The response lists matched ' +
         'participants with their recordId, and unmatched ones with a reason: "no_match" (no ' +
         'record has this email; create the person with upsert_record if worth keeping), ' +
@@ -470,8 +531,10 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         '"ambiguous" (several records claim it; candidates lists them) or "suppressed" (the ' +
         'person asked to be forgotten; the handle is not stored, and do not create a record ' +
         'for it). Retainer never creates records for you.\n\n' +
-        'Logging the same channel and externalId again with the same input returns the same ' +
-        'interaction with created: false; different input is a conflict.',
+        'Logging the same channel and externalId again returns the same interaction with ' +
+        'created: false, after adding the participants and about records it did not have ' +
+        '(listed in added); nothing is removed. A different kind, occurredAt, title or ' +
+        'summary is a conflict: an edited source needs a new externalId.',
       inputSchema: logInteractionInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },

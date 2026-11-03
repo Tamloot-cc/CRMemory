@@ -189,6 +189,13 @@ export async function mergeRecords(
     update field_assertions set record_id = ${a} where record_id = ${b} returning field_id`;
   await tx`update facts set record_id = ${a} where record_id = ${b}`;
   await tx`update interaction_participants set record_id = ${a} where record_id = ${b}`;
+  // An interaction is about a record once: drop an about link that now
+  // repeats another link to the survivor (1.3).
+  await tx`
+    delete from interaction_participants d using interaction_participants k
+    where d.workspace_id = ${workspaceId} and d.record_id = ${a} and d.link = 'about'
+      and k.interaction_id = d.interaction_id and k.record_id = ${a} and k.id <> d.id
+      and (k.link = 'participant' or k.position < d.position)`;
   // The survivor changed even when no field did (it gained B's facts), so
   // the consolidator's next run compares it again.
   await tx`

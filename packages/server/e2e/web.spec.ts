@@ -141,6 +141,48 @@ test('approves a schema proposal and refreshes the schema', async ({ page, retai
       .fields.find((f: any) => f.name === 'jobTitle').isUnique,
   ).toBe(true);
 });
+test('shows why a schema approval failed, with the records in the way', async ({
+  page,
+  retainer: r,
+}) => {
+  await r.request('/schema/changes', {
+    operations: [{ op: 'update_field', object: 'person', field: 'jobTitle', isUnique: true }],
+  });
+  // Two records now share the value the change would make unique.
+  for (const name of ['Twin One', 'Twin Two']) {
+    await r.request('/objects/person/records', { values: { name, jobTitle: 'CTO' } });
+  }
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('button', { name: /Schema changes/ }).click();
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByText(/^The schema change could not be applied: .+/)).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Twin One' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Twin Two' })).toBeVisible();
+});
+test('lists interactions and facts as built-ins, and shows what an interaction is about', async ({
+  page,
+  retainer: r,
+}) => {
+  const acme = await r.request('/objects/company/records', { values: { name: 'Acme Pilot Co' } });
+  const meeting = await r.request('/interactions', {
+    kind: 'meeting',
+    channel: 'calendar',
+    occurredAt: '2026-10-29T12:00:00Z',
+    title: 'Pilot review',
+    about: [acme.id],
+  });
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/schema`);
+  await page
+    .getByRole('navigation', { name: 'Built-in' })
+    .getByRole('button', { name: /^Interactions/ })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Interactions', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/object=interaction/);
+  await expect(page.getByText('log_interaction', { exact: true })).toBeVisible();
+  await page.goto(`${r.url}/app/i/${meeting.id}`);
+  await expect(page.getByRole('link', { name: 'Acme Pilot Co' })).toBeVisible();
+});
 test('draws the objects and relations and opens them from the diagram', async ({
   page,
   retainer: r,

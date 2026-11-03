@@ -4,6 +4,7 @@ import type { Sql } from '../db/client.js';
 import { inWorkspace } from '../db/tx.js';
 import type { Caller } from '../records/service.js';
 import { readWorkspace } from '../workspaces/workspaces.js';
+import { BUILT_INS } from './built-ins.js';
 import { getSchema } from './compiled.js';
 import { runSchemaChange, type SchemaChangeResult } from './engine.js';
 import { schemaOperationSchema, stripUniversalIds } from './operations.js';
@@ -11,7 +12,10 @@ import { presentSchema } from './present.js';
 
 export type { SchemaDescription } from '@retainer/shared';
 
-/** describe_schema and GET /v1/schema: the workspace and its objects and fields (5). */
+/**
+ * describe_schema and GET /v1/schema: the workspace, its objects and fields,
+ * and the built-in interactions and facts (5).
+ */
 export async function describeSchema(sql: Sql, caller: Caller): Promise<SchemaDescription> {
   const { workspaceId } = caller;
   return inWorkspace(sql, workspaceId, async (tx) => {
@@ -29,6 +33,7 @@ export async function describeSchema(sql: Sql, caller: Caller): Promise<SchemaDe
         schemaVersion: schema.version,
       },
       objects: presentSchema(schema),
+      builtIns: BUILT_INS,
     };
   });
 }

@@ -21,6 +21,7 @@ import {
   Tabs,
 } from '../ui/index.js';
 import { MergeSuggestionCard } from './merge.js';
+import { CandidateRecord } from './record-actions.js';
 import { describeOperation } from './schema-model.js';
 import { QueryError, useView } from './state.js';
 
@@ -119,6 +120,7 @@ export function ReviewPage() {
   const [selected, setSelected] = useState<string[]>([]),
     [busy, setBusy] = useState(false),
     [messages, setMessages] = useState<string[]>([]),
+    [blockingRecords, setBlockingRecords] = useState<string[]>([]),
     [outcomes, setOutcomes] = useState<ReviewOutcome[]>([]),
     [focus, setFocus] = useState(0);
   const canWrite = canMutate(session),
@@ -177,13 +179,18 @@ export function ReviewPage() {
   async function decideSchema(id: string, decision: 'approve' | 'reject') {
     if (!canAdmin || busy) return;
     setBusy(true);
+    setBlockingRecords([]);
     try {
       const result = await api.decideSchemaChange(id, decision);
+      // A failed approval keeps the engine's reason and, when it has them, the
+      // records that stand in the way, such as those still holding a removed option.
+      const reason = result.change?.error;
       setMessages([
         result.status === 'failed'
-          ? 'The schema change could not be applied'
+          ? `The schema change could not be applied${reason ? `: ${reason}` : ''}`
           : `Schema change ${decision === 'approve' ? 'approved' : 'rejected'}`,
       ]);
+      if (result.status === 'failed') setBlockingRecords(result.recordIds ?? []);
     } catch (e) {
       setMessages([(e as Error).message]);
     }
@@ -295,6 +302,17 @@ export function ReviewPage() {
           {[...new Set(messages)].map((m) => (
             <div key={m}>{m}</div>
           ))}
+          {blockingRecords.length ? (
+            <Row>
+              <span>Records in the way:</span>
+              {blockingRecords.slice(0, 20).map((id) => (
+                <CandidateRecord key={id} id={id} />
+              ))}
+              {blockingRecords.length > 20 ? (
+                <Muted>and {blockingRecords.length - 20} more</Muted>
+              ) : null}
+            </Row>
+          ) : null}
         </Notice>
       ) : null}
       {review.error ? (

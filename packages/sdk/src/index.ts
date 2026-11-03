@@ -1,4 +1,5 @@
 import type {
+  AddedLinks,
   AggregateInput,
   AggregateResult,
   AssertionView,
@@ -8,6 +9,9 @@ import type {
   DecisionResult,
   DeleteImpact,
   ForgetResult,
+  InteractionQueryInput,
+  InteractionQueryResult,
+  LogInteractionResult,
   MergeInput,
   MergeResult,
   MergeSuggestionDecision,
@@ -71,8 +75,14 @@ export type LogInteractionInput = {
   externalId?: string;
   title?: string;
   summary?: string;
-  participants?: { handle?: string; recordId?: string; role?: string }[];
+  /** Who took part. */
+  participants?: Participant[];
+  /** IDs of the records it concerns, e.g. the company and project of a meeting. */
+  about?: string[];
 };
+type Participant = { handle?: string; recordId?: string; role?: string };
+const isFailedChange = (body: unknown) =>
+  typeof body === 'object' && body !== null && (body as { status?: unknown }).status === 'failed';
 export class RetainerClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -85,7 +95,12 @@ export class RetainerClient {
       ? { authorization: `Bearer ${this.options.apiKey}` }
       : { 'X-Retainer-Client': 'web' };
   }
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  /** `isResult` lets an error status whose body is a result come back as one. */
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+    isResult?: (body: unknown) => boolean,
+  ): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       ...init,
       credentials: this.options.credentials ?? 'same-origin',
@@ -98,7 +113,7 @@ export class RetainerClient {
     const body = (await response.json()) as {
       error?: { code?: string; message?: string; details?: Record<string, unknown> };
     };
-    if (!response.ok) {
+    if (!response.ok && !isResult?.(body)) {
       if (response.status === 401 && path !== '/auth/session') this.options.onUnauthorized?.();
       throw new RetainerApiError(
         response.status,
@@ -292,11 +307,32 @@ export class RetainerClient {
     return this.get<PresentedInteraction>(`/v1/interactions/${encodeURIComponent(id)}`, {}, signal);
   }
   logInteraction(input: LogInteractionInput) {
-    return this.post<{
-      id: string;
-      created: boolean;
-      participants: PresentedInteraction['participants'];
-    }>('/v1/interactions', input);
+    return this.post<LogInteractionResult>('/v1/interactions', input);
+  }
+  /** Lists and counts interactions by kind, channel, time and linked record. */
+  queryInteractions(input: InteractionQueryInput = {}, signal?: AbortSignal) {
+    return this.post<InteractionQueryResult>('/v1/interactions/query', input, signal);
+  }
+  /** Adds participants and `about` records to a logged interaction; idempotent. */
+  addInteractionLinks(id: string, input: { participants?: Participant[]; about?: string[] }) {
+    return this.post<PresentedInteraction & { added: AddedLinks }>(
+      `/v1/interactions/${encodeURIComponent(id)}/participants`,
+      input,
+    );
+  }
+  /** Removes one participant (a person's key only). */
+  removeParticipant(id: string, participantId: string) {
+    return this.request<PresentedInteraction>(
+      `/v1/interactions/${encodeURIComponent(id)}/participants/${encodeURIComponent(participantId)}`,
+      { method: 'DELETE' },
+    );
+  }
+  /** Removes a record from an interaction's `about` list (a person's key only). */
+  removeAbout(id: string, recordId: string) {
+    return this.request<PresentedInteraction>(
+      `/v1/interactions/${encodeURIComponent(id)}/about/${encodeURIComponent(recordId)}`,
+      { method: 'DELETE' },
+    );
   }
   retractInteraction(id: string) {
     return this.request<RetractInteractionResult>(`/v1/interactions/${encodeURIComponent(id)}`, {
@@ -325,12 +361,23 @@ export class RetainerClient {
   schemaChange(id: string, signal?: AbortSignal) {
     return this.get<SchemaChange>(`/v1/schema/changes/${encodeURIComponent(id)}`, {}, signal);
   }
+  /**
+   * A change that existing records block comes back as 409 with the change
+   * itself (`status: "failed"`, its `error` and the blocking `recordIds`),
+   * so it is returned like any other outcome rather than thrown.
+   */
   proposeSchemaChange(operations: SchemaOperation[], reason?: string) {
-    return this.post<SchemaChangeResult>('/v1/schema/changes', { operations, reason });
+    return this.request<SchemaChangeResult>(
+      '/v1/schema/changes',
+      { method: 'POST', body: JSON.stringify({ operations, reason }) },
+      isFailedChange,
+    );
   }
   decideSchemaChange(id: string, decision: 'approve' | 'reject') {
-    return this.post<SchemaChangeResult>(
+    return this.request<SchemaChangeResult>(
       `/v1/schema/changes/${encodeURIComponent(id)}/${decision}`,
+      { method: 'POST' },
+      isFailedChange,
     );
   }
 }
