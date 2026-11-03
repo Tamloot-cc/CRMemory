@@ -13,6 +13,8 @@ export type PickerOption = {
   keywords?: string;
   /** Muted text at the end of the row, e.g. "Israeli New Shekel". */
   hint?: string;
+  /** Listed only while the search box is empty, e.g. "No company". */
+  unsearched?: boolean;
 };
 
 const fold = (s: string) =>
@@ -93,10 +95,11 @@ export function OptionList({
   const id = useId();
   const [search, setSearch] = useState('');
   const [active, setActive] = useState(searchable ? -1 : 0);
-  const shown = useMemo(
-    () => (onSearchChange ? options : filterOptions(options, search)),
-    [options, search, onSearchChange],
-  );
+  const shown = useMemo(() => {
+    // Typing looks for a match, so Enter picks a match, never "No company".
+    const listed = search.trim() ? options.filter((o) => !o.unsearched) : options;
+    return onSearchChange ? listed : filterOptions(listed, search);
+  }, [options, search, onSearchChange]);
   const current = searching ? -1 : active < shown.length ? active : shown.length - 1;
   const activeId = current >= 0 ? `${id}-${current}` : undefined;
 

@@ -266,7 +266,7 @@ export function selectOptions(field: FieldView): PickerOption[] {
  */
 function clearOption(field: FieldView, show = field.isNullable): PickerOption[] {
   const label = `No ${field.label.toLowerCase()}`;
-  return show ? [{ value: '', label, content: <Muted>{label}</Muted> }] : [];
+  return show ? [{ value: '', label, content: <Muted>{label}</Muted>, unsearched: true }] : [];
 }
 /** A select field's options in a menu: one choice, or several. */
 function OptionsMenu({

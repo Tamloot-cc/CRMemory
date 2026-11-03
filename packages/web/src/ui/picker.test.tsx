@@ -117,6 +117,21 @@ describe('OptionList', () => {
     await userEvent.keyboard('{Enter}');
     expect(onPick).toHaveBeenCalledWith('ready');
   });
+  it('lists a clearing choice only before typing, so Enter after a search picks a match', async () => {
+    const onPick = vi.fn();
+    render(
+      <OptionList
+        label="Company"
+        options={[{ value: '', label: 'No company', unsearched: true }, ...OPTIONS]}
+        onSearchChange={vi.fn()}
+        onPick={onPick}
+      />,
+    );
+    expect(screen.getByRole('option', { name: 'No company' })).toBeTruthy();
+    await userEvent.type(screen.getByRole('combobox', { name: 'Company' }), 'acme{Enter}');
+    expect(screen.queryByRole('option', { name: 'No company' })).toBeNull();
+    expect(onPick).toHaveBeenCalledWith('new');
+  });
   it('says when nothing matches', async () => {
     render(<OptionList label="Stage" options={OPTIONS} selected={[]} onPick={vi.fn()} />);
     await userEvent.type(screen.getByRole('combobox', { name: 'Stage' }), 'zzz');

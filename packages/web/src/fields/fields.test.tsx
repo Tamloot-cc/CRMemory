@@ -46,6 +46,15 @@ describe('pickers', () => {
     await userEvent.click(screen.getByRole('option', { name: 'No stage' }));
     expect(onChange).toHaveBeenLastCalledWith(null);
   });
+  it('picks the typed match with Enter, not the clearing choice', async () => {
+    const onChange = vi.fn();
+    render(
+      <FieldPicker field={{ ...stage, label: 'Stage area' }} value="new" onChange={onChange} />,
+    );
+    // "No stage area" contains the typed text too; it isn't offered once typing.
+    await userEvent.type(screen.getByRole('combobox', { name: 'Stage area' }), 'a{Enter}');
+    expect(onChange).toHaveBeenLastCalledWith('ready');
+  });
   it('toggles options of a multi select as a whole new set', async () => {
     const onChange = vi.fn();
     render(
