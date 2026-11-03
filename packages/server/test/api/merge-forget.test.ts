@@ -107,6 +107,13 @@ describe('merge suggestions in review', () => {
       (s: { recordIds: string[] }) => s.recordIds.includes(a) && s.recordIds.includes(b),
     );
     expect(suggestion).toMatchObject({ reason: 'similar names' });
+    // Labels come with the pair, so the inbox needs no read per record.
+    expect(suggestion.records).toEqual(
+      expect.arrayContaining([
+        { id: a, object: 'person', label: 'Yael Mizrahi' },
+        { id: b, object: 'person', label: 'Yael Mizrachi' },
+      ]),
+    );
     expect(review.body.totals.mergeSuggestions).toBeGreaterThanOrEqual(1);
 
     const byAgent = await t.request(`/v1/review/merges/${suggestion.id}/dismiss`, {

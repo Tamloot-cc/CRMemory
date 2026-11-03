@@ -1,4 +1,4 @@
-import type { FieldType } from '@retainer/shared';
+import { type FieldType, MULTI_VALUE_TYPES } from '@retainer/shared';
 import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
 
 const NAME_PATTERN = /^[a-z][a-zA-Z0-9]{0,62}$/;
@@ -67,8 +67,6 @@ export const LABEL_FIELD_TYPES: ReadonlySet<FieldType> = new Set([
   'date_time',
   'select',
 ]);
-
-export const MULTI_VALUE_TYPES: ReadonlySet<FieldType> = new Set(['emails', 'phones', 'links']);
 
 /**
  * Step 3 of the engine: checks the desired schema as a whole. Returns every

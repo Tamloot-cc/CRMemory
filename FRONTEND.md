@@ -1,10 +1,9 @@
 # Retainer web app
 
-Status: web steps 1–4 are implemented and verified locally. Server build
-steps 4 and 5 have landed (`POST /v1/search` and context packs; merge,
-dismiss and `forget` routes; merge suggestions in `GET /v1/review`), but web
-step 5 and the product questions in section 13 remain deferred. Read
-`ARCHITECTURE.md` first; this document uses its section numbers.
+Status: web steps 1–5 are implemented and verified locally, including
+record creation, deletion, merges and suggested merges, `forget` and global
+search. Read `ARCHITECTURE.md` first; this document uses its section
+numbers.
 
 Retainer is used by agents through REST and MCP. The web app is for the
 people those agents work for. It does the jobs only a person can do and lets
@@ -140,9 +139,10 @@ which actors the REST and MCP APIs allow to edit or retract data.
 | ---------------------------------------------------------------------------- | --------------------------------- |
 | Browse records, facts, interactions                                          | `read`                            |
 | Edit fields, retract facts and interactions, accept or reject pending values | `write` and a `user` actor        |
+| Create, delete and merge records; dismiss merge suggestions                  | `write` and a `user` actor        |
 | Approve or reject schema changes                                             | `admin` and a `user` actor        |
 | Apply a template                                                             | `schema:write` and a `user` actor |
-| `forget` (web step 5, not built yet)                                         | `admin` and a `user` actor        |
+| Erase a record for privacy (`forget`)                                        | `admin` and a `user` actor        |
 
 A key with a non-`user` actor can sign in read-only, with a banner saying
 why actions are missing.
@@ -212,10 +212,11 @@ Tabs:
    only a deleted record (1.2). Read-only in v1, with links to the
    interaction.
 
-4. **Suggested merges.** Not built yet (web step 5), although server build
-   step 5 returns `mergeSuggestions` in `GET /v1/review`. Planned: the two
-   records side by side, field by field, with a Merge button
-   (`POST /v1/records/:id/merge`).
+4. **Suggested merges.** One card per pending pair from the consolidator:
+   the reason, the object and both records' labels (`records` on each
+   suggestion, resolved through `references()`). "Compare and merge" opens
+   the merge dialog (5.4a) for the pair, which also offers "Not duplicates"
+   (`POST /v1/review/merges/:id/dismiss`).
 
 ### 5.3 Object list — `/app/o/:object`
 
@@ -239,6 +240,17 @@ One route for every object. Source: `POST /v1/objects/:object/query`.
 - Cursor pagination with `limit` 50. A footer shows the row range and
   Previous/Next; Previous is remembered for pages reached in this visit,
   otherwise it returns to the first page.
+- A **New** button (`write` and a `user` actor) opens a form built from the
+  object's fields: the label field first, then required fields, then the
+  rest; inverse relations, read-only fields and `json` are left out. Empty
+  optional fields are skipped, required ones are checked before sending and
+  values pass the shared validation (9.3). It sends
+  `POST /v1/objects/:object/records` with an `Idempotency-Key` that lives as
+  long as the form, so a retry after a lost response cannot create a second
+  record. Server errors land on their field: `422 invalid_values` per field,
+  and a `409 unique_conflict` or `409 suppressed` on the field it names, with
+  a link to the record that holds a conflicting value. The new record opens
+  in the side sheet.
 - Clicking a row, or its label link, opens the record in a side sheet that
   slides in over the list (5.4 content). The open record is the `record`
   search parameter, so Back closes the sheet and a copied address reopens
@@ -291,13 +303,42 @@ Three areas:
   - _Tasks_: open tasks linked to the record, from the standard `task`
     object.
 
+### 5.4a Record actions
+
+A menu in the sheet's header and the record page's top bar, for `write` keys
+with a `user` actor. Each action confirms in a dialog first. When the
+record is gone, the screen leaves it (the sheet closes; the page goes to the
+object list) and the shell shows what happened above the next screen until
+dismissed.
+
+- **Merge a duplicate…** searches the same object for the other record,
+  then opens the merge dialog with the current record as the survivor. The
+  dialog (shared with suggested merges) asks which record keeps its ID, the
+  older one by default, and lists only the fields where the two differ. A
+  field only one record has keeps that value. Where both have one, the
+  person picks the kept record's, the merged record's, or the server's rule
+  ("Newest wins", or "Combine both" for emails, phones and links); only
+  explicit picks are sent as `values`. `POST /v1/records/:id/merge` carries
+  an `Idempotency-Key` per dialog. A merge cannot be undone, so its button
+  is `destructive`.
+- **Delete…** soft-deletes the record (`DELETE /v1/records/:id`). The
+  dialog names the linked records a cascading relation would delete with it,
+  from the record's inverse relation fields, and the report counts what the
+  server deleted.
+- **Erase for privacy…** (`admin`) runs `forget` (ARCHITECTURE.md 2.1). The
+  dialog lists what is erased and that emails and phones are blocked from
+  coming back, and enables its button only once the person types the
+  record's label (or "erase" when it has none). The report gives the
+  server's counts and links the review candidates' records and interactions
+  (labels fetched for the first ten of each), and counts candidate facts.
+
 ### 5.5 Search — `⌘K`
 
-Build step 4 shipped `POST /v1/search`, but the app does not use it yet
-(web step 5). Planned: results grouped by object, then facts and
-interactions. Today `⌘K` jumps between objects and, on an object list,
-searches that object's records by keyword (`search` on
-`POST /v1/objects/:object/query`).
+`POST /v1/search` as the person types (after a 200 ms pause): records grouped
+by object, then facts, then interactions, each list ranked by the server. A
+record hit found only by the fuzzy label fallback is marked "similar name".
+A fact opens its record on the Facts tab. Below the results, objects whose
+name matches jump to their list.
 
 ### 5.6 Interaction — `/app/i/:id`
 
@@ -347,11 +388,9 @@ A workspace with no template applied shows the template list
 ### Not in v1
 
 Creating or editing objects and fields in the UI, kanban and pipeline views,
-dashboards, workspace and key management (operator CLI only, 7.1), several workspaces per session,
-and `forget` (web step 5; the server route shipped in build step 5).
-Record creation and the release boundary
-for step 5 remain explicit open decisions (13); no label-only creation flow
-is specified by this document.
+dashboards, workspace and key management (operator CLI only, 7.1), several
+workspaces per session, bulk record actions, and context packs
+(`GET /v1/records/:id/context`, which serves agents).
 
 ---
 
@@ -536,9 +575,12 @@ Each route lands with API-layer tests (12, layer 3). The cookie and CSRF
 rules get tests for: cookie only, header only, both, revoked key, and a
 cookie-authenticated write without the CSRF header.
 
-Routes that have shipped but the app does not use yet (web step 5):
-`POST /v1/search` and `GET /v1/records/:id/context` (step 4), merges,
-merge-suggestion dismissal and `forget` (step 5).
+Merge suggestions in `GET /v1/review` carry `records`: the object and label
+of each live record in the pair, resolved through `references()`, so the
+inbox needs no read per record.
+
+The one shipped route the app does not use is `GET /v1/records/:id/context`
+(step 4), which serves agents.
 
 ### 9.2 SDK (MIT)
 
@@ -566,11 +608,11 @@ when switching the server to the shared helpers.
 
 Same rules as `ARCHITECTURE.md` section 12: a real database, never a mock.
 
-| Layer      | Covers                                                                                                                                                                                                            | How                                                                                                                              |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns and paging; schema page descriptions                                             | Vitest                                                                                                                           |
-| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                               | Vitest and Testing Library                                                                                                       |
-| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; ⌘K; retracting an interaction; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
+| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                             | How                                                                                                                              |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns and paging; schema page descriptions                                                                                                                                                                                                              | Vitest                                                                                                                           |
+| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                | Vitest and Testing Library                                                                                                       |
+| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; ⌘K search across objects, facts and interactions; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; retracting an interaction; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
 
 Add coverage for inboxes larger than one page (including decisions between
 page loads), accurate totals and off-page review links; acceptance that leaves
@@ -595,7 +637,8 @@ End-to-end tests run in CI after layers 1–4.
    interaction page, schema page.
 4. **Editing.** Every field type's `Input`, inline editing, retracting facts
    and interactions.
-5. **After server steps 4 and 5.** Search, suggested merges, `forget`.
+5. **After server steps 4 and 5.** Search, record creation and deletion,
+   merges and suggested merges, `forget`.
 
 Each step lands with its tests (10).
 
@@ -622,12 +665,6 @@ All of these have been updated.
    short-lived tokens. Is the simple version enough for v1?
 3. **Schema editing in the UI.** v1 only approves what agents propose. Should
    people be able to propose changes from the schema page?
-4. **Record creation.** No creation flow is specified yet. Decide whether
-   creation belongs in the web v1 before including it in implementation.
-   Label-only creation is not sufficient for objects with other required
-   fields; inclusion needs a schema-driven required-field form and tests.
-5. **Release boundary.** Decide whether search, suggested merges and `forget`
-   are part of the web v1 or a later release. Build step 5 is conditional on
-   server work and is not a complete UI contract: merge survivor selection,
-   conflict feedback, permissions and destructive confirmation still need
-   specification before that step is implemented.
+
+Record creation and the web step 5 boundary were open questions; both are
+now decided and built (5.3, 5.4a, 5.5).

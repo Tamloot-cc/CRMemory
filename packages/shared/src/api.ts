@@ -119,6 +119,8 @@ export type UnresolvedParticipant = {
 export type MergeSuggestion = {
   id: string;
   recordIds: [string, string];
+  /** The two records' object and label, for live records only (7.2, rule 3). */
+  records: RecordReference[];
   reason: string;
   createdAt: string;
 };

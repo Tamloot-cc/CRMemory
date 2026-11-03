@@ -36,7 +36,8 @@ export function Popover({
   );
 }
 
-export function PopoverForm({ onSubmit, children }: { onSubmit: () => void; children: ReactNode }) {
+/** A form laid out for popovers and dialogs. */
+export function Form({ onSubmit, children }: { onSubmit: () => void; children: ReactNode }) {
   return (
     <form
       className="flex flex-col gap-3"
@@ -47,6 +48,31 @@ export function PopoverForm({ onSubmit, children }: { onSubmit: () => void; chil
     >
       {children}
     </form>
+  );
+}
+/** A full-width action in a menu; `destructive` for one that cannot be undone. */
+export function MenuButton({
+  onClick,
+  destructive = false,
+  children,
+}: {
+  onClick: () => void;
+  destructive?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn(
+          'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:shrink-0',
+          destructive && 'text-destructive',
+        )}
+      >
+        {children}
+      </button>
+    </li>
   );
 }
 export function MenuHeader({ title, action }: { title: string; action?: ReactNode }) {

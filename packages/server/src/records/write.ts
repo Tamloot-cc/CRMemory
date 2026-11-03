@@ -60,7 +60,13 @@ export class UniqueConflictError extends AppError {
       409,
       'unique_conflict',
       `${field.name} value ${value} already belongs to record ${recordId}`,
-      { field: field.name, value, recordId, candidates: [recordId] },
+      {
+        field: field.name,
+        value,
+        recordId,
+        candidates: [recordId],
+        errors: [{ field: field.name, message: 'already belongs to another record' }],
+      },
     );
   }
 }
@@ -249,7 +255,15 @@ async function checkSuppressed(
       409,
       'suppressed',
       `a value of ${hit.field.name} was erased by a privacy request and cannot be stored again`,
-      { field: hit.field.name },
+      {
+        field: hit.field.name,
+        errors: [
+          {
+            field: hit.field.name,
+            message: 'was erased by a privacy request and cannot be stored again',
+          },
+        ],
+      },
     );
   }
 }

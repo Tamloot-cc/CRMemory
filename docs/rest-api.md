@@ -42,6 +42,10 @@ Errors are JSON with a stable `code`, a readable `message`, and sometimes
 | 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `idempotency_key_reused` |
 | 503    | The database is unreachable, or `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`                            |
 
+`unique_conflict` and `suppressed` also list the field in `details.errors`,
+in the same shape as `invalid_values`, so a client can show every per-field
+error the same way.
+
 ## Pagination
 
 List routes take `limit` and `cursor` and return `nextCursor`, which is `null`

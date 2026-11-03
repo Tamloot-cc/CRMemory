@@ -32,8 +32,10 @@ The first release: the whole of build order steps 1 to 6 in
   participants; record tables with filters, sorting and resizable,
   reorderable columns; records in a side sheet or a full page, with
   provenance, inline field editing and retraction of facts and interactions;
-  and a schema page with objects, fields and change history. Merging,
-  dismissing merge suggestions and `forget` are REST-only for now.
+  a schema page with objects, fields and change history; record creation
+  from a schema-driven form; delete, merge (with a field-by-field comparison)
+  and erase-for-privacy from a record's actions menu; suggested merges in the
+  review inbox; and ⌘K search across records, facts and interactions.
 
 ### `@retainer/sdk`
 
@@ -48,4 +50,5 @@ The first release: the whole of build order steps 1 to 6 in
 ### `@retainer/shared`
 
 - Field types, value validation, schema definitions and the public request and
-  response types shared by the server, the SDK and the web app.
+  response types shared by the server, the SDK and the web app. Merge
+  suggestions carry the object and label of both records (`records`).

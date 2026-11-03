@@ -195,6 +195,10 @@ test('hides mutations from agent and read-only keys and isolates a replacement s
   await expect(page.getByText('This key represents a agent.', { exact: false })).toBeVisible();
   await page.goto(`${r.url}/app/r/${record.id}`);
   await expect(page.getByRole('button', { name: 'Edit Job title' })).not.toBeVisible();
+  await expect(page.getByRole('button', { name: 'Record actions' })).not.toBeVisible();
+  await page.getByRole('link', { name: 'People', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Private Acme person' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New person' })).not.toBeVisible();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
   await page.getByLabel('Personal API key').fill(r.keys.other);
@@ -316,7 +320,7 @@ test('supports keyboard review and system dark mode on a narrow screen', async (
   await page.screenshot({ path: '/tmp/retainer-web-dark-mobile.png', fullPage: true });
 });
 
-test('searches the current object with the command palette and keeps list filters in the URL', async ({
+test('searches the workspace with the command palette and keeps list filters in the URL', async ({
   page,
   retainer: r,
 }) => {
@@ -335,7 +339,7 @@ test('searches the current object with the command palette and keeps list filter
   await page.reload();
   await expect(page.getByRole('link', { name: 'Dana Levi' })).toBeVisible();
   await page.keyboard.press('ControlOrMeta+k');
-  await page.getByLabel('Find objects or records').fill('Other');
+  await page.getByLabel('Search the workspace').fill('Other');
   await page.getByRole('dialog').getByRole('button', { name: 'Other person', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Other person' })).toBeVisible();
 });
@@ -588,4 +592,271 @@ test('opens records from the list in a side sheet and edits fields inline', asyn
   await expect(page.getByRole('heading', { name: 'Noa Cohen', level: 1 })).toBeVisible();
   await expect(page.getByRole('dialog')).not.toBeVisible();
   await page.screenshot({ path: '/tmp/retainer-web-sheet.png', fullPage: true });
+});
+
+test('creates a record from the list with a schema-driven form', async ({ page, retainer: r }) => {
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('link', { name: 'People', exact: true }).click();
+  await page.getByRole('button', { name: 'New person', exact: true }).click();
+  const form = page.getByRole('dialog', { name: 'New person' });
+  await form.getByLabel('First name').fill('Noa');
+  await form.getByLabel('Last name').fill('Peretz');
+  await form.getByRole('textbox', { name: 'Job title', exact: true }).fill('Head of Sales');
+  await form.getByRole('button', { name: 'Create person', exact: true }).click();
+  // The new record opens in the sheet over the list, which already shows it.
+  const sheet = page.getByRole('dialog', { name: 'Noa Peretz' });
+  await expect(sheet.getByText('Head of Sales', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Noa Peretz' })).toBeVisible();
+  const id = new URL(page.url()).searchParams.get('record');
+  expect(await r.request(`/records/${id}`)).toMatchObject({
+    fields: { name: { first: 'Noa', last: 'Peretz' }, jobTitle: 'Head of Sales' },
+    createdBy: { type: 'user', id: 'dana' },
+  });
+});
+
+test('checks required fields and shows a unique conflict on the field', async ({
+  page,
+  retainer: r,
+}) => {
+  const holder = (
+    await r.request(
+      '/objects/person/records',
+      { values: { name: 'Claim holder', emails: 'taken@acme.test', jobTitle: 'CTO' } },
+      r.keys.user,
+    )
+  ).record;
+  const change = await r.request('/schema/changes', {
+    operations: [{ op: 'update_field', object: 'person', field: 'jobTitle', isNullable: false }],
+  });
+  await r.request(`/schema/changes/${change.change.id}/approve`, {}, r.keys.user);
+  expect(holder.fields.jobTitle).toBe('CTO');
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/o/person`);
+  await page.getByRole('button', { name: 'New person', exact: true }).click();
+  const form = page.getByRole('dialog', { name: 'New person' });
+  await form.getByLabel('First name').fill('Second');
+  await form.getByRole('button', { name: 'Add email' }).click();
+  await form.getByRole('textbox', { name: 'Email 1' }).fill('taken@acme.test');
+  await form.getByRole('button', { name: 'Create person', exact: true }).click();
+  await expect(form.getByText('Job title is required')).toBeVisible();
+  await form.getByRole('textbox', { name: 'Job title', exact: true }).fill('CFO');
+  await form.getByRole('button', { name: 'Create person', exact: true }).click();
+  await expect(form.getByText('Emails already belongs to another record')).toBeVisible();
+  await expect(form.getByRole('link', { name: 'View that record' })).toBeVisible();
+  expect((await r.request('/objects/person/query', {})).records).toHaveLength(1);
+});
+
+test('deletes a record from its sheet and reports it', async ({ page, retainer: r }) => {
+  const record = (
+    await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }, r.keys.user)
+  ).record;
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/o/person?record=${record.id}`);
+  const sheet = page.getByRole('dialog', { name: 'Dana Levi' });
+  await sheet.getByRole('button', { name: 'Record actions' }).click();
+  await page.getByRole('button', { name: 'Delete…' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Delete Dana Levi?' });
+  await confirm.getByRole('button', { name: 'Delete record', exact: true }).click();
+  await expect(page.getByText('Deleted Dana Levi.')).toBeVisible();
+  await expect(sheet).not.toBeVisible();
+  await expect(page.getByText('No records found')).toBeVisible();
+  await expect(r.request(`/records/${record.id}`)).rejects.toThrow(/record_deleted/);
+});
+
+test('warns before a delete that cascades to linked records', async ({ page, retainer: r }) => {
+  const change = await r.request('/schema/changes', {
+    operations: [
+      {
+        op: 'create_field',
+        object: 'person',
+        field: {
+          name: 'employer',
+          label: 'Employer',
+          type: 'relation',
+          settings: {
+            targetObject: 'company',
+            inverseField: 'staff',
+            relationCardinality: 'many_to_one',
+            onDelete: 'cascade',
+          },
+        },
+      },
+    ],
+  });
+  expect(change.status).toBe('applied');
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  await r.request('/objects/person/records', { values: { name: 'Dana Levi', employer: acme.id } });
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/r/${acme.id}`);
+  await page.getByRole('button', { name: 'Record actions' }).click();
+  await page.getByRole('button', { name: 'Delete…' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Delete Acme?' });
+  await expect(confirm.getByText('Deleting it also deletes 1 linked person.')).toBeVisible();
+  await confirm.getByRole('button', { name: 'Delete record', exact: true }).click();
+  await expect(page.getByText('Deleted Acme and 1 linked record.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
+});
+
+test('merges a suggested duplicate, choosing the value to keep', async ({ page, retainer: r }) => {
+  const older = (
+    await r.request('/objects/person/records', {
+      values: { name: 'Yael Mizrahi', jobTitle: 'CTO', emails: 'yael@acme.test' },
+    })
+  ).record;
+  const newer = (
+    await r.request('/objects/person/records', {
+      values: { name: 'Yael Mizrachi', jobTitle: 'VP Engineering', emails: 'yael@gmail.test' },
+    })
+  ).record;
+  await r.consolidate();
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('button', { name: /Suggested merges/ }).click();
+  await expect(page.getByText('similar names')).toBeVisible();
+  await page
+    .getByRole('button', { name: /^Compare and merge Yael Mizra.*hi and Yael Mizra.*hi$/ })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Merge duplicate records' });
+  // The older record survives by default; emails are combined unless chosen.
+  await expect(dialog.getByRole('radio', { name: /Yael Mizrahi/ })).toBeChecked();
+  await expect(dialog.getByLabel('Value for Emails')).toHaveValue('auto');
+  await dialog.getByLabel('Value for Job title').selectOption('merge');
+  await dialog.getByRole('button', { name: 'Merge into Yael Mizrahi' }).click();
+  await expect(page.getByText('Merged Yael Mizrachi into')).toBeVisible();
+  await expect(page.getByText('No suggested merges')).toBeVisible();
+  expect(await r.request(`/records/${newer.id}`)).toMatchObject({
+    id: older.id,
+    fields: {
+      jobTitle: 'VP Engineering',
+      emails: { primary: 'yael@acme.test', additional: ['yael@gmail.test'] },
+    },
+  });
+});
+
+test('dismisses a suggestion, and merges a duplicate found from the record', async ({
+  page,
+  retainer: r,
+}) => {
+  await r.request('/objects/person/records', { values: { name: 'Yael Mizrahi' } });
+  await r.request('/objects/person/records', { values: { name: 'Yael Mizrachi' } });
+  const keep = (await r.request('/objects/person/records', { values: { name: 'Avi Cohen' } }))
+    .record;
+  const away = (
+    await r.request('/objects/person/records', { values: { name: 'Avi Cohen', jobTitle: 'CFO' } })
+  ).record;
+  await r.consolidate();
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/?tab=mergeSuggestions`);
+  await page
+    .getByRole('button', { name: /^Compare and merge Yael Mizra.*hi and Yael Mizra.*hi$/ })
+    .click();
+  await page.getByRole('button', { name: 'Not duplicates' }).click();
+  await expect(page.getByText('Suggestion dismissed.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Yael Mizrachi' })).not.toBeVisible();
+
+  await page.goto(`${r.url}/app/r/${keep.id}`);
+  await page.getByRole('button', { name: 'Record actions' }).click();
+  await page.getByRole('button', { name: 'Merge a duplicate…' }).click();
+  const picker = page.getByRole('dialog', { name: 'Merge a duplicate into Avi Cohen' });
+  // The search starts from the record's own name, and the record itself is not offered.
+  await expect(picker.getByRole('button', { name: 'Avi Cohen' })).toHaveCount(1);
+  await picker.getByRole('button', { name: 'Avi Cohen' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Merge duplicate records' });
+  await expect(dialog.getByText('Keeps the only value')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Merge into Avi Cohen' }).click();
+  await expect(page.getByText('Merged Avi Cohen into')).toBeVisible();
+  await expect(page.getByText('CFO', { exact: true })).toBeVisible();
+  expect((await r.request(`/records/${away.id}`)).id).toBe(keep.id);
+});
+
+test('erases a person for a privacy request after typed confirmation', async ({
+  page,
+  retainer: r,
+}) => {
+  const person = (
+    await r.request('/objects/person/records', {
+      values: { name: 'Avi Erased', emails: 'avi@erased.test' },
+    })
+  ).record;
+  const interaction = await r.request('/interactions', {
+    kind: 'meeting',
+    channel: 'zoom',
+    occurredAt: '2026-10-20T10:00:00Z',
+    title: 'Intro call',
+    participants: [{ recordId: person.id }],
+  });
+  await r.request(`/records/${person.id}/facts`, { text: 'Prefers email', source: interaction.id });
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/r/${person.id}`);
+  await page.getByRole('button', { name: 'Record actions' }).click();
+  await page.getByRole('button', { name: 'Erase for privacy…' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Erase Avi Erased permanently?' });
+  const erase = confirm.getByRole('button', { name: 'Erase permanently' });
+  await expect(erase).toBeDisabled();
+  await confirm.getByLabel('Confirmation').fill('Avi');
+  await expect(erase).toBeDisabled();
+  await confirm.getByLabel('Confirmation').fill('Avi Erased');
+  await erase.click();
+  await expect(
+    page.getByText(/Erased Avi Erased: 1 record, 1 interaction, 1 fact and \d+ values\./),
+  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'People', exact: true })).toBeVisible();
+  await expect(r.request(`/records/${person.id}`)).rejects.toThrow(/not_found/);
+  await expect(
+    r.request('/objects/person/records', { values: { name: 'Avi', emails: 'avi@erased.test' } }),
+  ).rejects.toThrow(/suppressed/);
+});
+
+test('offers erasing only to admin user keys', async ({ page, retainer: r }) => {
+  const person = (await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }))
+    .record;
+  await signIn(page, r.url, r.keys.writer);
+  await page.goto(`${r.url}/app/r/${person.id}`);
+  await page.getByRole('button', { name: 'Record actions' }).click();
+  await expect(page.getByRole('button', { name: 'Delete…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Erase for privacy…' })).not.toBeVisible();
+});
+
+test('finds records, facts and interactions across objects with the command palette', async ({
+  page,
+  retainer: r,
+}) => {
+  const dana = (await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }))
+    .record;
+  await r.request('/objects/company/records', { values: { name: 'Levi Logistics' } });
+  const interaction = await r.request('/interactions', {
+    kind: 'call',
+    channel: 'phone',
+    occurredAt: '2026-10-20T10:00:00Z',
+    title: 'Quarterly pricing review',
+    participants: [{ recordId: dana.id }],
+  });
+  await r.request(`/records/${dana.id}/facts`, {
+    text: 'Wants quarterly invoices',
+    source: interaction.id,
+  });
+  await signIn(page, r.url, r.keys.user);
+  await page.keyboard.press('ControlOrMeta+k');
+  const palette = page.getByRole('dialog', { name: 'Find anything' });
+  await palette.getByLabel('Search the workspace').fill('Levi');
+  await expect(
+    palette.getByRole('region', { name: 'People' }).getByRole('button', { name: 'Dana Levi' }),
+  ).toBeVisible();
+  await expect(
+    palette
+      .getByRole('region', { name: 'Companies' })
+      .getByRole('button', { name: 'Levi Logistics' }),
+  ).toBeVisible();
+  await palette.getByLabel('Search the workspace').fill('quarterly');
+  await expect(
+    palette
+      .getByRole('region', { name: 'Interactions' })
+      .getByRole('button', { name: /Quarterly pricing review/ }),
+  ).toBeVisible();
+  await palette
+    .getByRole('region', { name: 'Facts' })
+    .getByRole('button', { name: 'Wants quarterly invoices' })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Dana Levi' })).toBeVisible();
+  expect(page.url()).toContain('tab=facts');
+  await expect(page.getByText('Wants quarterly invoices')).toBeVisible();
 });

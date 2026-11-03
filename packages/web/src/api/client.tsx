@@ -2,6 +2,13 @@ import { RetainerClient } from '@retainer/sdk';
 import type { SchemaDescription, Scope, Session } from '@retainer/shared';
 import { createContext, useContext } from 'react';
 
+async function errorCode(response: Response): Promise<unknown> {
+  const body = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  return (body as { error?: { code?: unknown } } | null)?.error?.code;
+}
 let sessionEpoch = 0;
 export function resetSessionTransport() {
   sessionEpoch++;
@@ -16,11 +23,14 @@ export const api = new RetainerClient({
       typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
     );
     const read = !init?.method || init.method === 'GET' || url.pathname.endsWith('/query');
+    // A 404 may mean the cached schema names an object that no longer exists;
+    // a deleted record is a plain answer, so it skips the schema refresh.
     if (
       response.status === 404 &&
       read &&
       url.pathname.startsWith('/v1/') &&
-      url.pathname !== '/v1/schema'
+      url.pathname !== '/v1/schema' &&
+      (await errorCode(response)) !== 'record_deleted'
     ) {
       const refreshed = await api.schema(init?.signal ?? undefined);
       if (epoch !== sessionEpoch)

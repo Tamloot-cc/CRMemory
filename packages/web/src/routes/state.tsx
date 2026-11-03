@@ -1,6 +1,6 @@
 import type { ObjectView } from '@retainer/shared';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { useCallback } from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import { Button, Notice, Row } from '../ui/index.js';
 export type ViewSearch = {
   tab?: string;
@@ -17,6 +17,18 @@ export type ViewSearch = {
   /** Schema page: the change-history status filter. */
   status?: string;
 };
+/** How a record is named on screen. */
+export const recordTitle = (r: { label: string | null }) => r.label || 'Untitled record';
+
+/** `value` once it has stopped changing for `ms`, so typing is not a request per key. */
+export function useDebounced<T>(value: T, ms = 200): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(timer);
+  }, [value, ms]);
+  return settled;
+}
 /** Standard (system) objects first, then the rest in schema order: the sidebar and schema page order. */
 export function sortObjects(objects: ObjectView[]) {
   return [...objects].sort((a, b) => Number(b.owner === 'system') - Number(a.owner === 'system'));
@@ -42,3 +54,11 @@ export function QueryError({ error, retry }: { error: Error; retry?: () => void 
     </Notice>
   );
 }
+
+/**
+ * Reports the outcome of an action whose screen goes away with it (a
+ * deleted, merged or erased record): the shell shows it above the next
+ * screen until dismissed.
+ */
+export const ReportContext = createContext<(report: ReactNode) => void>(() => {});
+export const useReport = () => useContext(ReportContext);

@@ -6,12 +6,15 @@ import postgres from 'postgres';
 import { createApp } from '../src/api/app.js';
 import { createApiKey } from '../src/auth/keys.js';
 import { createSql, RUNTIME_ROLE } from '../src/db/client.js';
+import { consolidateWorkspace } from '../src/worker/consolidate.js';
 import { createWorkspace } from '../src/workspaces/workspaces.js';
 export const test = base.extend<{
   retainer: {
     url: string;
-    keys: { user: string; agent: string; reader: string; other: string };
+    keys: { user: string; writer: string; agent: string; reader: string; other: string };
     request: (path: string, body?: unknown, key?: string, method?: string) => Promise<any>;
+    /** Runs the consolidator once, which suggests merges. */
+    consolidate: () => Promise<unknown>;
   };
 }>({
   retainer: async ({ browserName: _browserName }, use) => {
@@ -42,6 +45,14 @@ export const test = base.extend<{
         name: 'Inbox agent',
         actor: { type: 'agent', id: 'inbox' },
         scopes: ['read', 'write', 'schema:write'],
+      })
+    ).key;
+    const writer = (
+      await createApiKey(owner, {
+        workspace: workspace.id,
+        name: 'Writer',
+        actor: { type: 'user', id: 'writer' },
+        scopes: ['read', 'write'],
       })
     ).key;
     const reader = (
@@ -83,7 +94,12 @@ export const test = base.extend<{
       return result;
     }
     try {
-      await use({ url, keys: { user, agent, reader, other: otherKey }, request });
+      await use({
+        url,
+        keys: { user, writer, agent, reader, other: otherKey },
+        request,
+        consolidate: () => consolidateWorkspace(sql, workspace.id),
+      });
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((e) => (e ? reject(e) : resolve()));

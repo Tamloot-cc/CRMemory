@@ -61,7 +61,7 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={
-        props.type === 'checkbox'
+        props.type === 'checkbox' || props.type === 'radio'
           ? 'h-4 w-4 shrink-0 accent-primary'
           : 'h-8 w-full min-w-0 rounded-md border border-input bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring disabled:opacity-50'
       }
@@ -106,6 +106,10 @@ export function CheckLabel({ children }: { children: ReactNode }) {
     </label>
   );
 }
+/** Text cut to one line with an ellipsis, inside a button or row. */
+export function Truncate({ children }: { children: ReactNode }) {
+  return <span className="min-w-0 truncate">{children}</span>;
+}
 export function Muted({ children }: { children: ReactNode }) {
   return <span className="text-sm text-muted-foreground">{children}</span>;
 }
@@ -127,18 +131,64 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
     </span>
   );
 }
-export function Notice({ children, error = false }: { children: ReactNode; error?: boolean }) {
+/** With `onDismiss`, a close button sits at its end. */
+export function Notice({
+  children,
+  error = false,
+  onDismiss,
+}: {
+  children: ReactNode;
+  error?: boolean;
+  onDismiss?: () => void;
+}) {
   return (
     <div
       role={error ? 'alert' : 'status'}
       className={cn(
-        'rounded-lg border px-3 py-2.5 text-sm',
+        'flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm',
         error
           ? 'border-destructive/30 text-destructive'
           : 'border-border bg-muted/40 text-muted-foreground',
       )}
     >
+      <div className="min-w-0 flex-1">{children}</div>
+      {onDismiss ? (
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={onDismiss}
+          className="-my-0.5 shrink-0 rounded-md p-0.5 hover:bg-hover"
+        >
+          <X size={14} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+/**
+ * One control in a form: its name, an optional hint beside it and an error
+ * under it. Not a `<label>`, because some inputs hold several controls that
+ * carry their own accessible names.
+ */
+export function FormField({
+  label,
+  hint,
+  error,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  error?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline gap-2 text-sm font-medium">
+        {label}
+        {hint ? <span className="text-xs font-normal text-muted-foreground">{hint}</span> : null}
+      </div>
       {children}
+      {error ? <span className="text-xs font-normal text-destructive">{error}</span> : null}
     </div>
   );
 }
@@ -502,7 +552,14 @@ export {
   Timeline,
   TimelineItem,
 } from './layout.js';
-export { MenuHeader, MenuItem, MenuList, Popover, PopoverForm } from './popover.js';
+export {
+  Form,
+  MenuButton,
+  MenuHeader,
+  MenuItem,
+  MenuList,
+  Popover,
+} from './popover.js';
 export { Property, PropertyEditor, PropertyList, Section } from './property.js';
 export { Sheet } from './sheet.js';
 export { objectIcon, Shell } from './shell.js';

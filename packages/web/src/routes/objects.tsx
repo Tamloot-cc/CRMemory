@@ -1,9 +1,9 @@
 import type { FieldView, ObjectView, QueryInput } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
-import { ArrowUpDown, ChevronLeft, ChevronRight, Columns3, ListFilter } from 'lucide-react';
+import { ArrowUpDown, ChevronLeft, ChevronRight, Columns3, ListFilter, Plus } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
-import { api, useWorkspace } from '../api/client.js';
+import { api, canMutate, useWorkspace } from '../api/client.js';
 import { filterValue, operatorsFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import {
@@ -12,6 +12,7 @@ import {
   DataGrid,
   Empty,
   FilterChip,
+  Form,
   GridFooter,
   Input,
   Inset,
@@ -23,11 +24,11 @@ import {
   Notice,
   Page,
   Popover,
-  PopoverForm,
   RecordLink,
   Select,
   Toolbar,
 } from '../ui/index.js';
+import { CreateRecordDialog } from './create-record.js';
 import {
   addClause,
   type ColumnPrefs,
@@ -80,7 +81,8 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const { session } = useWorkspace();
   const { search, setSearch } = useView();
   const workspace = session.workspace.id;
-  const [error, setError] = useState('');
+  const [error, setError] = useState(''),
+    [creating, setCreating] = useState(false);
   const [prefs, setPrefs] = useState(() => loadColumnPrefs(() => localStorage, workspace, name));
 
   const view = parseListSearch(search);
@@ -168,13 +170,21 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       eyebrow="Objects"
       title={object.labelPlural}
       actions={
-        <ColumnsMenu
-          object={object}
-          columns={columns}
-          order={order}
-          onChange={saveOrder}
-          onReset={() => savePrefs({ order: defaultColumnOrder(object), widths: {} })}
-        />
+        <>
+          <ColumnsMenu
+            object={object}
+            columns={columns}
+            order={order}
+            onChange={saveOrder}
+            onReset={() => savePrefs({ order: defaultColumnOrder(object), widths: {} })}
+          />
+          {canMutate(session) ? (
+            <Button variant="primary" size="small" onClick={() => setCreating(true)}>
+              <Plus size={14} />
+              New {object.labelSingular.toLowerCase()}
+            </Button>
+          ) : null}
+        </>
       }
     >
       <Toolbar
@@ -254,7 +264,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
             description={
               search.filter
                 ? 'No records match these filters.'
-                : 'Ask your agent to add records, and they will show up here.'
+                : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
             }
           />
         </Inset>
@@ -294,6 +304,16 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           {pageRange(pages, search.cursor, rows.length, PAGE_SIZE)}
           {nextCursor ? ' · more available' : ''}
         </GridFooter>
+      ) : null}
+      {creating ? (
+        <CreateRecordDialog
+          object={object}
+          onClose={() => setCreating(false)}
+          onCreated={(id) => {
+            setCreating(false);
+            void setSearch({ record: id });
+          }}
+        />
       ) : null}
       {search.record ? (
         <RecordSheet id={search.record} onClose={() => void setSearch({ record: undefined })} />
@@ -392,7 +412,7 @@ function FilterMenu({
         </Button>
       }
     >
-      <PopoverForm onSubmit={apply}>
+      <Form onSubmit={apply}>
         <Label>
           Field
           <Select
@@ -440,7 +460,7 @@ function FilterMenu({
             </Button>
           </>
         ) : null}
-      </PopoverForm>
+      </Form>
     </Popover>
   );
 }

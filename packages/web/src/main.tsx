@@ -8,10 +8,8 @@ import {
   lazyRouteComponent,
   Outlet,
   RouterProvider,
-  useNavigate,
-  useParams,
 } from '@tanstack/react-router';
-import { StrictMode, useEffect, useState } from 'react';
+import { type ReactNode, StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AuthContext,
@@ -21,16 +19,16 @@ import {
   WorkspaceContext,
 } from './api/client.js';
 import { SignIn } from './auth/sign-in.js';
+import { CommandPalette } from './routes/command.js';
 import type { ViewSearch } from './routes/state.js';
-import { QueryError, sortObjects } from './routes/state.js';
-import { Button, Dialog, Input, Notice, Page, Shell, Stack } from './ui/index.js';
+import { QueryError, ReportContext, sortObjects } from './routes/state.js';
+import { Button, Notice, Page, Shell } from './ui/index.js';
 import './style.css';
 
 function Layout() {
   const { session, signOut } = useAuth();
-  const navigate = useNavigate();
   const [command, setCommand] = useState(false),
-    [search, setSearch] = useState('');
+    [report, setReport] = useState<ReactNode>(null);
   const client = useQueryClient();
   const schema = useQuery({
     queryKey: [session.workspace.id, 'schema'],
@@ -46,20 +44,6 @@ function Layout() {
     retry: false,
     staleTime: 60_000,
     refetchOnWindowFocus: true,
-  });
-  const params = useParams({ strict: false }) as { object?: string };
-  const currentObject = schema.data?.objects.find(
-    (o) => o.nameSingular === params.object || o.namePlural === params.object,
-  );
-  const currentRecords = useQuery({
-    queryKey: [session.workspace.id, 'commandRecords', currentObject?.nameSingular, search],
-    enabled: command && !!search.trim() && !!currentObject,
-    queryFn: ({ signal }) =>
-      api.queryRecords(
-        currentObject?.nameSingular ?? '',
-        { search: search.trim(), limit: 20 },
-        signal,
-      ),
   });
   useEffect(() => {
     const refreshed = (event: Event) => {
@@ -99,73 +83,29 @@ function Layout() {
   const objects = sortObjects(schema.data.objects);
   return (
     <WorkspaceContext.Provider value={{ session, schema: schema.data }}>
-      <Shell
-        workspace={session.workspace.name}
-        user={{
-          name: session.actor.name || session.actor.id,
-          type: session.actor.type,
-        }}
-        inboxCount={inbox.data?.totals.pendingAssertions}
-        objects={objects.map((o) => ({ name: o.nameSingular, label: o.labelPlural }))}
-        onSignOut={signOut}
-        onSearch={() => setCommand(true)}
-      >
-        {session.actor.type !== 'user' ? (
-          <Notice>
-            This key represents a {session.actor.type}. Sign in with a personal user key to make
-            changes.
-          </Notice>
-        ) : null}
-        <Outlet />
-      </Shell>
-      <Dialog
-        open={command}
-        onOpenChange={setCommand}
-        title={currentObject ? `Find in ${currentObject.labelPlural}` : 'Jump to an object'}
-        description="Search the current object or jump to another. Global search comes in a later milestone."
-      >
-        <Input
-          aria-label="Find objects or records"
-          autoFocus
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Find an object or record…"
-        />
-        {currentRecords.error ? <QueryError error={currentRecords.error} /> : null}
-        {currentObject && search ? (
-          <Stack>
-            {currentRecords.isFetching ? (
-              <Notice>Searching {currentObject.labelPlural}…</Notice>
-            ) : null}
-            {currentRecords.data?.records.map((r) => (
-              <Button
-                key={r.id}
-                onClick={() => {
-                  setCommand(false);
-                  void navigate({ to: '/r/$id', params: { id: r.id } });
-                }}
-              >
-                {r.label || 'Untitled record'}
-              </Button>
-            ))}
-          </Stack>
-        ) : null}
-        <Stack>
-          {objects
-            .filter((o) => o.labelPlural.toLowerCase().includes(search.toLowerCase()))
-            .map((o) => (
-              <Button
-                key={o.nameSingular}
-                onClick={() => {
-                  setCommand(false);
-                  void navigate({ to: '/o/$object', params: { object: o.nameSingular } });
-                }}
-              >
-                {o.labelPlural}
-              </Button>
-            ))}
-        </Stack>
-      </Dialog>
+      <ReportContext.Provider value={setReport}>
+        <Shell
+          workspace={session.workspace.name}
+          user={{
+            name: session.actor.name || session.actor.id,
+            type: session.actor.type,
+          }}
+          inboxCount={inbox.data?.totals.pendingAssertions}
+          objects={objects.map((o) => ({ name: o.nameSingular, label: o.labelPlural }))}
+          onSignOut={signOut}
+          onSearch={() => setCommand(true)}
+        >
+          {session.actor.type !== 'user' ? (
+            <Notice>
+              This key represents a {session.actor.type}. Sign in with a personal user key to make
+              changes.
+            </Notice>
+          ) : null}
+          {report ? <Notice onDismiss={() => setReport(null)}>{report}</Notice> : null}
+          <Outlet />
+        </Shell>
+        <CommandPalette open={command} onOpenChange={setCommand} />
+      </ReportContext.Provider>
     </WorkspaceContext.Provider>
   );
 }
