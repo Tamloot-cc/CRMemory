@@ -200,29 +200,43 @@ function ObjectsTab() {
     { search, setSearch } = useView();
   const objects = sortObjects(schema.objects);
   const { builtIns } = schema;
-  const builtIn = builtIns.find((b) => b.name === search.object);
-  const object = builtIn ? undefined : (findObject(objects, search.object) ?? objects[0]);
+  const named = builtIns.find((b) => b.name === search.object);
+  const object = named ? undefined : (findObject(objects, search.object) ?? objects[0]);
+  // With no objects yet, the built-ins are still there to look at.
+  const builtIn = named ?? (object ? undefined : builtIns[0]);
   const field = object?.fields.find((f) => f.name === search.field);
   const select = (object: string, field?: string) => void setSearch({ object, field });
   return (
     <>
       {!schema.workspace.templates.length ? <TemplatePicker /> : null}
+      {objects.length ? null : (
+        <Empty
+          title="No objects yet"
+          description={
+            canMutate(session, 'schema:write')
+              ? 'Apply a template above, or let an agent propose objects.'
+              : 'Objects appear here once a template is applied or an agent’s proposal is approved.'
+          }
+        />
+      )}
       {object || builtIn ? (
         <SplitView
           nav={
             <>
-              <NavList label="Objects">
-                {objects.map((o) => (
-                  <NavItem
-                    key={o.nameSingular}
-                    icon={objectIcon(o.nameSingular)}
-                    label={o.labelPlural}
-                    meta={o.fields.length}
-                    active={o.nameSingular === object?.nameSingular}
-                    onSelect={() => select(o.nameSingular)}
-                  />
-                ))}
-              </NavList>
+              {objects.length ? (
+                <NavList label="Objects">
+                  {objects.map((o) => (
+                    <NavItem
+                      key={o.nameSingular}
+                      icon={objectIcon(o.nameSingular)}
+                      label={o.labelPlural}
+                      meta={o.fields.length}
+                      active={o.nameSingular === object?.nameSingular}
+                      onSelect={() => select(o.nameSingular)}
+                    />
+                  ))}
+                </NavList>
+              ) : null}
               {builtIns.length ? (
                 <NavList label="Built-in">
                   {builtIns.map((b) => (
@@ -251,16 +265,7 @@ function ObjectsTab() {
             />
           ) : null}
         </SplitView>
-      ) : (
-        <Empty
-          title="No objects yet"
-          description={
-            canMutate(session, 'schema:write')
-              ? 'Apply a template above, or let an agent propose objects.'
-              : 'Objects appear here once a template is applied or an agent’s proposal is approved.'
-          }
-        />
-      )}
+      ) : null}
       {object && field ? (
         <FieldSheet
           object={object}
