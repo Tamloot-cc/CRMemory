@@ -3,6 +3,7 @@
   "files": {
     "includes": [
       "**",
+      "!**/.claude",
       "!**/dist",
       "!**/drizzle/meta",
       "!**/node_modules",
