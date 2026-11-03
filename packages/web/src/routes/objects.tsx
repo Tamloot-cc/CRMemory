@@ -150,26 +150,28 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const [unsaved, setUnsaved] = useState<Record<string, ColumnPrefs>>({});
 
   // Saved views (ARCHITECTURE.md 1.4): `?view=` picks one; without it, all records.
+  // Keyed by the singular name, as the view dialogs are, whichever name the address uses.
+  const objectName = object.nameSingular;
   const views = useQuery({
-    queryKey: viewsKey(workspace, name),
-    queryFn: ({ signal }) => api.views(name, signal),
+    queryKey: viewsKey(workspace, objectName),
+    queryFn: ({ signal }) => api.views(objectName, signal),
   });
   const saved = search.view ? views.data?.views.find((v) => v.id === search.view) : undefined;
   const missingView = !!search.view && views.isSuccess && !saved;
   const kind = saved?.kind ?? 'table';
   const selectView = useCallback(
     (id: string | undefined, options: { replace?: boolean } = {}) => {
-      rememberView(workspace, name, id);
+      rememberView(workspace, objectName, id);
       void setSearch(
         { view: id, filter: undefined, sort: undefined, cursor: undefined, month: undefined },
         options,
       );
     },
-    [workspace, name, setSearch],
+    [workspace, objectName, setSearch],
   );
   const opening = useLastView(
     workspace,
-    name,
+    objectName,
     search,
     // If views fail to load, all records it is.
     views.data?.views ?? (views.isError ? [] : undefined),
@@ -340,7 +342,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
     const id = saved.id;
     const replace = (update: (v: SavedView) => SavedView) =>
       client.setQueryData<{ views: SavedView[] }>(
-        viewsKey(workspace, name),
+        viewsKey(workspace, objectName),
         (old) => old && { views: old.views.map((v) => (v.id === id ? update(v) : v)) },
       );
     replace((v) => applyChange(v, change));
@@ -356,7 +358,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       const reply = updated;
       replace(() => reply);
     } else if (next === 'refetch')
-      void client.invalidateQueries({ queryKey: viewsKey(workspace, name) });
+      void client.invalidateQueries({ queryKey: viewsKey(workspace, objectName) });
     return !!updated;
   }
 

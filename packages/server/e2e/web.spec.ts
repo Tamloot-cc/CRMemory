@@ -1098,7 +1098,8 @@ test('saves a board view, totals its columns, and moves a card from the keyboard
     await r.request('/objects/deal/records', { values: { name, stage, amount: usd(amount) } });
   await r.request('/objects/deal/records', { values: { name: 'Unscoped inbound' } });
   await signIn(page, r.url, r.keys.user);
-  await page.getByRole('link', { name: 'Deals', exact: true }).click();
+  // By the plural name, which the address also takes; views are the object's either way.
+  await page.goto(`${r.url}/app/o/deals`);
 
   await page.getByRole('button', { name: 'View: All deals' }).click();
   await page.getByRole('menuitem', { name: 'New view…' }).click();

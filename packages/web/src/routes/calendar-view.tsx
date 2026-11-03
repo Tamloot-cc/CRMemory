@@ -230,7 +230,8 @@ export function CalendarView({
                     item={r}
                     title={recordTitle(r)}
                     time={timeOf(field, dateValue(r))}
-                    draggable={draggable}
+                    // One move at a time: a record saving its move can't be moved again.
+                    draggable={draggable && !Object.hasOwn(moves.moving, r.id)}
                     selected={selected === r.id}
                     pending={Object.hasOwn(moves.moving, r.id)}
                     onOpen={() => onOpen(r.id)}

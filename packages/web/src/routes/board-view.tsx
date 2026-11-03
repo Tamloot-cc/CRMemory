@@ -279,7 +279,8 @@ function Column({
             column={group.key}
             item={card}
             {...toCard(card)}
-            draggable={draggable}
+            // One move at a time: a card saving its move can't be moved again.
+            draggable={draggable && !Object.hasOwn(moving, card.record.id)}
             selected={selected === card.record.id}
             pending={Object.hasOwn(moving, card.record.id)}
             onOpen={() => onOpen(card.record.id)}
