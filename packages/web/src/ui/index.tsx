@@ -7,6 +7,7 @@ import {
   type ComponentProps,
   type HTMLAttributes,
   type InputHTMLAttributes,
+  lazy,
   type ReactNode,
   type SelectHTMLAttributes,
   useContext,
@@ -481,6 +482,14 @@ export function Td({
 }
 export type { Tone } from './core.js';
 export { DataGrid, FilterChip, GridFooter, Toolbar } from './data-grid.js';
+export {
+  type DiagramEdge,
+  type DiagramEnd,
+  DiagramKey,
+  type DiagramNode,
+} from './diagram-parts.js';
+/** React Flow and dagre are heavy, so the canvas loads on first render; wrap it in Suspense. */
+export const Diagram = lazy(() => import('./diagram.js').then((m) => ({ default: m.Diagram })));
 export {
   CardGrid,
   Check,

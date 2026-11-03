@@ -1,0 +1,27 @@
+/* React Flow in the app's colours, light and dark. Loads with the diagram. */
+.retainer-diagram .react-flow {
+  --xy-background-color: transparent;
+  --xy-background-pattern-color: color-mix(in srgb, var(--muted-foreground) 30%, transparent);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--hover);
+  --xy-controls-button-color: var(--muted-foreground);
+  --xy-controls-button-color-hover: var(--foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--muted) 70%, transparent);
+  --xy-minimap-mask-stroke-color: var(--border);
+  --xy-minimap-node-background-color: var(--muted);
+  --xy-minimap-node-stroke-color: var(--border);
+  --xy-attribution-background-color: transparent;
+}
+.retainer-diagram .react-flow__controls,
+.retainer-diagram .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.retainer-diagram .react-flow__attribution,
+.retainer-diagram .react-flow__attribution a {
+  color: var(--muted-foreground);
+}

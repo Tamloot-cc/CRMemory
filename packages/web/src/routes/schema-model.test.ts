@@ -1,9 +1,11 @@
 import type { FieldView, ObjectView } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  cardinality,
   describeOperation,
   matchesField,
   parseStatus,
+  relationEdges,
   relativeTime,
   typeDetail,
 } from './schema-model.js';
@@ -81,6 +83,50 @@ const objects = [deal, person, company];
 describe('schema page model', () => {
   it('puts system objects first and keeps schema order otherwise', () => {
     expect(sortObjects(objects).map((o) => o.nameSingular)).toEqual(['person', 'company', 'deal']);
+  });
+
+  it('draws each relation once, from its many side to its one side', () => {
+    expect(relationEdges(objects)).toEqual([
+      {
+        id: 'person.company',
+        from: { node: 'person', row: 'company' },
+        to: { node: 'company', row: 'people' },
+        description: 'Company: Each person has one company. Each company has many people.',
+      },
+    ]);
+  });
+
+  it('keeps a one-to-many field without its other side, and drops missing targets', () => {
+    const lonely = object({
+      nameSingular: 'company',
+      labelSingular: 'Company',
+      labelPlural: 'Companies',
+      fields: [
+        field({
+          name: 'staff',
+          label: 'Staff',
+          type: 'relation',
+          settings: { targetObject: 'person', relationCardinality: 'one_to_many' },
+        }),
+        field({ name: 'ghost', label: 'Ghost', type: 'relation', settings: { targetObject: 'x' } }),
+      ],
+    });
+    const edges = relationEdges([
+      object({ nameSingular: 'person', labelSingular: 'Person' }),
+      lonely,
+    ]);
+    expect(edges.map((e) => [e.from, e.to])).toEqual([
+      [
+        { node: 'person', row: undefined },
+        { node: 'company', row: 'staff' },
+      ],
+    ]);
+  });
+
+  it('words cardinality the same way everywhere', () => {
+    expect(cardinality(person, company, false)).toBe('Each person has one company');
+    expect(cardinality(company, person, true)).toBe('Each company has many people');
+    expect(cardinality(person, null, true)).toBe('Each person has many records');
   });
 
   it('describes what settings add to a type', () => {

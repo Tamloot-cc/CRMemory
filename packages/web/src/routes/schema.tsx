@@ -21,7 +21,7 @@ import {
   type LucideIcon,
   TriangleAlert,
 } from 'lucide-react';
-import { useState } from 'react';
+import { Suspense, useCallback, useMemo, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge } from '../provenance/index.js';
@@ -31,6 +31,8 @@ import {
   CardGrid,
   Check,
   Code,
+  Diagram,
+  DiagramKey,
   Empty,
   EntityHeader,
   Input,
@@ -60,10 +62,13 @@ import {
   Tr,
 } from '../ui/index.js';
 import {
+  cardinality,
   describeOperation,
   findObject,
   matchesField,
   parseStatus,
+  relationEdges,
+  relationEnds,
   relativeTime,
   typeDetail,
 } from './schema-model.js';
@@ -138,7 +143,7 @@ function useSchemaChanges(status?: SchemaChangeStatus, cursor?: string) {
 export function SchemaPage() {
   const { schema } = useWorkspace(),
     { search, setSearch } = useView();
-  const tab = search.tab === 'history' ? 'history' : 'objects';
+  const tab = search.tab === 'history' || search.tab === 'diagram' ? search.tab : 'objects';
   const proposed = useSchemaChanges('proposed');
   const all = useSchemaChanges();
   const pending = proposed.data?.total ?? 0;
@@ -172,10 +177,11 @@ export function SchemaPage() {
         }
         items={[
           { value: 'objects', label: 'Objects', count: schema.objects.length },
+          { value: 'diagram', label: 'Diagram' },
           { value: 'history', label: 'Change history', count: all.data?.total },
         ]}
       />
-      {tab === 'objects' ? <ObjectsTab /> : <HistoryTab />}
+      {tab === 'objects' ? <ObjectsTab /> : tab === 'diagram' ? <DiagramTab /> : <HistoryTab />}
     </Page>
   );
 }
@@ -233,6 +239,69 @@ function ObjectsTab() {
         />
       ) : null}
     </>
+  );
+}
+
+/** The objects as boxes and their relations as lines; both open in the Objects tab. */
+function DiagramTab() {
+  const { schema } = useWorkspace(),
+    { setSearch } = useView();
+  const { nodes, edges } = useMemo(() => {
+    const objects = sortObjects(schema.objects);
+    const row = (f: FieldView, o: ObjectView) => ({
+      id: f.name,
+      icon: fields[f.type].icon,
+      label: f.label,
+      detail: f.type === 'relation' ? (typeDetail(f, objects) ?? undefined) : fields[f.type].label,
+      isKey: f.name === o.labelField,
+    });
+    return {
+      nodes: objects.map((o) => ({
+        id: o.nameSingular,
+        icon: objectIcon(o.nameSingular),
+        label: o.labelPlural,
+        meta: `${o.fields.length} ${o.fields.length === 1 ? 'field' : 'fields'}`,
+        // The field that names records, then the relations.
+        rows: [
+          ...o.fields.filter((f) => f.name === o.labelField),
+          ...o.fields.filter((f) => f.type === 'relation' && f.name !== o.labelField),
+        ].map((f) => row(f, o)),
+      })),
+      edges: relationEdges(objects),
+    };
+  }, [schema.objects]);
+  const open = useCallback(
+    (object: string, field?: string) => void setSearch({ tab: undefined, object, field }),
+    [setSearch],
+  );
+  if (!nodes.length)
+    return (
+      <Empty
+        title="No objects yet"
+        description="The diagram appears once the workspace has objects."
+      />
+    );
+  return (
+    <Suspense fallback={<Notice>Loading diagram…</Notice>}>
+      <Diagram
+        label="Objects and their relations"
+        nodes={nodes}
+        edges={edges}
+        onSelectNode={open}
+        onSelectRow={open}
+        legend={
+          <>
+            <DiagramKey end="many">Many</DiagramKey>
+            <DiagramKey end="one">One</DiagramKey>
+            <span>
+              {edges.length} {edges.length === 1 ? 'relation' : 'relations'}. Each card shows the
+              field that names its records and its relations. Drag to move, use the controls to
+              zoom, and click a card, a field or a line to open it.
+            </span>
+          </>
+        }
+      />
+    </Suspense>
   );
 }
 
@@ -360,8 +429,7 @@ function FieldSheet({
 }) {
   const { schema } = useWorkspace();
   const s = field.settings;
-  const target = findObject(schema.objects, s.targetObject);
-  const inverse = target?.fields.find((f) => f.name === s.inverseField);
+  const { target, inverse } = relationEnds(field, schema.objects);
   const flags = [
     ...FLAGS.map((f) => ({ ...f, on: f.on(field) })),
     {
@@ -422,9 +490,7 @@ function FieldSheet({
               )}
             </Property>
             <Property label="Cardinality">
-              {s.relationCardinality === 'one_to_many'
-                ? `Each ${object.labelSingular.toLowerCase()} has many ${target?.labelPlural.toLowerCase() ?? 'records'}`
-                : `Each ${object.labelSingular.toLowerCase()} has one ${target?.labelSingular.toLowerCase() ?? 'record'}`}
+              {cardinality(object, target, s.relationCardinality === 'one_to_many')}
             </Property>
             {s.inverseField ? (
               <Property label="Other side">
