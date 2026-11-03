@@ -59,10 +59,22 @@ export function isEmptyFor(type: FieldView['type'], value: unknown): boolean {
   }
   return false;
 }
-const dateText = (v: string, time = false) => {
+export const dateText = (v: string, time = false) => {
   const d = new Date(time ? v : `${v}T12:00:00`);
   return Number.isNaN(d.getTime()) ? v : time ? d.toLocaleString() : d.toLocaleDateString();
 };
+/** "$1,200.50"; an unknown currency code falls back to "1200.5 XYZ". */
+export function moneyText(v: MoneyValue): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: v.currency,
+      maximumFractionDigits: 6,
+    }).format(v.amountMicros / 1e6);
+  } catch {
+    return `${v.amountMicros / 1e6} ${v.currency}`;
+  }
+}
 export function FieldDisplay({ field, value, compact = false, references = {} }: DisplayProps) {
   if (isEmptyFor(field.type, value)) return <Muted>—</Muted>;
   switch (field.type) {
@@ -104,26 +116,8 @@ export function FieldDisplay({ field, value, compact = false, references = {} }:
         </Row>
       );
     }
-    case 'money': {
-      const v = value as MoneyValue;
-      try {
-        return (
-          <span>
-            {new Intl.NumberFormat(undefined, {
-              style: 'currency',
-              currency: v.currency,
-              maximumFractionDigits: 6,
-            }).format(v.amountMicros / 1e6)}
-          </span>
-        );
-      } catch {
-        return (
-          <span>
-            {v.amountMicros / 1e6} {v.currency}
-          </span>
-        );
-      }
-    }
+    case 'money':
+      return <span>{moneyText(value as MoneyValue)}</span>;
     case 'full_name': {
       const v = value as FullNameValue;
       return (

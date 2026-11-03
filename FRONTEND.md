@@ -237,9 +237,32 @@ One route for every object. Source: `POST /v1/objects/:object/query`.
   and stay in place while other chips are added, replaced or removed.
 - Click a sortable header to sort ascending, descending, then off. The Sort
   menu also offers Updated and Created.
-- Cursor pagination with `limit` 50. A footer shows the row range and
-  Previous/Next; Previous is remembered for pages reached in this visit,
-  otherwise it returns to the first page.
+- Cursor pagination with `limit` 50. A footer shows the row range out of
+  the total the view matches ("51–100 of 230") and Previous/Next; Previous is
+  remembered for pages reached in this visit, otherwise it returns to the
+  first page.
+- Under the rows, each column's footer offers **Calculate**: empty and not
+  empty (count or percent) for every column, unique values for scalar,
+  select and many-to-one relation columns, sum and average for number and
+  money, min and max (earliest and latest for dates). They come from
+  `POST /v1/objects/:object/aggregate` with the list's filter, so they cover
+  every matching record, not the page; "empty" counts the same records as
+  the `isNull` filter. Money in more than one currency shows "mixed
+  currencies" rather than a sum. The chosen calculations are saved with the
+  column preferences.
+- With `write` and a `user` actor, each row has a checkbox, and the header
+  box selects the page. Selecting replaces the filter bar with the count and
+  its actions: **Delete…** for any number, **Merge…** when exactly two are
+  selected (the merge comparison of 5.4a). The delete warning comes from
+  `POST /v1/records/delete-impact`, which counts what all the selected
+  records cascade to once each. Records are then deleted one by one; one
+  already gone counts as deleted, and any that fail stay selected and are
+  named in the report. Selection belongs to the page and view: paging,
+  filtering or sorting clears it.
+- Writable cells (as in 5.4) show a pencil on hover or focus that opens the
+  record page's inline editor in a layer next to the cell, with the same
+  stale-write guard. Editing does not open the record, and the footer
+  totals refresh after a save.
 - A **New** button (`write` and a `user` actor) opens a form built from the
   object's fields: the label field first, then required fields, then the
   rest; inverse relations, read-only fields and `json` are left out. Empty
@@ -535,6 +558,8 @@ this:
 | `GET /v1/assertions/:id`                        | Fetch an assertion directly for review deep links, including its current status                                                 | 5.2, 5.4  |
 | Review enrichment                               | Source interaction summary and current conflicting record reference, as below                                                   | 5.2       |
 | Relation references on record reads and queries | Optional resolved labels alongside existing relation ID values, as below                                                        | 5.3, 5.4  |
+| `POST /v1/objects/:object/aggregate`            | Total and per-column calculations over the records a filter matches                                                             | 5.3       |
+| `POST /v1/records/delete-impact`                | What deleting several records together would cascade to, overlaps counted once                                                  | 5.3       |
 
 The v1 read contracts are:
 
@@ -609,11 +634,11 @@ when switching the server to the shared helpers.
 
 Same rules as `ARCHITECTURE.md` section 12: a real database, never a mock.
 
-| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                             | How                                                                                                                              |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns and paging; schema page descriptions                                                                                                                                                                                                              | Vitest                                                                                                                           |
-| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                | Vitest and Testing Library                                                                                                       |
-| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; ⌘K search across objects, facts and interactions; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; retracting an interaction; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
+| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                               | How                                                                                                                              |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns, paging and footer totals; schema page descriptions                                                                                                                                                                                                                                                                                 | Vitest                                                                                                                           |
+| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                                                                                                  | Vitest and Testing Library                                                                                                       |
+| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; list selection with bulk delete and merge, column totals and editing in the grid; ⌘K search across objects, facts and interactions; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; retracting an interaction; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
 
 Add coverage for inboxes larger than one page (including decisions between
 page loads), accurate totals and off-page review links; acceptance that leaves

@@ -1,14 +1,29 @@
-import type { FieldView, FilterOperator, ObjectView, QueryInput } from '@retainer/shared';
-import { SORTABLE_TYPES } from '@retainer/shared';
-import { microsToDecimal } from '../fields/common.js';
+import type {
+  AggregateOp,
+  AggregateValue,
+  FieldView,
+  FilterOperator,
+  MoneyValue,
+  ObjectView,
+  QueryInput,
+} from '@retainer/shared';
+import { AGGREGATE_OPS, SORTABLE_TYPES } from '@retainer/shared';
+import { dateText, microsToDecimal, moneyText } from '../fields/common.js';
 import { clampWidth } from '../ui/data-grid.js';
 
 // ---------------------------------------------------------------------------
 // Columns: which fields show, in what order, at what width. Saved per object.
 // ---------------------------------------------------------------------------
 
-/** `order` lists the visible columns after the pinned label column. */
-export type ColumnPrefs = { order: string[]; widths: Record<string, number> };
+/**
+ * `order` lists the visible columns after the pinned label column;
+ * `aggregates` is what each column's footer computes.
+ */
+export type ColumnPrefs = {
+  order: string[];
+  widths: Record<string, number>;
+  aggregates?: Record<string, AggregateOp>;
+};
 
 export const columnsKey = (workspace: string, object: string) =>
   `retainer:columns:v2:${workspace}:${object}`;
@@ -20,13 +35,17 @@ const isStringArray = (v: unknown): v is string[] =>
 
 export function parseColumnPrefs(raw: unknown): ColumnPrefs | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const { order, widths } = raw as Record<string, unknown>;
+  const { order, widths, aggregates } = raw as Record<string, unknown>;
   if (!isStringArray(order)) return undefined;
   const clean: Record<string, number> = {};
   if (widths && typeof widths === 'object' && !Array.isArray(widths))
     for (const [k, v] of Object.entries(widths))
       if (typeof v === 'number' && Number.isFinite(v)) clean[k] = clampWidth(v);
-  return { order, widths: clean };
+  const ops: Record<string, AggregateOp> = {};
+  if (aggregates && typeof aggregates === 'object' && !Array.isArray(aggregates))
+    for (const [k, v] of Object.entries(aggregates))
+      if (AGGREGATE_OPS.includes(v as AggregateOp)) ops[k] = v as AggregateOp;
+  return { order, widths: clean, ...(Object.keys(ops).length ? { aggregates: ops } : {}) };
 }
 
 /** Reads saved preferences, migrating the v1 list of visible columns. */
@@ -283,10 +302,53 @@ export function pageRange(
   cursor: string | undefined,
   count: number,
   pageSize: number,
+  total?: number,
 ): string {
+  const of = total === undefined ? '' : ` of ${total.toLocaleString()}`;
   const index = cursor ? trail[cursor]?.index : 0;
-  if (index === undefined) return count === 1 ? '1 record' : `${count} records`;
+  if (index === undefined) return `${count === 1 ? '1 record' : `${count} records`}${of}`;
   if (!count) return 'No records';
   const start = index * pageSize + 1;
-  return `${start.toLocaleString()}–${(start + count - 1).toLocaleString()}`;
+  return `${start.toLocaleString()}–${(start + count - 1).toLocaleString()}${of}`;
+}
+
+// ---------------------------------------------------------------------------
+// Column totals: what a footer cell computes and how it reads.
+// ---------------------------------------------------------------------------
+
+/** Menu labels; dates read as earliest and latest rather than min and max. */
+export const AGGREGATE_LABELS: Record<AggregateOp, string> = {
+  countEmpty: 'Empty',
+  countNotEmpty: 'Not empty',
+  percentEmpty: 'Percent empty',
+  percentNotEmpty: 'Percent not empty',
+  countUnique: 'Unique values',
+  sum: 'Sum',
+  avg: 'Average',
+  min: 'Min',
+  max: 'Max',
+};
+const isDate = (f: FieldView) => f.type === 'date' || f.type === 'date_time';
+export function aggregateLabel(field: FieldView, op: AggregateOp): string {
+  if (isDate(field) && op === 'min') return 'Earliest';
+  if (isDate(field) && op === 'max') return 'Latest';
+  return AGGREGATE_LABELS[op];
+}
+/** "Empty 33%", "Sum $400.00", "Latest 5/15/2026": what a footer cell shows. */
+export function formatAggregate(field: FieldView, result: AggregateValue): string {
+  // The % sign says "percent", so the label drops it.
+  const label =
+    result.op === 'percentEmpty'
+      ? AGGREGATE_LABELS.countEmpty
+      : result.op === 'percentNotEmpty'
+        ? AGGREGATE_LABELS.countNotEmpty
+        : aggregateLabel(field, result.op);
+  const { value } = result;
+  if (result.mixedCurrencies) return `${label}: mixed currencies`;
+  if (value === null) return `${label} —`;
+  if (result.op === 'percentEmpty' || result.op === 'percentNotEmpty')
+    return `${label} ${Math.round(Number(value))}%`;
+  if (typeof value === 'object') return `${label} ${moneyText(value as MoneyValue)}`;
+  if (typeof value === 'string') return `${label} ${dateText(value, field.type === 'date_time')}`;
+  return `${label} ${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }

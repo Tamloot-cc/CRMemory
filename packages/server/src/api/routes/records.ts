@@ -2,9 +2,13 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { aggregateInputSchema } from '../../records/aggregate.js';
 import { mergeInputSchema } from '../../records/merge.js';
 import { queryInputSchema } from '../../records/query.js';
 import {
+  aggregate,
+  bulkDeleteImpact,
+  bulkDeleteImpactSchema,
   createRecord,
   decideAssertion,
   deleteImpact,
@@ -41,6 +45,15 @@ export function recordRoutes(app: Hono<AppEnv>, sql: Sql) {
     const input = await readBody(c, queryInputSchema);
     return c.json(await findRecords(sql, c.get('caller'), c.req.param('object'), input));
   });
+
+  app.post('/objects/:object/aggregate', requireScope('read'), async (c) => {
+    const input = await readBody(c, aggregateInputSchema);
+    return c.json(await aggregate(sql, c.get('caller'), c.req.param('object'), input));
+  });
+
+  app.post('/records/delete-impact', requireScope('read'), async (c) =>
+    c.json(await bulkDeleteImpact(sql, c.get('caller'), await readBody(c, bulkDeleteImpactSchema))),
+  );
 
   app.post('/objects/:object/upsert', requireScope('write'), async (c) => {
     const input = await readBody(c, upsertInputSchema);

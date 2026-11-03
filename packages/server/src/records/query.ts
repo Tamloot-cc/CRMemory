@@ -61,7 +61,7 @@ const invalidFilter = (message: string, details?: Record<string, unknown>) =>
 const likePattern = (text: string) => `%${text.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
 /** The SQL type a field's value is compared as. */
-function typed(tx: Tx, field: FieldState): Fragment {
+export function typed(tx: Tx, field: FieldState): Fragment {
   const text = tx`(r.data ->> ${field.key})`;
   switch (field.type) {
     case 'number':
@@ -189,14 +189,8 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
 
   if (op === 'isNull') {
     if (typeof raw !== 'boolean') throw invalidFilter(`${field.name}.isNull takes true or false`);
-    if (field.type === 'relation') {
-      const exists = tx`exists (select 1 from record_links l join records t
-        on t.id = l.target_record_id and t.deleted_at is null
-        where l.source_record_id = r.id and l.field_id = ${field.id as string})`;
-      return raw ? tx`not ${exists}` : exists;
-    }
-    const isNull = tx`coalesce(r.data -> ${key}, 'null'::jsonb) = 'null'::jsonb`;
-    return raw ? isNull : tx`not ${isNull}`;
+    const empty = emptyValue(tx, field);
+    return raw ? empty : tx`not ${empty}`;
   }
 
   if (field.type === 'relation') {
@@ -334,6 +328,36 @@ function decodeCursor(cursor: string | undefined): number {
   throw invalidFilter('invalid cursor; pass nextCursor from the previous page');
 }
 
+/**
+ * The live records of one object that a filter and keyword search match, as
+ * a `where` clause over `records r`. The list and its totals share it, so
+ * they always count the same records.
+ */
+export function matchingRecords(
+  tx: Tx,
+  workspaceId: string,
+  object: CompiledObject,
+  input: Pick<QueryInput, 'filter' | 'search'>,
+): Fragment {
+  const where = input.filter ? compileFilter(tx, object, input.filter) : tx`true`;
+  return tx`r.workspace_id = ${workspaceId} and r.object_type_id = ${object.id}
+    and r.deleted_at is null and ${where}
+    ${input.search ? tx`and r.search @@ plainto_tsquery('simple', ${input.search})` : tx``}`;
+}
+
+/** `from … where …` over the live targets record `r` links to through `field`. */
+export function liveLinks(tx: Tx, field: FieldState): Fragment {
+  return tx`from record_links l join records t
+    on t.id = l.target_record_id and t.deleted_at is null
+    where l.source_record_id = r.id and l.field_id = ${field.id as string}`;
+}
+
+/** Whether a field has no value, as the `isNull` filter decides it. */
+export function emptyValue(tx: Tx, field: FieldState): Fragment {
+  if (field.type === 'relation') return tx`not exists (select 1 ${liveLinks(tx, field)})`;
+  return tx`coalesce(r.data -> ${field.key}, 'null'::jsonb) = 'null'::jsonb`;
+}
+
 /** Filters, sorts and pages live records of one object. */
 export async function queryRecords(
   tx: Tx,
@@ -342,14 +366,11 @@ export async function queryRecords(
   object: CompiledObject,
   input: QueryInput,
 ): Promise<RecordPage> {
-  const where = input.filter ? compileFilter(tx, object, input.filter) : tx`true`;
   const offset = decodeCursor(input.cursor);
   const columns = RECORD_COLUMNS.map((c) => `r.${c}`);
   const rows = await tx<RecordRow[]>`
     select ${tx.unsafe(columns.join(', '))} from records r
-    where r.workspace_id = ${workspaceId} and r.object_type_id = ${object.id}
-      and r.deleted_at is null and ${where}
-      ${input.search ? tx`and r.search @@ plainto_tsquery('simple', ${input.search})` : tx``}
+    where ${matchingRecords(tx, workspaceId, object, input)}
     order by ${compileSort(tx, object, input.sort)}
     limit ${input.limit + 1} offset ${offset}`;
   const page = rows.slice(0, input.limit);

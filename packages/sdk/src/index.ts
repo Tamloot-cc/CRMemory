@@ -1,5 +1,8 @@
 import type {
+  AggregateInput,
+  AggregateResult,
   AssertionView,
+  BulkDeleteImpact,
   ContextInput,
   ContextPack,
   DecisionResult,
@@ -186,6 +189,18 @@ export class RetainerClient {
     return this.get<DeleteImpact>(
       `/v1/records/${encodeURIComponent(id)}/delete-impact`,
       {},
+      signal,
+    );
+  }
+  /** What deleting several records together would delete with them. */
+  bulkDeleteImpact(ids: string[], signal?: AbortSignal) {
+    return this.post<BulkDeleteImpact>('/v1/records/delete-impact', { ids }, signal);
+  }
+  /** The total and requested aggregates over the records a filter matches. */
+  aggregate(object: string, input: AggregateInput = {}, signal?: AbortSignal) {
+    return this.post<AggregateResult>(
+      `/v1/objects/${encodeURIComponent(object)}/aggregate`,
+      input,
       signal,
     );
   }

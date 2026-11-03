@@ -1,5 +1,5 @@
 import type { Actor } from './actor.js';
-import type { FieldType } from './field-types.js';
+import type { FieldType, MoneyValue } from './field-types.js';
 import type {
   FieldDefinition,
   FieldSettings,
@@ -140,6 +140,13 @@ export type MergeResult = {
 export type DeleteImpact = {
   id: string;
   /** Records deleted through cascading relations, at any depth, counted by object. */
+  records: { object: string; count: number }[];
+};
+/** `POST /v1/records/delete-impact`: the same for several records deleted together. */
+export type BulkDeleteImpact = {
+  /** The records asked about, after following merges. */
+  ids: string[];
+  /** Other records the deletes would take with them, counted by object. */
   records: { object: string; count: number }[];
 };
 /** `POST /v1/review/merges/:id/dismiss`. */
@@ -350,6 +357,57 @@ export type MergeInput = {
   /** Values the survivor should end with, by field name. */
   values?: Record<string, unknown>;
 };
+/**
+ * What a list footer can compute over the records a filter matches. Counts
+ * and percentages work on every field a record holds; the rest depend on the
+ * type (`aggregateOps`).
+ */
+export const AGGREGATE_OPS = [
+  'countEmpty',
+  'countNotEmpty',
+  'percentEmpty',
+  'percentNotEmpty',
+  'countUnique',
+  'sum',
+  'avg',
+  'min',
+  'max',
+] as const;
+export type AggregateOp = (typeof AGGREGATE_OPS)[number];
+const EMPTINESS: AggregateOp[] = ['countEmpty', 'countNotEmpty', 'percentEmpty', 'percentNotEmpty'];
+/** The aggregates a field supports; none for an inverse (one-to-many) relation. */
+export function aggregateOps(field: {
+  type: FieldType;
+  settings: { relationCardinality?: string };
+}): AggregateOp[] {
+  if (field.settings.relationCardinality === 'one_to_many') return [];
+  const ops = [...EMPTINESS];
+  if (field.type === 'relation' || SORTABLE_TYPES.includes(field.type)) ops.push('countUnique');
+  if (field.type === 'number' || field.type === 'money') ops.push('sum', 'avg');
+  // The ordered types, which take `gt` and `lt` filters.
+  if (FILTER_OPERATORS[field.type].includes('gt')) ops.push('min', 'max');
+  return ops;
+}
+/** `POST /v1/objects/:object/aggregate`. */
+export type AggregateInput = {
+  search?: string;
+  filter?: Record<string, unknown>;
+  aggregates?: { field: string; op: AggregateOp }[];
+};
+export type AggregateValue = {
+  field: string;
+  op: AggregateOp;
+  /**
+   * A count; a percentage from 0 to 100; a number; a `money` value; or a date
+   * or date-time string for `min` and `max` of dates. Null when there is
+   * nothing to compute over, or for money in more than one currency.
+   */
+  value: number | string | MoneyValue | null;
+  /** Money values in several currencies are not added up. */
+  mixedCurrencies?: true;
+};
+export type AggregateResult = { total: number; values: AggregateValue[] };
+
 export const SORTABLE_TYPES: readonly FieldType[] = [
   'text',
   'number',

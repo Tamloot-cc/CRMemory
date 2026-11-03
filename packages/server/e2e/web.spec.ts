@@ -697,6 +697,131 @@ test('warns before a delete that cascades to linked records', async ({ page, ret
   await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
 });
 
+test('selects rows in a list to delete them together or merge two', async ({
+  page,
+  retainer: r,
+}) => {
+  const change = await r.request('/schema/changes', {
+    operations: [
+      {
+        op: 'create_field',
+        object: 'person',
+        field: {
+          name: 'employer',
+          label: 'Employer',
+          type: 'relation',
+          settings: {
+            targetObject: 'company',
+            inverseField: 'staff',
+            relationCardinality: 'many_to_one',
+            onDelete: 'cascade',
+          },
+        },
+      },
+    ],
+  });
+  expect(change.status).toBe('applied');
+  const company = async (name: string) =>
+    (await r.request('/objects/company/records', { values: { name } })).record.id as string;
+  const one = await company('One'),
+    two = await company('Two');
+  await company('Three');
+  for (const [name, employer] of [
+    ['Dana Levi', one],
+    ['Avi Katz', two],
+    ['Noa Cohen', two],
+  ])
+    await r.request('/objects/person/records', { values: { name, employer } });
+
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('link', { name: 'Companies', exact: true }).click();
+  const grid = page.getByRole('region', { name: 'Companies' });
+  await grid.getByRole('checkbox', { name: 'Select One' }).check();
+  await grid.getByRole('checkbox', { name: 'Select Two' }).check();
+  await expect(page.getByText('2 selected')).toBeVisible();
+  // Checking a box selects; it does not open the record.
+  expect(new URL(page.url()).searchParams.get('record')).toBeNull();
+  await expect(
+    grid.getByRole('checkbox', { name: 'Select all rows on this page' }),
+  ).toHaveJSProperty('indeterminate', true);
+  await page.screenshot({ path: '/tmp/retainer-web-list-selection.png' });
+
+  // The warning counts what both deletes cascade to, once each.
+  await page.getByRole('button', { name: 'Delete…' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Delete 2 companies?' });
+  await expect(
+    confirm.getByText('Deleting them also deletes 3 people linked to them.'),
+  ).toBeVisible();
+  await confirm.getByRole('button', { name: 'Delete 2 companies', exact: true }).click();
+  await expect(page.getByText('Deleted 2 companies and 3 linked records.')).toBeVisible();
+  await expect(grid.getByRole('link', { name: 'Three' })).toBeVisible();
+  await expect(grid.getByRole('link', { name: 'One' })).not.toBeVisible();
+  await expect(page.getByText('2 selected')).not.toBeVisible();
+  expect((await r.request(`/objects/person/query`, {})).records).toHaveLength(0);
+
+  // Exactly two selected offers a merge.
+  const older = (await r.request('/objects/person/records', { values: { name: 'Yael Mizrahi' } }))
+    .record;
+  const newer = (await r.request('/objects/person/records', { values: { name: 'Yael Mizrachi' } }))
+    .record;
+  await page.getByRole('link', { name: 'People', exact: true }).click();
+  const people = page.getByRole('region', { name: 'People' });
+  await people.getByRole('checkbox', { name: 'Select all rows on this page' }).check();
+  await expect(page.getByText('2 selected')).toBeVisible();
+  await page.getByRole('button', { name: 'Merge…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Merge duplicate records' });
+  await dialog.getByRole('button', { name: 'Merge into Yael Mizrahi' }).click();
+  await expect(page.getByText('Merged Yael Mizrachi into')).toBeVisible();
+  await expect(people.getByRole('link', { name: /^Yael/ })).toHaveCount(1);
+  expect((await r.request(`/records/${newer.id}`)).id).toBe(older.id);
+});
+
+test('totals columns over the whole list and edits a cell from the grid', async ({
+  page,
+  retainer: r,
+}) => {
+  await r.request('/objects/person/records', { values: { name: 'Dana Levi', jobTitle: 'CTO' } });
+  await r.request('/objects/person/records', { values: { name: 'Noa Cohen', jobTitle: 'CFO' } });
+  const avi = (await r.request('/objects/person/records', { values: { name: 'Avi Katz' } })).record;
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('link', { name: 'People', exact: true }).click();
+  const grid = page.getByRole('region', { name: 'People' });
+  await expect(page.getByText('1–3 of 3')).toBeVisible();
+
+  await grid.getByRole('button', { name: 'Calculate Job title' }).click();
+  await page.getByRole('button', { name: 'Percent empty' }).click();
+  await expect(grid.getByRole('button', { name: 'Calculate Job title' })).toHaveText('Empty 33%');
+  await grid.getByRole('button', { name: 'Calculate Name' }).click();
+  await page.getByRole('button', { name: 'Not empty', exact: true }).click();
+  await expect(grid.getByRole('button', { name: 'Calculate Name' })).toHaveText('Not empty 3');
+
+  // The pencil edits in place, without opening the record, and the total follows.
+  const row = grid.getByRole('row').filter({ hasText: 'Avi Katz' });
+  await row.hover();
+  await row.getByRole('button', { name: 'Edit Job title of Avi Katz' }).click();
+  const input = page.getByRole('textbox', { name: 'Job title', exact: true });
+  await expect(input).toBeFocused();
+  await page.screenshot({ path: '/tmp/retainer-web-grid-edit.png' });
+  await input.fill('CEO');
+  await input.press('Enter');
+  await expect(input).not.toBeVisible();
+  await expect(row.getByText('CEO', { exact: true })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get('record')).toBeNull();
+  expect((await r.request(`/records/${avi.id}`)).fields.jobTitle).toBe('CEO');
+  await expect(grid.getByRole('button', { name: 'Calculate Job title' })).toHaveText('Empty 0%');
+
+  // Escape drops a draft; the chosen totals are kept for next time.
+  await row.hover();
+  await row.getByRole('button', { name: 'Edit Job title of Avi Katz' }).click();
+  await input.fill('Discarded');
+  await page.keyboard.press('Escape');
+  await expect(input).not.toBeVisible();
+  await expect(row.getByText('CEO', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(grid.getByRole('button', { name: 'Calculate Job title' })).toHaveText('Empty 0%');
+  await page.screenshot({ path: '/tmp/retainer-web-list-totals.png', fullPage: true });
+});
+
 test('merges a suggested duplicate, choosing the value to keep', async ({ page, retainer: r }) => {
   const older = (
     await r.request('/objects/person/records', {

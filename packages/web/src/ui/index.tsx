@@ -531,7 +531,15 @@ export function Td({
   );
 }
 export type { Tone } from './core.js';
-export { DataGrid, FilterChip, GridFooter, Toolbar } from './data-grid.js';
+export {
+  DataGrid,
+  EditableCell,
+  FilterChip,
+  FooterButton,
+  GridFooter,
+  type GridSelection,
+  Toolbar,
+} from './data-grid.js';
 export {
   type DiagramEdge,
   type DiagramEnd,

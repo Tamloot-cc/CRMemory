@@ -705,35 +705,37 @@ composes `search`, `query_records` and `get_context` with its own model.
 
 ### 6.1 REST (`/v1`)
 
-| Route                                             | Purpose                                                                     |
-| ------------------------------------------------- | --------------------------------------------------------------------------- |
-| `GET /v1/me`                                      | Caller workspace, actor and scopes                                          |
-| `GET /v1/schema/changes` · `/:id`                 | Paginated change history or one change                                      |
-| `GET /v1/schema`                                  | Current schema                                                              |
-| `POST /v1/schema/changes`                         | Request a schema change (applied or proposed)                               |
-| `POST /v1/schema/changes/:id/approve` · `/reject` | Decide a proposed change                                                    |
-| `GET /v1/templates`                               | Templates and what each adds (3.1)                                          |
-| `POST /v1/templates/:name/apply`                  | Apply a template (needs `schema:write`)                                     |
-| `POST /v1/objects/:object/records`                | Create a record                                                             |
-| `POST /v1/objects/:object/query`                  | Filter, sort and page records; optional object-scoped keyword lookup        |
-| `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)  |
-| `GET` · `PATCH` · `DELETE /v1/records/:id`        | One record                                                                  |
-| `GET /v1/records/:id/delete-impact`               | Records a delete would cascade to, at any depth, counted by object          |
-| `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                       |
-| `GET /v1/records/:id/interactions`                | Paginated interactions for a record                                         |
-| `GET /v1/assertions/:id`                          | One assertion, including status and review details                          |
-| `GET /v1/interactions/:id/claims`                 | Paginated assertions and facts citing an interaction                        |
-| `GET /v1/records/:id/context`                     | Context pack                                                                |
-| `POST /v1/records/:id/merge`                      | Merge another record into this one                                          |
-| `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                      |
-| `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                        |
-| `DELETE /v1/facts/:id`                            | Retract a fact (soft delete)                                                |
-| `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records |
-| `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                             |
-| `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                  |
-| `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)        |
-| `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                              |
-| `POST /v1/search`                                 | Keyword search (5.1)                                                        |
+| Route                                             | Purpose                                                                          |
+| ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `GET /v1/me`                                      | Caller workspace, actor and scopes                                               |
+| `GET /v1/schema/changes` · `/:id`                 | Paginated change history or one change                                           |
+| `GET /v1/schema`                                  | Current schema                                                                   |
+| `POST /v1/schema/changes`                         | Request a schema change (applied or proposed)                                    |
+| `POST /v1/schema/changes/:id/approve` · `/reject` | Decide a proposed change                                                         |
+| `GET /v1/templates`                               | Templates and what each adds (3.1)                                               |
+| `POST /v1/templates/:name/apply`                  | Apply a template (needs `schema:write`)                                          |
+| `POST /v1/objects/:object/records`                | Create a record                                                                  |
+| `POST /v1/objects/:object/query`                  | Filter, sort and page records; optional object-scoped keyword lookup             |
+| `POST /v1/objects/:object/aggregate`              | Count and per-field totals (empty, unique, sum, average, min, max) over a filter |
+| `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)       |
+| `GET` · `PATCH` · `DELETE /v1/records/:id`        | One record                                                                       |
+| `GET /v1/records/:id/delete-impact`               | Records a delete would cascade to, at any depth, counted by object               |
+| `POST /v1/records/delete-impact`                  | The same for several records deleted together, overlaps counted once             |
+| `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                            |
+| `GET /v1/records/:id/interactions`                | Paginated interactions for a record                                              |
+| `GET /v1/assertions/:id`                          | One assertion, including status and review details                               |
+| `GET /v1/interactions/:id/claims`                 | Paginated assertions and facts citing an interaction                             |
+| `GET /v1/records/:id/context`                     | Context pack                                                                     |
+| `POST /v1/records/:id/merge`                      | Merge another record into this one                                               |
+| `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                           |
+| `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                             |
+| `DELETE /v1/facts/:id`                            | Retract a fact (soft delete)                                                     |
+| `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records      |
+| `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                                  |
+| `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                       |
+| `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)             |
+| `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                                   |
+| `POST /v1/search`                                 | Keyword search (5.1)                                                             |
 
 Web sign-in and sign-out use `POST` and `DELETE /auth/session`, outside
 `/v1`; see section 7 for cookie and CSRF rules. `GET /health`, also outside

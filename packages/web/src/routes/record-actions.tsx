@@ -1,3 +1,4 @@
+import { RetainerApiError } from '@retainer/sdk';
 import type { ForgetResult, PresentedRecord } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Combine, MoreHorizontal, ShieldX, Trash2 } from 'lucide-react';
@@ -158,6 +159,113 @@ function DeleteDialog({ record, onClose, onGone }: ActionProps) {
             onClick={() => void remove()}
           >
             {busy ? 'Deleting…' : 'Delete record'}
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+        </Row>
+      </Stack>
+    </Dialog>
+  );
+}
+
+/**
+ * Deletes several records picked in a list, one at a time. The warning counts
+ * what cascades from all of them together, so a linked record two of them
+ * share counts once. `onDone` gets the records that could not be deleted, so
+ * the list can keep them selected.
+ */
+export function BulkDeleteDialog({
+  ids,
+  noun,
+  onClose,
+  onDone,
+}: {
+  ids: string[];
+  /** What the records are called, singular and plural: ['company', 'companies']. */
+  noun: [string, string];
+  onClose: () => void;
+  onDone: (failed: string[], deleted: string[]) => void;
+}) {
+  const { session, schema } = useWorkspace(),
+    client = useQueryClient(),
+    report = useReport();
+  const [busy, setBusy] = useState(false),
+    [progress, setProgress] = useState(0);
+  const impact = useQuery({
+    queryKey: [session.workspace.id, 'deleteImpact', ...[...ids].sort()],
+    queryFn: ({ signal }) => api.bulkDeleteImpact(ids, signal),
+  });
+  const linked = impact.data?.records ?? [];
+  const count = plural(ids.length, noun[0], noun[1]);
+  async function remove() {
+    setBusy(true);
+    const gone = new Set<string>(),
+      failed: { id: string; message: string }[] = [];
+    for (const [i, id] of ids.entries()) {
+      setProgress(i);
+      // An earlier delete may already have cascaded to this one.
+      if (gone.has(id)) continue;
+      try {
+        const result = await api.deleteRecord(id);
+        for (const other of result.deletedRecordIds) gone.add(other);
+      } catch (e) {
+        // Someone else deleted it meanwhile: it is gone either way.
+        if (e instanceof RetainerApiError && (e.status === 404 || e.code === 'record_deleted'))
+          gone.add(id);
+        else failed.push({ id, message: (e as Error).message });
+      }
+    }
+    const deleted = ids.filter((id) => gone.has(id));
+    const cascaded = gone.size - deleted.length;
+    const wid = session.workspace.id;
+    for (const id of gone) client.removeQueries({ queryKey: [wid, 'record', id] });
+    void client.invalidateQueries({ queryKey: [wid] });
+    report(
+      <Stack>
+        <span>
+          Deleted {plural(deleted.length, noun[0], noun[1])}
+          {cascaded ? ` and ${plural(cascaded, 'linked record', 'linked records')}` : ''}.
+        </span>
+        {failed.length ? (
+          <span>
+            {plural(failed.length, 'record was', 'records were')} not deleted and{' '}
+            {failed.length === 1 ? 'stays' : 'stay'} selected: {failed[0]?.message}
+          </span>
+        ) : null}
+      </Stack>,
+    );
+    onDone(
+      failed.map((f) => f.id),
+      deleted,
+    );
+  }
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+      title={`Delete ${count}?`}
+      description="They disappear from lists, search and the records that link to them. Their history stays stored, but they can’t be restored from the app."
+    >
+      <Stack>
+        {impact.error ? (
+          <QueryError error={impact.error} retry={() => void impact.refetch()} />
+        ) : null}
+        {impact.isPending ? <Notice>Checking linked records…</Notice> : null}
+        {linked.length ? (
+          <Notice error>
+            Deleting them also deletes {describeImpact(linked, schema.objects)} linked to them.
+          </Notice>
+        ) : null}
+        <Row>
+          <Button
+            variant="destructive"
+            disabled={busy || !impact.data}
+            onClick={() => void remove()}
+          >
+            {busy ? `Deleting… ${progress} of ${ids.length}` : `Delete ${count}`}
           </Button>
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
