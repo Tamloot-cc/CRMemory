@@ -108,8 +108,9 @@ describe('forget (2.1)', () => {
     expect(result.recomputedRecordIds).toEqual(expect.arrayContaining([ron.id, task.id]));
     expect(result.reviewCandidates.facts).toContain(mention.fact.id);
     expect(result.reviewCandidates.interactions).toContain(emailMention.id);
-    // The response carries no erased content.
-    expect(JSON.stringify(result)).not.toMatch(/dana|forgetme|765/i);
+    // The response carries no erased content. Match the whole phone number:
+    // shorter digit runs turn up in the random ids the response does carry.
+    expect(JSON.stringify(result)).not.toMatch(/dana|forgetme|765 ?4321|547654321/i);
 
     expect(await count(db.owner`select count(*)::int from records where id = ${dana.id}`)).toBe(0);
     expect(
