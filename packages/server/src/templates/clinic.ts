@@ -7,7 +7,9 @@ export const clinic: Template = {
   name: 'clinic',
   version: 1,
   label: 'Clinic',
-  description: 'Clinics, therapists and wellness practices.',
+  description:
+    'Clinics, therapists and wellness practices: appointments with patients or clients, each ' +
+    'with a status.',
   operations: [
     {
       op: 'create_object',

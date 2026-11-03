@@ -3,28 +3,46 @@ import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.
 
 const NAME_PATTERN = /^[a-z][a-zA-Z0-9]{0,62}$/;
 
-/** Object names that would be confused with API resources. */
-export const RESERVED_OBJECT_NAMES: ReadonlySet<string> = new Set([
-  'assertion',
-  'assertions',
-  'context',
-  'fact',
-  'facts',
-  'field',
-  'fields',
-  'interaction',
-  'interactions',
-  'object',
-  'objects',
-  'record',
-  'records',
-  'review',
-  'schema',
-  'search',
-  'template',
-  'templates',
-  'workspace',
-  'workspaces',
+const reserved = (names: string[], reason: string) => names.map((name) => [name, reason] as const);
+
+/**
+ * Object names that would be confused with API resources, each with the
+ * reason the validation error gives. Interactions and facts are built in,
+ * so their reason says what to use instead: an agent told only "reserved"
+ * renames its object and builds a twin of the built-in feature.
+ */
+export const RESERVED_OBJECT_NAMES: ReadonlyMap<string, string> = new Map([
+  ...reserved(
+    ['interaction', 'interactions'],
+    'meetings, calls, emails and messages are built in: log them as interactions ' +
+      '(log_interaction, or POST /v1/interactions) instead of creating an object',
+  ),
+  ...reserved(
+    ['fact', 'facts'],
+    'facts are built in: store one-off knowledge about a record with remember ' +
+      '(or POST /v1/records/:id/facts) instead of creating an object',
+  ),
+  ...reserved(
+    [
+      'assertion',
+      'assertions',
+      'context',
+      'field',
+      'fields',
+      'object',
+      'objects',
+      'record',
+      'records',
+      'review',
+      'schema',
+      'search',
+      'template',
+      'templates',
+      'workspace',
+      'workspaces',
+    ],
+    'it names a built-in API resource',
+  ),
 ]);
 
 /** Field names taken by built-in record columns and response keys. */
@@ -97,7 +115,7 @@ export function validateSchema(state: SchemaState): SchemaIssue[] {
       if (!NAME_PATTERN.test(name)) {
         issue(path, `"${name}" must be camelCase: a lowercase letter, then letters and digits`);
       } else if (RESERVED_OBJECT_NAMES.has(name)) {
-        issue(path, `"${name}" is reserved`);
+        issue(path, `"${name}" is reserved: ${RESERVED_OBJECT_NAMES.get(name)}`);
       }
     }
     if (object.nameSingular === object.namePlural) {

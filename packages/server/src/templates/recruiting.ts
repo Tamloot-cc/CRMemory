@@ -8,7 +8,8 @@ export const recruiting: Template = {
   name: 'recruiting',
   version: 1,
   label: 'Recruiting',
-  description: 'Recruiters and hiring teams.',
+  description:
+    'Recruiters and hiring teams: open jobs and the applications that move through stages.',
   operations: [
     {
       op: 'create_object',

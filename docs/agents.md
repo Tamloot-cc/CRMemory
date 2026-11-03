@@ -115,6 +115,13 @@ naming where to start; in Claude Code, with the server added as `retainer`,
 that is `/mcp__retainer__discover_schema`. Applying the schema needs the
 `schema:write` scope.
 
+## Growing the schema
+
+The `schema_design` guide holds the rules for changing a schema that is
+already in use, and the server instructions point an agent to it before it
+first adds an object. It also walks an agent through reviewing a schema in
+use; a person can start that review as the MCP prompt `schema_design`.
+
 ## How an agent should write
 
 Retainer does not read conversations; the agent does. After a meeting, call or

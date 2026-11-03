@@ -432,7 +432,7 @@ approval.
 | `sales`       | B2B sales teams, founders selling       | `deal` (stage, amount, close date, company, point of contact); `company` gets industry and employee count                           |
 | `services`    | Agencies, consultants, freelancers      | `project` (status, budget, start and end dates, company, primary contact); `proposal` (status, amount, sent date, company, project) |
 | `clinic`      | Clinics, therapists, wellness practices | `appointment` (date and time, type, status, person); `person` gets date of birth and preferred channel                              |
-| `real_estate` | Agents and brokers                      | `property` (address, type, price, status); `viewing` (date, property, person, feedback)                                             |
+| `real_estate` | Agents and brokers                      | `property` (address, type, price, status, owner); `viewing` (date, status, property, person, feedback)                              |
 | `recruiting`  | Recruiters, hiring teams                | `job` (title, status, company); `application` (person, job, stage, source)                                                          |
 | `blank`       | Anything else                           | Nothing; the agent extends the base objects itself                                                                                  |
 
@@ -763,7 +763,7 @@ the tool list without limit and break clients' tool caching.
 markdown, for a task an agent does rarely. Each guide is also an MCP prompt
 of the same name, so a person can start it from their client (a slash
 command in Claude Code); tools reach every agent, prompts only the clients
-that show them. The one guide so far, `discover_schema`, has the agent
+that show them. `discover_schema` has the agent
 find and sample its user's sources on its own (an existing CRM first, then
 spreadsheets, email and calendar), asking its user only for what it cannot
 find, propose a template and additions tied to that evidence, wait for
@@ -773,6 +773,13 @@ importing data is a separate step. Guides are static text in
 `packages/server/src/mcp/guides.ts`: Retainer reads none of the user's
 sources and calls no model (4.3). The server instructions point an agent
 at `discover_schema` when the workspace is not initialized.
+
+`schema_design` holds the rules for growing or reviewing a schema in use;
+`discover_schema` includes the same rules. Agents change the schema
+mid-task, long after setup, so the `propose_schema_change` description
+carries the short form and the server instructions point to the guide.
+Each reserved object name carries its reason, so an object named
+`interaction` or `fact` fails with the built-in feature to use instead.
 
 In v1 an agent is connected to exactly one workspace through one API key.
 Every call acts on that workspace, so no tool takes a workspace parameter.

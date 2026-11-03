@@ -221,24 +221,35 @@ describe('validate', () => {
       },
     ]);
 
+  const createObject = (nameSingular: string, namePlural: string) =>
+    issuesOf(base, [
+      {
+        op: 'create_object',
+        object: {
+          nameSingular,
+          namePlural,
+          labelSingular: 'X',
+          labelPlural: 'Xs',
+          labelField: 'name',
+          fields: [{ name: 'name', label: 'Name', type: 'text' }],
+        },
+      },
+    ]).map((i) => i.message);
+
   it('rejects reserved and badly formed names', () => {
     expect(create({ name: 'createdAt' })[0]?.message).toContain('reserved');
     expect(create({ name: 'Foo bar' })[0]?.message).toContain('camelCase');
-    expect(
-      issuesOf(base, [
-        {
-          op: 'create_object',
-          object: {
-            nameSingular: 'record',
-            namePlural: 'records',
-            labelSingular: 'R',
-            labelPlural: 'Rs',
-            labelField: 'name',
-            fields: [{ name: 'name', label: 'Name', type: 'text' }],
-          },
-        },
-      ]).map((i) => i.message),
-    ).toEqual(['"record" is reserved', '"records" is reserved']);
+    expect(createObject('record', 'records')).toEqual([
+      '"record" is reserved: it names a built-in API resource',
+      '"records" is reserved: it names a built-in API resource',
+    ]);
+  });
+
+  it.each([
+    ['interaction', 'interactions', 'log_interaction'],
+    ['fact', 'facts', 'remember'],
+  ])('points an object named %s at the built-in feature', (singular, plural, tool) => {
+    for (const message of createObject(singular, plural)) expect(message).toContain(tool);
   });
 
   it('rejects duplicate field names', () => {

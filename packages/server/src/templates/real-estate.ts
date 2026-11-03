@@ -6,9 +6,11 @@ const VIEWING = 'dc61b186-fb5d-40fd-9d50-941668198e60';
 
 export const realEstate: Template = {
   name: 'real_estate',
-  version: 1,
+  version: 2,
   label: 'Real estate',
-  description: 'Real-estate agents and brokers.',
+  description:
+    'Real-estate agents and brokers: properties for sale or rent, their owners, and viewings ' +
+    'with buyers or tenants.',
   operations: [
     {
       op: 'create_object',
@@ -70,6 +72,14 @@ export const realEstate: Template = {
               ],
             },
           },
+          {
+            universalId: 'f0987999-8338-4825-bf88-734a1c387175',
+            name: 'owner',
+            label: 'Owner',
+            description: 'The person selling or letting the property.',
+            type: 'relation',
+            settings: { targetObject: BASE_OBJECT_IDS.person, inverseField: 'properties' },
+          },
         ],
       },
     },
@@ -96,6 +106,20 @@ export const realEstate: Template = {
             name: 'date',
             label: 'Date',
             type: 'date_time',
+          },
+          {
+            universalId: '67487f99-bf63-460d-aff4-255c0b23ed7c',
+            name: 'status',
+            label: 'Status',
+            type: 'select',
+            settings: {
+              options: [
+                { value: 'scheduled', label: 'Scheduled' },
+                { value: 'completed', label: 'Completed' },
+                { value: 'cancelled', label: 'Cancelled' },
+                { value: 'no_show', label: 'No-show' },
+              ],
+            },
           },
           {
             universalId: '705b958f-6035-4f10-98f1-5674db0ffb30',

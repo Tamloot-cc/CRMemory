@@ -7,7 +7,8 @@ export const sales: Template = {
   name: 'sales',
   version: 1,
   label: 'Sales',
-  description: 'B2B sales teams and founders selling.',
+  description:
+    'B2B sales teams and founders selling: deals that move through stages to won or lost.',
   operations: [
     {
       op: 'create_object',

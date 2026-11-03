@@ -33,6 +33,11 @@ const TOOLS = [
   'upsert_record',
 ];
 
+async function toolsByName(client: McpTestClient) {
+  const { tools } = await client.listTools();
+  return new Map(tools.map((tool) => [tool.name, tool]));
+}
+
 beforeAll(async () => {
   t = startTestApp(db);
   const sales = await t.setupWorkspace(
@@ -163,8 +168,7 @@ describe('connecting', () => {
     expect(log).toBeGreaterThan(-1);
     expect(instructions.indexOf('2. upsert_record with source')).toBeGreaterThan(log);
     expect(instructions.indexOf('3. remember')).toBeGreaterThan(log);
-    const { tools } = await agent.listTools();
-    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    const byName = await toolsByName(agent);
     expect(byName.get('upsert_record')?.inputSchema.properties).toHaveProperty('source');
     expect(byName.get('upsert_record')?.description).toContain('log_interaction');
     expect(byName.get('remember')?.description).toContain('log_interaction');
@@ -192,11 +196,11 @@ describe('the discover_schema guide', () => {
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 
-  it('names only tools and field types that exist', async () => {
-    const res = await agent.call<string>('get_guide', { name: 'discover_schema' });
-    const known = new Set<string>([...TOOLS, ...FIELD_TYPES]);
+  it.each(GUIDE_NAMES)('%s names only tools, field types and guides that exist', async (name) => {
+    const res = await agent.call<string>('get_guide', { name });
+    const known = new Set<string>([...TOOLS, ...FIELD_TYPES, ...GUIDE_NAMES]);
     const named = new Set(res.body.match(/\b[a-z]+(?:_[a-z]+)+\b/g));
-    expect(named).toContain('propose_schema_change');
+    expect(named).toContain('log_interaction');
     expect([...named].filter((word) => !known.has(word))).toEqual([]);
   });
 
@@ -236,6 +240,30 @@ describe('the discover_schema guide', () => {
   });
 });
 
+describe('the schema_design guide', () => {
+  it('points agents at the guide where they change the schema', async () => {
+    expect(agent.getInstructions()).toContain('get_guide("schema_design")');
+    const byName = await toolsByName(agent);
+    const propose = byName.get('propose_schema_change')?.description ?? '';
+    expect(propose).toContain('get_guide("schema_design")');
+    expect(propose).toContain('log_interaction');
+    expect(byName.get('list_templates')?.description).toContain('initialized');
+  });
+
+  it('serves the guide with the same design rules as discover_schema', async () => {
+    const [design, discover] = await Promise.all([
+      reader.call<string>('get_guide', { name: 'schema_design' }),
+      reader.call<string>('get_guide', { name: 'discover_schema' }),
+    ]);
+    expect(design.isError).toBe(false);
+    expect(design.body).toMatch(/^# Design and grow the schema/);
+    const rules = design.body.slice(design.body.indexOf('### Use what Retainer already has'));
+    const shared = rules.slice(0, rules.indexOf('## Reviewing'));
+    expect(shared.length).toBeGreaterThan(500);
+    expect(discover.body).toContain(shared.trim());
+  });
+});
+
 describe('describe_schema, list_templates and apply_template', () => {
   it('shows a new workspace as not initialized, then applies a template', async () => {
     const before = await fresh.call('describe_schema');
@@ -256,6 +284,12 @@ describe('describe_schema, list_templates and apply_template', () => {
       'property',
       'viewing',
     ]);
+
+    expect(realEstate.version).toBe(2);
+    const fieldsOf = (name: string) =>
+      realEstate.adds.objects.find((o: { name: string }) => o.name === name).fields;
+    expect(fieldsOf('property')).toContain('owner');
+    expect(fieldsOf('viewing')).toContain('status');
 
     const applied = await fresh.call('apply_template', { name: 'real_estate' });
     expect(applied.isError).toBe(false);
