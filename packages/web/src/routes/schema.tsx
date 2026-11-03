@@ -199,7 +199,7 @@ function ObjectsTab() {
   const { session, schema } = useWorkspace(),
     { search, setSearch } = useView();
   const objects = sortObjects(schema.objects);
-  const builtIns = schema.builtIns ?? [];
+  const { builtIns } = schema;
   const builtIn = builtIns.find((b) => b.name === search.object);
   const object = builtIn ? undefined : (findObject(objects, search.object) ?? objects[0]);
   const field = object?.fields.find((f) => f.name === search.field);

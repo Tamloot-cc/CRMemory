@@ -2,7 +2,7 @@ import type { ForgetResult } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { requireUser } from '../errors.js';
 import { type Handle, parseHandle } from '../memory/handles.js';
-import { NOTE_CHANNEL } from '../memory/interactions.js';
+import { isNote } from '../memory/interactions.js';
 import { inboundRelationFields } from '../records/merge.js';
 import {
   lockRecordsForUpdate,
@@ -97,7 +97,7 @@ export async function forgetRecord(
       and ((p.link = 'participant'
           and (p.record_id = any(${recordIds}::uuid[]) or p.handle = any(${handleValues}::text[])))
         or (p.link = 'about' and p.record_id = any(${recordIds}::uuid[])
-          and i.kind = 'note' and i.channel = ${NOTE_CHANNEL}))
+          and ${isNote(tx)}))
     order by 1`;
   const interactionIds = interactions.map((r) => r.id);
 

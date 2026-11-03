@@ -14,7 +14,7 @@ import {
   requestSchemaChange,
   schemaChangeRequestSchema,
 } from '../../schema-engine/service.js';
-import { after, page } from '../../web/pagination.js';
+import { after, page } from '../../db/pagination.js';
 import type { AppEnv } from '../http.js';
 import { idParam, limitParam, readBody } from '../request.js';
 

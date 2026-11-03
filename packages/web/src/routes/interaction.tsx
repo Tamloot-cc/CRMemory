@@ -111,7 +111,7 @@ export function InteractionPage() {
           ) : null}
         </Stack>
       </Panel>
-      {i.about?.length ? (
+      {i.about.length ? (
         <Panel title="About">
           <Stack>
             {i.about.map((id) => (

@@ -21,8 +21,7 @@ import {
   logInteraction,
   type PresentedInteraction,
   type RetractInteractionResult,
-  removeAbout,
-  removeParticipant,
+  removeLink,
   retractInteraction,
 } from './interactions.js';
 import { type InteractionQuery, queryInteractions } from './query-interactions.js';
@@ -65,22 +64,14 @@ export async function addInteractionLinksFor(
   return withWrite(sql, caller, (tx, context) => addInteractionLinks(tx, context, id, input));
 }
 
-export async function removeParticipantFor(
+/** Removes a participant, or a record from the `about` list; a person only. */
+export async function removeLinkFor(
   sql: Sql,
   caller: Caller,
   id: string,
-  participantId: string,
+  target: { participant: string } | { about: string },
 ): Promise<PresentedInteraction> {
-  return withWrite(sql, caller, (tx, context) => removeParticipant(tx, context, id, participantId));
-}
-
-export async function removeAboutFor(
-  sql: Sql,
-  caller: Caller,
-  id: string,
-  recordId: string,
-): Promise<PresentedInteraction> {
-  return withWrite(sql, caller, (tx, context) => removeAbout(tx, context, id, recordId));
+  return withWrite(sql, caller, (tx, context) => removeLink(tx, context, id, target));
 }
 
 export async function retractInteractionFor(

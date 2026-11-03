@@ -3,7 +3,7 @@ import type { Fragment } from 'postgres';
 import type { Tx } from '../db/tx.js';
 import { references } from '../records/references.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { after, page } from './pagination.js';
+import { after, page } from '../db/pagination.js';
 import { assertions } from './reads.js';
 
 export async function reviewPage(

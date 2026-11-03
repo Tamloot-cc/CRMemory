@@ -1,6 +1,6 @@
 import type { Fragment } from 'postgres';
 import { z } from 'zod';
-import type { Tx } from '../db/tx.js';
+import type { Tx } from './tx.js';
 import { AppError } from '../errors.js';
 
 const cursorSchema = z.tuple([

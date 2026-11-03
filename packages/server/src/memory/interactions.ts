@@ -1,4 +1,11 @@
-import type { Actor, PresentedInteraction } from '@retainer/shared';
+import type {
+  Actor,
+  AddedLinks,
+  LogInteractionResult,
+  Participants,
+  PresentedInteraction,
+} from '@retainer/shared';
+import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import {
   INTERACTION_KINDS,
@@ -7,6 +14,7 @@ import {
   type UnmatchedReason,
 } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
+import { after, page } from '../db/pagination.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import { isSuppressed, suppressedOf } from '../privacy/suppression.js';
 import { searchVector } from '../records/search-sql.js';
@@ -44,6 +52,9 @@ export const participantInputSchema = z.strictObject({
  */
 export const NOTE_CHANNEL = 'retainer';
 
+/** Whether the interaction aliased `i` is a note `remember` created. */
+export const isNote = (tx: Tx) => tx`(i.kind = 'note' and i.channel = ${NOTE_CHANNEL})`;
+
 export const logInteractionInputSchema = z.strictObject({
   kind: z.enum(INTERACTION_KINDS),
   channel: z
@@ -61,51 +72,22 @@ export const logInteractionInputSchema = z.strictObject({
   participants: z.array(participantInputSchema).max(MAX_PARTICIPANTS).default([]),
   about: z.array(z.uuid()).max(MAX_ABOUT).default([]),
 });
-/** `about` may be left out by callers that skip the schema, such as tests. */
-export type LogInteractionInput = Omit<z.infer<typeof logInteractionInputSchema>, 'about'> & {
-  about?: string[];
-};
+export type LogInteractionInput = z.infer<typeof logInteractionInputSchema>;
 
 /** `POST /v1/interactions/:id/participants`: links to add to a logged interaction. */
-export const addLinksInputSchema = z
-  .strictObject({
-    participants: z.array(participantInputSchema).max(MAX_PARTICIPANTS).default([]),
-    about: z.array(z.uuid()).max(MAX_ABOUT).default([]),
-  })
+export const addLinksInputSchema = logInteractionInputSchema
+  .pick({ participants: true, about: true })
   .refine((input) => input.participants.length > 0 || input.about.length > 0, {
     message: 'give participants, about, or both',
   });
 export type AddLinksInput = z.infer<typeof addLinksInputSchema>;
 
-export type MatchedParticipant = {
-  id: string;
-  handle: string | null;
-  role: string | null;
-  recordId: string;
-};
-export type UnmatchedParticipant = {
-  id: string;
-  handle: string | null;
-  role: string | null;
-  reason: UnmatchedReason;
-  /** For `ambiguous`: the live records that claim the handle (1.2). */
-  candidates?: string[];
-};
-export type Participants = { matched: MatchedParticipant[]; unmatched: UnmatchedParticipant[] };
-
-/** What a write added to an interaction's participants and `about` records. */
-export type AddedLinks = { participants: Participants; about: string[] };
-
-/** What `log_interaction` returns (6.2). `added` is set when it was logged before. */
-export type LogInteractionResult = {
-  id: string;
-  created: boolean;
-  participants: Participants;
-  about: string[];
-  added?: AddedLinks;
-};
-
-export type { PresentedInteraction } from '@retainer/shared';
+export type {
+  AddedLinks,
+  LogInteractionResult,
+  Participants,
+  PresentedInteraction,
+} from '@retainer/shared';
 
 type NormalizedParticipant = {
   handle: Handle | null;
@@ -223,6 +205,8 @@ async function resolveParticipants(
   tx: Tx,
   workspaceId: string,
   participants: readonly NormalizedParticipant[],
+  /** The caller's lookup of these participants' record IDs, when it has one. */
+  known?: Map<string, CanonicalRecord>,
 ): Promise<Resolution[]> {
   const explicit = [...new Set(participants.flatMap((p) => (p.recordId ? [p.recordId] : [])))];
   const emails = [
@@ -233,7 +217,7 @@ async function resolveParticipants(
     ),
   ];
   const [records, emailMatches] = await Promise.all([
-    canonicalRecords(tx, workspaceId, explicit),
+    known ?? canonicalRecords(tx, workspaceId, explicit),
     matchEmails(tx, workspaceId, emails),
   ]);
 
@@ -275,10 +259,8 @@ async function presentParticipants(
   knownCandidates?: Map<string, EmailMatch>,
 ): Promise<Participants> {
   const rows = allRows.filter((r) => r.link === 'participant');
-  const ambiguous = rows.flatMap((r) =>
-    r.unmatched_reason === 'ambiguous' && r.handle ? [r.handle] : [],
-  );
-  const candidates = knownCandidates ?? (await matchEmails(tx, workspaceId, ambiguous));
+  const candidates =
+    knownCandidates ?? (await matchEmails(tx, workspaceId, ambiguousHandles(rows)));
   const participants: Participants = { matched: [], unmatched: [] };
   for (const row of rows) {
     if (row.record_id) {
@@ -304,17 +286,36 @@ async function presentParticipants(
   return participants;
 }
 
+const ambiguousHandles = (rows: readonly ParticipantRow[]) =>
+  rows.flatMap((r) => (r.unmatched_reason === 'ambiguous' && r.handle ? [r.handle] : []));
+
 /** The records an interaction is `about`, in logged order. */
 function aboutOf(rows: readonly ParticipantRow[]): string[] {
   return rows.flatMap((r) => (r.link === 'about' && r.record_id ? [r.record_id] : []));
 }
 
-async function loadRows(
+/** An interaction's links, presented, with what a write `added` among them. */
+async function presentLinks(
   tx: Tx,
   workspaceId: string,
-  interactionId: string,
-): Promise<(ParticipantRow & { position: number })[]> {
-  return tx<(ParticipantRow & { position: number })[]>`
+  rows: readonly ParticipantRow[],
+  inserted: readonly ParticipantRow[],
+): Promise<{ participants: Participants; about: string[]; added: AddedLinks }> {
+  const candidates = await matchEmails(tx, workspaceId, ambiguousHandles(rows));
+  return {
+    participants: await presentParticipants(tx, workspaceId, rows, candidates),
+    about: aboutOf(rows),
+    added: {
+      participants: await presentParticipants(tx, workspaceId, inserted, candidates),
+      about: aboutOf(inserted),
+    },
+  };
+}
+
+type StoredRow = ParticipantRow & { position: number };
+
+async function loadRows(tx: Tx, workspaceId: string, interactionId: string): Promise<StoredRow[]> {
+  return tx<StoredRow[]>`
     select id, position, handle, role, record_id, unmatched_reason, link
     from interaction_participants
     where workspace_id = ${workspaceId} and interaction_id = ${interactionId}
@@ -332,38 +333,43 @@ function participantKey(role: string | null, handle: string | null, recordId: st
 }
 
 /**
- * Adds participants and `about` records to an interaction (1.3). A
- * participant already stored (by handle, or by record when it has none) is
- * not added again, so a retry or a re-log adds nothing; nothing stored is
- * ever removed here. An `about` record already linked to the interaction,
- * as an attendee or as `about`, is skipped. The caller holds the
- * interaction row lock (or has just inserted it), so positions never clash.
+ * Adds participants and `about` records to an interaction whose links are
+ * `stored` (1.3), and returns the rows it inserted. A participant already
+ * stored (by handle, or by record when it has none) is not added again, so a
+ * retry or a re-log adds nothing; nothing stored is ever removed here. An
+ * `about` record already linked to the interaction, as an attendee or as
+ * `about`, is skipped. The caller holds the interaction row lock (or has
+ * just inserted it), so positions never clash.
  */
 async function addLinks(
   tx: Tx,
   workspaceId: string,
   interactionId: string,
+  stored: readonly StoredRow[],
   input: { participants: readonly NormalizedParticipant[]; about: readonly string[] },
-): Promise<{ rows: ParticipantRow[]; added: AddedLinks }> {
-  const stored = await loadRows(tx, workspaceId, interactionId);
-
+): Promise<ParticipantRow[]> {
   // A handle erased by forget is never stored again (2.1). The caller holds
   // the privacy lock in shared mode, so forget cannot run between this check
   // and the commit.
-  const suppressed = await suppressedOf(
-    tx,
-    workspaceId,
-    input.participants.flatMap((p) => (p.handle ? [p.handle] : [])),
-  );
-  const erased = input.participants.map(
-    (p) => p.handle !== null && isSuppressed(suppressed, p.handle),
-  );
-  const kept = input.participants.map((p, i) => (erased[i] ? { ...p, handle: null } : p));
-
   const given = [
-    ...new Set([...kept.flatMap((p) => (p.recordId ? [p.recordId] : [])), ...input.about]),
+    ...new Set([
+      ...input.participants.flatMap((p) => (p.recordId ? [p.recordId] : [])),
+      ...input.about,
+    ]),
   ];
-  const canonical = await canonicalRecords(tx, workspaceId, given);
+  const [suppressed, canonical] = await Promise.all([
+    suppressedOf(
+      tx,
+      workspaceId,
+      input.participants.flatMap((p) => (p.handle ? [p.handle] : [])),
+    ),
+    canonicalRecords(tx, workspaceId, given),
+  ]);
+  const kept = input.participants.map((p) =>
+    p.handle && isSuppressed(suppressed, p.handle)
+      ? { ...p, handle: null, erased: true }
+      : { ...p, erased: false },
+  );
 
   // Participants not stored yet. Matching counts duplicates, so a list that
   // names the same handle twice keeps both, as when it was first logged.
@@ -373,20 +379,14 @@ async function addLinks(
     const key = participantKey(row.role, row.handle, row.record_id);
     remaining.set(key, (remaining.get(key) ?? 0) + 1);
   }
-  const newParticipants: { participant: NormalizedParticipant; erased: boolean }[] = [];
-  kept.forEach((p, i) => {
+  const newParticipants = kept.filter((p) => {
     const recordId = p.recordId ? (canonical.get(p.recordId)?.id ?? p.recordId) : null;
     const key = participantKey(p.role, p.handle?.value ?? null, recordId);
     const left = remaining.get(key) ?? 0;
     if (left > 0) remaining.set(key, left - 1);
-    else newParticipants.push({ participant: p, erased: erased[i] as boolean });
+    return left === 0;
   });
-
-  const resolutions = await resolveParticipants(
-    tx,
-    workspaceId,
-    newParticipants.map((n) => n.participant),
-  );
+  const resolutions = await resolveParticipants(tx, workspaceId, newParticipants, canonical);
 
   // About records: known and live, not linked already, each once.
   const linked = new Set(stored.flatMap((r) => (r.record_id ? [r.record_id] : [])));
@@ -413,7 +413,7 @@ async function addLinks(
 
   let position = Math.max(-1, ...stored.map((r) => r.position)) + 1;
   const inserts = [
-    ...newParticipants.map(({ participant: p, erased }, n) => {
+    ...newParticipants.map((p, n) => {
       const resolution = resolutions[n] as Resolution;
       const matched = 'recordId' in resolution;
       return {
@@ -423,7 +423,7 @@ async function addLinks(
         handle: p.handle?.value ?? null,
         role: p.role,
         record_id: matched ? resolution.recordId : null,
-        unmatched_reason: matched ? null : erased ? 'suppressed' : resolution.reason,
+        unmatched_reason: matched ? null : p.erased ? 'suppressed' : resolution.reason,
         link: 'participant',
       };
     }),
@@ -438,19 +438,10 @@ async function addLinks(
       link: 'about',
     })),
   ];
-  const inserted =
-    inserts.length > 0
-      ? await tx<ParticipantRow[]>`
-          insert into interaction_participants ${tx(inserts)}
-          returning id, handle, role, record_id, unmatched_reason, link`
-      : [];
-  return {
-    rows: [...stored, ...inserted],
-    added: {
-      participants: await presentParticipants(tx, workspaceId, inserted),
-      about: aboutOf(inserted),
-    },
-  };
+  if (inserts.length === 0) return [];
+  return tx<ParticipantRow[]>`
+    insert into interaction_participants ${tx(inserts)}
+    returning id, handle, role, record_id, unmatched_reason, link`;
 }
 
 /**
@@ -488,17 +479,18 @@ export async function logInteraction(
     on conflict (workspace_id, channel, external_id) where external_id is not null do nothing
     returning id`;
   const id = inserted?.id ?? (await lockExisting(tx, context.workspaceId, input, occurredAt));
-  const { rows, added } = await addLinks(tx, context.workspaceId, id, {
+  const stored = inserted ? [] : await loadRows(tx, context.workspaceId, id);
+  const added = await addLinks(tx, context.workspaceId, id, stored, {
     participants,
-    // Absent when a caller skips the schema's default.
-    about: input.about ?? [],
+    about: input.about,
   });
+  const links = await presentLinks(tx, context.workspaceId, [...stored, ...added], added);
   return {
     id,
     created: inserted !== undefined,
-    participants: await presentParticipants(tx, context.workspaceId, rows),
-    about: aboutOf(rows),
-    ...(inserted ? {} : { added }),
+    participants: links.participants,
+    about: links.about,
+    ...(inserted ? {} : { added: links.added }),
   };
 }
 
@@ -545,18 +537,6 @@ async function lockExisting(
   return existing.id;
 }
 
-/** Locks a live interaction for a change to its links. */
-async function lockLive(tx: Tx, workspaceId: string, id: string): Promise<void> {
-  const [row] = await tx<{ deleted_at: Date | null }[]>`
-    select deleted_at from interactions
-    where id = ${id} and workspace_id = ${workspaceId}
-    for update`;
-  if (!row) throw notFound('interaction', { id });
-  if (row.deleted_at) {
-    throw new AppError(404, 'interaction_deleted', `interaction ${id} was retracted`, { id });
-  }
-}
-
 /**
  * Adds participants and `about` records to a logged interaction, with the
  * same matching as `logInteraction` (1.3). Idempotent: links it already has
@@ -569,51 +549,45 @@ export async function addInteractionLinks(
   input: AddLinksInput,
 ): Promise<PresentedInteraction & { added: AddedLinks }> {
   const participants = normalizeParticipants(input.participants);
-  await lockLive(tx, context.workspaceId, id);
-  const { added } = await addLinks(tx, context.workspaceId, id, {
+  const row = await loadInteraction(tx, context.workspaceId, id, true);
+  const stored = await loadRows(tx, context.workspaceId, id);
+  const added = await addLinks(tx, context.workspaceId, id, stored, {
     participants,
     about: input.about,
   });
-  return { ...(await getInteraction(tx, context.workspaceId, id)), added };
+  const links = await presentLinks(tx, context.workspaceId, [...stored, ...added], added);
+  return { ...presentInteraction(row, links.participants, links.about), added: links.added };
 }
 
 /**
- * Removes one participant from an interaction (1.3). Only a person removes
- * links: what an agent logged stays until someone decides otherwise.
+ * Removes one participant, or one record from the `about` list, from an
+ * interaction (1.3). Only a person removes links: what an agent logged stays
+ * until someone decides otherwise.
  */
-export async function removeParticipant(
+export async function removeLink(
   tx: Tx,
   context: WriteContext,
   id: string,
-  participantId: string,
+  target: { participant: string } | { about: string },
 ): Promise<PresentedInteraction> {
-  requireUser(context.actor, 'remove a participant');
-  await lockLive(tx, context.workspaceId, id);
+  requireUser(context.actor, 'remove a participant or an about record');
+  await loadInteraction(tx, context.workspaceId, id, true);
+  const match =
+    'participant' in target
+      ? tx`link = 'participant' and id = ${target.participant}`
+      : tx`link = 'about' and record_id = ${
+          (await canonicalRecords(tx, context.workspaceId, [target.about])).get(target.about)?.id ??
+          target.about
+        }`;
   const [removed] = await tx<{ id: string }[]>`
     delete from interaction_participants
-    where workspace_id = ${context.workspaceId} and interaction_id = ${id}
-      and id = ${participantId} and link = 'participant'
+    where workspace_id = ${context.workspaceId} and interaction_id = ${id} and ${match}
     returning id`;
-  if (!removed) throw notFound('participant', { id: participantId, interaction: id });
-  return getInteraction(tx, context.workspaceId, id);
-}
-
-/** Removes a record from an interaction's `about` list (1.3); a person only. */
-export async function removeAbout(
-  tx: Tx,
-  context: WriteContext,
-  id: string,
-  recordId: string,
-): Promise<PresentedInteraction> {
-  requireUser(context.actor, 'remove an about record');
-  await lockLive(tx, context.workspaceId, id);
-  const canonical = (await canonicalRecords(tx, context.workspaceId, [recordId])).get(recordId);
-  const [removed] = await tx<{ id: string }[]>`
-    delete from interaction_participants
-    where workspace_id = ${context.workspaceId} and interaction_id = ${id} and link = 'about'
-      and record_id = ${canonical?.id ?? recordId}
-    returning id`;
-  if (!removed) throw notFound('about record', { id: recordId, interaction: id });
+  if (!removed) {
+    throw 'participant' in target
+      ? notFound('participant', { id: target.participant, interaction: id })
+      : notFound('about record', { id: target.about, interaction: id });
+  }
   return getInteraction(tx, context.workspaceId, id);
 }
 
@@ -630,20 +604,45 @@ export type InteractionRow = {
   deleted_at: Date | null;
 };
 
+/** The columns of `InteractionRow`, for selects that present interactions. */
+export const INTERACTION_COLUMNS = [
+  'id',
+  'kind',
+  'channel',
+  'external_id',
+  'occurred_at',
+  'title',
+  'summary',
+  'created_by',
+  'created_at',
+  'deleted_at',
+] as const;
+
+/** A live interaction's row, locked for a change to its links when `lock` is set. */
+async function loadInteraction(
+  tx: Tx,
+  workspaceId: string,
+  id: string,
+  lock = false,
+): Promise<InteractionRow> {
+  const [row] = await tx<InteractionRow[]>`
+    select ${tx(INTERACTION_COLUMNS)}
+    from interactions where id = ${id} and workspace_id = ${workspaceId}
+    ${lock ? tx`for update` : tx``}`;
+  if (!row) throw notFound('interaction', { id });
+  if (row.deleted_at) {
+    throw new AppError(404, 'interaction_deleted', `interaction ${id} was retracted`, { id });
+  }
+  return row;
+}
+
 /** One live interaction with its participants. */
 export async function getInteraction(
   tx: Tx,
   workspaceId: string,
   id: string,
 ): Promise<PresentedInteraction> {
-  const [row] = await tx<InteractionRow[]>`
-    select id, kind, channel, external_id, occurred_at, title, summary, created_by, created_at,
-      deleted_at
-    from interactions where id = ${id} and workspace_id = ${workspaceId}`;
-  if (!row) throw notFound('interaction', { id });
-  if (row.deleted_at) {
-    throw new AppError(404, 'interaction_deleted', `interaction ${id} was retracted`, { id });
-  }
+  const row = await loadInteraction(tx, workspaceId, id);
   const rows = await loadRows(tx, workspaceId, row.id);
   return presentInteraction(row, await presentParticipants(tx, workspaceId, rows), aboutOf(rows));
 }
@@ -693,6 +692,31 @@ export async function presentInteractions(
       ),
     ),
   );
+}
+
+/** A page of live interactions matching `where`, newest first unless `newest` is false. */
+export async function interactionPage(
+  tx: Tx,
+  workspaceId: string,
+  where: Fragment,
+  limit: number,
+  cursor?: string,
+  newest = true,
+) {
+  const direction = tx.unsafe(newest ? 'desc' : 'asc');
+  const rows = await tx<(InteractionRow & { stamp: string })[]>`
+    select ${tx(INTERACTION_COLUMNS.map((column) => `i.${column}`))},
+      i.occurred_at::text as stamp
+    from interactions i
+    where i.deleted_at is null and ${where}
+      and ${after(tx, tx`i.occurred_at`, tx`i.id`, cursor, newest)}
+    order by i.occurred_at ${direction}, i.id ${direction}
+    limit ${limit + 1}`;
+  const result = page(rows, limit);
+  return {
+    items: await presentInteractions(tx, workspaceId, result.items),
+    nextCursor: result.nextCursor,
+  };
 }
 
 /** A live interaction cited as a source, and when it happened (rules 2.1, 2.2). */

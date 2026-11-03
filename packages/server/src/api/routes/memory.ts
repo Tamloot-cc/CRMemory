@@ -10,8 +10,7 @@ import {
   queryInteractionsFor,
   readInteraction,
   remember,
-  removeAboutFor,
-  removeParticipantFor,
+  removeLinkFor,
   retractFactFor,
   retractInteractionFor,
 } from '../../memory/service.js';
@@ -43,12 +42,16 @@ export function memoryRoutes(app: Hono<AppEnv>, sql: Sql) {
 
   app.delete('/interactions/:id/participants/:participantId', requireScope('write'), async (c) =>
     c.json(
-      await removeParticipantFor(sql, c.get('caller'), idParam(c), idParam(c, 'participantId')),
+      await removeLinkFor(sql, c.get('caller'), idParam(c), {
+        participant: idParam(c, 'participantId'),
+      }),
     ),
   );
 
   app.delete('/interactions/:id/about/:recordId', requireScope('write'), async (c) =>
-    c.json(await removeAboutFor(sql, c.get('caller'), idParam(c), idParam(c, 'recordId'))),
+    c.json(
+      await removeLinkFor(sql, c.get('caller'), idParam(c), { about: idParam(c, 'recordId') }),
+    ),
   );
 
   app.delete('/interactions/:id', requireScope('write'), async (c) =>

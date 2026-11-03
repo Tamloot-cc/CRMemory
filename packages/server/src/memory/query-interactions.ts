@@ -5,8 +5,7 @@ import { INTERACTION_KINDS, PARTICIPANT_LINKS } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { resolveRecordId } from '../records/write.js';
-import { after, page } from '../web/pagination.js';
-import { type InteractionRow, NOTE_CHANNEL, presentInteractions } from './interactions.js';
+import { interactionPage, isNote } from './interactions.js';
 
 /**
  * Exact queries on the interaction log (5): filters, a time range, the
@@ -58,10 +57,11 @@ export async function queryInteractions(
       field: 'link',
     });
   }
+  // interactionPage adds `deleted_at is null`; the counts need it too.
   const conditions: Fragment[] = [
     tx`i.workspace_id = ${workspaceId}`,
     tx`i.deleted_at is null`,
-    tx`not (i.kind = 'note' and i.channel = ${NOTE_CHANNEL})`,
+    tx`not ${isNote(tx)}`,
   ];
   if (filter.kind) conditions.push(tx`i.kind = any(${list(filter.kind)}::text[])`);
   if (filter.channel) conditions.push(tx`i.channel = any(${list(filter.channel)}::text[])`);
@@ -80,29 +80,30 @@ export async function queryInteractions(
   }
   const where = conditions.reduce((a, b) => tx`${a} and ${b}`);
 
-  const newest = input.order === 'newest';
-  const direction = tx.unsafe(newest ? 'desc' : 'asc');
-  const [rows, [totals], counts] = await Promise.all([
+  const [items, counts] = await Promise.all([
     input.limit === 0
-      ? Promise.resolve([])
-      : tx<(InteractionRow & { stamp: string })[]>`
-          select i.*, i.occurred_at::text as stamp from interactions i
-          where ${where} and ${after(tx, tx`i.occurred_at`, tx`i.id`, input.cursor, newest)}
-          order by i.occurred_at ${direction}, i.id ${direction}
-          limit ${input.limit + 1}`,
-    tx<{ total: number }[]>`select count(*)::int as total from interactions i where ${where}`,
+      ? { items: [], nextCursor: null }
+      : interactionPage(
+          tx,
+          workspaceId,
+          where,
+          input.limit,
+          input.cursor,
+          input.order === 'newest',
+        ),
+    // With countBy the total is the sum of the counts, so one scan does both.
     input.countBy
       ? tx<{ key: string; count: number }[]>`
-          select ${tx.unsafe(input.countBy === 'kind' ? 'i.kind' : 'i.channel')} as key, count(*)::int as count
+          select ${tx.unsafe(input.countBy === 'kind' ? 'i.kind' : 'i.channel')} as key,
+            count(*)::int as count
           from interactions i where ${where}
           group by 1 order by 2 desc, 1`
-      : Promise.resolve(undefined),
+      : tx<{ key: string; count: number }[]>`
+          select null as key, count(*)::int as count from interactions i where ${where}`,
   ]);
-  const result = page(rows, input.limit);
   return {
-    items: await presentInteractions(tx, workspaceId, result.items),
-    nextCursor: result.nextCursor,
-    total: totals?.total ?? 0,
-    ...(counts ? { counts: Object.fromEntries(counts.map((c) => [c.key, c.count])) } : {}),
+    ...items,
+    total: counts.reduce((sum, c) => sum + c.count, 0),
+    ...(input.countBy ? { counts: Object.fromEntries(counts.map((c) => [c.key, c.count])) } : {}),
   };
 }

@@ -9,8 +9,7 @@ import {
   queryInteractionsFor,
   readInteraction,
   remember,
-  removeAboutFor,
-  removeParticipantFor,
+  removeLinkFor,
   retractInteractionFor,
 } from '../../src/memory/service.js';
 import {
@@ -349,21 +348,27 @@ describe('adding and removing links by route (1.3)', () => {
     });
     const participantId = logged.participants.matched[0]?.id as string;
     await expect(
-      removeParticipantFor(app, as(AGENT), logged.id, participantId),
+      removeLinkFor(app, as(AGENT), logged.id, { participant: participantId }),
     ).rejects.toMatchObject({ status: 403 });
-    await expect(removeAboutFor(app, as(AGENT), logged.id, acme.id)).rejects.toMatchObject({
+    await expect(
+      removeLinkFor(app, as(AGENT), logged.id, { about: acme.id }),
+    ).rejects.toMatchObject({
       status: 403,
     });
 
-    const withoutDana = await removeParticipantFor(app, as(USER), logged.id, participantId);
-    expect(withoutDana.participants.matched).toEqual([]);
-    const withoutAcme = await removeAboutFor(app, as(USER), logged.id, acme.id);
-    expect(withoutAcme.about).toEqual([]);
-    await expect(removeAboutFor(app, as(USER), logged.id, acme.id)).rejects.toMatchObject({
-      status: 404,
+    const withoutDana = await removeLinkFor(app, as(USER), logged.id, {
+      participant: participantId,
     });
+    expect(withoutDana.participants.matched).toEqual([]);
+    const withoutAcme = await removeLinkFor(app, as(USER), logged.id, { about: acme.id });
+    expect(withoutAcme.about).toEqual([]);
+    await expect(removeLinkFor(app, as(USER), logged.id, { about: acme.id })).rejects.toMatchObject(
+      {
+        status: 404,
+      },
+    );
     await expect(
-      removeParticipantFor(app, as(USER), logged.id, participantId),
+      removeLinkFor(app, as(USER), logged.id, { participant: participantId }),
     ).rejects.toMatchObject({ status: 404 });
   });
 });

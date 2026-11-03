@@ -179,7 +179,6 @@ export function ReviewPage() {
   async function decideSchema(id: string, decision: 'approve' | 'reject') {
     if (!canAdmin || busy) return;
     setBusy(true);
-    setBlockingRecords([]);
     try {
       const result = await api.decideSchemaChange(id, decision);
       // A failed approval keeps the engine's reason and, when it has them, the
@@ -190,9 +189,10 @@ export function ReviewPage() {
           ? `The schema change could not be applied${reason ? `: ${reason}` : ''}`
           : `Schema change ${decision === 'approve' ? 'approved' : 'rejected'}`,
       ]);
-      if (result.status === 'failed') setBlockingRecords(result.recordIds ?? []);
+      setBlockingRecords(result.status === 'failed' ? (result.recordIds ?? []) : []);
     } catch (e) {
       setMessages([(e as Error).message]);
+      setBlockingRecords([]);
     }
     await refresh();
     setBusy(false);

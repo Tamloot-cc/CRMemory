@@ -43,6 +43,7 @@ const log = (input: Partial<LogInteractionInput> = {}) =>
     channel: 'zoom',
     occurredAt: '2026-10-29T14:00:00+02:00',
     participants: [],
+    about: [],
     ...input,
   });
 
