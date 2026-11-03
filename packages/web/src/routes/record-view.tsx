@@ -609,6 +609,9 @@ export function InlineEditor({
             value={draft}
             references={record.relationReferences}
             onChange={(next) => {
+              // One save at a time: a pick while one is in flight would show
+              // as chosen but never be written.
+              if (busy) return;
               setDraft(next);
               if (picker === 'one') void save(next);
             }}
