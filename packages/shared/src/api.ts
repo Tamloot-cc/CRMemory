@@ -4,6 +4,7 @@ import type {
   FieldDefinition,
   FieldSettings,
   ObjectDefinition,
+  SchemaChangeStatus,
   SchemaOwner,
   SelectOption,
 } from './schema.js';
@@ -227,7 +228,6 @@ export type SchemaChange = {
   createdAt: string;
   decidedAt: string | null;
 };
-export type SchemaChangeStatus = 'applied' | 'proposed' | 'rejected' | 'failed';
 /** Public request operations; the schema engine remains the validator. */
 export type SchemaOperation =
   | { op: 'create_object'; object: ObjectDefinition }

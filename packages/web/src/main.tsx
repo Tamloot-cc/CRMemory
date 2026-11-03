@@ -21,7 +21,7 @@ import {
 } from './api/client.js';
 import { SignIn } from './auth/sign-in.js';
 import type { ViewSearch } from './routes/state.js';
-import { QueryError } from './routes/state.js';
+import { QueryError, sortObjects } from './routes/state.js';
 import { Button, Dialog, Input, Notice, ObjectLink, Page, Shell, Stack } from './ui/index.js';
 import './style.css';
 
@@ -95,9 +95,7 @@ function Layout() {
         <Button onClick={signOut}>Sign out</Button>
       </Page>
     );
-  const objects = [...schema.data.objects].sort(
-    (a, b) => Number(b.owner === 'system') - Number(a.owner === 'system'),
-  );
+  const objects = sortObjects(schema.data.objects);
   return (
     <WorkspaceContext.Provider value={{ session, schema: schema.data }}>
       <Shell
@@ -172,7 +170,17 @@ function Layout() {
 }
 function validateSearch(raw: Record<string, unknown>): ViewSearch {
   const result: ViewSearch = {};
-  for (const key of ['tab', 'cursor', 'filter', 'sort', 'assertion', 'record'] as const)
+  for (const key of [
+    'tab',
+    'cursor',
+    'filter',
+    'sort',
+    'assertion',
+    'record',
+    'object',
+    'field',
+    'status',
+  ] as const)
     if (typeof raw[key] === 'string') result[key] = raw[key];
   return result;
 }

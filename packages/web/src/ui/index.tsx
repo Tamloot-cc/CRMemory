@@ -11,7 +11,7 @@ import {
   type SelectHTMLAttributes,
   useContext,
 } from 'react';
-import { cn, NavigationContext } from './core.js';
+import { cn, isPlainClick, NavigationContext, ROW_STATE, type Tone } from './core.js';
 
 // Adapted from shadcn/ui Button (MIT); see THIRD_PARTY.md.
 const buttonVariants = cva(
@@ -108,13 +108,7 @@ export function CheckLabel({ children }: { children: ReactNode }) {
 export function Muted({ children }: { children: ReactNode }) {
   return <span className="text-sm text-muted-foreground">{children}</span>;
 }
-export function Badge({
-  children,
-  tone = 'neutral',
-}: {
-  children: ReactNode;
-  tone?: 'neutral' | 'pending' | 'success';
-}) {
+export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: Tone }) {
   return (
     <span
       className={cn(
@@ -123,7 +117,9 @@ export function Badge({
           ? 'border-amber-300/40 text-amber-700 dark:text-amber-300'
           : tone === 'success'
             ? 'border-emerald-300/40 text-emerald-700 dark:text-emerald-300'
-            : 'border-border text-muted-foreground',
+            : tone === 'error'
+              ? 'border-destructive/30 text-destructive'
+              : 'border-border text-muted-foreground',
       )}
     >
       {children}
@@ -405,7 +401,13 @@ export function Dialog({
   );
 }
 /** A small static table inside a page. Record lists use `DataGrid`. */
-export function Table({ headers, children }: { headers: ReactNode[]; children: ReactNode }) {
+export function Table({
+  headers,
+  children,
+}: {
+  headers: { label: string; align?: 'center' }[];
+  children: ReactNode;
+}) {
   return (
     <div className="overflow-auto rounded-lg border border-border">
       <table className="w-full border-separate border-spacing-0 text-sm">
@@ -413,13 +415,14 @@ export function Table({ headers, children }: { headers: ReactNode[]; children: R
           <tr>
             {headers.map((h, i) => (
               <th
-                key={String(h)}
+                key={h.label}
                 className={cn(
                   'h-9 whitespace-nowrap border-b border-border bg-muted/50 px-3 font-medium',
-                  i === 0 ? 'sticky left-0 bg-muted' : '',
+                  i === 0 && 'sticky left-0 z-10 bg-muted',
+                  h.align === 'center' && 'text-center',
                 )}
               >
-                {h}
+                {h.label}
               </th>
             ))}
           </tr>
@@ -429,30 +432,71 @@ export function Table({ headers, children }: { headers: ReactNode[]; children: R
     </div>
   );
 }
-export function Tr({ children, ...props }: HTMLAttributes<HTMLTableRowElement>) {
+/**
+ * A table row. With `onOpen`, a plain click anywhere on the row opens it
+ * (controls inside keep their own clicks); `selected` keeps it highlighted.
+ */
+export function Tr({
+  children,
+  onOpen,
+  selected = false,
+  onClick,
+  ...props
+}: HTMLAttributes<HTMLTableRowElement> & { onOpen?: () => void; selected?: boolean }) {
   return (
-    <tr {...props} className="group">
+    <tr
+      {...props}
+      data-selected={selected || undefined}
+      onClick={(e) => {
+        onClick?.(e);
+        if (onOpen && isPlainClick(e)) onOpen();
+      }}
+      className={cn('group', onOpen && 'cursor-pointer')}
+    >
       {children}
     </tr>
   );
 }
-export function Td({ children, first = false }: { children: ReactNode; first?: boolean }) {
+export function Td({
+  children,
+  first = false,
+  align = 'left',
+}: {
+  children: ReactNode;
+  first?: boolean;
+  align?: 'left' | 'center';
+}) {
   return (
     <td
       className={cn(
-        'max-w-72 border-b border-border px-3 py-2 align-top group-hover:bg-hover',
-        first ? 'sticky left-0 bg-card font-medium' : '',
+        'max-w-72 border-b border-border px-3 py-2 align-top',
+        first && 'sticky left-0 bg-card font-medium',
+        ROW_STATE,
+        align === 'center' && 'text-center',
       )}
     >
       {children}
     </td>
   );
 }
+export type { Tone } from './core.js';
 export { DataGrid, FilterChip, GridFooter, Toolbar } from './data-grid.js';
+export {
+  CardGrid,
+  Check,
+  Code,
+  EntityHeader,
+  NavItem,
+  NavList,
+  SplitView,
+  TextButton,
+  Timeline,
+  TimelineItem,
+} from './layout.js';
 export { MenuHeader, MenuItem, MenuList, Popover, PopoverForm } from './popover.js';
 export { Property, PropertyEditor, PropertyList, Section } from './property.js';
 export { Sheet } from './sheet.js';
-export { Shell } from './shell.js';
+export { objectIcon, Shell } from './shell.js';
 export function SignInFrame({ children }: { children: ReactNode }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/30 p-6">

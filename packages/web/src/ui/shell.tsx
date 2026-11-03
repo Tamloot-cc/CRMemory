@@ -41,6 +41,9 @@ const OBJECT_ICONS: Record<string, LucideIcon> = {
   appointment: CalendarDays,
 };
 
+/** The sidebar icon for an object, by its singular API name. */
+export const objectIcon = (name: string): LucideIcon => OBJECT_ICONS[name] ?? Box;
+
 const initials = (name: string) =>
   name
     .split(/\s+/)
@@ -217,7 +220,7 @@ function Sidebar({
             key={o.name}
             to="/o/$object"
             params={{ object: o.name }}
-            icon={OBJECT_ICONS[o.name] ?? Box}
+            icon={objectIcon(o.name)}
             label={o.label}
             collapsed={collapsed}
             onNavigate={onNavigate}

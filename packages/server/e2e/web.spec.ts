@@ -90,6 +90,34 @@ test('approves a schema proposal and refreshes the schema', async ({ page, retai
   await expect(page.getByText('No schema changes to review')).toBeVisible();
   await page.getByRole('link', { name: 'Schema', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Schema', exact: true })).toBeVisible();
+  // Pick an object, filter its fields and open one in the side sheet.
+  await page
+    .getByRole('navigation', { name: 'Objects' })
+    .getByRole('button', { name: /^People/ })
+    .click();
+  await expect(page.getByRole('heading', { name: 'People', exact: true })).toBeVisible();
+  await page.getByRole('searchbox', { name: 'Filter fields' }).fill('job');
+  await page.getByRole('button', { name: 'Job title', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Job title' });
+  await expect(sheet.getByText('No two records can share a value')).toBeVisible();
+  await expect(page).toHaveURL(/object=person&field=jobTitle/);
+  // A relation links to the field on its other side.
+  await page.keyboard.press('Escape');
+  await page.getByRole('searchbox', { name: 'Filter fields' }).fill('company');
+  await page.getByRole('button', { name: 'Company', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Company' })
+    .getByRole('button', { name: 'Company → People' })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'People' })).toBeVisible();
+  // The approved change is in the history, in words.
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /Change history/ }).click();
+  const history = page.getByRole('list', { name: 'Schema changes' });
+  await expect(history.getByText('Change Person → Job title: unique')).toBeVisible();
+  await page.getByRole('combobox', { name: 'Status' }).selectOption('rejected');
+  await expect(page.getByText('No rejected changes')).toBeVisible();
   const schema = await r.request('/schema');
   expect(
     schema.objects

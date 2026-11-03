@@ -11,6 +11,10 @@ export type SchemaOwner = (typeof SCHEMA_OWNERS)[number];
 export const SCHEMA_STATUSES = ['active', 'deprecated'] as const;
 export type SchemaStatus = (typeof SCHEMA_STATUSES)[number];
 
+/** Where a requested schema change stands. */
+export const SCHEMA_CHANGE_STATUSES = ['applied', 'proposed', 'rejected', 'failed'] as const;
+export type SchemaChangeStatus = (typeof SCHEMA_CHANGE_STATUSES)[number];
+
 export type SelectOption = {
   value: string;
   label: string;

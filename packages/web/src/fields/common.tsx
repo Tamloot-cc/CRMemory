@@ -10,11 +10,13 @@ import type {
 } from '@retainer/shared';
 import { FILTER_OPERATORS, normalizeFieldValue } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
+import type { LucideIcon } from 'lucide-react';
 import { type ComponentType, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
 import {
   Badge,
   Button,
+  Check,
   ExternalLink,
   Input,
   Label,
@@ -34,6 +36,9 @@ export type DisplayProps = {
 };
 export type InputProps = { field: FieldView; value: unknown; onChange: (value: unknown) => void };
 export type FieldModule = {
+  /** The type's name where the schema itself is shown, e.g. "Single select". */
+  label: string;
+  icon: LucideIcon;
   Display: ComponentType<DisplayProps>;
   Input: ComponentType<InputProps>;
   Filter: ComponentType<InputProps & { operator: string }>;
@@ -74,11 +79,7 @@ export function FieldDisplay({ field, value, compact = false, references = {} }:
     case 'number':
       return <span>{Number(value).toLocaleString()}</span>;
     case 'boolean':
-      return (
-        <span role="img" aria-label={value ? 'Yes' : 'No'}>
-          {value ? '✓' : '—'}
-        </span>
-      );
+      return <Check value={!!value} />;
     case 'date':
     case 'date_time':
       return (
