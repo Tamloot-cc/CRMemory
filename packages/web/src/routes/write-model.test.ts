@@ -1,9 +1,9 @@
-import type { FieldView, ObjectView, PresentedRecord, SchemaDescription } from '@retainer/shared';
+import type { FieldView, ObjectView, PresentedRecord } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
 import {
-  cascadeImpact,
   creatableFields,
   defaultSurvivor,
+  describeImpact,
   forgetConfirmation,
   groupRecordHits,
   initialDraft,
@@ -76,7 +76,6 @@ const company: ObjectView = {
     }),
   ],
 };
-const schema = { objects: [person, company] } as SchemaDescription;
 const record = (fields: Record<string, unknown>, extra: Partial<PresentedRecord> = {}) =>
   ({
     id: 'r1',
@@ -147,28 +146,20 @@ describe('serverFieldErrors', () => {
   });
 });
 
-describe('cascadeImpact', () => {
-  it('counts linked records whose relation cascades on delete', () => {
-    const acme = record({ name: 'Acme', people: ['p1', 'p2'] }, { object: 'company' });
-    expect(cascadeImpact(schema, acme)).toEqual([{ object: 'person', label: 'People', count: 2 }]);
-    expect(cascadeImpact(schema, { ...acme, fields: { people: ['p1'] } })).toEqual([
-      { object: 'person', label: 'Person', count: 1 },
-    ]);
-    expect(cascadeImpact(schema, { ...acme, fields: { people: [] } })).toEqual([]);
-  });
-  it('ignores relations that only clear the link', () => {
-    const setNull = {
-      objects: [
-        {
-          ...person,
-          fields: person.fields.map((f) =>
-            f.name === 'company' ? { ...f, settings: { ...f.settings, onDelete: 'set_null' } } : f,
-          ),
-        },
-        company,
-      ],
-    } as SchemaDescription;
-    expect(cascadeImpact(setNull, record({ people: ['p1'] }, { object: 'company' }))).toEqual([]);
+describe('describeImpact', () => {
+  it('names each object by its label, singular or plural, in one sentence', () => {
+    expect(describeImpact([{ object: 'person', count: 2 }], [person, company])).toBe('2 people');
+    expect(
+      describeImpact(
+        [
+          { object: 'company', count: 1 },
+          { object: 'person', count: 1 },
+          { object: 'gone', count: 3 },
+        ],
+        [person, company],
+      ),
+    ).toBe('1 company, 1 person and 3 gone');
+    expect(describeImpact([], [person])).toBe('');
   });
 });
 

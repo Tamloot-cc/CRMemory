@@ -20,8 +20,8 @@ import {
   Stack,
 } from '../ui/index.js';
 import { MergePicker } from './merge.js';
-import { recordTitle as title, useReport } from './state.js';
-import { cascadeImpact, forgetConfirmation } from './write-model.js';
+import { QueryError, recordTitle as title, useReport } from './state.js';
+import { describeImpact, forgetConfirmation } from './write-model.js';
 
 /**
  * The record's actions menu, in the sheet and on the record page: merge a
@@ -104,11 +104,16 @@ type ActionProps = {
 };
 
 function DeleteDialog({ record, onClose, onGone }: ActionProps) {
-  const { schema } = useWorkspace(),
+  const { session, schema } = useWorkspace(),
     report = useReport();
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
-  const impact = cascadeImpact(schema, record);
+  // Counted by the server over every cascading link, at any depth.
+  const impact = useQuery({
+    queryKey: [session.workspace.id, 'deleteImpact', record.id],
+    queryFn: ({ signal }) => api.deleteImpact(record.id, signal),
+  });
+  const linked = impact.data?.records ?? [];
   async function remove() {
     setBusy(true);
     setError('');
@@ -137,14 +142,21 @@ function DeleteDialog({ record, onClose, onGone }: ActionProps) {
     >
       <Stack>
         {error ? <Notice error>{error}</Notice> : null}
-        {impact.length ? (
+        {impact.error ? (
+          <QueryError error={impact.error} retry={() => void impact.refetch()} />
+        ) : null}
+        {impact.isPending ? <Notice>Checking linked records…</Notice> : null}
+        {linked.length ? (
           <Notice error>
-            Deleting it also deletes{' '}
-            {impact.map((i, n) => `${n ? ', ' : ''}${i.count} linked ${i.label.toLowerCase()}`)}.
+            Deleting it also deletes {describeImpact(linked, schema.objects)} linked to it.
           </Notice>
         ) : null}
         <Row>
-          <Button variant="destructive" disabled={busy} onClick={() => void remove()}>
+          <Button
+            variant="destructive"
+            disabled={busy || !impact.data}
+            onClick={() => void remove()}
+          >
             {busy ? 'Deleting…' : 'Delete record'}
           </Button>
           <Button variant="ghost" disabled={busy} onClick={onClose}>

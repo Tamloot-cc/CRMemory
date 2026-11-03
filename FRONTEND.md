@@ -322,9 +322,10 @@ dismissed.
   an `Idempotency-Key` per dialog. A merge cannot be undone, so its button
   is `destructive`.
 - **Delete…** soft-deletes the record (`DELETE /v1/records/:id`). The
-  dialog names the linked records a cascading relation would delete with it,
-  from the record's inverse relation fields, and the report counts what the
-  server deleted.
+  dialog names the records a delete would take with it, counted by object
+  (`GET /v1/records/:id/delete-impact`, which follows cascading relations
+  at any depth with the same traversal as the delete), and enables its
+  button once that count is in. The report counts what the server deleted.
 - **Erase for privacy…** (`admin`) runs `forget` (ARCHITECTURE.md 2.1). The
   dialog lists what is erased and that emails and phones are blocked from
   coming back, and enables its button only once the person types the

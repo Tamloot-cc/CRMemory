@@ -1,13 +1,13 @@
 import type {
+  DeleteImpact,
   FieldView,
   ObjectView,
   PresentedRecord,
   RecordHit,
-  SchemaDescription,
 } from '@retainer/shared';
 import { FieldValueError, MULTI_VALUE_TYPES, validateFieldValue } from '@retainer/shared';
 import { isEmptyFor } from '../fields/common.js';
-import { findObject, isInverseRelation, relationEnds } from './schema-model.js';
+import { findObject, isInverseRelation } from './schema-model.js';
 
 /** A field a person can set: not an inverse relation, not read-only, not `json` (read-only in the app). */
 export const isWritable = (f: FieldView) =>
@@ -75,26 +75,19 @@ export function serverFieldErrors(details: unknown): Record<string, string> {
   return errors;
 }
 
-export type CascadeImpact = { object: string; label: string; count: number };
 /**
- * Linked records that deleting `record` deletes too: records on the other
- * side of an inverse relation whose many-to-one field cascades.
+ * "2 people and 1 task": what a delete takes with it, from
+ * `GET /v1/records/:id/delete-impact`, named by each object's label.
  */
-export function cascadeImpact(schema: SchemaDescription, record: PresentedRecord): CascadeImpact[] {
-  const object = findObject(schema.objects, record.object);
-  const impact: CascadeImpact[] = [];
-  for (const f of object?.fields.filter(isInverseRelation) ?? []) {
-    const { target, inverse } = relationEnds(f, schema.objects);
-    const ids = record.fields[f.name];
-    if (!target || inverse?.settings.onDelete !== 'cascade' || !Array.isArray(ids) || !ids.length)
-      continue;
-    impact.push({
-      object: target.nameSingular,
-      label: ids.length === 1 ? target.labelSingular : target.labelPlural,
-      count: ids.length,
-    });
-  }
-  return impact;
+export function describeImpact(impact: DeleteImpact['records'], objects: ObjectView[]): string {
+  const parts = impact.map(({ object, count }) => {
+    const o = findObject(objects, object);
+    const name = o ? (count === 1 ? o.labelSingular : o.labelPlural).toLowerCase() : object;
+    return `${count} ${name}`;
+  });
+  return parts.length > 1
+    ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`
+    : (parts[0] ?? '');
 }
 
 /** What the person types to confirm erasing a record: its label, or a fixed word. */

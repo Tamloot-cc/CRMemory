@@ -7,6 +7,7 @@ import { queryInputSchema } from '../../records/query.js';
 import {
   createRecord,
   decideAssertion,
+  deleteImpact,
   deleteRecord,
   dismissSuggestion,
   findRecords,
@@ -56,6 +57,10 @@ export function recordRoutes(app: Hono<AppEnv>, sql: Sql) {
     const input = await readBody(c, patchInputSchema);
     return c.json(await patchRecord(sql, c.get('caller'), id, input));
   });
+
+  app.get('/records/:id/delete-impact', requireScope('read'), async (c) =>
+    c.json(await deleteImpact(sql, c.get('caller'), idParam(c))),
+  );
 
   app.delete('/records/:id', requireScope('write'), async (c) =>
     c.json(await deleteRecord(sql, c.get('caller'), idParam(c))),

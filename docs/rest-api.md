@@ -80,6 +80,7 @@ original response; the same key with a different body fails with 422
 | `POST /v1/objects/:object/query`                  | `read`           | Filter, sort and page records of one object                          |
 | `GET /v1/records/:id`                             | `read`           | One record; `?include=provenance,relationReferences`                 |
 | `PATCH /v1/records/:id`                           | `write`          | Update fields; optional `source` and `expectedUpdatedAt`             |
+| `GET /v1/records/:id/delete-impact`               | `read`           | What a delete would take with it through cascades, counted by object |
 | `DELETE /v1/records/:id`                          | `write`          | Soft-delete a record                                                 |
 | `GET /v1/records/:id/assertions`                  | `read`           | Per-field history; `?field=`                                         |
 | `GET /v1/records/:id/interactions`                | `read`           | Interactions the record took part in                                 |

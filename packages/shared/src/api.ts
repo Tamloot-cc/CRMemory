@@ -136,6 +136,12 @@ export type MergeResult = {
   recomputedRecordIds: string[];
   record: PresentedRecord;
 };
+/** `GET /v1/records/:id/delete-impact`: the other records a delete would take with it. */
+export type DeleteImpact = {
+  id: string;
+  /** Records deleted through cascading relations, at any depth, counted by object. */
+  records: { object: string; count: number }[];
+};
 /** `POST /v1/review/merges/:id/dismiss`. */
 export type MergeSuggestionDecision = {
   id: string;

@@ -691,7 +691,7 @@ test('warns before a delete that cascades to linked records', async ({ page, ret
   await page.getByRole('button', { name: 'Record actions' }).click();
   await page.getByRole('button', { name: 'Delete…' }).click();
   const confirm = page.getByRole('dialog', { name: 'Delete Acme?' });
-  await expect(confirm.getByText('Deleting it also deletes 1 linked person.')).toBeVisible();
+  await expect(confirm.getByText('Deleting it also deletes 1 person linked to it.')).toBeVisible();
   await confirm.getByRole('button', { name: 'Delete record', exact: true }).click();
   await expect(page.getByText('Deleted Acme and 1 linked record.')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();

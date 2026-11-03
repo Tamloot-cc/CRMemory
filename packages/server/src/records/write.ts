@@ -625,6 +625,35 @@ export async function computeDataFromAssertions(
 }
 
 /**
+ * The record and every live record that deleting it reaches through
+ * `onDelete: cascade` relations, at any depth: what `softDeleteRecord`
+ * deletes, and what the delete dialog warns about beforehand.
+ */
+export async function cascadeSet(
+  tx: Tx,
+  schema: CompiledSchema,
+  rootId: string,
+): Promise<Set<string>> {
+  const cascadeFieldIds = schema.state.objects.flatMap((o) =>
+    o.fields
+      .filter((f) => f.status === 'active' && f.settings.onDelete === 'cascade')
+      .map((f) => f.id as string),
+  );
+  const ids = new Set([rootId]);
+  let frontier = [rootId];
+  while (frontier.length > 0 && cascadeFieldIds.length > 0) {
+    const rows = await tx<{ id: string }[]>`
+      select distinct l.source_record_id as id from record_links l
+      join records r on r.id = l.source_record_id and r.deleted_at is null
+      where l.target_record_id = any(${frontier}::uuid[])
+        and l.field_id = any(${cascadeFieldIds}::uuid[])`;
+    frontier = rows.map((r) => r.id).filter((rid) => !ids.has(rid));
+    for (const rid of frontier) ids.add(rid);
+  }
+  return ids;
+}
+
+/**
  * Soft-deletes a record (2.1). Relations to it with `onDelete: cascade`
  * soft-delete their source records too; `set_null` relations simply stop
  * resolving, since reads skip deleted targets. All affected records are
@@ -637,26 +666,8 @@ export async function softDeleteRecord(
   id: string,
 ): Promise<string[]> {
   const rootId = await resolveRecordId(tx, context.workspaceId, id);
-  const cascadeFieldIds = context.schema.state.objects.flatMap((o) =>
-    o.fields
-      .filter((f) => f.status === 'active' && f.settings.onDelete === 'cascade')
-      .map((f) => f.id as string),
-  );
-
   // Collect first, then lock everything in sorted order.
-  const ids = new Set([rootId]);
-  let frontier = [rootId];
-  while (frontier.length > 0 && cascadeFieldIds.length > 0) {
-    const rows = await tx<{ id: string }[]>`
-      select distinct l.source_record_id as id from record_links l
-      join records r on r.id = l.source_record_id and r.deleted_at is null
-      where l.target_record_id = any(${frontier}::uuid[])
-        and l.field_id = any(${cascadeFieldIds}::uuid[])`;
-    frontier = rows.map((r) => r.id).filter((rid) => !ids.has(rid));
-    for (const rid of frontier) ids.add(rid);
-  }
-
-  const sorted = [...ids].sort();
+  const sorted = [...(await cascadeSet(tx, context.schema, rootId))].sort();
   const locked = await lockRecordsForUpdate(tx, context.workspaceId, sorted);
   if (locked.find((r) => r.id === rootId)?.deleted_at) {
     throw new AppError(409, 'record_deleted', `record ${rootId} is already deleted`, {
