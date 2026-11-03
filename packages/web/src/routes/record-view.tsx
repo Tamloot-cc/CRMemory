@@ -564,7 +564,14 @@ export function InlineEditor({
       onCancel={() => {
         if (!busy) onDone();
       }}
-      onOutside={() => void save(draft, true)}
+      onOutside={() => {
+        if (busy) return;
+        // While the editor shows a problem (a stale write, a write kept only
+        // in history, a rejected value), clicking away leaves it: only an
+        // explicit Save or Retry writes again.
+        if (error || stale) onDone(true);
+        else void save(draft, true);
+      }}
       footerStart={
         !picker && field.isNullable ? (
           <Button size="small" variant="ghost" disabled={busy} onClick={() => setDraft(null)}>

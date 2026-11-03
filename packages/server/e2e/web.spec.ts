@@ -79,6 +79,21 @@ test('preserves a draft after a stale edit and retries only with explicit action
   await expect(page.getByRole('textbox', { name: 'Job title', exact: true })).not.toBeVisible();
   await expect(page.getByText('My draft', { exact: true })).toBeVisible();
   expect((await r.request(`/records/${record.id}`)).fields.jobTitle).toBe('My draft');
+
+  // Clicking away from a stale draft leaves it, rather than retrying unasked.
+  await page.getByRole('button', { name: 'Edit Job title', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Job title', exact: true }).fill('Second draft');
+  await r.request(
+    `/records/${record.id}`,
+    { values: { jobTitle: 'Changed again' } },
+    r.keys.user,
+    'PATCH',
+  );
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('This record changed.', { exact: false })).toBeVisible();
+  await page.getByRole('heading', { name: 'Dana Levi' }).click();
+  await expect(page.getByRole('textbox', { name: 'Job title', exact: true })).not.toBeVisible();
+  expect((await r.request(`/records/${record.id}`)).fields.jobTitle).toBe('Changed again');
 });
 test('approves a schema proposal and refreshes the schema', async ({ page, retainer: r }) => {
   await r.request('/schema/changes', {

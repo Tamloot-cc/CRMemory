@@ -93,6 +93,30 @@ describe('OptionList', () => {
     await userEvent.keyboard('{ArrowDown}{Enter}');
     expect(onPick).toHaveBeenCalledWith('ready');
   });
+  it('picks nothing from a remote search until its results match what was typed', async () => {
+    const onPick = vi.fn(),
+      onSubmit = vi.fn();
+    const list = (searching: boolean) => (
+      <form onSubmit={onSubmit}>
+        <OptionList
+          label="Company"
+          options={searching ? OPTIONS.slice(0, 1) : OPTIONS.slice(1, 2)}
+          onSearchChange={vi.fn()}
+          searching={searching}
+          onPick={onPick}
+        />
+      </form>
+    );
+    const { rerender } = render(list(true));
+    const search = screen.getByRole('combobox', { name: 'Company' });
+    await userEvent.type(search, 'rea{Enter}');
+    expect(search.getAttribute('aria-activedescendant')).toBeNull();
+    expect(onPick).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+    rerender(list(false));
+    await userEvent.keyboard('{Enter}');
+    expect(onPick).toHaveBeenCalledWith('ready');
+  });
   it('says when nothing matches', async () => {
     render(<OptionList label="Stage" options={OPTIONS} selected={[]} onPick={vi.fn()} />);
     await userEvent.type(screen.getByRole('combobox', { name: 'Stage' }), 'zzz');

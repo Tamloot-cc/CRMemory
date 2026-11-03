@@ -359,14 +359,17 @@ function useRelationOptions(
     const label = options.find((o) => o.value === id)?.label;
     if (label) setSeen((s) => ({ ...s, [id]: label }));
   };
+  // The typed search is still settling, or its results are still on the way.
+  const searching = search.trim() !== query || results.isPlaceholderData;
   const status = results.error
     ? results.error.message
-    : results.isFetching && !results.data
+    : searching || (results.isFetching && !results.data)
       ? 'Searching…'
       : undefined;
   return {
     options,
     status,
+    searching,
     setSearch,
     remember,
     currentLabel,
@@ -430,6 +433,7 @@ function RelationPicker({ field, value, onChange, references }: InputProps) {
       options={[...clearOption(field), ...r.options]}
       selected={[typeof value === 'string' ? value : '']}
       onSearchChange={r.setSearch}
+      searching={r.searching}
       status={r.status}
       empty={`No ${r.noun} found`}
       onPick={(v) => onChange(v || null)}
@@ -453,6 +457,7 @@ function RelationInput({ field, value, onChange, references }: InputProps) {
         if (!next) r.setSearch('');
       }}
       onSearchChange={r.setSearch}
+      searching={r.searching}
       status={r.status}
       onChange={(v) => {
         r.remember(v);

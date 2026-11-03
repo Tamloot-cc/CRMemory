@@ -57,7 +57,9 @@ function CheckSquare({ checked }: { checked: boolean }) {
  * enclosing form. With `multiple`, picking toggles and the list stays.
  *
  * Search filters `options` here unless `onSearchChange` is given, in which
- * case the caller fetches matching options itself.
+ * case the caller fetches matching options itself, and says it is still
+ * `searching` until `options` match the latest search; until then nothing is
+ * highlighted and Enter picks nothing, so it can't choose a stale result.
  */
 export function OptionList({
   label,
@@ -70,6 +72,7 @@ export function OptionList({
   empty = 'No matches',
   status,
   onSearchChange,
+  searching = false,
 }: {
   /** Names the search box, or the list when there is no search box. */
   label: string;
@@ -84,6 +87,8 @@ export function OptionList({
   /** A loading or error line under the options. */
   status?: ReactNode;
   onSearchChange?: (search: string) => void;
+  /** Remote search only: `options` are still from an earlier search. */
+  searching?: boolean;
 }) {
   const id = useId();
   const [search, setSearch] = useState('');
@@ -92,7 +97,7 @@ export function OptionList({
     () => (onSearchChange ? options : filterOptions(options, search)),
     [options, search, onSearchChange],
   );
-  const current = active < shown.length ? active : shown.length - 1;
+  const current = searching ? -1 : active < shown.length ? active : shown.length - 1;
   const activeId = current >= 0 ? `${id}-${current}` : undefined;
 
   useEffect(() => {
@@ -129,6 +134,8 @@ export function OptionList({
       !e.ctrlKey &&
       !e.nativeEvent.isComposing
     ) {
+      // Results for the typed search haven't arrived: wait, rather than save.
+      if (searching) return e.preventDefault();
       const option = shown[current];
       if (!option) return;
       e.preventDefault();
@@ -222,6 +229,8 @@ type SelectMenuProps = {
   size?: 'default' | 'small';
   status?: ReactNode;
   onSearchChange?: (search: string) => void;
+  /** Remote search only: `options` are still from an earlier search. */
+  searching?: boolean;
   /** Told when the list opens and closes, e.g. to fetch options only while open. */
   onOpenChange?: (open: boolean) => void;
   /** Shown on the button when the value isn't among `options`. */
@@ -245,6 +254,7 @@ export function SelectMenu(props: SelectMenuProps) {
     size = 'default',
     status,
     onSearchChange,
+    searching,
     onOpenChange,
     fallback,
   } = props;
@@ -321,6 +331,7 @@ export function SelectMenu(props: SelectMenuProps) {
             searchable={searchable}
             status={status}
             onSearchChange={onSearchChange}
+            searching={searching}
             onPick={pick}
           />
         </PopoverPrimitive.Content>
