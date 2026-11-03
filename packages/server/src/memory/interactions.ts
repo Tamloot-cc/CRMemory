@@ -202,7 +202,7 @@ type Resolution = { recordId: string } | { reason: UnmatchedReason; candidates?:
  * only by deleted records stays unresolved for review (1.2), and one claimed
  * by several live records is ambiguous rather than matched to the first.
  */
-function resolveParticipants(
+export function resolveParticipants(
   participants: readonly NormalizedParticipant[],
   /** The participants' record IDs, following merges. Unknown IDs are absent. */
   records: Map<string, CanonicalRecord>,
@@ -222,9 +222,19 @@ function resolveParticipants(
     if (p.handle?.kind !== 'email') return { reason: 'phone_only' };
     const match = emailMatches.get(p.handle.value);
     if (!match) return { reason: 'no_match' };
-    const [only, ...others] = match.live;
-    if (only && others.length === 0) return { recordId: records.get(only)?.id ?? only };
-    if (only) return { reason: 'ambiguous', candidates: match.live };
+    // The claims were read before the records were locked: a record deleted
+    // or merged since counts as it is now.
+    const live = [
+      ...new Set(
+        match.live.flatMap((id) => {
+          const record = records.get(id);
+          return record && !record.deleted ? [record.id] : [];
+        }),
+      ),
+    ].sort();
+    const [only, ...others] = live;
+    if (only && others.length === 0) return { recordId: only };
+    if (only) return { reason: 'ambiguous', candidates: live };
     return { reason: 'deleted_record' };
   });
   if (errors.length > 0) {
