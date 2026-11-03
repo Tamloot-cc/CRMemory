@@ -285,4 +285,43 @@ describe('views across schema changes', () => {
     expect((await patch(view.body.id, { name: 'Renamed' })).status).toBe(200);
     expect((await patch(view.body.id, { groupBy: 'stage' })).body.groupBy).toBe('stage');
   });
+
+  it('drops conditions and sorts that no longer compile, and says so', async () => {
+    await schemaChange([
+      {
+        op: 'create_field',
+        object: 'deal',
+        field: { name: 'source', label: 'Source', type: 'text' },
+      },
+    ]);
+    const view = await create({
+      name: 'From referrals',
+      kind: 'table',
+      filter: { and: [{ source: { eq: 'referral' } }, { stage: { neq: 'lost' } }] },
+      sort: [{ field: 'source', direction: 'asc' }],
+    });
+    expect(view.status).toBe(201);
+    // The field stays, but can no longer be filtered or sorted by.
+    expect(
+      (
+        await schemaChange([
+          { op: 'update_field', object: 'deal', field: 'source', isFilterable: false },
+        ])
+      ).status,
+    ).toBe(200);
+
+    const res = await t.request(`/v1/views/${view.body.id}`, { key: keys.dana });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ filter: { and: [{ stage: { neq: 'lost' } }] }, sort: null });
+    expect(res.body.issues).toEqual([
+      expect.stringContaining('The sort on "Source" no longer applies'),
+      expect.stringContaining('The filter on "Source" no longer applies'),
+    ]);
+    // What is left still runs as a query.
+    const query = await t.request('/v1/objects/deal/query', {
+      key: keys.dana,
+      body: { filter: res.body.filter },
+    });
+    expect(query.status).toBe(200);
+  });
 });

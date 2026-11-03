@@ -53,6 +53,7 @@ import {
   SelectMenu,
   Truncate,
 } from '../ui/index.js';
+import { useBoardTotals } from './board-totals.js';
 import type { ColumnPrefs } from './list-state.js';
 import { aggregateLabel } from './list-state.js';
 import {
@@ -426,15 +427,24 @@ const HEADER_OPS: AggregateOp[] = ['sum', 'avg', 'min', 'max'];
 export function ViewOptions({
   object,
   view,
+  filter,
   onChange,
 }: {
   object: ObjectView;
   view: SavedView;
+  /** The filter the board runs, for the values records hold beyond the options. */
+  filter: Record<string, unknown> | undefined;
   onChange: (change: UpdateViewInput) => void;
 }) {
   const group = object.fields.find((f) => f.name === view.groupBy);
-  // Every column in the field's option order, shown or hidden.
-  const columns = group ? boardGroups(group) : undefined;
+  const counts = useBoardTotals(object, view, filter);
+  // Every column the board has or could show, hidden ones included.
+  const columns = group
+    ? boardGroups(group, [
+        ...(counts.data?.groups?.map((g) => g.value) ?? []),
+        ...view.hiddenGroups,
+      ])
+    : undefined;
   // The fields that add up: number and money.
   const totals = object.fields
     .filter((f) => aggregateOps(f).includes('sum'))

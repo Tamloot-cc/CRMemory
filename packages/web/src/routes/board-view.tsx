@@ -1,6 +1,5 @@
 import type {
   AggregateGroup,
-  AggregateInput,
   FieldView,
   ObjectView,
   PresentedRecord,
@@ -8,7 +7,7 @@ import type {
   RecordReference,
   SavedView,
 } from '@retainer/shared';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { api, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import {
@@ -23,6 +22,7 @@ import {
   Inset,
   Notice,
 } from '../ui/index.js';
+import { useBoardTotals } from './board-totals.js';
 import { defaultColumnOrder, formatAggregate } from './list-state.js';
 import type { MoveNotice } from './record-move.js';
 import { useRecordMoves } from './record-move.js';
@@ -74,21 +74,10 @@ export function BoardView({
   onOpen: (id: string) => void;
   onChangeView: (change: { groupBy: string }) => void;
 }) {
-  const { session } = useWorkspace();
   const field = object.fields.find((f) => f.name === view.groupBy);
   const moves = useRecordMoves<Card>();
 
-  const aggregateInput: AggregateInput = {
-    filter,
-    ...(field ? { groupBy: field.name } : {}),
-    aggregates: view.groupAggregate ? [view.groupAggregate] : [],
-  };
-  const totals = useQuery({
-    queryKey: [session.workspace.id, 'aggregate', object.nameSingular, aggregateInput],
-    queryFn: ({ signal }) => api.aggregate(object.nameSingular, aggregateInput, signal),
-    enabled: !!field,
-    placeholderData: (previous) => previous,
-  });
+  const totals = useBoardTotals(object, view, filter);
 
   if (!field)
     return (

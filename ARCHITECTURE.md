@@ -265,7 +265,9 @@ Rules:
    as they are when the view is read, so adding, renaming or removing an
    option needs no change to any view. A view that names a field that is no
    longer active is returned without it: dropped from columns and sort, the
-   filter condition removed, `groupBy` or `dateField` returned as null. Each
+   filter condition removed, `groupBy` or `dateField` returned as null. A
+   filter condition or sort that no longer compiles (the field stopped being
+   filterable, or lost the option it names) is dropped the same way. Each
    dropped reference is listed in the view's `issues`, so the caller can say
    so rather than silently show more records.
 3. **Validated like queries.** `filter` and `sort` must compile against the

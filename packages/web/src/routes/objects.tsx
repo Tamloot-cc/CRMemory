@@ -459,7 +459,12 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
                 </Button>
               ) : null}
               {saved && saved.kind !== 'table' && writable ? (
-                <ViewOptions object={object} view={saved} onChange={(c) => void changeView(c)} />
+                <ViewOptions
+                  object={object}
+                  view={saved}
+                  filter={view.query.filter}
+                  onChange={(c) => void changeView(c)}
+                />
               ) : null}
               <SortMenu
                 object={object}

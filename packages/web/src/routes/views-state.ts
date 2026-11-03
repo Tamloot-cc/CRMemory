@@ -169,7 +169,7 @@ export function boardGroups(
   return [
     ...options.map((o) => ({ key: groupKey(o.value), value: o.value, label: o.label })),
     { key: groupKey(null), value: null, label: `No ${field.label.toLowerCase()}` },
-    ...present
+    ...[...new Set(present)]
       .filter((v): v is string => v !== null && !known.has(v))
       .map((v) => ({ key: groupKey(v), value: v, label: v })),
   ];

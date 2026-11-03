@@ -166,6 +166,15 @@ describe('board columns', () => {
     ]);
   });
 
+  it('list a value no longer an option once, however often it is given', () => {
+    expect(boardGroups(stage, ['lost', null, 'lost']).map((g) => g.key)).toEqual([
+      'v:lead',
+      'v:won',
+      'none',
+      'v:lost',
+    ]);
+  });
+
   it('put a record in a column by its value, or by having none', () => {
     expect(groupCondition(stage, 'won')).toEqual({ stage: { eq: 'won' } });
     expect(groupCondition(stage, null)).toEqual({ stage: { isNull: true } });

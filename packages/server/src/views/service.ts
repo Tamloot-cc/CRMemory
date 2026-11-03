@@ -135,7 +135,7 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
  */
 function renameFilter(
   filter: Record<string, unknown>,
-  rename: (field: string) => string | undefined,
+  rename: (field: string, condition: unknown) => string | undefined,
 ): Record<string, unknown> | undefined {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(filter)) {
@@ -150,7 +150,7 @@ function renameFilter(
       const part = isPlainObject(v) ? renameFilter(v, rename) : undefined;
       if (part) out[k] = part;
     } else if (!NESTING.has(k)) {
-      const renamed = rename(k);
+      const renamed = rename(k, v);
       if (renamed) out[renamed] = v;
     }
   }
@@ -313,9 +313,24 @@ type ViewRow = {
 };
 
 /** A stored view by field name, without references to fields that are gone (rule 1.4.2). */
-export function presentView(object: CompiledObject, row: ViewRow): SavedView {
+export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): SavedView {
   const fields = new FieldNames(object);
   const config = row.config;
+  /**
+   * Whether a filter condition or sort still compiles: a field can stay
+   * active but stop being filterable, or lose the option a condition names.
+   */
+  const compiles = (what: string, fieldName: string, compile: () => unknown) => {
+    try {
+      compile();
+      return true;
+    } catch (e) {
+      if (!(e instanceof AppError) || e.status >= 500) throw e;
+      const label = object.fieldsByName.get(fieldName)?.label ?? fieldName;
+      fields.issues.push(`${what} on "${label}" no longer applies (${e.message}); it was dropped`);
+      return false;
+    }
+  };
   const columns: ViewColumns | null = config.columns
     ? {
         order: config.columns.order
@@ -337,7 +352,10 @@ export function presentView(object: CompiledObject, row: ViewRow): SavedView {
     config.sort
       ?.map((s) => {
         const fieldName = fields.name(s.field, 'The sort');
-        return fieldName ? { field: fieldName, direction: s.direction } : undefined;
+        const entry = fieldName ? { field: fieldName, direction: s.direction } : undefined;
+        return entry && compiles('The sort', entry.field, () => compileSort(tx, object, [entry]))
+          ? entry
+          : undefined;
       })
       .filter((s) => !!s) ?? [];
   const aggregateField = config.groupAggregate
@@ -351,7 +369,17 @@ export function presentView(object: CompiledObject, row: ViewRow): SavedView {
     visibility: row.visibility,
     position: row.position,
     filter:
-      (config.filter && renameFilter(config.filter, (k) => fields.name(k, 'The filter'))) ?? null,
+      (config.filter &&
+        renameFilter(config.filter, (k, condition) => {
+          const fieldName = fields.name(k, 'The filter');
+          return fieldName &&
+            compiles('The filter', fieldName, () =>
+              compileFilter(tx, object, { [fieldName]: condition }),
+            )
+            ? fieldName
+            : undefined;
+        })) ??
+      null,
     sort: sort.length ? sort : null,
     columns,
     groupBy: (config.groupBy && fields.name(config.groupBy, 'The board grouping')) || null,
@@ -420,14 +448,14 @@ export async function listViews(
       select v.* from views v
       where v.object_type_id = ${object.id} and ${visibleTo(tx, caller.actor)}
       order by v.position, v.created_at, v.id`;
-    return { views: rows.map((r) => presentView(object, r)) };
+    return { views: rows.map((r) => presentView(tx, object, r)) };
   });
 }
 
 export async function readView(sql: Sql, caller: Caller, id: string): Promise<SavedView> {
   return withViews(sql, caller, async (tx, schema) => {
     const { row, object } = await loadView(tx, schema, caller, id);
-    return presentView(object, row);
+    return presentView(tx, object, row);
   });
 }
 
@@ -460,7 +488,7 @@ export async function createView(
         ${tx.json(caller.actor)})
       returning *`;
     if (!row) throw new Error('view insert returned no row');
-    return presentView(object, row);
+    return presentView(tx, object, row);
   });
 }
 
@@ -485,7 +513,7 @@ export async function updateView(
     // Check the kind's field when the request changes either, so a view
     // whose field was removed can still be renamed or moved.
     if (input.kind !== undefined || input.groupBy === null || input.dateField === null)
-      requireKindField(kind, presentView(object, { ...row, config }));
+      requireKindField(kind, presentView(tx, object, { ...row, config }));
     const [updated] = await tx<ViewRow[]>`
       update views set
         name = ${input.name ?? row.name},
@@ -498,7 +526,7 @@ export async function updateView(
       where id = ${id}
       returning *`;
     if (!updated) throw notFound(`view ${id}`);
-    return presentView(object, updated);
+    return presentView(tx, object, updated);
   });
 }
 
