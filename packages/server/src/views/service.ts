@@ -331,6 +331,22 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
       return false;
     }
   };
+  /** A board's or calendar's field, if it still exists and can still be used for it. */
+  const layoutField = (
+    key: string | undefined,
+    what: string,
+    fits: (field: FieldState) => boolean,
+    needs: string,
+  ): string | null => {
+    const fieldName = key && fields.name(key, what);
+    if (!fieldName) return null;
+    const field = object.fieldsByName.get(fieldName);
+    if (field && fits(field)) return fieldName;
+    fields.issues.push(
+      `${what} used "${field?.label ?? fieldName}", which is no longer a ${needs} field; it was dropped`,
+    );
+    return null;
+  };
   const columns: ViewColumns | null = config.columns
     ? {
         order: config.columns.order
@@ -382,7 +398,7 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
       null,
     sort: sort.length ? sort : null,
     columns,
-    groupBy: (config.groupBy && fields.name(config.groupBy, 'The board grouping')) || null,
+    groupBy: layoutField(config.groupBy, 'The board grouping', canGroupBy, 'filterable select'),
     hiddenGroups: config.hiddenGroups ?? [],
     groupAggregate:
       aggregateField && config.groupAggregate
@@ -391,7 +407,12 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
             op: config.groupAggregate.op as NonNullable<SavedView['groupAggregate']>['op'],
           }
         : null,
-    dateField: (config.dateField && fields.name(config.dateField, 'The calendar date')) || null,
+    dateField: layoutField(
+      config.dateField,
+      'The calendar date',
+      canPlaceBy,
+      'filterable date or date-time',
+    ),
     createdBy: row.created_by,
     updatedBy: row.updated_by,
     createdAt: row.created_at.toISOString(),

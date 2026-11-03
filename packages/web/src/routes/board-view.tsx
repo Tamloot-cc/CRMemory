@@ -29,11 +29,13 @@ import { useRecordMoves } from './record-move.js';
 import { QueryError, recordTitle } from './state.js';
 import { MissingLayoutField } from './view-bar.js';
 import {
+  acceptsMoves,
   andFilter,
   type BoardGroup,
   boardGroups,
-  groupCondition,
+  columnCondition,
   groupKey,
+  inColumn,
 } from './views-state.js';
 import { isWritable } from './write-model.js';
 
@@ -215,7 +217,7 @@ function Column({
   const { session } = useWorkspace();
   const name = object.nameSingular;
   const input = {
-    filter: andFilter(filter, groupCondition(field, group.value)),
+    filter: andFilter(filter, columnCondition(field, group)),
     ...(sort ? { sort } : {}),
     limit: PAGE_SIZE,
     include: ['relationReferences'],
@@ -229,7 +231,9 @@ function Column({
   });
 
   const cards: Card[] = (query.data?.pages ?? []).flatMap((page) =>
-    page.records.map((record) => ({ record, references: page.relationReferences })),
+    page.records
+      .filter((record) => inColumn(field, group, record))
+      .map((record) => ({ record, references: page.relationReferences })),
   );
   const here = new Set(cards.map((c) => c.record.id));
   // Cards on the move show where they are going while the move saves.
@@ -247,7 +251,7 @@ function Column({
       title={group.label}
       count={count}
       meta={meta}
-      locked={!draggable}
+      locked={!draggable || !acceptsMoves(field, group)}
       footer={
         query.hasNextPage ? (
           <ColumnMore loading={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>

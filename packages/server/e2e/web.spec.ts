@@ -1071,8 +1071,14 @@ const usd = (dollars: number) => ({ currency: 'USD', amountMicros: dollars * 1_0
 /** What a drag announces to screen readers. */
 const announced = (page: Page, text: string) => page.getByRole('status').filter({ hasText: text });
 
-/** Space picks an item up, the right arrow carries it to the next target, Space drops it. */
-async function moveRightByKeyboard(page: Page, item: Locator, from: string, to: string) {
+/** Space picks an item up, an arrow carries it to the next target that way, Space drops it. */
+async function moveByKeyboard(
+  page: Page,
+  item: Locator,
+  arrow: 'ArrowLeft' | 'ArrowRight',
+  from: string,
+  to: string,
+) {
   const name = await item.getAttribute('aria-label');
   await item.focus();
   await page.keyboard.press('Space');
@@ -1080,7 +1086,7 @@ async function moveRightByKeyboard(page: Page, item: Locator, from: string, to: 
   // The drag listens for keys from the task after the pick-up; a person
   // can't press that fast, but a test can.
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve)));
-  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press(arrow);
   await expect(announced(page, `${name} is over ${to}.`)).toHaveCount(1);
   await page.keyboard.press('Space');
 }
@@ -1128,9 +1134,10 @@ test('saves a board view, totals its columns, and moves a card from the keyboard
     .poll(async () => (await r.request(`/views/${viewId}`)).groupAggregate)
     .toEqual({ field: 'amount', op: 'sum' });
 
-  await moveRightByKeyboard(
+  await moveByKeyboard(
     page,
     page.getByRole('button', { name: 'Globex pilot' }),
+    'ArrowRight',
     'the Lead column',
     'the Qualified column',
   );
@@ -1174,7 +1181,7 @@ test('places records on a calendar and moves one to another day', async ({ page,
   const entry = day('Wednesday, March 11').getByRole('button', { name: 'Acme renewal' });
   await expect(entry).toBeVisible();
 
-  await moveRightByKeyboard(page, entry, 'Wednesday, March 11', 'Thursday, March 12');
+  await moveByKeyboard(page, entry, 'ArrowRight', 'Wednesday, March 11', 'Thursday, March 12');
   await expect(
     day('Thursday, March 12').getByRole('button', { name: 'Acme renewal' }),
   ).toBeVisible();

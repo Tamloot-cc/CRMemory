@@ -286,6 +286,47 @@ describe('views across schema changes', () => {
     expect((await patch(view.body.id, { groupBy: 'stage' })).body.groupBy).toBe('stage');
   });
 
+  it('drops a board or calendar field that can no longer be used for it', async () => {
+    await schemaChange([
+      {
+        op: 'create_field',
+        object: 'deal',
+        field: {
+          name: 'tier',
+          label: 'Tier',
+          type: 'select',
+          settings: { options: [{ value: 'gold', label: 'Gold' }] },
+        },
+      },
+      {
+        op: 'create_field',
+        object: 'deal',
+        field: { name: 'renewsOn', label: 'Renews on', type: 'date' },
+      },
+    ]);
+    const board = await create({ name: 'By tier', kind: 'board', groupBy: 'tier' });
+    const calendar = await create({ name: 'Renewals', kind: 'calendar', dateField: 'renewsOn' });
+    expect(
+      (
+        await schemaChange([
+          { op: 'update_field', object: 'deal', field: 'tier', isFilterable: false },
+          { op: 'update_field', object: 'deal', field: 'renewsOn', isFilterable: false },
+        ])
+      ).status,
+    ).toBe(200);
+
+    const read = async (id: string) =>
+      (await t.request(`/v1/views/${id}`, { key: keys.dana })).body;
+    expect(await read(board.body.id)).toMatchObject({
+      groupBy: null,
+      issues: [expect.stringContaining('"Tier", which is no longer a filterable select field')],
+    });
+    expect(await read(calendar.body.id)).toMatchObject({
+      dateField: null,
+      issues: [expect.stringContaining('"Renews on", which is no longer a filterable date')],
+    });
+  });
+
   it('drops conditions and sorts that no longer compile, and says so', async () => {
     await schemaChange([
       {

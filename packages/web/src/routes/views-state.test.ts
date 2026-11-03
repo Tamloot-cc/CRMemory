@@ -1,9 +1,12 @@
 import type { FieldView, SavedView } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  acceptsMoves,
   andFilter,
+  type BoardGroup,
   boardGroups,
   changesToSave,
+  columnCondition,
   dayOf,
   effectiveSearch,
   filterParam,
@@ -32,6 +35,7 @@ const field = (name: string, extra: Partial<FieldView> = {}) =>
   }) as FieldView;
 const stage = field('stage', {
   type: 'select',
+  isNullable: true,
   settings: {
     options: [
       { value: 'lead', label: 'Lead' },
@@ -173,6 +177,27 @@ describe('board columns', () => {
       'none',
       'v:lost',
     ]);
+  });
+
+  it('have no "no value" column for a required field, unless records lack one', () => {
+    const required = { ...stage, isNullable: false };
+    expect(boardGroups(required).map((g) => g.key)).toEqual(['v:lead', 'v:won']);
+    expect(boardGroups(required, [null]).map((g) => g.key)).toEqual(['v:lead', 'v:won', 'none']);
+  });
+
+  it('take moves into options, and into "no value" only where that is allowed', () => {
+    const [lead, , none, lost] = boardGroups(stage, ['lost']) as BoardGroup[];
+    expect(acceptsMoves(stage, lead as BoardGroup)).toBe(true);
+    expect(acceptsMoves(stage, none as BoardGroup)).toBe(true);
+    expect(acceptsMoves({ ...stage, isNullable: false }, none as BoardGroup)).toBe(false);
+    expect(acceptsMoves(stage, lost as BoardGroup)).toBe(false);
+  });
+
+  it('load a value no longer an option as "held, and not a current option"', () => {
+    const lost = boardGroups(stage, ['lost']).at(-1) as BoardGroup;
+    expect(columnCondition(stage, lost)).toEqual({
+      and: [{ stage: { isNull: false } }, { not: { stage: { in: ['lead', 'won'] } } }],
+    });
   });
 
   it('put a record in a column by its value, or by having none', () => {
