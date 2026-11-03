@@ -1,4 +1,5 @@
 import type { Sql } from '../db/client.js';
+import { log as serverLog } from '../log.js';
 import { consolidateWorkspace } from './consolidate.js';
 
 /**
@@ -18,7 +19,8 @@ export type WorkerOptions = {
   intervalMinutes: number;
   /** How often to look for due workspaces. */
   tickMs?: number;
-  log?: (message: string) => void;
+  /** Where progress and failures go; the server log by default. */
+  log?: Pick<typeof serverLog, 'info' | 'error'>;
 };
 
 export type Worker = {
@@ -29,7 +31,7 @@ export type Worker = {
 
 export async function startWorker(options: WorkerOptions): Promise<Worker> {
   const { sql, intervalMinutes } = options;
-  const log = options.log ?? ((message: string) => console.log(message));
+  const log = options.log ?? serverLog;
   const tickMs = options.tickMs ?? Math.min(60_000, intervalMinutes * 60_000);
   const interval = `${intervalMinutes} minutes`;
   let timer: NodeJS.Timeout | undefined;
@@ -44,20 +46,20 @@ export async function startWorker(options: WorkerOptions): Promise<Worker> {
       try {
         const stats = await consolidateWorkspace(sql, id, { minInterval: interval });
         if (stats && (stats.supersededFacts > 0 || stats.mergeSuggestions > 0)) {
-          log(
+          log.info(
             `Consolidated workspace ${id}: ${stats.supersededFacts} duplicate facts superseded, ` +
               `${stats.mergeSuggestions} merges suggested.`,
           );
         }
       } catch (error) {
-        log(`Consolidating workspace ${id} failed: ${(error as Error).message}`);
+        log.error(`Consolidating workspace ${id} failed: ${(error as Error).message}`);
       }
     }
   }
 
   const tick = () => {
     running = running.then(runTick).catch((error: unknown) => {
-      log(`Consolidator tick failed: ${(error as Error).message}`);
+      log.error(`Consolidator tick failed: ${(error as Error).message}`);
     });
     return running;
   };
@@ -67,7 +69,7 @@ export async function startWorker(options: WorkerOptions): Promise<Worker> {
     timer = setTimeout(() => void tick().then(schedule), tickMs);
   };
 
-  log(`Worker started: consolidating each workspace every ${intervalMinutes} minutes.`);
+  log.info(`Worker started: consolidating each workspace every ${intervalMinutes} minutes.`);
   void tick().then(schedule);
 
   return {

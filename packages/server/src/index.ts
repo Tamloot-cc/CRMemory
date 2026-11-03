@@ -2,15 +2,18 @@ import { serve } from '@hono/node-server';
 import { createApp } from './api/app.js';
 import { loadConfig } from './config.js';
 import { createSql, RUNTIME_ROLE } from './db/client.js';
+import { log, setLogLevel } from './log.js';
 import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
 import { startWorker } from './worker/index.js';
 
 const config = loadConfig();
+setLogLevel(config.LOG_LEVEL);
 
 // First boot runs as the migration role: only it can create workspaces and keys.
 const owner = createSql(config.DATABASE_URL, { max: 1 });
 try {
   const firstBoot = await bootstrap(owner);
+  // Printed whatever LOG_LEVEL is: it holds the only copy of the first key.
   if (firstBoot) console.log(firstBootBanner(firstBoot));
 } finally {
   await owner.end({ timeout: 5 });
@@ -27,7 +30,7 @@ if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {
     publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
   });
   const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
-    console.log(`Retainer API listening on http://localhost:${info.port}`);
+    log.info(`Retainer API listening on http://localhost:${info.port}`);
   });
   stops.push(
     () =>
@@ -46,7 +49,7 @@ if (config.RETAINER_ROLE === 'worker' || config.RETAINER_ROLE === 'all') {
 }
 
 async function shutdown(signal: string) {
-  console.log(`${signal} received, shutting down.`);
+  log.info(`${signal} received, shutting down.`);
   await Promise.allSettled(stops.map((stop) => stop()));
   await sql.end({ timeout: 5 });
   process.exit(0);

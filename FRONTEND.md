@@ -165,7 +165,7 @@ The first screen built and the default after sign-in. Source: `GET /v1/review`
 and `GET /v1/schema/changes?status=proposed`.
 
 Tabs, each with a total count from the server, independent of the loaded
-page. Each tab has its own cursor and a Load more control (9.1); no tab may
+page. Each tab has its own cursor and Next page and First page controls (9.1); no tab may
 silently truncate outstanding items. Counts and pages reflect live data and
 are refreshed after decisions. A record links to a review item using its
 assertion ID in the URL; the inbox fetches that item directly even when it
@@ -512,7 +512,7 @@ The v1 read contracts are:
   and render an unavailable-reference state rather than inventing a label.
 - **Other growing collections.** Assertion history, record interactions,
   interaction claims and record facts provide cursor pagination and
-  `nextCursor`; their screens expose Load more rather than silently stopping
+  `nextCursor`; their screens expose a Next page control rather than silently stopping
   at the current server limits.
 
 Relation filters by target ID already exist in the query engine (`eq` and

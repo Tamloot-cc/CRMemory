@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LOG_LEVELS } from './log.js';
 
 export const publicOriginSchema = z
   .url()
@@ -25,7 +26,7 @@ const configSchema = z.object({
   DATABASE_URL: z.string().url(),
   RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
   PORT: z.coerce.number().int().positive().default(8787),
-  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
   /** How often the consolidator runs per workspace (4.2). */
   RETAINER_CONSOLIDATE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
   /**

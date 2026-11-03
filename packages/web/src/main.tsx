@@ -4,6 +4,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  Link,
   lazyRouteComponent,
   Outlet,
   RouterProvider,
@@ -22,7 +23,7 @@ import {
 import { SignIn } from './auth/sign-in.js';
 import type { ViewSearch } from './routes/state.js';
 import { QueryError, sortObjects } from './routes/state.js';
-import { Button, Dialog, Input, Notice, ObjectLink, Page, Shell, Stack } from './ui/index.js';
+import { Button, Dialog, Input, Notice, Page, Shell, Stack } from './ui/index.js';
 import './style.css';
 
 function Layout() {
@@ -189,7 +190,7 @@ const rootRoute = createRootRoute({
   validateSearch,
   notFoundComponent: () => (
     <Page title="Page not found">
-      <ObjectLink object="person">Browse people</ObjectLink>
+      <Link to="/">Go to the review inbox</Link>
     </Page>
   ),
   errorComponent: ({ error, reset }) => (

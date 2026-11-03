@@ -151,7 +151,7 @@ export function InteractionPage() {
           <Button
             onClick={() => void setSearch({ cursor: claims.data?.nextCursors[tab] ?? undefined })}
           >
-            Load more
+            Next page
           </Button>
         ) : null}
       </Row>

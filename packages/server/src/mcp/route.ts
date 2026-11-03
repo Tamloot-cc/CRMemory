@@ -3,6 +3,7 @@ import type { Hono } from 'hono';
 import type { AppEnv } from '../api/http.js';
 import { authenticate } from '../auth/middleware.js';
 import type { Sql } from '../db/client.js';
+import { log } from '../log.js';
 import type { Caller } from '../records/service.js';
 import { createMcpServer } from './server.js';
 
@@ -20,7 +21,7 @@ export function mcpRoute(app: Hono<AppEnv>, sql: Sql, publicOrigin?: string) {
       if (!caller) throw new Error('MCP request reached the server without a caller');
       return createMcpServer(sql, caller);
     },
-    { onerror: (error) => console.error(error) },
+    { onerror: (error) => log.error(error) },
   );
 
   app.use('/mcp', authenticate(sql, publicOrigin));

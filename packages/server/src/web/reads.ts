@@ -5,31 +5,11 @@ import { notFound } from '../errors.js';
 import { type InteractionRow, presentInteractions } from '../memory/interactions.js';
 import { identifiersFor } from '../records/derive.js';
 import { getRecord, type PresentedRecord } from '../records/read.js';
+import { references } from '../records/references.js';
 import { normalizeFieldValue } from '../records/values.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { after, page } from './pagination.js';
 
-/** All cross-record labels go through this RLS-bound reference presenter. */
-export async function references(
-  tx: Tx,
-  schema: CompiledSchema,
-  ids: string[],
-): Promise<Record<string, RecordReference>> {
-  if (!ids.length) return {};
-  const rows = await tx<
-    { id: string; label: string | null; object_type_id: string }[]
-  >`select id, label, object_type_id from records where id = any(${ids}::uuid[]) and deleted_at is null`;
-  return Object.fromEntries(
-    rows.map((r) => [
-      r.id,
-      {
-        id: r.id,
-        label: r.label,
-        object: schema.objectsById.get(r.object_type_id)?.name ?? 'unknown',
-      },
-    ]),
-  );
-}
 export async function relationReferences(
   tx: Tx,
   schema: CompiledSchema,
