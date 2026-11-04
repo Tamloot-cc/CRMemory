@@ -101,7 +101,8 @@ Operators are `eq`, `neq`, `in`, `gt`, `gte`, `lt`, `lte`, `contains` and
 be filtered or sorted; the error for any other field lists the allowed ones.
 
 `search` takes Postgres `websearch_to_tsquery` syntax: quoted phrases, `OR`,
-and `-word` to exclude.
+and `-word` to exclude. Each word also matches longer words that start with
+it ("Dan" finds "Dana"), exact matches rank first, and accents are ignored.
 
 ## Review, merge and forget
 

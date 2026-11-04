@@ -122,4 +122,23 @@ describe('label and search text', () => {
       }),
     ).toEqual({ label: 'דנה לוי', body: 'CTO' });
   });
+
+  it('adds the domain of each email and link once, after the field text', () => {
+    const name = field({ key: 'name', type: 'full_name', isSearchable: true });
+    const emails = field({ key: 'emails', type: 'emails', isSearchable: true });
+    const links = field({ key: 'links', type: 'links', isSearchable: true });
+    expect(
+      searchTextOf([name, emails, links], name, {
+        name: { first: 'Dana', last: 'Levi' },
+        emails: { primary: 'dana@Acme.com', additional: ['d@acme.com', 'dana@globex.io'] },
+        links: {
+          primary: { url: 'https://www.acme.com/pricing', label: 'Pricing' },
+          additional: [{ url: 'not a url', label: null }],
+        },
+      }).body,
+    ).toBe(
+      'dana@Acme.com d@acme.com dana@globex.io Pricing https://www.acme.com/pricing ' +
+        'not a url acme.com globex.io',
+    );
+  });
 });

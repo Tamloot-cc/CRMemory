@@ -5,11 +5,14 @@ import { createDb } from './client.js';
 
 const migrationsFolder = fileURLToPath(new URL('../../drizzle', import.meta.url));
 
-/** Extensions the migrations need: trigram and combined GIN indexes (5.1). */
-const EXTENSIONS = ['pg_trgm', 'btree_gin'] as const;
+/**
+ * Extensions search needs (5.1): trigram and combined GIN indexes, and
+ * accent folding.
+ */
+const EXTENSIONS = ['pg_trgm', 'btree_gin', 'unaccent'] as const;
 
 /**
- * Applies pending migrations as the migration role (the table owner). Both
+ * Applies pending migrations as the migration role (the table owner). The
  * extensions are trusted, so a database owner without superuser can create
  * them.
  */

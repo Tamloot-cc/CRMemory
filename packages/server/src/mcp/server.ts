@@ -278,8 +278,9 @@ const rememberInput = z.strictObject({
 
 const searchInput = z.strictObject({
   query: searchInputSchema.shape.query.describe(
-    'Keywords. Matches whole words, so add other forms with OR, e.g. "meeting OR meetings". ' +
-      'Use "quotes" for a phrase and -word to exclude a word.',
+    'Keywords. Each word also matches longer words it starts ("meet" finds "meetings", ' +
+      '"Dan" finds "Dana"); exact matches rank first. Accents are ignored. Other forms of a ' +
+      'word need OR, e.g. "ran OR run". Use "quotes" for a phrase and -word to exclude a word.',
   ),
   limit: searchInputSchema.shape.limit.describe('Hits per type, 10 by default (at most 50).'),
 });
@@ -452,7 +453,8 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'ranked within each. Every hit carries the record IDs it belongs to. Use it to find a ' +
         'record by name or by anything said about it. When no record matches word for word, ' +
         'records with a similar label come back with match "similar_label" (a misspelled ' +
-        'name), so check them before using one. Words match whole, without stemming.',
+        'name), so check them before using one. Words match as typed or as the start of a ' +
+        'longer word, without stemming; email and website domains are searchable ("acme").',
       inputSchema: searchInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },

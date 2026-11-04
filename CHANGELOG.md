@@ -22,8 +22,10 @@ The first release: the whole of build order steps 1 to 6 in
   participants and `about` records it was missing, filtering and counting
   with `query_interactions`, and facts that cite the interactions they came
   from. `describe_schema` lists interactions and facts as built-ins.
-- Keyword search over records, facts and interactions (Postgres full-text and
-  trigram fallback), and token-budgeted context packs.
+- Keyword search over records, facts and interactions (Postgres full-text,
+  with every word matched as a prefix and exact matches ranked first, accents
+  ignored, email and website domains indexed, and a trigram fallback for
+  misspelled names), and token-budgeted context packs.
 - Consolidator: fact deduplication and supersession, merge suggestions,
   record merges, and `forget` for privacy requests with keyed-hash
   suppression of erased emails and phones.

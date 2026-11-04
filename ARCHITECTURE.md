@@ -562,9 +562,9 @@ The workspace records which templates it has applied, with their versions
 ```
 
 One Docker image, started with a role: `api`, `worker`, or `all`.
-Postgres is the only dependency, with the standard `pg_trgm` and `btree_gin`
-extensions for search (5.1); the job queue runs on Postgres too. Retainer
-calls no language model and needs no model API key.
+Postgres is the only dependency, with the standard `pg_trgm`, `btree_gin`
+and `unaccent` extensions for search (5.1); the job queue runs on Postgres
+too. Retainer calls no language model and needs no model API key.
 
 ### 4.1 How memory gets written
 
@@ -737,19 +737,19 @@ not summarized by a model; summarizing is the agent's job.
 
 ### 5.1 Search
 
-Search is Postgres full-text search, plus two standard extensions that ship
-with Postgres and are offered by managed services: `pg_trgm` (fuzzy name
-matching) and `btree_gin` (combined indexes). No embeddings, no BM25
-extension.
+Search is Postgres full-text search, plus three standard extensions that
+ship with Postgres and are offered by managed services: `pg_trgm` (fuzzy
+name matching), `btree_gin` (combined indexes) and `unaccent` (accent
+folding). No embeddings, no BM25 extension.
 
 #### What is indexed
 
-| Source         | Search text                                                                           | Column and index                                     |
-| -------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `records`      | Values of `is_searchable` fields; the label field (usually the name) weighted highest | `search tsvector`, GIN on `(workspace_id, search)`   |
-| `records`      | The label field as plain text, e.g. "Dana Levi"                                       | `label text`, trigram GIN on `(workspace_id, label)` |
-| `facts`        | `content`                                                                             | `search tsvector`, GIN on `(workspace_id, search)`   |
-| `interactions` | `title` (weighted higher) and `summary`                                               | `search tsvector`, GIN on `(workspace_id, search)`   |
+| Source         | Search text                                                                                                                   | Column and index                                     |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `records`      | Values of `is_searchable` fields, plus the domain of each email and link; the label field (usually the name) weighted highest | `search tsvector`, GIN on `(workspace_id, search)`   |
+| `records`      | The label field as plain text, e.g. "Dana Levi"                                                                               | `label text`, trigram GIN on `(workspace_id, label)` |
+| `facts`        | `content`                                                                                                                     | `search tsvector`, GIN on `(workspace_id, search)`   |
+| `interactions` | `title` (weighted higher) and `summary`                                                                                       | `search tsvector`, GIN on `(workspace_id, search)`   |
 
 The server computes every `search` and `label` value in the same
 transaction that writes the row (for records, the one that recomputes
@@ -762,33 +762,63 @@ Every index leads with `workspace_id` (`btree_gin`), so a common word is
 matched within one workspace inside the index instead of across every
 tenant and filtered afterwards.
 
-All `tsvector` columns use the `simple` configuration: lowercase, split on
-spaces and punctuation, no stemming and no language-specific rules. It
-behaves the same for every language, at the cost of matching whole words
-only: "meeting" does not find "meetings". Changing the configuration later
-requires a background job that rebuilds stored search values.
+All `tsvector` columns use the `simple` configuration over text folded by
+`retainer_fold`: lowercase, accents removed ("José" is stored as "jose"),
+split on spaces and punctuation, no stemming and no language-specific rules.
+It behaves the same for every language. Queries are folded the same way, so
+"Jose" and "José" find each other. `retainer_fold` is `unaccent` with its
+dictionary named, declared `IMMUTABLE` (plain `unaccent` is only `STABLE`),
+so a query built from constants is computed once rather than once per row.
+Every vector and query is built in `records/search-sql.ts`, so no call site
+folds, or forgets to fold, on its own.
+
+Postgres keeps an email or a host as one word ("dana@acme.com",
+"www.acme.com"), so neither starts with "acme". Emails and links therefore
+also add their bare domain ("acme.com"), and "acme" finds both.
+
+Stored search values are rebuilt when the way they are built changes. Facts
+and interactions are searched by their own columns, so the migration that
+makes the change computes their new values in SQL; a test checks that it
+matches what the write path stores. Record search text depends on schema
+metadata, so that migration sets it to null instead, and every server boot
+rebuilds null values (`records/rebuild-search.ts`) with the statement that
+schema changes use, in batches, before it serves requests. One process
+rebuilds at a time; others boot without waiting, and stale records only
+fail to match until they are rebuilt. A partial index on `search is null`
+keeps the check free once nothing is stale. Merged-away records keep no
+search value and are skipped.
 
 #### How a search runs
 
 1. Postgres parses the query with `websearch_to_tsquery('simple', …)`, which
-   handles quoted phrases, `OR` and `-word`. There is no custom parser.
+   handles quoted phrases, `OR` and `-word`. There is no custom parser. The
+   server then turns every word into a prefix (`'dan':*`) by rewriting the
+   parsed query's text, so "Dan" finds "Dana" and "meet" finds "meetings",
+   for people typing in the web app and for agents alike.
 2. The server runs one query each on records, facts and interactions.
    Workspace and liveness filters (and, for facts, "current, not
    superseded") apply before ranking and limit. The `note` interactions
    `remember` creates are left out: their text is the fact's, so it is found
    with the fact, or hidden with it once the fact is retracted.
 3. Each list is ranked with `ts_rank_cd`, using length normalization so long
-   texts do not outrank short, precise matches.
-4. If the records query finds nothing, the server matches `records.label` by
-   trigram similarity, so "Dana Levy" finds "Dana Levi".
+   texts do not outrank short, precise matches. Hits that match the words as
+   typed rank above hits that only match a longer word, since `ts_rank_cd`
+   scores a prefix match the same as an exact one.
+4. If the records query finds nothing, even by prefix, the server matches
+   `records.label` by trigram similarity, so "Dana Levy" finds "Dana Levi".
 5. Results come back grouped by type. Each hit carries its record IDs and
    its text as stored: a record's label, a fact's content, an interaction's
    title and summary. A record hit says whether it matched the text or only
    a similar label. Scores from the three lists are not comparable and are
    not merged.
 
-Agents cover other word forms themselves: the `search` tool description
-tells them to add variants with `OR` ("meeting OR meetings").
+Prefixes cover endings ("meeting" finds "meetings"); agents cover other
+word forms themselves: the `search` tool description tells them to add
+variants with `OR` ("ran OR run").
+
+`query_records` takes keywords too (`search`, within one object, as the web
+app's record pickers use it): `plainto_tsquery`, every word required, each
+matched as a prefix, accents folded.
 
 #### Why not BM25
 
@@ -1274,7 +1304,7 @@ and the original scaffold lacked. All of them landed in build step 1
 
 **Extensions and search indexes**
 
-- [x] The migration runner creates `pg_trgm` and `btree_gin` (5.1)
+- [x] The migration runner creates `pg_trgm`, `btree_gin` and `unaccent` (5.1)
 - [x] Replace `records_search_gin` with a GIN index on
   `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
 - [x] Trigram GIN index on `records (workspace_id, label)` (5.1)

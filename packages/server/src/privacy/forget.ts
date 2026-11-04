@@ -4,6 +4,7 @@ import { requireUser } from '../errors.js';
 import { type Handle, parseHandle } from '../memory/handles.js';
 import { isNote } from '../memory/interactions.js';
 import { inboundRelationFields } from '../records/merge.js';
+import { phraseQuery } from '../records/search-sql.js';
 import {
   lockRecordsForUpdate,
   type RemovedClaim,
@@ -226,7 +227,7 @@ async function findMentions(
     names.length === 0
       ? tx`false`
       : tx`exists (select 1 from unnest(${names as string[]}::text[]) n
-          where search @@ phraseto_tsquery('simple', n))`;
+          where search @@ ${phraseQuery(tx, tx`n`)})`;
   const records = await tx<{ id: string }[]>`
     select id from records
     where workspace_id = ${workspaceId} and deleted_at is null

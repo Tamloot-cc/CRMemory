@@ -162,7 +162,8 @@ export function labelOf(labelField: FieldState | undefined, value: unknown): str
 /**
  * The text a record's search vector is built from: the label (weighted
  * highest) and the values of searchable fields, indexed with the `simple`
- * configuration (5.1).
+ * configuration (5.1). Emails and links add their domain, so "acme" finds
+ * dana@acme.com and https://www.acme.com.
  */
 export function searchTextOf(
   fields: FieldState[],
@@ -170,10 +171,28 @@ export function searchTextOf(
   data: Record<string, unknown>,
 ): { label: string | null; body: string } {
   const label = labelOf(labelField, labelField ? data[labelField.key] : undefined);
-  const body = fields
-    .filter((f) => f.status === 'active' && f.isSearchable && f !== labelField)
-    .map((f) => textOf(f, data[f.key]))
+  const indexed = fields.filter(
+    (f) => f.status === 'active' && (f.isSearchable || f === labelField),
+  );
+  const body = [
+    ...indexed.filter((f) => f !== labelField).map((f) => textOf(f, data[f.key])),
+    ...new Set(indexed.flatMap((f) => domainsOf(f, data[f.key]))),
+  ]
     .filter(Boolean)
     .join(' ');
   return { label, body };
+}
+
+/**
+ * The domains in an emails or links value, normalized as identifiers are.
+ * Postgres indexes "dana@acme.com" and "www.acme.com" as single words, so
+ * neither starts with "acme" on its own; the bare domain does. The label
+ * field's domains count too.
+ */
+function domainsOf(field: FieldState, value: unknown): string[] {
+  return identifiersFor(field, value).flatMap(({ kind, value: id }) => {
+    if (kind === 'domain') return [id];
+    if (kind === 'email' && id.includes('@')) return [id.slice(id.lastIndexOf('@') + 1)];
+    return [];
+  });
 }

@@ -91,7 +91,7 @@ describe('POST /v1/search', () => {
     });
   });
 
-  it('supports quoted phrases, OR and -word, and matches whole words only', async () => {
+  it('supports quoted phrases, OR and -word', async () => {
     const [a, b] = [word(), word()];
     const one = await create('company', { name: `${a} alpha` });
     const two = await create('company', { name: `${a} beta` });
@@ -106,8 +106,62 @@ describe('POST /v1/search', () => {
     expect(await ids(`"${a} beta"`)).toEqual([two]);
     expect(await ids(`"beta ${a}"`)).toEqual([]);
     expect(await ids(`${a} OR ${b}`)).toEqual([one, two, three].sort());
-    // No stemming or prefix matching: part of a word does not match.
-    expect(await ids(a.slice(0, -1))).toEqual([]);
+    // No stemming: a word does not match a shorter one.
+    expect(await ids(`${a}s`)).toEqual([]);
+  });
+
+  it('matches every word as a prefix, ranking exact matches first', async () => {
+    const tag = word();
+    const exact = await create('company', { name: tag });
+    const longer = await create('company', { name: `${tag}corp` });
+    const ids = async (query: string) =>
+      ((await search({ query })).body.records as { id: string; match: string }[])
+        .filter((r) => r.match === 'text')
+        .map((r) => r.id);
+
+    // The newer record would come first on a tie; the exact one wins.
+    expect(await ids(tag)).toEqual([exact, longer]);
+    expect((await ids(tag.slice(0, -2))).sort()).toEqual([exact, longer].sort());
+    expect(await ids(`${tag}co`)).toEqual([longer]);
+    // Every word must match: one that starts no word excludes the hit.
+    expect(await ids(`${tag} zz${tag}`)).toEqual([]);
+
+    const call = await logInteraction({ title: `Kickoff ${tag}meetings` });
+    const dana = await create('person', { name: `Dana ${word()}` });
+    await rememberFact(dana, `Prefers ${tag}meetings in person`, call);
+    const res = await search({ query: `${tag}meet` });
+    expect(res.body.interactions.map((i: { id: string }) => i.id)).toEqual([call]);
+    expect(res.body.facts.map((f: { record: string }) => f.record)).toEqual([dana]);
+  });
+
+  it('ignores accents in the query and the stored text', async () => {
+    const tag = word();
+    const accented = await create('person', { name: `José Muñoz${tag}` });
+    const plain = await create('person', { name: `Jose Munoz${tag}` });
+    const ids = async (query: string) =>
+      ((await search({ query })).body.records as { id: string; match: string }[])
+        .map((r) => `${r.id}:${r.match}`)
+        .sort();
+    const both = [`${accented}:text`, `${plain}:text`].sort();
+    expect(await ids(`jose munoz${tag}`)).toEqual(both);
+    expect(await ids(`JOSÉ MUÑOZ${tag}`)).toEqual(both);
+
+    await rememberFact(accented, `Wants the café ${tag} package`);
+    const res = await search({ query: `cafe ${tag}` });
+    expect(res.body.facts.map((f: { record: string }) => f.record)).toEqual([accented]);
+  });
+
+  it('finds a record by the domain of its emails and links', async () => {
+    const tag = word();
+    const person = await create('person', { name: word(), emails: `dana@${tag}.example` });
+    const company = await create('company', {
+      name: word(),
+      domain: `https://www.${tag}.example/pricing`,
+    });
+    const ids = async (query: string) =>
+      ((await search({ query })).body.records as { id: string }[]).map((r) => r.id).sort();
+    expect(await ids(tag)).toEqual([person, company].sort());
+    expect(await ids(`${tag}.example`)).toEqual([person, company].sort());
   });
 
   it('ranks short, precise matches first and honors the limit', async () => {
