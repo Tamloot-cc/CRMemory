@@ -348,7 +348,10 @@ export type TemplateView = {
     fields: { object: string; field: string }[];
   };
 };
-/** `POST /v1/search` input (5.1), in Postgres `websearch_to_tsquery` syntax. */
+/**
+ * `POST /v1/search` input (5.1), in Postgres `websearch_to_tsquery` syntax;
+ * every word also matches as a prefix, and accents are ignored.
+ */
 export type SearchInput = { query: string; limit?: number };
 export type RecordHit = {
   id: string;

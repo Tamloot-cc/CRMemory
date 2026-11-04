@@ -258,6 +258,10 @@ export const records = pgTable(
     ),
     index('records_search_gin').using('gin', t.workspaceId, t.search),
     index('records_label_trgm').using('gin', t.workspaceId, t.label.op('gin_trgm_ops')),
+    // Search text waiting to be rebuilt on boot (5.1); empty once rebuilt.
+    index('records_search_stale_idx')
+      .on(t.workspaceId, t.id)
+      .where(sql`${t.search} is null and ${t.mergedIntoId} is null`),
   ],
 );
 

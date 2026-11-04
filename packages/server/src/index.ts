@@ -4,17 +4,22 @@ import { loadConfig } from './config.js';
 import { createSql, RUNTIME_ROLE } from './db/client.js';
 import { log, setLogLevel } from './log.js';
 import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
+import { rebuildSearchText } from './records/rebuild-search.js';
 import { startWorker } from './worker/index.js';
 
 const config = loadConfig();
 setLogLevel(config.LOG_LEVEL);
 
-// First boot runs as the migration role: only it can create workspaces and keys.
+// Boot tasks run as the migration role: only it can create workspaces and keys,
+// and it rebuilds stale search text across workspaces.
 const owner = createSql(config.DATABASE_URL, { max: 1 });
 try {
   const firstBoot = await bootstrap(owner);
   // Printed whatever LOG_LEVEL is: it holds the only copy of the first key.
   if (firstBoot) console.log(firstBootBanner(firstBoot));
+  // A migration that changes how search text is built leaves it null (5.1).
+  const rebuilt = await rebuildSearchText(owner);
+  if (rebuilt > 0) log.info(`Rebuilt the search text of ${rebuilt} records.`);
 } finally {
   await owner.end({ timeout: 5 });
 }

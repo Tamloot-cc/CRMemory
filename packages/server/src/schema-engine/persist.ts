@@ -1,7 +1,7 @@
 import type { Actor } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
-import { identifiersFor, searchTextOf } from '../records/derive.js';
-import { searchVector } from '../records/search-sql.js';
+import { identifiersFor } from '../records/derive.js';
+import { rewriteSearchText } from '../records/rebuild-search.js';
 import { repairViews } from '../views/service.js';
 import { compileSchema } from './compiled.js';
 import { loadSchemaState } from './load.js';
@@ -353,10 +353,5 @@ async function refreshSearchText(
   const records = await tx<{ id: string; data: Record<string, unknown> }[]>`
     select id, data from records
     where workspace_id = ${workspaceId} and object_type_id = ${objectTypeId}`;
-  for (const record of records) {
-    const { label, body } = searchTextOf(object.fields, labelField, record.data);
-    await tx`
-      update records set label = ${label}, search = ${searchVector(tx, label, body)}
-      where id = ${record.id}`;
-  }
+  await rewriteSearchText(tx, object.fields, labelField, records);
 }

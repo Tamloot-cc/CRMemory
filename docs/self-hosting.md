@@ -96,7 +96,16 @@ over HTTPS; Secure cookies require it. Revoking the key ends access at once.
 ## Upgrading
 
 Pull the new release, rebuild and restart. Migrations run on start and are
-forward-only, so back up the database before upgrading:
+forward-only, so back up the database before upgrading.
+
+Run one version at a time: stop every Retainer container of the old version
+before the new one starts. A migration can change what the server writes,
+and an old server that keeps writing after it ran leaves rows the new one
+does not expect. For example, search text written by an older server is
+never rebuilt. With the single `retainer` container below, `up` does this.
+With separate API and worker containers or several replicas, stop all of
+them first, but not Postgres (for example
+`docker compose -f docker/compose.yml stop retainer`).
 
 ```sh
 docker compose -f docker/compose.yml exec postgres \

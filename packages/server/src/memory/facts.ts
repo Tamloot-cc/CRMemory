@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError, invalid, notFound } from '../errors.js';
 import { requestHash } from '../idempotency.js';
-import { searchVector } from '../records/search-sql.js';
+import { searchVector, textVector } from '../records/search-sql.js';
 import { lockRecord, resolveRecordId, type WriteContext } from '../records/write.js';
 import { type CitedSource, lockSource, NOTE_CHANNEL } from './interactions.js';
 
@@ -85,7 +85,7 @@ export async function rememberFact(
   const [inserted] = await tx<FactRow[]>`
     insert into facts (workspace_id, record_id, content, kind, valid_from, search, actor)
     values (${context.workspaceId}, ${record.id}, ${input.text}, 'stated', ${source.occurredAt},
-      to_tsvector('simple', ${input.text}), ${tx.json(context.actor)})
+      ${textVector(tx, input.text)}, ${tx.json(context.actor)})
     returning id, record_id, content, kind, valid_from, valid_to, actor`;
   const fact = inserted as FactRow;
   await tx`

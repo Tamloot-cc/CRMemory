@@ -14,6 +14,7 @@ import type { FieldState } from '../schema-engine/types.js';
 import { relationReferences } from '../web/reads.js';
 import { normalizeDomain, normalizeEmail, normalizePhone } from './derive.js';
 import { presentRecords, RECORD_COLUMNS, type RecordRow } from './read.js';
+import { plainPrefixQuery } from './search-sql.js';
 import { normalizeFieldValue } from './values.js';
 
 /**
@@ -35,7 +36,9 @@ export const queryInputSchema = z.strictObject({
     .max(500)
     .optional()
     .describe(
-      'Keywords within this object only, matched by Postgres full-text search over its label and searchable fields.',
+      'Keywords within this object only, matched by Postgres full-text search over its label and ' +
+        'searchable fields. Every word must match, as a whole word or the start of one ("Dan" ' +
+        'finds "Dana"); accents are ignored.',
     ),
   filter: z.record(z.string(), z.unknown()).optional(),
   sort: z
@@ -343,7 +346,7 @@ export function matchingRecords(
   const where = input.filter ? compileFilter(tx, object, input.filter) : tx`true`;
   return tx`r.workspace_id = ${workspaceId} and r.object_type_id = ${object.id}
     and r.deleted_at is null and ${where}
-    ${input.search ? tx`and r.search @@ plainto_tsquery('simple', ${input.search})` : tx``}`;
+    ${input.search ? tx`and r.search @@ ${plainPrefixQuery(tx, input.search)}` : tx``}`;
 }
 
 /** `from … where …` over the live targets record `r` links to through `field`. */

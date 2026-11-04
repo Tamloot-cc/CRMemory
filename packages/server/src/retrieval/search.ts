@@ -2,14 +2,16 @@ import type { FactHit, InteractionHit, RecordHit, SearchResult } from '@retainer
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { isNote } from '../memory/interactions.js';
+import { exactQuery, prefixQuery } from '../records/search-sql.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 
 /**
  * Keyword search across records, facts and interactions (5.1). Postgres
  * parses the query (`websearch_to_tsquery`: quoted phrases, `OR`, `-word`)
- * with the `simple` configuration the stored vectors use. Each list is
- * ranked on its own; scores are not comparable across lists, so results
- * stay grouped by type.
+ * with the `simple` configuration the stored vectors use, accents folded.
+ * Every word also matches as a prefix ("Dan" finds "Dana"); hits that match
+ * the words exactly rank first. Each list is ranked on its own; scores are
+ * not comparable across lists, so results stay grouped by type.
  */
 
 export const searchInputSchema = z.strictObject({
@@ -30,20 +32,23 @@ export async function search(
   schema: CompiledSchema,
   input: SearchInput,
 ): Promise<SearchResult> {
-  const query = () => tsQuery(tx, input.query);
   const [records, facts, interactions] = await Promise.all([
-    searchRecords(tx, workspaceId, schema, input, query),
-    searchFacts(tx, workspaceId, input, query),
-    searchInteractions(tx, workspaceId, input, query),
+    searchRecords(tx, workspaceId, schema, input),
+    searchFacts(tx, workspaceId, input),
+    searchInteractions(tx, workspaceId, input),
   ]);
   return { records, facts, interactions };
 }
 
-/** A fresh fragment per use: postgres.js fragments are not shared between queries. */
-function tsQuery(tx: Tx, text: string) {
-  return tx`websearch_to_tsquery('simple', ${text})`;
+/**
+ * Hits match every word as a prefix (`prefixQuery`). Those that match the
+ * words as typed rank first, since `ts_rank_cd` scores a prefix match the
+ * same as an exact one; each by `ts_rank_cd`.
+ */
+function rank(tx: Tx, column: 'search' | 'f.search' | 'i.search', text: string) {
+  return tx`ts_rank_cd(${tx.unsafe(column)}, ${exactQuery(tx, text)}, ${RANK_NORMALIZATION}) desc,
+    ts_rank_cd(${tx.unsafe(column)}, ${prefixQuery(tx, text)}, ${RANK_NORMALIZATION}) desc`;
 }
-type Query = () => ReturnType<typeof tsQuery>;
 
 type RecordRow = { id: string; object_type_id: string; label: string | null };
 
@@ -52,7 +57,6 @@ async function searchRecords(
   workspaceId: string,
   schema: CompiledSchema,
   input: SearchInput,
-  query: Query,
 ): Promise<RecordHit[]> {
   const present = (rows: RecordRow[], match: RecordHit['match']) =>
     rows.map((row) => ({
@@ -64,12 +68,12 @@ async function searchRecords(
 
   const text = await tx<RecordRow[]>`
     select id, object_type_id, label from records
-    where workspace_id = ${workspaceId} and deleted_at is null and search @@ ${query()}
-    order by ts_rank_cd(search, ${query()}, ${RANK_NORMALIZATION}) desc, updated_at desc, id
+    where workspace_id = ${workspaceId} and deleted_at is null and search @@ ${prefixQuery(tx, input.query)}
+    order by ${rank(tx, 'search', input.query)}, updated_at desc, id
     limit ${input.limit}`;
   if (text.length > 0) return present(text, 'text');
 
-  // Nothing matched word for word: a misspelled name ("Dana Levy") can
+  // Nothing matched, even as a prefix: a misspelled name ("Dana Levy") can
   // still find its record by trigram similarity of the label.
   const similar = await tx<RecordRow[]>`
     select id, object_type_id, label from records
@@ -80,22 +84,17 @@ async function searchRecords(
 }
 
 /** Current facts only: not retracted or superseded, on a live record, with a live source (2.1). */
-async function searchFacts(
-  tx: Tx,
-  workspaceId: string,
-  input: SearchInput,
-  query: Query,
-): Promise<FactHit[]> {
+async function searchFacts(tx: Tx, workspaceId: string, input: SearchInput): Promise<FactHit[]> {
   const rows = await tx<{ id: string; record_id: string; content: string; valid_from: Date }[]>`
     select f.id, f.record_id, f.content, f.valid_from from facts f
     join records r on r.id = f.record_id and r.deleted_at is null
-    where f.workspace_id = ${workspaceId} and f.search @@ ${query()}
+    where f.workspace_id = ${workspaceId} and f.search @@ ${prefixQuery(tx, input.query)}
       and f.deleted_at is null and f.superseded_by is null and f.valid_to is null
       and exists (
         select 1 from fact_sources s
         join interactions i on i.id = s.interaction_id and i.deleted_at is null
         where s.fact_id = f.id)
-    order by ts_rank_cd(f.search, ${query()}, ${RANK_NORMALIZATION}) desc, f.valid_from desc, f.id
+    order by ${rank(tx, 'f.search', input.query)}, f.valid_from desc, f.id
     limit ${input.limit}`;
   return rows.map((row) => ({
     id: row.id,
@@ -113,7 +112,6 @@ async function searchInteractions(
   tx: Tx,
   workspaceId: string,
   input: SearchInput,
-  query: Query,
 ): Promise<InteractionHit[]> {
   const rows = await tx<
     {
@@ -132,9 +130,9 @@ async function searchInteractions(
         where p.interaction_id = i.id
         order by p.position) as records
     from interactions i
-    where i.workspace_id = ${workspaceId} and i.deleted_at is null and i.search @@ ${query()}
+    where i.workspace_id = ${workspaceId} and i.deleted_at is null and i.search @@ ${prefixQuery(tx, input.query)}
       and not ${isNote(tx)}
-    order by ts_rank_cd(i.search, ${query()}, ${RANK_NORMALIZATION}) desc, i.occurred_at desc, i.id
+    order by ${rank(tx, 'i.search', input.query)}, i.occurred_at desc, i.id
     limit ${input.limit}`;
   return rows.map((row) => ({
     id: row.id,

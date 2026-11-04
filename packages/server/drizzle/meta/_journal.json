@@ -71,6 +71,20 @@
       "when": 1793740886223,
       "tag": "0009_views_security",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793760013755,
+      "tag": "0010_search_fold",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793760014311,
+      "tag": "0011_search_stale_index",
+      "breakpoints": true
     }
   ]
 }

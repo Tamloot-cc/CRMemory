@@ -55,6 +55,18 @@ beforeAll(async () => {
 });
 
 describe('query_records', () => {
+  it('searches by word prefix, ignoring accents, and by email domain', async () => {
+    expect(await labels('person', { search: 'Da' })).toEqual(['Dana Levi']);
+    expect(await labels('person', { search: 'dana le' })).toEqual(['Dana Levi']);
+    expect(await labels('person', { search: 'dana co' })).toEqual([]);
+    expect(await labels('person', { search: 'acme' })).toEqual(['Dana Levi', 'Avi Ben']);
+    expect(await labels('company', { search: 'glob' })).toEqual(['Globex']);
+    const accented = await createRecord(app, caller, 'company', { name: 'Société Mondiale' });
+    expect(await labels('company', { search: 'societe' })).toEqual(['Société Mondiale']);
+    expect(await labels('company', { search: 'SOCIÉ' })).toEqual(['Société Mondiale']);
+    await deleteRecord(app, caller, accented.id);
+  });
+
   it('returns live records in creation order by default', async () => {
     expect(await labels('deal', {})).toEqual(['Acme renewal', 'Globex pilot', 'Acme expansion']);
   });
