@@ -786,7 +786,9 @@ schema changes use, in batches, before it serves requests. One process
 rebuilds at a time; others boot without waiting, and stale records only
 fail to match until they are rebuilt. A partial index on `search is null`
 keeps the check free once nothing is stale. Merged-away records keep no
-search value and are skipped.
+search value and are skipped. This assumes no older server writes after the
+migration runs: it would store the old form, which nothing marks stale.
+Upgrades stop the old version first (`docs/self-hosting.md`).
 
 #### How a search runs
 
