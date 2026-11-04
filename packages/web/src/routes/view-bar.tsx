@@ -23,7 +23,7 @@ import {
   Table2,
   Trash2,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import {
@@ -53,16 +53,17 @@ import {
   SelectMenu,
   Truncate,
 } from '../ui/index.js';
-import { useBoardTotals } from './board-totals.js';
 import type { ColumnPrefs } from './list-state.js';
 import { aggregateLabel } from './list-state.js';
 import {
+  applyChange,
   boardGroups,
   type FieldLayout,
   KIND_LABELS,
   LAYOUT_FIELDS,
   layoutFields,
   toggleHidden,
+  ViewSaves,
   viewsKey,
 } from './views-state.js';
 
@@ -82,6 +83,47 @@ function useUpdateViews(object: ObjectView) {
       viewsKey(session.workspace.id, object.nameSingular),
       (old) => old && { views: update(old.views) },
     );
+}
+
+/** Saves in flight per view, from every place that changes one. */
+const inFlight = new Map<string, ViewSaves>();
+
+/**
+ * Every change to a saved view goes through here: it shows at once, and the
+ * server's copy replaces it once that copy is known to be the final one
+ * (`ViewSaves`). Throws what the save threw.
+ */
+export function useSaveView(object: ObjectView) {
+  const client = useQueryClient();
+  const { session } = useWorkspace();
+  const workspace = session.workspace.id;
+  const objectName = object.nameSingular;
+  return useCallback(
+    async (id: string, change: UpdateViewInput): Promise<SavedView> => {
+      const key = viewsKey(workspace, objectName);
+      const replace = (update: (v: SavedView) => SavedView) =>
+        client.setQueryData<{ views: SavedView[] }>(
+          key,
+          (old) => old && { views: old.views.map((v) => (v.id === id ? update(v) : v)) },
+        );
+      replace((v) => applyChange(v, change));
+      const saves = inFlight.get(id) ?? new ViewSaves();
+      inFlight.set(id, saves);
+      saves.start();
+      let updated: SavedView | undefined;
+      try {
+        updated = await api.updateView(id, change);
+        return updated;
+      } finally {
+        const next = saves.settle(!!updated);
+        if (next !== 'wait') inFlight.delete(id);
+        const reply = updated;
+        if (next === 'use' && reply) replace(() => reply);
+        else if (next === 'refetch') void client.invalidateQueries({ queryKey: key });
+      }
+    },
+    [client, workspace, objectName],
+  );
 }
 
 /** The current view's name; opens the list of views and what can be done with them. */
@@ -206,7 +248,7 @@ export function MissingLayoutField({
   return (
     <Inset>
       <Notice>
-        {view[layout.setting] === null && view.issues.length ? layout.removed : ''}
+        {view[layout.setting] === null ? layout.removed : ''}
         {layout.prompt}
       </Notice>
       {writable ? <FieldChoice object={object} kind={kind} value="" onChange={onChoose} /> : null}
@@ -235,6 +277,7 @@ export function ViewDialog({
 }) {
   const { session } = useWorkspace();
   const updateViews = useUpdateViews(object);
+  const saveView = useSaveView(object);
   const [name, setName] = useState(view?.name ?? ''),
     [kind, setKind] = useState<SavedViewKind>(view?.kind ?? 'table'),
     // The field each layout would use, kept while switching between them.
@@ -265,24 +308,26 @@ export function ViewDialog({
       ...(fieldKind && layout ? { [layout.setting]: picked[fieldKind] } : {}),
     };
     try {
-      const saved = view
-        ? await api.updateView(view.id, {
+      if (view) {
+        onSaved(
+          await saveView(view.id, {
             name: name.trim(),
             ...shape,
             ...(ownsIt && visibility !== view.visibility ? { visibility } : {}),
-          })
-        : await api.createView(object.nameSingular, {
-            name: name.trim(),
-            visibility,
-            ...shape,
-            ...(base.filter ? { filter: base.filter } : {}),
-            ...(base.sort?.length ? { sort: base.sort } : {}),
-            ...(base.columns ? { columns: base.columns } : {}),
-          });
-      updateViews((views) =>
-        view ? views.map((v) => (v.id === saved.id ? saved : v)) : [...views, saved],
-      );
-      onSaved(saved);
+          }),
+        );
+        return;
+      }
+      const created = await api.createView(object.nameSingular, {
+        name: name.trim(),
+        visibility,
+        ...shape,
+        ...(base.filter ? { filter: base.filter } : {}),
+        ...(base.sort?.length ? { sort: base.sort } : {}),
+        ...(base.columns ? { columns: base.columns } : {}),
+      });
+      updateViews((views) => [...views, created]);
+      onSaved(created);
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
@@ -427,24 +472,15 @@ const HEADER_OPS: AggregateOp[] = ['sum', 'avg', 'min', 'max'];
 export function ViewOptions({
   object,
   view,
-  filter,
   onChange,
 }: {
   object: ObjectView;
   view: SavedView;
-  /** The filter the board runs, for the values records hold beyond the options. */
-  filter: Record<string, unknown> | undefined;
   onChange: (change: UpdateViewInput) => void;
 }) {
   const group = object.fields.find((f) => f.name === view.groupBy);
-  const counts = useBoardTotals(object, view, filter);
-  // Every column the board has or could show, hidden ones included.
-  const columns = group
-    ? boardGroups(group, [
-        ...(counts.data?.groups?.map((g) => g.value) ?? []),
-        ...view.hiddenGroups,
-      ])
-    : undefined;
+  // Every column the board has, hidden ones included.
+  const columns = group ? boardGroups(group) : undefined;
   // The fields that add up: number and money.
   const totals = object.fields
     .filter((f) => aggregateOps(f).includes('sum'))

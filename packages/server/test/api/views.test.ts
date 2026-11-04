@@ -231,7 +231,12 @@ describe('views across schema changes', () => {
     });
   });
 
-  it('drops references to a removed field and says so', async () => {
+  // The schema change rewrites the stored view in its own transaction, so a
+  // read after it has nothing left to drop: `issues` stays empty, and the
+  // view was last updated by whoever changed the schema.
+  const repaired = { issues: [], updatedBy: { type: 'user', id: 'root' } };
+
+  it('drops references to a removed field when the field is removed', async () => {
     await schemaChange([
       {
         op: 'create_field',
@@ -272,9 +277,8 @@ describe('views across schema changes', () => {
       filter: { or: [{ stage: 'won' }] },
       sort: null,
       columns: { order: ['stage'], widths: {} },
+      ...repaired,
     });
-    expect(res.body.issues.length).toBeGreaterThanOrEqual(4);
-    expect(res.body.issues[0]).toContain('"Priority", a field that was removed');
     // The view still runs as a query.
     const query = await t.request('/v1/objects/deal/query', {
       key: keys.dana,
@@ -317,17 +321,16 @@ describe('views across schema changes', () => {
 
     const read = async (id: string) =>
       (await t.request(`/v1/views/${id}`, { key: keys.dana })).body;
-    expect(await read(board.body.id)).toMatchObject({
-      groupBy: null,
-      issues: [expect.stringContaining('"Tier", which is no longer a filterable select field')],
-    });
+    // The views stay, waiting for a new field, rather than being deleted.
+    expect(await read(board.body.id)).toMatchObject({ kind: 'board', groupBy: null, ...repaired });
     expect(await read(calendar.body.id)).toMatchObject({
+      kind: 'calendar',
       dateField: null,
-      issues: [expect.stringContaining('"Renews on", which is no longer a filterable date')],
+      ...repaired,
     });
   });
 
-  it('drops conditions and sorts that no longer compile, and says so', async () => {
+  it('drops conditions and sorts that no longer compile', async () => {
     await schemaChange([
       {
         op: 'create_field',
@@ -353,16 +356,83 @@ describe('views across schema changes', () => {
 
     const res = await t.request(`/v1/views/${view.body.id}`, { key: keys.dana });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ filter: { and: [{ stage: { neq: 'lost' } }] }, sort: null });
-    expect(res.body.issues).toEqual([
-      expect.stringContaining('The sort on "Source" no longer applies'),
-      expect.stringContaining('The filter on "Source" no longer applies'),
-    ]);
+    expect(res.body).toMatchObject({
+      filter: { and: [{ stage: { neq: 'lost' } }] },
+      sort: null,
+      ...repaired,
+    });
     // What is left still runs as a query.
     const query = await t.request('/v1/objects/deal/query', {
       key: keys.dana,
       body: { filter: res.body.filter },
     });
     expect(query.status).toBe(200);
+  });
+
+  it('drops a removed option from filters and hidden columns', async () => {
+    await schemaChange([
+      {
+        op: 'create_field',
+        object: 'deal',
+        field: {
+          name: 'segment',
+          label: 'Segment',
+          type: 'select',
+          settings: {
+            options: [
+              { value: 'smb', label: 'SMB' },
+              { value: 'mid', label: 'Mid-market' },
+              { value: 'ent', label: 'Enterprise' },
+            ],
+          },
+        },
+      },
+    ]);
+    const board = await create({
+      name: 'By segment',
+      kind: 'board',
+      groupBy: 'segment',
+      hiddenGroups: ['mid', null],
+      filter: { or: [{ segment: { in: ['smb', 'mid'] } }, { segment: { eq: 'mid' } }] },
+    });
+    expect(board.status).toBe(201);
+    // No record holds "mid", so the engine lets it go.
+    expect(
+      (
+        await schemaChange([
+          { op: 'remove_option', object: 'deal', field: 'segment', value: 'mid' },
+        ])
+      ).status,
+    ).toBe(200);
+
+    const res = await t.request(`/v1/views/${board.body.id}`, { key: keys.dana });
+    expect(res.body).toMatchObject({
+      groupBy: 'segment',
+      hiddenGroups: [null],
+      // `in` keeps the options left; a condition naming only "mid" goes.
+      filter: { or: [{ segment: { in: ['smb'] } }] },
+      ...repaired,
+    });
+  });
+
+  it('leaves views alone when a change gives them nothing to repair', async () => {
+    const view = await create({
+      name: 'Open deals',
+      kind: 'table',
+      filter: { stage: { neq: 'lost' } },
+    });
+    await schemaChange([
+      {
+        op: 'create_field',
+        object: 'deal',
+        field: { name: 'notes2', label: 'Side notes', type: 'text' },
+      },
+    ]);
+    await schemaChange([{ op: 'delete_field', object: 'deal', field: 'notes2' }]);
+    const res = await t.request(`/v1/views/${view.body.id}`, { key: keys.dana });
+    expect(res.body).toMatchObject({
+      updatedBy: { type: 'user', id: 'dana' },
+      updatedAt: view.body.updatedAt,
+    });
   });
 });

@@ -3,9 +3,9 @@ import {
   canPlaceBy,
   type FieldView,
   type ObjectView,
-  type PresentedRecord,
   type SavedView,
   type SavedViewKind,
+  type UpdateViewInput,
 } from '@retainer/shared';
 import {
   addDays,
@@ -109,6 +109,14 @@ export class ViewSaves {
   }
 }
 
+/** A view change as it will read back, shown before the server answers. */
+export function applyChange(view: SavedView, change: UpdateViewInput): SavedView {
+  const next = { ...view } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(change))
+    if (value !== undefined) next[key] = key === 'hiddenGroups' ? (value ?? []) : value;
+  return next as SavedView;
+}
+
 export const KIND_LABELS: Record<SavedViewKind, string> = {
   table: 'Table',
   board: 'Board',
@@ -124,7 +132,7 @@ export const LAYOUT_FIELDS = {
     fits: canGroupBy,
     choose: 'Choose the field whose options become columns',
     none: (plural: string) => `${plural} have no single-select field to group by`,
-    removed: 'The field this board was grouped by was removed. ',
+    removed: 'The field this board was grouped by was removed, or can no longer group it. ',
     prompt: 'Choose a single-select field to group the board by.',
   },
   calendar: {
@@ -134,7 +142,7 @@ export const LAYOUT_FIELDS = {
     fits: canPlaceBy,
     choose: 'Choose the date field to place records by',
     none: (plural: string) => `${plural} have no date field to place on a calendar`,
-    removed: 'The date field this calendar was placed by was removed. ',
+    removed: 'The date field this calendar was placed by was removed, or can no longer place it. ',
     prompt: 'Choose a date field to place records on the calendar.',
   },
 } as const;
@@ -153,72 +161,30 @@ export function andFilter(
 }
 
 // ---------------------------------------------------------------------------
-// Board columns: the group field's options as they are now, then "No value",
-// then any value records still hold that is no longer an option.
+// Board columns: the group field's options as they are now, then "No value".
 // ---------------------------------------------------------------------------
 
-/**
- * A board column: one of the field's options, records with no value, or a
- * value records still hold that is no longer an option (`legacy`).
- */
-export type BoardGroup = {
-  key: string;
-  value: string | null;
-  label: string;
-  kind: 'option' | 'none' | 'legacy';
-};
+/** A board column: one of the field's options, or records with no value. */
+export type BoardGroup = { key: string; value: string | null; label: string };
 
 export const groupKey = (value: string | null) => (value === null ? 'none' : `v:${value}`);
 
-export function boardGroups(
-  field: FieldView,
-  present: readonly (string | null)[] = [],
-): BoardGroup[] {
-  const options = field.settings.options ?? [];
-  const known = new Set(options.map((o) => o.value));
+/**
+ * Every record has a column: the schema engine won't remove an option
+ * records hold, or make a field required while records lack it (3).
+ */
+export function boardGroups(field: FieldView): BoardGroup[] {
   return [
-    ...options.map(
-      (o): BoardGroup => ({
-        key: groupKey(o.value),
-        value: o.value,
-        label: o.label,
-        kind: 'option',
-      }),
-    ),
-    // A required field has no "no value" column, unless records still lack one.
-    ...(field.isNullable || present.includes(null)
-      ? [
-          {
-            key: groupKey(null),
-            value: null,
-            label: `No ${field.label.toLowerCase()}`,
-            kind: 'none',
-          } satisfies BoardGroup,
-        ]
+    ...(field.settings.options ?? []).map((o) => ({
+      key: groupKey(o.value),
+      value: o.value,
+      label: o.label,
+    })),
+    ...(field.isNullable
+      ? [{ key: groupKey(null), value: null, label: `No ${field.label.toLowerCase()}` }]
       : []),
-    ...[...new Set(present)]
-      .filter((v): v is string => v !== null && !known.has(v))
-      .map((v): BoardGroup => ({ key: groupKey(v), value: v, label: v, kind: 'legacy' })),
   ];
 }
-
-/** Whether a card can be moved into a column: an option, or no value where that's allowed. */
-export const acceptsMoves = (field: FieldView, group: BoardGroup) =>
-  group.kind === 'option' || (group.kind === 'none' && field.isNullable);
-
-/**
- * The condition that loads a column. A filter can't name a value that is no
- * longer an option, so a legacy column loads every such record and keeps its
- * own (`inColumn`).
- */
-export function columnCondition(field: FieldView, group: BoardGroup) {
-  if (group.kind !== 'legacy') return groupCondition(field, group.value);
-  const options = (field.settings.options ?? []).map((o) => o.value);
-  const held = { [field.name]: { isNull: false } };
-  return options.length ? { and: [held, { not: { [field.name]: { in: options } } }] } : held;
-}
-export const inColumn = (field: FieldView, group: BoardGroup, record: PresentedRecord) =>
-  group.kind !== 'legacy' || record.fields[field.name] === group.value;
 
 /** The condition that puts a record in a column. */
 export const groupCondition = (field: FieldView, value: string | null) =>

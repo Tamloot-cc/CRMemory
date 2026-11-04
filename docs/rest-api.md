@@ -150,8 +150,9 @@ query's, and a bad one fails with 422 `invalid_filter` or `invalid_view`.
 `PATCH` changes only the keys sent, and `null` clears one. A `private` view
 is visible only to the key's actor that created it (others get 404), and
 only that actor can change `visibility` (403 otherwise). A view follows a
-renamed field; a removed field is dropped from it on read and named in the
-view's `issues`. Saved views are display settings: they never change
+renamed field. A schema change that removes a field or option, or stops a
+field being filterable, rewrites the views that named it; anything a read
+still has to drop is named in the view's `issues`. Saved views are display settings: they never change
 records, and moving a board card is a record `PATCH`.
 
 `POST /v1/interactions/query` reads the interaction log, which is not a

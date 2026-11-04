@@ -1,5 +1,6 @@
 import type {
   AggregateGroup,
+  AggregateInput,
   FieldView,
   ObjectView,
   PresentedRecord,
@@ -7,7 +8,7 @@ import type {
   RecordReference,
   SavedView,
 } from '@retainer/shared';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { api, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import {
@@ -22,20 +23,17 @@ import {
   Inset,
   Notice,
 } from '../ui/index.js';
-import { useBoardTotals } from './board-totals.js';
 import { defaultColumnOrder, formatAggregate } from './list-state.js';
 import type { MoveNotice } from './record-move.js';
 import { useRecordMoves } from './record-move.js';
 import { QueryError, recordTitle } from './state.js';
 import { MissingLayoutField } from './view-bar.js';
 import {
-  acceptsMoves,
   andFilter,
   type BoardGroup,
   boardGroups,
-  columnCondition,
+  groupCondition,
   groupKey,
-  inColumn,
 } from './views-state.js';
 import { isWritable } from './write-model.js';
 
@@ -79,7 +77,20 @@ export function BoardView({
   const field = object.fields.find((f) => f.name === view.groupBy);
   const moves = useRecordMoves<Card>();
 
-  const totals = useBoardTotals(object, view, filter);
+  const { session } = useWorkspace();
+  const name = object.nameSingular;
+  // Each column's count and header total, over the view's filter.
+  const totalsInput: AggregateInput = {
+    filter,
+    ...(field ? { groupBy: field.name } : {}),
+    aggregates: view.groupAggregate ? [view.groupAggregate] : [],
+  };
+  const totals = useQuery({
+    queryKey: [session.workspace.id, 'aggregate', name, totalsInput],
+    queryFn: ({ signal }) => api.aggregate(name, totalsInput, signal),
+    enabled: !!field,
+    placeholderData: (previous) => previous,
+  });
 
   if (!field)
     return (
@@ -92,10 +103,7 @@ export function BoardView({
       />
     );
 
-  const groups = boardGroups(
-    field,
-    totals.data?.groups?.map((g) => g.value),
-  ).filter((g) => !view.hiddenGroups.includes(g.value));
+  const groups = boardGroups(field).filter((g) => !view.hiddenGroups.includes(g.value));
   const byValue = new Map(totals.data?.groups?.map((g) => [g.value, g]));
   const cardFields = (order ?? defaultColumnOrder(object))
     .filter((n) => n !== field.name && n !== object.labelField)
@@ -217,7 +225,7 @@ function Column({
   const { session } = useWorkspace();
   const name = object.nameSingular;
   const input = {
-    filter: andFilter(filter, columnCondition(field, group)),
+    filter: andFilter(filter, groupCondition(field, group.value)),
     ...(sort ? { sort } : {}),
     limit: PAGE_SIZE,
     include: ['relationReferences'],
@@ -231,9 +239,7 @@ function Column({
   });
 
   const cards: Card[] = (query.data?.pages ?? []).flatMap((page) =>
-    page.records
-      .filter((record) => inColumn(field, group, record))
-      .map((record) => ({ record, references: page.relationReferences })),
+    page.records.map((record) => ({ record, references: page.relationReferences })),
   );
   const here = new Set(cards.map((c) => c.record.id));
   // Cards on the move show where they are going while the move saves.
@@ -251,7 +257,7 @@ function Column({
       title={group.label}
       count={count}
       meta={meta}
-      locked={!draggable || !acceptsMoves(field, group)}
+      locked={!draggable}
       footer={
         query.hasNextPage ? (
           <ColumnMore loading={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>

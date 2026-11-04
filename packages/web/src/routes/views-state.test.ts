@@ -1,12 +1,10 @@
 import type { FieldView, SavedView } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
 import {
-  acceptsMoves,
   andFilter,
-  type BoardGroup,
+  applyChange,
   boardGroups,
   changesToSave,
-  columnCondition,
   dayOf,
   effectiveSearch,
   filterParam,
@@ -153,6 +151,13 @@ describe('saving a view', () => {
     expect(saves.settle(true)).toBe('use');
   });
 
+  it('shows a change as it will read back', () => {
+    const saved = view({ name: 'Pipeline', hiddenGroups: ['won'], groupBy: 'stage' });
+    expect(
+      applyChange(saved, { name: 'Deals', hiddenGroups: null, groupBy: undefined }),
+    ).toMatchObject({ name: 'Deals', hiddenGroups: [], groupBy: 'stage' });
+  });
+
   it('reads the view again after a failed save', () => {
     const saves = new ViewSaves();
     saves.start();
@@ -161,43 +166,19 @@ describe('saving a view', () => {
 });
 
 describe('board columns', () => {
-  it("are the field's options now, then no value, then values no longer an option", () => {
-    expect(boardGroups(stage, ['lead', 'lost', null]).map((g) => [g.key, g.label])).toEqual([
+  it("are the field's options now, then no value", () => {
+    expect(boardGroups(stage).map((g) => [g.key, g.label])).toEqual([
       ['v:lead', 'Lead'],
       ['v:won', 'Won'],
       ['none', 'No stage'],
-      ['v:lost', 'lost'],
     ]);
   });
 
-  it('list a value no longer an option once, however often it is given', () => {
-    expect(boardGroups(stage, ['lost', null, 'lost']).map((g) => g.key)).toEqual([
+  it('have no "no value" column for a required field', () => {
+    expect(boardGroups({ ...stage, isNullable: false }).map((g) => g.key)).toEqual([
       'v:lead',
       'v:won',
-      'none',
-      'v:lost',
     ]);
-  });
-
-  it('have no "no value" column for a required field, unless records lack one', () => {
-    const required = { ...stage, isNullable: false };
-    expect(boardGroups(required).map((g) => g.key)).toEqual(['v:lead', 'v:won']);
-    expect(boardGroups(required, [null]).map((g) => g.key)).toEqual(['v:lead', 'v:won', 'none']);
-  });
-
-  it('take moves into options, and into "no value" only where that is allowed', () => {
-    const [lead, , none, lost] = boardGroups(stage, ['lost']) as BoardGroup[];
-    expect(acceptsMoves(stage, lead as BoardGroup)).toBe(true);
-    expect(acceptsMoves(stage, none as BoardGroup)).toBe(true);
-    expect(acceptsMoves({ ...stage, isNullable: false }, none as BoardGroup)).toBe(false);
-    expect(acceptsMoves(stage, lost as BoardGroup)).toBe(false);
-  });
-
-  it('load a value no longer an option as "held, and not a current option"', () => {
-    const lost = boardGroups(stage, ['lost']).at(-1) as BoardGroup;
-    expect(columnCondition(stage, lost)).toEqual({
-      and: [{ stage: { isNull: false } }, { not: { stage: { in: ['lead', 'won'] } } }],
-    });
   });
 
   it('put a record in a column by its value, or by having none', () => {

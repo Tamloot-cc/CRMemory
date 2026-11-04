@@ -261,15 +261,19 @@ Rules:
 1. **Fields by key.** Stored config names fields by `fields.key`, like
    `records.data`, so renaming a field never breaks a view. The API reads
    and writes field names and translates both ways.
-2. **Resolved at read time.** Board columns are the group field's options
-   as they are when the view is read, so adding, renaming or removing an
-   option needs no change to any view. A view that names a field that is no
-   longer active is returned without it: dropped from columns and sort, the
-   filter condition removed, `groupBy` or `dateField` returned as null. A
-   filter condition or sort that no longer compiles (the field stopped being
-   filterable, or lost the option it names) is dropped the same way. Each
-   dropped reference is listed in the view's `issues`, so the caller can say
-   so rather than silently show more records.
+2. **Repaired by the schema change.** Board columns are the group field's
+   options as they are when the view is read, so adding or relabelling an
+   option needs no change to any view. A schema change that removes a
+   field, stops a field being filterable, or removes an option rewrites the
+   object's views in the same transaction: the field leaves columns and
+   sort, a filter condition that no longer compiles goes, a removed option
+   leaves `in` lists (a condition naming nothing else goes), hidden columns
+   lose removed options, and a `groupBy` or `dateField` that no longer fits
+   is cleared. The view stays, so a board or calendar left without its field
+   asks for a new one. Every record has a board column, because the engine
+   refuses to remove an option records hold or make a field required while
+   records lack it. Reads apply the same repair as a safety net, listing
+   anything they drop in the view's `issues`.
 3. **Validated like queries.** `filter` and `sort` must compile against the
    current schema, as a query would. `groupBy` must be a filterable `select`
    field and `dateField` a filterable `date` or `date_time` field, because

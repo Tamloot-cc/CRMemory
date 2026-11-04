@@ -311,8 +311,9 @@ set for one object, shown as a table, a board or a calendar. Source:
 - **State.** The open view is `?view=`. The last view used per object is
   remembered in `localStorage` (`retainer:view:v1:{workspace}:{object}`)
   and reopened from the sidebar. A view that is gone or hidden says so and
-  returns to All. Fields the view named that were removed are dropped and
-  listed in a notice (the view's `issues`).
+  returns to All. The server repairs a view when the schema changes under
+  it; anything a read still drops is listed in a notice (the view's
+  `issues`). A board or calendar whose field went asks for a new one.
 - **Unsaved changes.** The URL `filter` and `sort` run over the view's own;
   `{}` and `[]` mean "none" where the view has some, and a change back to
   the view's value clears the parameter. While they differ, the toolbar
@@ -321,8 +322,7 @@ set for one object, shown as a table, a board or a calendar. Source:
   Column changes on a view save to it directly; keys that can't write keep
   them for the session.
 - **Board.** One column per option of a single-select field, in option
-  order, then "No {field}", then any value records still hold that is no
-  longer an option. Each column pages on its own (25 at a time, "Show
+  order, then "No {field}" if the field is optional. Each column pages on its own (25 at a time, "Show
   more"), shows its count, and can show a sum, average, min or max of a
   number or money field, from `POST /v1/objects/:object/aggregate` with
   `groupBy`. Options shows or hides columns and picks the total. Cards show

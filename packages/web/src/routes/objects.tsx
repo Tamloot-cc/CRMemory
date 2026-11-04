@@ -9,7 +9,7 @@ import type {
   UpdateViewInput,
 } from '@retainer/shared';
 import { aggregateOps } from '@retainer/shared';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
 import {
   ArrowDown,
@@ -28,7 +28,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { filterValue, operatorsFor, PICKERS } from '../fields/common.js';
 import { fields } from '../fields/index.js';
@@ -100,14 +100,19 @@ import { MergeDialog } from './merge.js';
 import { BulkDeleteDialog } from './record-actions.js';
 import { InlineEditor, RecordSheet } from './record-view.js';
 import { QueryError, recordTitle, useView, type ViewSearch } from './state.js';
-import { DeleteViewDialog, ViewDialog, ViewOptions, ViewSwitcher } from './view-bar.js';
+import {
+  DeleteViewDialog,
+  useSaveView,
+  ViewDialog,
+  ViewOptions,
+  ViewSwitcher,
+} from './view-bar.js';
 import {
   changesToSave,
   effectiveSearch,
   filterParam,
   hasChanges,
   sortParam,
-  ViewSaves,
   viewColumns,
   viewsKey,
 } from './views-state.js';
@@ -135,7 +140,6 @@ export function ObjectPage() {
 
 function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const { session } = useWorkspace();
-  const client = useQueryClient();
   const { search, setSearch } = useView();
   const workspace = session.workspace.id;
   const [error, setError] = useState(''),
@@ -334,32 +338,16 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   ));
   const openRow = useCallback((id: string) => void setSearch({ record: id }), [setSearch]);
 
-  // Changes to a saved view show at once; the server's copy replaces them
-  // once it is known to be the final one (`ViewSaves`).
-  const saves = useRef(new ViewSaves());
+  const saveView = useSaveView(object);
   async function changeView(change: UpdateViewInput): Promise<boolean> {
     if (!saved) return false;
-    const id = saved.id;
-    const replace = (update: (v: SavedView) => SavedView) =>
-      client.setQueryData<{ views: SavedView[] }>(
-        viewsKey(workspace, objectName),
-        (old) => old && { views: old.views.map((v) => (v.id === id ? update(v) : v)) },
-      );
-    replace((v) => applyChange(v, change));
-    saves.current.start();
-    let updated: SavedView | undefined;
     try {
-      updated = await api.updateView(id, change);
+      await saveView(saved.id, change);
+      return true;
     } catch (e) {
       setError(`The view could not be saved: ${(e as Error).message}`);
+      return false;
     }
-    const next = saves.current.settle(!!updated);
-    if (next === 'use' && updated) {
-      const reply = updated;
-      replace(() => reply);
-    } else if (next === 'refetch')
-      void client.invalidateQueries({ queryKey: viewsKey(workspace, objectName) });
-    return !!updated;
   }
 
   function savePrefs(next: ColumnPrefs) {
@@ -459,12 +447,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
                 </Button>
               ) : null}
               {saved && saved.kind !== 'table' && writable ? (
-                <ViewOptions
-                  object={object}
-                  view={saved}
-                  filter={view.query.filter}
-                  onChange={(c) => void changeView(c)}
-                />
+                <ViewOptions object={object} view={saved} onChange={(c) => void changeView(c)} />
               ) : null}
               <SortMenu
                 object={object}
@@ -533,9 +516,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               {object.labelPlural.toLowerCase()}.
             </Notice>
           ) : null}
-          {saved?.issues.length ? (
-            <Notice>{saved.issues.join('. ')}. Save the view to keep it this way.</Notice>
-          ) : null}
+          {saved?.issues.length ? <Notice>{saved.issues.join('. ')}.</Notice> : null}
           {query.error ? (
             <QueryError error={query.error} retry={() => void query.refetch()} />
           ) : null}
@@ -697,14 +678,6 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       ) : null}
     </Page>
   );
-}
-
-/** A view change as it will read back, shown before the server answers. */
-function applyChange(view: SavedView, change: UpdateViewInput): SavedView {
-  const next = { ...view } as Record<string, unknown>;
-  for (const [key, value] of Object.entries(change))
-    if (value !== undefined) next[key] = key === 'hiddenGroups' ? (value ?? []) : value;
-  return next as SavedView;
 }
 
 /** Remembers the view last shown for an object; `''` for all records. */

@@ -129,13 +129,14 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v);
 
 /**
- * A filter with each field renamed, between names and keys. A condition
- * `rename` drops is left out, and a group left empty goes with it: an empty
- * part would otherwise match every record (or none, inside `or`).
+ * A filter with each field renamed, between names and keys, and its
+ * condition as `rename` returns it. A condition `rename` drops is left out,
+ * and a group left empty goes with it: an empty part would otherwise match
+ * every record (or none, inside `or`).
  */
 function renameFilter(
   filter: Record<string, unknown>,
-  rename: (field: string, condition: unknown) => string | undefined,
+  rename: (field: string, condition: unknown) => [string, unknown] | undefined,
 ): Record<string, unknown> | undefined {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(filter)) {
@@ -151,7 +152,7 @@ function renameFilter(
       if (part) out[k] = part;
     } else if (!NESTING.has(k)) {
       const renamed = rename(k, v);
-      if (renamed) out[renamed] = v;
+      if (renamed) out[renamed[0]] = renamed[1];
     }
   }
   return Object.keys(out).length ? out : undefined;
@@ -168,6 +169,38 @@ function renameKeys<T>(
     if (next !== undefined) out[next] = v;
   }
   return out;
+}
+
+const optionValues = (field: FieldState) => new Set(field.settings.options?.map((o) => o.value));
+
+/**
+ * A select condition without the values that are no longer options, or
+ * undefined when none are left. Removing an option is refused while records
+ * hold it (3), so `in` loses nothing it matched.
+ */
+function withoutRemovedOptions(
+  field: FieldState | undefined,
+  condition: unknown,
+): { condition: unknown; removed: string[] } {
+  if (
+    !field ||
+    (field.type !== 'select' && field.type !== 'multi_select') ||
+    !isPlainObject(condition)
+  )
+    return { condition, removed: [] };
+  const options = optionValues(field);
+  const gone = (v: unknown): v is string => typeof v === 'string' && !options.has(v);
+  const removed: string[] = [];
+  const out: Record<string, unknown> = {};
+  for (const [op, raw] of Object.entries(condition)) {
+    if (op === 'in' && Array.isArray(raw)) {
+      removed.push(...raw.filter(gone));
+      const kept = raw.filter((v) => !gone(v));
+      if (kept.length) out[op] = kept;
+    } else if (op !== 'isNull' && gone(raw)) removed.push(raw);
+    else out[op] = raw;
+  }
+  return { condition: Object.keys(out).length ? out : undefined, removed };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +239,7 @@ function toStored(
     if (input.filter) compileFilter(tx, object, input.filter);
     // The filter compiled, so every name exists.
     out.filter = input.filter
-      ? renameFilter(input.filter, (n) => fields.key(n, 'filter'))
+      ? renameFilter(input.filter, (n, condition) => [fields.key(n, 'filter'), condition])
       : undefined;
   }
   if (given('sort')) {
@@ -364,6 +397,14 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
           : {}),
       }
     : null;
+  const groupBy = layoutField(
+    config.groupBy,
+    'The board grouping',
+    canGroupBy,
+    'filterable select',
+  );
+  const groupField = groupBy ? object.fieldsByName.get(groupBy) : undefined;
+  const groupOptions = groupField && optionValues(groupField);
   const sort =
     config.sort
       ?.map((s) => {
@@ -386,20 +427,30 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
     position: row.position,
     filter:
       (config.filter &&
-        renameFilter(config.filter, (k, condition) => {
+        renameFilter(config.filter, (k, stored) => {
           const fieldName = fields.name(k, 'The filter');
-          return fieldName &&
+          if (!fieldName) return undefined;
+          const field = object.fieldsByName.get(fieldName);
+          const { condition, removed } = withoutRemovedOptions(field, stored);
+          if (removed.length)
+            fields.issues.push(
+              `The filter on "${field?.label ?? fieldName}" named ${removed.map((v) => `"${v}"`).join(', ')}, no longer ${removed.length > 1 ? 'options' : 'an option'}; ${condition === undefined ? 'the condition was dropped' : 'it was dropped from the condition'}`,
+            );
+          return condition !== undefined &&
             compiles('The filter', fieldName, () =>
               compileFilter(tx, object, { [fieldName]: condition }),
             )
-            ? fieldName
+            ? [fieldName, condition]
             : undefined;
         })) ??
       null,
     sort: sort.length ? sort : null,
     columns,
-    groupBy: layoutField(config.groupBy, 'The board grouping', canGroupBy, 'filterable select'),
-    hiddenGroups: config.hiddenGroups ?? [],
+    groupBy,
+    // A hidden column for an option that was removed has nothing left to hide.
+    hiddenGroups: (config.hiddenGroups ?? []).filter(
+      (v) => v === null || !groupOptions || groupOptions.has(v),
+    ),
     groupAggregate:
       aggregateField && config.groupAggregate
         ? {
@@ -561,4 +612,51 @@ export async function deleteView(
     await tx`delete from views where id = ${id}`;
     return { id, deleted: true };
   });
+}
+
+/**
+ * Rewrites the stored views of these objects without what a schema change
+ * made unusable: removed fields, filters and sorts that no longer compile,
+ * options that are gone, and a board or calendar field that no longer fits
+ * (rule 1.4.2). Runs in the schema change's transaction, against the schema
+ * it leaves, so a view is repaired once rather than on every read. A view the
+ * repair can't store is left as it is; reading it still drops what it can't use.
+ */
+export async function repairViews(
+  tx: Tx,
+  schema: CompiledSchema,
+  objectTypeIds: string[],
+  actor: Actor,
+): Promise<void> {
+  if (objectTypeIds.length === 0) return;
+  const rows = await tx<ViewRow[]>`
+    select * from views where object_type_id = any(${objectTypeIds}::uuid[])`;
+  for (const row of rows) {
+    const object = schema.objectsById.get(row.object_type_id);
+    if (object?.state.status !== 'active') continue;
+    const view = presentView(tx, object, row);
+    let config: StoredViewConfig;
+    try {
+      config = merge(
+        row.config,
+        toStored(tx, object, {
+          filter: view.filter,
+          sort: view.sort,
+          columns: view.columns,
+          groupBy: view.groupBy,
+          hiddenGroups: view.hiddenGroups,
+          groupAggregate: view.groupAggregate,
+          dateField: view.dateField,
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof AppError) || e.status >= 500) throw e;
+      continue;
+    }
+    if (JSON.stringify(config) === JSON.stringify(row.config)) continue;
+    await tx`
+      update views set config = ${tx.json(jsonValue(config))}, updated_by = ${tx.json(actor)},
+        updated_at = now()
+      where id = ${row.id}`;
+  }
 }

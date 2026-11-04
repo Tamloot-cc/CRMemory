@@ -46,7 +46,9 @@ The first release: the whole of build order steps 1 to 6 in
   records move between columns and days by mouse, touch or keyboard.
 - Saved views: `GET`/`POST /v1/objects/:object/views` and
   `GET`/`PATCH`/`DELETE /v1/views/:id`, with workspace or private
-  visibility; fields are stored by key, so views follow renames.
+  visibility; fields are stored by key, so views follow renames, and a
+  schema change that removes a field or option rewrites the views that
+  named it.
 - `groupBy` on `POST /v1/objects/:object/aggregate`: the same totals per
   value of a single-select field.
 
