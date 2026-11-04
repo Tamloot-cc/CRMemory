@@ -33,6 +33,8 @@ export interface DiagramEdge {
   id: string;
   from: DiagramEnd;
   to: DiagramEnd;
+  /** The end at `to`: "one" unless both ends are many (many-to-many). */
+  toEnd?: 'many' | 'one';
   /** The link in a sentence, the line's accessible name. */
   description: string;
 }

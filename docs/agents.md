@@ -151,6 +151,11 @@ Things worth knowing:
   `pending_review` or `superseded`. An agent's value that would overwrite what
   a person entered waits for review; the agent should say so rather than claim
   the update is done.
+- **Lists of records.** A `many_to_many` relation (for example a deal's
+  `contacts`) takes the whole list of record IDs, and a write replaces it, so
+  read the record first and send every member to keep; `[]` clears it. The
+  other side of a relation (`readOnly`, `isInverse` in `describe_schema`) is
+  written from its owning side.
 - **Participants and `about`.** Participants are who took part. A meeting
   with Dana about the Acme pilot lists Dana as a participant and the Acme
   company and the pilot project in `about`:

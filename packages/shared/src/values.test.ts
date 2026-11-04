@@ -42,4 +42,21 @@ describe('public field-aware validation', () => {
       '2026-11-02T08:00:00.000Z',
     );
   });
+
+  it('takes a set of record IDs for a many_to_many relation', () => {
+    const set = f('relation', { relationCardinality: 'many_to_many' });
+    const a = 'B0000000-0000-4000-8000-000000000002';
+    const b = 'a0000000-0000-4000-8000-000000000001';
+    expect(validateFieldValue(set, [a, b, a.toLowerCase()])).toEqual([b, a.toLowerCase()]);
+    expect(validateFieldValue(set, [])).toEqual([]);
+    expect(() => validateFieldValue(set, null)).toThrow('[] clears it');
+    expect(() => validateFieldValue(set, b)).toThrow('array');
+    expect(() => validateFieldValue(set, ['nope'])).toThrow('ID');
+    expect(() => validateFieldValue({ ...set, isNullable: false }, [])).toThrow('at least one');
+    expect(() =>
+      validateFieldValue(f('relation', { relationCardinality: 'many_to_many', isInverse: true }), [
+        b,
+      ]),
+    ).toThrow('read-only');
+  });
 });

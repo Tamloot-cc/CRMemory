@@ -241,21 +241,38 @@ function validateField(
     ? target.fields.find((f) => f.universalId === settings.inverseFieldId)
     : undefined;
 
-  if (settings.relationCardinality === 'many_to_one') {
+  const cardinality = settings.relationCardinality;
+  if (!settings.isInverse) {
+    if (cardinality !== 'many_to_one' && cardinality !== 'many_to_many') {
+      issue(path, 'relationCardinality must be many_to_one or many_to_many');
+    }
     if (settings.inverseFieldId && inverse?.status !== 'active') {
       issue(path, 'the inverse field of this relation is missing');
     }
     if (inverse && inverse.settings.inverseFieldId !== field.universalId) {
       issue(path, 'the inverse field does not point back at this relation');
     }
-  } else if (settings.relationCardinality === 'one_to_many') {
-    if (inverse?.status !== 'active') {
-      issue(path, 'an inverse relation needs an active many_to_one field on the other side');
-    } else if (inverse.settings.relationCardinality !== 'many_to_one') {
-      issue(path, 'the other side of an inverse relation must be many_to_one');
+    if (cardinality === 'many_to_many') {
+      if (settings.onDelete === 'cascade') {
+        // Cascades follow links at any depth: deleting one contact would
+        // delete every deal that lists it (5.3).
+        issue(path, 'onDelete: cascade is not allowed on a many_to_many relation; use set_null');
+      }
+      if (field.isUnique) issue(path, 'a many_to_many relation cannot be unique');
+    }
+  } else {
+    if (inverse?.status !== 'active' || inverse.settings.isInverse) {
+      issue(path, 'an inverse relation needs an active owning field on the other side');
+    } else {
+      const expected =
+        inverse.settings.relationCardinality === 'many_to_many' ? 'many_to_many' : 'one_to_many';
+      if (cardinality !== expected) {
+        issue(
+          path,
+          `the inverse of a ${inverse.settings.relationCardinality} relation is ${expected}`,
+        );
+      }
     }
     if (!field.isNullable) issue(path, 'an inverse relation field cannot be required');
-  } else {
-    issue(path, 'relationCardinality must be many_to_one or one_to_many');
   }
 }

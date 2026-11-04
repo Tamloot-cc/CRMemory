@@ -202,27 +202,36 @@ async function checkRelationTargets(
   writes: Map<FieldState, unknown>,
 ): Promise<void> {
   const relations = [...writes].filter(
-    (entry): entry is [FieldState, string] => entry[0].type === 'relation' && entry[1] !== null,
+    (entry): entry is [FieldState, string | string[]] =>
+      entry[0].type === 'relation' && entry[1] !== null,
   );
   if (relations.length === 0) return;
   const byId = await lockTargets(tx, context.workspaceId, [
-    ...new Set(relations.map(([, id]) => id)),
+    ...new Set(relations.flatMap(([, value]) => (Array.isArray(value) ? value : [value]))),
   ]);
   const errors = [];
-  for (const [field, targetId] of relations) {
-    const target = byId.get(targetId);
-    if (target && target.id !== targetId) writes.set(field, target.id);
+  for (const [field, value] of relations) {
     const targetObject = context.schema.objectsByUniversalId.get(
       field.settings.targetObjectId ?? '',
     );
-    if (!target || target.deleted_at) {
-      errors.push({ field: field.name, message: `no live record ${targetId}` });
-    } else if (target.object_type_id !== targetObject?.id) {
-      errors.push({
-        field: field.name,
-        message: `record ${targetId} is not a ${targetObject?.name ?? 'valid target'}`,
-      });
+    const resolved: string[] = [];
+    for (const targetId of Array.isArray(value) ? value : [value]) {
+      const target = byId.get(targetId);
+      if (!target || target.deleted_at) {
+        errors.push({ field: field.name, message: `no live record ${targetId}` });
+      } else if (target.object_type_id !== targetObject?.id) {
+        errors.push({
+          field: field.name,
+          message: `record ${targetId} is not a ${targetObject?.name ?? 'valid target'}`,
+        });
+      } else resolved.push(target.id);
     }
+    // A merged ID is replaced by its survivor; a set is normalized again,
+    // since two IDs may now name one record.
+    writes.set(
+      field,
+      Array.isArray(value) ? [...new Set(resolved)].sort() : (resolved[0] ?? value),
+    );
   }
   if (errors.length > 0) {
     throw new AppError(422, 'invalid_values', `invalid values for ${object.name}`, { errors });
@@ -375,12 +384,23 @@ async function applyWinners(
     if (field.type === 'relation') {
       await tx`delete from record_links where source_record_id = ${record.id}
         and field_id = ${field.id as string}`;
-      if (winner?.value) {
+      // One edge per target; a set's edges are marked by the database (5.3).
+      const targets = Array.isArray(winner?.value)
+        ? (winner.value as string[])
+        : winner?.value
+          ? [winner.value as string]
+          : [];
+      if (targets.length > 0) {
         await tx`
-          insert into record_links (workspace_id, field_id, source_record_id, target_record_id,
-            created_by)
-          values (${context.workspaceId}, ${field.id as string}, ${record.id},
-            ${winner.value as string}, ${tx.json(winner.actor)})`;
+          insert into record_links ${tx(
+            targets.map((target) => ({
+              workspace_id: context.workspaceId,
+              field_id: field.id as string,
+              source_record_id: record.id,
+              target_record_id: target,
+              created_by: tx.json(jsonValue(winner?.actor ?? context.actor)),
+            })),
+          )}`;
       }
       continue;
     }

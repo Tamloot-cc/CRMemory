@@ -1,5 +1,6 @@
 import {
   type FieldView,
+  isInverseRelation,
   type ObjectView,
   SCHEMA_CHANGE_STATUSES,
   type SchemaChangeStatus,
@@ -21,12 +22,13 @@ export function typeDetail(field: FieldView, objects: ObjectView[]) {
   }
   if (field.type === 'relation') {
     const target = findObject(objects, s.targetObject);
+    const many = isManyRelation(field);
     const name = target
-      ? s.relationCardinality === 'one_to_many'
+      ? many
         ? target.labelPlural
         : target.labelSingular
       : (s.targetObject ?? 'unknown object');
-    return `${s.relationCardinality === 'one_to_many' ? 'Many' : 'One'} ${name}`;
+    return `${many ? 'Many' : 'One'} ${name}`;
   }
   if (s.maxValues) return `Up to ${s.maxValues}`;
   return null;
@@ -56,31 +58,36 @@ export function cardinality(object: ObjectView, target: ObjectView | null, many:
   return `Each ${object.labelSingular.toLowerCase()} has ${what}`;
 }
 
-/** The one-to-many side of a relation: a read-only list of the records pointing back. */
-export const isInverseRelation = (f: FieldView) => f.settings.relationCardinality === 'one_to_many';
-const isManyToOne = (f: FieldView) => !isInverseRelation(f);
+/** Whether each record holds many related records here: a set, or an inverse list. */
+export const isManyRelation = (f: FieldView) =>
+  f.settings.relationCardinality === 'one_to_many' ||
+  f.settings.relationCardinality === 'many_to_many';
+const isOwning = (f: FieldView) => !isInverseRelation(f);
 
 /**
- * Every relation once, as a line from the many side's field to the one
- * side's. A relation has a field on each side (Person → Company and Company
- * → People): it is drawn from the many-to-one field, and a one-to-many field
- * only when that other side is missing. Relations to objects that no longer
- * exist are left out.
+ * Every relation once, as a line from its owning field (the side that is
+ * written) to the inverse. A relation has a field on each side (Person →
+ * Company and Company → People): it is drawn from the owning field, and from
+ * an inverse field only when that other side is missing. A many-to-many
+ * relation (Deal → Contacts and Person → Deals) has a "many" end at both.
+ * Relations to objects that no longer exist are left out.
  */
 export function relationEdges(objects: ObjectView[]): DiagramEdge[] {
   return objects.flatMap((object) =>
     object.fields.flatMap((field): DiagramEdge[] => {
       if (field.type !== 'relation') return [];
       const { target, inverse } = relationEnds(field, objects);
-      if (!target || (!isManyToOne(field) && inverse && isManyToOne(inverse))) return [];
+      if (!target || (!isOwning(field) && inverse && isOwning(inverse))) return [];
       const own = { node: object.nameSingular, row: field.name },
         other = { node: target.nameSingular, row: inverse?.name };
-      const [many, one] = isManyToOne(field) ? [object, target] : [target, object];
+      const [source, dest] = isOwning(field) ? [object, target] : [target, object];
+      const bothMany = field.settings.relationCardinality === 'many_to_many';
       return [
         {
           id: `${object.nameSingular}.${field.name}`,
-          ...(isManyToOne(field) ? { from: own, to: other } : { from: other, to: own }),
-          description: `${field.label}: ${cardinality(many, one, false)}. ${cardinality(one, many, true)}.`,
+          ...(isOwning(field) ? { from: own, to: other } : { from: other, to: own }),
+          ...(bothMany ? { toEnd: 'many' as const } : {}),
+          description: `${field.label}: ${cardinality(source, dest, bothMany)}. ${cardinality(dest, source, true)}.`,
         },
       ];
     }),

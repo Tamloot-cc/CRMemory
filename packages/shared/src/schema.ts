@@ -84,10 +84,23 @@ export type SelectOption = {
 };
 
 /**
- * A relation is written on its many_to_one side (`person.company`); the
- * one_to_many side (`company.people`) is its read-only inverse.
+ * A relation is written on its owning side: `many_to_one` (`person.company`,
+ * one record) or `many_to_many` (`deal.contacts`, a set of records). The
+ * other side is its read-only inverse, marked `isInverse`: `one_to_many`
+ * for a many_to_one field (`company.people`), `many_to_many` for a
+ * many_to_many one (`person.deals`).
  */
-export type RelationCardinality = 'many_to_one' | 'one_to_many';
+export type RelationCardinality = 'many_to_one' | 'one_to_many' | 'many_to_many';
+
+/** Whether a relation field is the read-only, derived side of its relation. */
+export const isInverseRelation = (field: { settings: { isInverse?: boolean } }) =>
+  field.settings.isInverse === true;
+
+/** Whether a relation field holds a set of records rather than one. */
+export const isCollectionRelation = (field: {
+  type: string;
+  settings: { relationCardinality?: RelationCardinality };
+}) => field.type === 'relation' && field.settings.relationCardinality === 'many_to_many';
 
 export type OnDeleteBehavior = 'set_null' | 'cascade';
 
@@ -100,7 +113,15 @@ export type FieldSettings = {
   /** `relation`: API name of the field on the other side that points back. */
   inverseField?: string;
   relationCardinality?: RelationCardinality;
-  /** `relation`, many_to_one side: what happens when the target is deleted. */
+  /**
+   * `relation`: set by the engine on the derived, read-only side of a
+   * relation. Write the other side instead.
+   */
+  isInverse?: boolean;
+  /**
+   * `relation`, owning side: what happens when the target is deleted.
+   * `cascade` is refused on many_to_many fields.
+   */
   onDelete?: OnDeleteBehavior;
   /** `emails`, `phones`, `links`: cap on total primary plus additional values. */
   maxValues?: number;

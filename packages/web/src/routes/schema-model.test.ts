@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cardinality,
   describeOperation,
+  isManyRelation,
   matchesField,
   parseStatus,
   relationEdges,
@@ -76,6 +77,7 @@ const company = object({
         targetObject: 'person',
         inverseField: 'company',
         relationCardinality: 'one_to_many',
+        isInverse: true,
       },
     }),
   ],
@@ -109,7 +111,7 @@ describe('schema page model', () => {
           name: 'staff',
           label: 'Staff',
           type: 'relation',
-          settings: { targetObject: 'person', relationCardinality: 'one_to_many' },
+          settings: { targetObject: 'person', relationCardinality: 'one_to_many', isInverse: true },
         }),
         field({ name: 'ghost', label: 'Ghost', type: 'relation', settings: { targetObject: 'x' } }),
       ],
@@ -124,6 +126,69 @@ describe('schema page model', () => {
         { node: 'company', row: 'staff' },
       ],
     ]);
+  });
+
+  it('draws a many-to-many relation once, from its owning set, many at both ends', () => {
+    const deal = object({
+      nameSingular: 'deal',
+      labelSingular: 'Deal',
+      labelPlural: 'Deals',
+      fields: [
+        field({
+          name: 'contacts',
+          label: 'Contacts',
+          type: 'relation',
+          settings: {
+            targetObject: 'person',
+            inverseField: 'deals',
+            relationCardinality: 'many_to_many',
+          },
+        }),
+      ],
+    });
+    const people = object({
+      nameSingular: 'person',
+      labelSingular: 'Person',
+      labelPlural: 'People',
+      fields: [
+        field({
+          name: 'deals',
+          label: 'Deals',
+          type: 'relation',
+          readOnly: true,
+          settings: {
+            targetObject: 'deal',
+            inverseField: 'contacts',
+            relationCardinality: 'many_to_many',
+            isInverse: true,
+          },
+        }),
+      ],
+    });
+    // Listed inverse first, so the inverse is the one skipped, not the first seen.
+    expect(relationEdges([people, deal])).toEqual([
+      {
+        id: 'deal.contacts',
+        from: { node: 'deal', row: 'contacts' },
+        to: { node: 'person', row: 'deals' },
+        toEnd: 'many',
+        description: 'Contacts: Each deal has many people. Each person has many deals.',
+      },
+    ]);
+    // Without its owning side, the inverse draws the line, pointing the same way.
+    expect(relationEdges([people, { ...deal, fields: [] }])).toEqual([
+      expect.objectContaining({
+        from: { node: 'deal', row: undefined },
+        to: { node: 'person', row: 'deals' },
+        toEnd: 'many',
+      }),
+    ]);
+    const [contacts] = deal.fields as [FieldView];
+    const [deals] = people.fields as [FieldView];
+    expect(typeDetail(contacts, [deal, people])).toBe('Many People');
+    expect(typeDetail(deals, [deal, people])).toBe('Many Deals');
+    expect([contacts, deals].map(isManyRelation)).toEqual([true, true]);
+    expect(isManyRelation(person.fields[2] as FieldView)).toBe(false);
   });
 
   it('words cardinality the same way everywhere', () => {

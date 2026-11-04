@@ -1,3 +1,4 @@
+import { isInverseRelation } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
 import { useState } from 'react';
@@ -87,9 +88,7 @@ export function EventPage() {
   const e = r.event;
   const type = objectByName(schema, r.object);
   // Title and summary show above; the type's other fields are listed here.
-  const others = (type?.fields ?? []).filter(
-    (f) => !f.coreRole && f.settings.relationCardinality !== 'one_to_many',
-  );
+  const others = (type?.fields ?? []).filter((f) => !f.coreRole && !isInverseRelation(f));
   return (
     <Page
       eyebrow={type?.labelSingular ?? r.object}

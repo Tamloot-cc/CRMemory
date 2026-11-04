@@ -3,6 +3,7 @@ import {
   type CoreRole,
   type EventColumn,
   type FieldView,
+  isInverseRelation,
   type ObjectView,
   SCHEMA_CHANGE_STATUSES,
   type SchemaChange,
@@ -71,6 +72,7 @@ import {
   cardinality,
   describeOperation,
   findObject,
+  isManyRelation,
   matchesField,
   parseStatus,
   relationEdges,
@@ -577,7 +579,7 @@ function FieldSheet({
       label: 'Read only',
       on: field.readOnly,
       yes:
-        s.relationCardinality === 'one_to_many' && target && inverse
+        isInverseRelation(field) && target && inverse
           ? `The inverse side; write ${target.labelSingular} → ${inverse.label} instead`
           : 'Written by the server, not directly',
       no: 'Agents and people can write it',
@@ -638,7 +640,12 @@ function FieldSheet({
               )}
             </Property>
             <Property label="Cardinality">
-              {cardinality(object, target, s.relationCardinality === 'one_to_many')}
+              {cardinality(object, target, isManyRelation(field))}
+            </Property>
+            <Property label="Side">
+              {isInverseRelation(field)
+                ? 'Inverse: derived from the other side, read only'
+                : 'Owning: written here'}
             </Property>
             {s.inverseField ? (
               <Property label="Other side">

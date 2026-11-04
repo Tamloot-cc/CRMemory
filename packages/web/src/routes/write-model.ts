@@ -5,9 +5,14 @@ import type {
   PresentedRecord,
   RecordHit,
 } from '@retainer/shared';
-import { FieldValueError, MULTI_VALUE_TYPES, validateFieldValue } from '@retainer/shared';
+import {
+  FieldValueError,
+  isInverseRelation,
+  MULTI_VALUE_TYPES,
+  validateFieldValue,
+} from '@retainer/shared';
 import { isEmptyFor } from '../fields/common.js';
-import { findObject, isInverseRelation } from './schema-model.js';
+import { findObject } from './schema-model.js';
 
 /** A field a person can set: not an inverse relation, not read-only, not `json` (read-only in the app). */
 export const isWritable = (f: FieldView) =>

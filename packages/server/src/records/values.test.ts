@@ -102,7 +102,7 @@ describe('normalizeFieldValue', () => {
   it('refuses writes to the read-only side of a relation', () => {
     expect(
       bad(
-        { type: 'relation', settings: { relationCardinality: 'one_to_many' } },
+        { type: 'relation', settings: { relationCardinality: 'one_to_many', isInverse: true } },
         '0d6b0c38-2f55-4b4e-9d7c-6f3f2b4c1a10',
       ),
     ).toThrow('read-only');
@@ -116,7 +116,11 @@ describe('prepareValues', () => {
   const fields = [
     field({ name: 'name', isNullable: false }),
     field({ name: 'age', type: 'number' }),
-    field({ name: 'people', type: 'relation', settings: { relationCardinality: 'one_to_many' } }),
+    field({
+      name: 'people',
+      type: 'relation',
+      settings: { relationCardinality: 'one_to_many', isInverse: true },
+    }),
   ];
   const object = {
     name: 'thing',

@@ -192,11 +192,20 @@ export function normalizeFieldValue(field: ValueField, value: unknown): unknown 
     }
     case 'address':
       return parseWith(addressValueSchema.strict(), value);
-    case 'relation':
-      if (field.settings.relationCardinality !== 'many_to_one') {
+    case 'relation': {
+      if (field.settings.isInverse || field.settings.relationCardinality === 'one_to_many') {
         fail('this is the read-only side of a relation; write the other side instead');
       }
-      return parseWith(z.uuid({ message: 'expected the ID of the related record' }), value);
+      if (field.settings.relationCardinality !== 'many_to_many') {
+        return parseWith(z.uuid({ message: 'expected the ID of the related record' }), value);
+      }
+      // A set: duplicates dropped, ordered by ID, since membership is unordered.
+      if (!Array.isArray(value)) fail('expected an array of related record IDs ([] clears it)');
+      const ids = value.map((id) =>
+        parseWith(z.uuid({ message: 'expected the ID of a related record' }), id),
+      );
+      return [...new Set(ids.map((id) => id.toLowerCase()))].sort();
+    }
     case 'json':
       if (value === undefined) fail('expected a JSON value');
       return JSON.parse(JSON.stringify(value));
@@ -205,9 +214,16 @@ export function normalizeFieldValue(field: ValueField, value: unknown): unknown 
 
 /** Validates an editor value, including clearing a nullable field. */
 export function validateFieldValue(field: ValueField, value: unknown): unknown {
+  const collection =
+    field.type === 'relation' && field.settings.relationCardinality === 'many_to_many';
   if (value === null) {
+    if (collection) throw new FieldValueError('takes an array of record IDs; [] clears it');
     if (!field.isNullable) throw new FieldValueError('is required and cannot be null');
     return null;
   }
-  return normalizeFieldValue(field, value);
+  const normalized = normalizeFieldValue(field, value);
+  if (collection && !field.isNullable && (normalized as unknown[]).length === 0) {
+    throw new FieldValueError('is required: give at least one record');
+  }
+  return normalized;
 }

@@ -139,7 +139,9 @@ const queryRecordsInput = z.strictObject({
   filter: queryInputSchema.shape.filter.describe(
     'Field name to a value (equality) or to operators: eq, neq, in, gt, gte, lt, lte, ' +
       'e.g. { "status": "todo", "dueDate": { "lte": "2026-11-30" } }. Only filterable fields. ' +
-      'Event types also filter and sort by occurredAt, channel and externalId.',
+      'Event types also filter and sort by occurredAt, channel and externalId. A ' +
+      'many_to_many relation takes containsAny or containsAll (lists of record IDs) and ' +
+      'isEmpty (true or false), e.g. { "contacts": { "containsAny": ["<person id>"] } }.',
   ),
   cursor: queryInputSchema.shape.cursor.describe('nextCursor from the previous page.'),
 });
@@ -156,7 +158,10 @@ const upsertRecordInput = z.strictObject({
     .default({})
     .describe(
       'Field name to value. Composite fields (emails, phones, links, money, full_name, ' +
-        'address) are replaced whole, so include the values to keep. null clears a field.',
+        'address) are replaced whole, so include the values to keep. null clears a field. ' +
+        'A many_to_many relation takes the whole list of record IDs ([] clears it): read ' +
+        'the record first and send every member to keep. Fields marked readOnly (isInverse) ' +
+        'are written from the other side.',
     ),
   ifMissing: upsertInputSchema.shape.ifMissing.describe(
     'When id or match finds nothing: "fail" (default) or "create". Use "create" only ' +

@@ -1,13 +1,18 @@
 import { RetainerApiError } from '@retainer/sdk';
 import type { AssertionView, FieldView, PresentedRecord } from '@retainer/shared';
-import { TASK_DONE_OPTION, validateFieldValue } from '@retainer/shared';
+import {
+  isCollectionRelation,
+  isInverseRelation,
+  TASK_DONE_OPTION,
+  validateFieldValue,
+} from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { History, Maximize2, Pencil } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { api, canMutate, useWorkspace } from '../api/client.js';
-import { FieldPicker, PICKERS } from '../fields/common.js';
+import { FieldPicker, pickerFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge, AssertionSource, SourcedValue } from '../provenance/index.js';
 import {
@@ -74,6 +79,14 @@ export function useRecord(id: string) {
     queryFn: ({ signal }) => api.record(id, undefined, signal),
   });
 }
+
+/**
+ * A filter condition for "this relation points at `id`": `eq` on a
+ * single-record field, `containsAny` on a set. A many_to_many field, owning
+ * or inverse, pairs with a set on the other side too.
+ */
+export const pointsAt = (field: FieldView, id: string) =>
+  isCollectionRelation(field) ? { containsAny: [id] } : { eq: id };
 
 /** Where the memory tabs keep their tab and page: the URL on the record page, local state in the sheet. */
 type MemoryNav = {
@@ -182,12 +195,12 @@ export function RecordView({
         f.type === 'relation' &&
         f.isFilterable &&
         f.settings.targetObject === r.object &&
-        f.settings.relationCardinality === 'many_to_one',
+        !isInverseRelation(f),
     ) ?? [];
   const taskFilter = {
     and: [
       ...(taskStatus ? [{ [taskStatus.name]: { neq: TASK_DONE_OPTION } }] : []),
-      { or: links.map((f) => ({ [f.name]: { eq: rid } })) },
+      { or: links.map((f) => ({ [f.name]: pointsAt(f, rid) })) },
     ],
   };
   const tasks = useQuery({
@@ -207,9 +220,8 @@ export function RecordView({
   });
   const object = schema.objects.find((o) => o.nameSingular === r.object),
     canWrite = canMutate(session);
-  const own = object?.fields.filter((f) => f.settings.relationCardinality !== 'one_to_many') ?? [];
-  const inverse =
-    object?.fields.filter((f) => f.settings.relationCardinality === 'one_to_many') ?? [];
+  const own = object?.fields.filter((f) => !isInverseRelation(f)) ?? [];
+  const inverse = object?.fields.filter(isInverseRelation) ?? [];
   async function retractFact() {
     if (!retract) return;
     setBusy(true);
@@ -274,7 +286,10 @@ export function RecordView({
                     {f.settings.targetObject && f.settings.inverseField ? (
                       <ObjectLink
                         object={f.settings.targetObject}
-                        filter={JSON.stringify({ [f.settings.inverseField]: { eq: rid } })}
+                        filter={JSON.stringify({
+                          // The other side holds this record: as its value, or in its set.
+                          [f.settings.inverseField]: pointsAt(f, rid),
+                        })}
                       >
                         View related records
                       </ObjectLink>
@@ -499,6 +514,17 @@ function FieldProperty({
 }
 
 /**
+ * Whether a draft holds the value already stored. A set compares as members
+ * in ID order, as the server keeps it; the order they were picked in is not
+ * a change.
+ */
+export function sameValue(field: FieldView, draft: unknown, current: unknown) {
+  const shape = (v: unknown) =>
+    isCollectionRelation(field) && Array.isArray(v) ? [...new Set(v)].sort() : (v ?? null);
+  return JSON.stringify(shape(draft)) === JSON.stringify(shape(current));
+}
+
+/**
  * Saves one field with the record's `updatedAt` as the precondition. A stale
  * write keeps the draft open beside the latest value; retrying is explicit.
  *
@@ -525,7 +551,7 @@ export function InlineEditor({
     [busy, setBusy] = useState(false),
     [stale, setStale] = useState(false);
   const { Input, Display } = fields[field.type];
-  const picker = PICKERS[field.type];
+  const picker = pickerFor(field);
   // Wait only for the record (the next save's precondition); the rest of the
   // workspace, including the list behind a sheet, refreshes in the background.
   async function refresh() {
@@ -538,7 +564,7 @@ export function InlineEditor({
   async function save(next: unknown = draft, outside = false) {
     if (busy) return;
     // Nothing to write: leave without adding to the field's history.
-    if (JSON.stringify(next ?? null) === JSON.stringify(current)) return onDone(outside);
+    if (sameValue(field, next, current)) return onDone(outside);
     setBusy(true);
     try {
       const value = validateFieldValue(field, next);

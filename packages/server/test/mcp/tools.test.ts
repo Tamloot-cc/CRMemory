@@ -206,7 +206,14 @@ describe('the discover_schema guide', () => {
     async (name) => {
       const res = await agent.call<string>('get_guide', { name });
       const operations = schemaOperationSchema.options.map((o) => o.shape.op.value);
-      const known = new Set<string>([...TOOLS, ...operations, ...FIELD_TYPES, ...GUIDE_NAMES]);
+      const cardinalities = ['many_to_one', 'many_to_many', 'one_to_many'];
+      const known = new Set<string>([
+        ...TOOLS,
+        ...operations,
+        ...FIELD_TYPES,
+        ...GUIDE_NAMES,
+        ...cardinalities,
+      ]);
       const named = new Set(res.body.match(/\b[a-z]+(?:_[a-z]+)+\b/g));
       expect(named).toContain('log_event');
       expect([...named].filter((word) => !known.has(word))).toEqual([]);

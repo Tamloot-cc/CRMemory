@@ -1,8 +1,9 @@
 import {
   EVENT_ATTACHMENTS,
-  FILTER_OPERATORS,
   type FieldType,
   type FilterOperator,
+  filterOperatorsFor,
+  isCollectionRelation,
   type RecordPage,
   SORTABLE_TYPES,
 } from '@retainer/shared';
@@ -27,7 +28,6 @@ import { normalizeFieldValue } from './values.js';
 export type Filter = { and?: Filter[]; or?: Filter[]; not?: Filter } & Record<string, unknown>;
 
 type Operator = FilterOperator;
-const OPERATORS_BY_TYPE = FILTER_OPERATORS;
 const SORTABLE: ReadonlySet<FieldType> = new Set(SORTABLE_TYPES);
 
 export const queryInputSchema = z.strictObject({
@@ -191,7 +191,7 @@ function compileCondition(
       allowed: filterableNames(object),
     });
   }
-  const allowed = [...OPERATORS_BY_TYPE[field.type], 'isNull'];
+  const allowed = filterOperatorsFor(field);
 
   for (const [op, raw] of Object.entries(conditions)) {
     if (!(allowed as string[]).includes(op)) {
@@ -237,6 +237,24 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
     if (typeof raw !== 'boolean') throw invalidFilter(`${field.name}.isNull takes true or false`);
     const empty = emptyValue(tx, field);
     return raw ? empty : tx`not ${empty}`;
+  }
+
+  if (isCollectionRelation(field)) {
+    if (op === 'isEmpty') {
+      if (typeof raw !== 'boolean')
+        throw invalidFilter(`${field.name}.isEmpty takes true or false`);
+      const empty = emptyValue(tx, field);
+      return raw ? empty : tx`not ${empty}`;
+    }
+    if (!Array.isArray(raw) || raw.length === 0 || raw.some((id) => typeof id !== 'string')) {
+      throw invalidFilter(`${field.name}.${op} takes a non-empty array of record IDs`);
+    }
+    const ids = [...new Set(raw as string[])];
+    if (op === 'containsAny') {
+      return tx`exists (select 1 ${liveLinks(tx, field)} and l.target_record_id = any(${ids}::uuid[]))`;
+    }
+    return tx`(select count(distinct l.target_record_id) ${liveLinks(tx, field)}
+      and l.target_record_id = any(${ids}::uuid[])) = ${ids.length}`;
   }
 
   if (field.type === 'relation') {
@@ -294,7 +312,9 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
   if (op === 'neq' && field.type !== 'date_time') {
     return tx`not (r.data @> ${tx.json(jsonValue({ [key]: value }))})`;
   }
-  const sqlOp = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
+  const sqlOp = (
+    { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' } as Record<string, string>
+  )[op];
   if (!sqlOp) throw invalidFilter(`unsupported operator ${op}`);
   return tx`${typed(tx, field)} ${tx.unsafe(sqlOp)} ${castParam(tx, field, value)}`;
 }

@@ -67,9 +67,13 @@ const DESIGN_RULES = `### Use what Retainer already has
 
 - Types: select for a small closed set, with the options you saw;
   multi_select for tags; money for amounts (with currency); date or
-  date_time; emails, phones and links for contact details; relation (many
-  to one) to link to another object, with an inverseField name for the other
-  side. Avoid json.
+  date_time; emails, phones and links for contact details; relation to
+  link to another object, with an inverseField name for the other side.
+  A relation is many_to_one (one record: a deal's company) unless a record
+  can link to several at once (a deal's contacts, a person's
+  organizations): then set relationCardinality "many_to_many" rather than
+  creating a join object. Write a relation on its owning side; the inverse
+  (isInverse) is read-only. Avoid json.
 - Names are camelCase API names (nameSingular "deal", namePlural "deals";
   field "closeDate"); labels are what people read. Prefer a template's
   names to your own when they mean the same thing.

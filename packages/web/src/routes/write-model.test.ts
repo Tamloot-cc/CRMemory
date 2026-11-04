@@ -7,6 +7,7 @@ import {
   forgetConfirmation,
   groupRecordHits,
   initialDraft,
+  isWritable,
   mergeRows,
   mergeValues,
   prepareCreateValues,
@@ -74,6 +75,7 @@ const company: ObjectView = {
         targetObject: 'person',
         inverseField: 'company',
         relationCardinality: 'one_to_many',
+        isInverse: true,
       },
     }),
   ],
@@ -134,6 +136,59 @@ describe('prepareCreateValues', () => {
       lastContact: '2026-11-02T09:30:00+02:00',
     });
     expect(values.lastContact).toBe('2026-11-02T07:30:00.000Z');
+  });
+});
+
+describe('many-to-many relations', () => {
+  const A = '10000000-0000-4000-8000-00000000000a',
+    B = '10000000-0000-4000-8000-00000000000b';
+  const set = {
+    targetObject: 'person',
+    inverseField: 'deals',
+    relationCardinality: 'many_to_many',
+  };
+  const deal: ObjectView = {
+    ...person,
+    nameSingular: 'deal',
+    labelField: 'title',
+    fields: [
+      field('title', 'text'),
+      field('contacts', 'relation', { isNullable: false, settings: set as never }),
+      field('watchers', 'relation', { settings: set as never }),
+    ],
+  };
+  const deals = field('deals', 'relation', {
+    readOnly: true,
+    settings: {
+      targetObject: 'deal',
+      inverseField: 'contacts',
+      relationCardinality: 'many_to_many',
+      isInverse: true,
+    },
+  });
+  it('writes the owning set, never its inverse', () => {
+    expect(creatableFields(deal).map((f) => f.name)).toEqual(['title', 'contacts', 'watchers']);
+    expect(isWritable(deals)).toBe(false);
+    // The flag decides, not the cardinality: both sides are many_to_many.
+    expect(isWritable({ ...deals, readOnly: false })).toBe(false);
+  });
+  it('sends a set in ID order, skips an empty optional one and requires a required one', () => {
+    const list = creatableFields(deal);
+    expect(prepareCreateValues(list, { title: 'X', contacts: [B, A, B], watchers: [] })).toEqual({
+      values: { title: 'X', contacts: [A, B] },
+      errors: {},
+    });
+    expect(prepareCreateValues(list, { title: 'X', contacts: [] }).errors).toEqual({
+      contacts: 'is required',
+    });
+  });
+  it('merges a set as one value that the newest wins, not a combined list', () => {
+    const rows = mergeRows(
+      deal,
+      record({ title: 'X', contacts: [A] }, { object: 'deal' }),
+      record({ title: 'X', contacts: [B] }, { object: 'deal' }),
+    );
+    expect(rows).toMatchObject([{ field: { name: 'contacts' }, conflict: true, combined: false }]);
   });
 });
 

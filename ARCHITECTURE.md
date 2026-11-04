@@ -111,22 +111,48 @@ not schema fields.
 
 #### Relations
 
-A `relation` field is defined on the many-to-one side (`person.company`).
-The one-to-many side (`company.people`) is its inverse, read from the same
-`record_links` rows. Setting a link is a field assertion whose value is the
-target record's ID, so links follow the same write rules as other fields;
-`record_links` is derived from those assertions, like `records.data`. The
-field's `onDelete` setting is applied by the application when the target is
-soft-deleted: `cascade` soft-deletes the source records too; `set_null` (the
-default) keeps the edge and the assertion, and reads skip the deleted
-target. The database cascade only covers hard deletes of edges, not the
-asserted relation values. A many-to-one field permits at most one edge per
-`(source_record_id, field_id)`, enforced by a unique index on `record_links
-(source_record_id, field_id)`; inverse fields are read-only. A relation
-assertion is accepted only when the target is a live record of the target
-object in the same workspace. Hard deletion deletes relation assertions that
-point at the deleted record (2.1, step 3), so a rebuild cannot recreate
-dangling links.
+A `relation` field is defined on its owning side: `many_to_one` for one
+record (`person.company`) or `many_to_many` for a set of records
+(`deal.contacts`). The other side, if named with `inverseField`, is its
+inverse, read from the same `record_links` rows: `one_to_many` for a
+many-to-one field (`company.people`), `many_to_many` for a many-to-many
+one (`person.contactDeals`). The engine marks every inverse
+`settings.isInverse`, and only the owning side is written; `describe_schema`
+shows inverses as `readOnly`. Cardinality and target cannot change on an
+existing field: create a new field instead.
+
+Setting a link is a field assertion whose value is the target record's ID,
+or for a set the whole array of IDs, so links follow the same write rules as
+other fields; `record_links` is derived from the winning assertion, one row
+per target, like `records.data`. A set is normalized before it is compared
+or stored: duplicates dropped, ordered by ID, `[]` to clear it, `null`
+refused; a required set needs at least one member. A write replaces the
+whole set as one assertion, ranked like any other; there is no implicit
+union, so two writers replacing a set do not each keep their members, and
+a pending set changes no edges. Every member must be a live record of the
+target object in the same workspace, or the whole write fails.
+
+The field's `onDelete` setting is applied by the application when the target
+is soft-deleted: `cascade` soft-deletes the source records too; `set_null`
+(the default) keeps the edge and the assertion, and reads skip the deleted
+target. `cascade` is refused on many-to-many fields, since cascades follow
+links at any depth and deleting one contact would delete every deal listing
+it. The database cascade only covers hard deletes of edges, not the
+asserted relation values.
+
+`record_links.is_collection` marks a set's edges. A trigger sets it from the
+field, never from the writer, and refuses edges on an inverse or
+non-relation field; a unique index on `(workspace_id, source_record_id,
+field_id, target_record_id)` keeps each edge once, and a partial unique
+index on `(source_record_id, field_id) where not is_collection` holds a
+single-record field to one edge in the database itself, even for a writer
+that bypasses the application. Merges point sets at the survivor, once.
+Hard deletion deletes single-record assertions that point at the deleted
+record and removes it from every set assertion, current or past (2.1,
+step 3), so a rebuild cannot recreate dangling links.
+
+Sets filter with `containsAny` and `containsAll` (lists of record IDs) and
+`isEmpty`; they take no comparisons and cannot be sorted.
 
 #### Actor
 
@@ -493,7 +519,8 @@ can erase those dependencies. Then, in a coordinated deletion operation:
    (a meeting about a company) is someone else's conversation: it stays, and
    only the link is deleted. An erased event's identity is replaced by a
    tombstone (below);
-3. invalidate inbound relation assertions and recompute surviving records'
+3. invalidate inbound relation assertions (removing the record from sets)
+   and recompute surviving records'
    field values, links, identifiers and search text. A surviving event whose
    initial values this erases loses its `channel` and `external_id`, which
    are caller-chosen strings that may identify the person, and gets a

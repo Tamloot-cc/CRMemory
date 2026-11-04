@@ -103,7 +103,8 @@ const history = await retainer.recordEvents(acme.id, { limit: 20 });
 A filter maps field names to a value (equality) or to operators, and nests
 with `and`, `or` and `not`: `{ or: [{ stage: 'won' }, { amount: { gte: 10000 } }] }`.
 Operators are `eq`, `neq`, `in`, `gt`, `gte`, `lt`, `lte`, `contains` and
-`isNull`, depending on the field type (`FILTER_OPERATORS` in
+`isNull`, depending on the field type, and `containsAny`, `containsAll` and
+`isEmpty` for a many-to-many relation (`filterOperatorsFor` in
 `@retainer/shared`). Only fields with `isFilterable` in `retainer.schema()` can
 be filtered or sorted; the error for any other field lists the allowed ones.
 

@@ -1,9 +1,10 @@
-import type {
-  Actor,
-  AssertionView,
-  Provenance,
-  RecordReference,
-  SourceReference,
+import {
+  type Actor,
+  type AssertionView,
+  isCollectionRelation,
+  type Provenance,
+  type RecordReference,
+  type SourceReference,
 } from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { after, page } from '../db/pagination.js';
@@ -51,7 +52,7 @@ type AssertionRow = {
   reviewed_by: Actor | null;
   reviewed_at: Date | null;
   stamp: string;
-  current_link: string | null;
+  current_links: string[] | null;
 };
 export async function assertions(
   tx: Tx,
@@ -65,7 +66,7 @@ export async function assertions(
     AssertionRow[]
   >`select a.*, a.created_at::text as stamp, r.object_type_id, r.label, r.data,
     src.object_type_id as source_type, src.data as source_data, e.occurred_at,
-    (select l.target_record_id from record_links l where l.source_record_id = r.id and l.field_id = a.field_id) as current_link
+    (select array_agg(l.target_record_id::text order by l.target_record_id) from record_links l where l.source_record_id = r.id and l.field_id = a.field_id) as current_links
     from field_assertions a join records r on r.id = a.record_id
     left join records src on src.id = a.source_record_id and src.deleted_at is null
       and src.object_type_id = any(${schema.visibleObjectIds}::uuid[])
@@ -95,7 +96,7 @@ export async function assertions(
   const targetIds = result.items.flatMap((r) => {
     const field = schema.fieldOwners.get(r.field_id)?.fieldsById.get(r.field_id);
     return field?.type === 'relation'
-      ? [r.value, r.current_link].filter((v): v is string => typeof v === 'string')
+      ? [r.value, r.current_links].flat().filter((v): v is string => typeof v === 'string')
       : [];
   });
   const refs = await references(tx, schema, [...holders.map((h) => h.record_id), ...targetIds]);
@@ -117,7 +118,13 @@ export async function assertions(
         field: field?.name ?? r.field_id,
         value: r.value,
         currentValue:
-          field?.type === 'relation' ? r.current_link : field ? (r.data[field.key] ?? null) : null,
+          field?.type === 'relation'
+            ? isCollectionRelation(field)
+              ? (r.current_links ?? [])
+              : (r.current_links?.[0] ?? null)
+            : field
+              ? (r.data[field.key] ?? null)
+              : null,
         status: r.status,
         reason: r.review_reason,
         actor: r.actor,
@@ -181,7 +188,7 @@ export async function enrichedRecord(
     );
     result.provenance = Object.fromEntries(
       (schema.objectsByName.get(record.object)?.activeFields ?? [])
-        .filter((f) => f.settings.relationCardinality !== 'one_to_many')
+        .filter((f) => !f.settings.isInverse)
         .map((f) => [
           f.name,
           {

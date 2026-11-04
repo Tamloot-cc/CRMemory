@@ -312,6 +312,57 @@ describe('protection', () => {
   });
 });
 
+describe('many_to_many relations', () => {
+  const contacts = (settings: object) =>
+    ({
+      op: 'create_field',
+      object: 'task',
+      field: {
+        name: 'watchers',
+        label: 'Watchers',
+        type: 'relation',
+        settings: { targetObject: 'person', relationCardinality: 'many_to_many', ...settings },
+      },
+    }) as SchemaOperation;
+
+  it('creates an owning set and a read-only many_to_many inverse', () => {
+    const state = applyValid(base, [contacts({ inverseField: 'watching' })]);
+    const owner = field(state, 'task', 'watchers');
+    expect(owner?.settings).toMatchObject({
+      relationCardinality: 'many_to_many',
+      onDelete: 'set_null',
+    });
+    expect(owner?.settings.isInverse).toBeUndefined();
+    expect(field(state, 'person', 'watching')?.settings).toMatchObject({
+      relationCardinality: 'many_to_many',
+      isInverse: true,
+      inverseFieldId: owner?.universalId,
+    });
+  });
+
+  it('marks the inverse of a many_to_one relation too', () => {
+    expect(field(base, 'company', 'people')?.settings.isInverse).toBe(true);
+    expect(field(base, 'person', 'company')?.settings.isInverse).toBeUndefined();
+  });
+
+  it('refuses cascade, and changes or deletes on the inverse side', () => {
+    expect(issuesOf(base, [contacts({ onDelete: 'cascade' })]).map((i) => i.message)).toEqual([
+      'onDelete: cascade is not allowed on a many_to_many relation; use set_null',
+    ]);
+    const state = applyValid(base, [contacts({ inverseField: 'watching' })]);
+    expect(
+      issuesOf(state, [{ op: 'delete_field', object: 'person', field: 'watching' }]).map(
+        (i) => i.message,
+      ),
+    ).toEqual(['an inverse relation field is removed by deleting its owning side']);
+    expect(
+      issuesOf(state, [
+        { op: 'update_field', object: 'person', field: 'watching', isFilterable: true },
+      ]).map((i) => i.message),
+    ).toEqual(['an inverse relation field only takes label and description changes']);
+  });
+});
+
 describe('event types', () => {
   const seeded = applyValid(
     base,

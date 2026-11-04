@@ -156,10 +156,12 @@ export function applyOperations(
     object.fields.push(field);
     const target = findObject(targetObject, path);
     if (!target) return;
+    // `onDelete: cascade` on a set is refused by validation (5.3).
+    const collection = relationCardinality === 'many_to_many';
     field.settings = {
       ...field.settings,
       targetObjectId: target.universalId,
-      relationCardinality: 'many_to_one',
+      relationCardinality: collection ? 'many_to_many' : 'many_to_one',
       onDelete: onDelete ?? 'set_null',
     };
 
@@ -174,7 +176,8 @@ export function applyOperations(
         settings: {
           targetObjectId: object.universalId,
           inverseFieldId: universalId,
-          relationCardinality: 'one_to_many',
+          relationCardinality: collection ? 'many_to_many' : 'one_to_many',
+          isInverse: true,
         },
         isNullable: true,
         isUnique: false,
@@ -352,7 +355,7 @@ export function applyOperations(
           );
           break;
         }
-        const isInverse = field.settings.relationCardinality === 'one_to_many';
+        const isInverse = field.settings.isInverse === true;
         const flags = PROTECTED_FIELD_FLAGS;
         if (isInverse && flags.some((flag) => operation[flag] !== undefined)) {
           issue(path, 'an inverse relation field only takes label and description changes');
@@ -390,8 +393,8 @@ export function applyOperations(
         const field = object && findField(object, operation.field);
         if (!object || !field) break;
         const path = `${object.nameSingular}.${field.name}`;
-        if (field.settings.relationCardinality === 'one_to_many') {
-          issue(path, 'an inverse relation field is removed by deleting its many_to_one side');
+        if (field.settings.isInverse) {
+          issue(path, 'an inverse relation field is removed by deleting its owning side');
           break;
         }
         if (field.isProtected) {

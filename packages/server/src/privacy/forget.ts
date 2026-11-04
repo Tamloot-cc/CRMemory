@@ -132,11 +132,17 @@ export async function forgetRecord(
   const relationFieldIds = object ? inboundRelationFields(schema, object) : [];
   const pointsAtRecord = tx`field_id = any(${relationFieldIds}::uuid[])
     and value = any(array(select to_jsonb(x::text) from unnest(${recordIds}::uuid[]) x))`;
+  // A set (many_to_many) that holds the record, in any assertion, current
+  // or historical: the record is removed from it, so no recomputation can
+  // bring it back (5.3).
+  const holdsRecord = tx`field_id = any(${relationFieldIds}::uuid[])
+    and jsonb_typeof(value) = 'array' and value ?| ${recordIds}::text[]`;
   const elsewhere = tx`workspace_id = ${workspaceId} and record_id <> all(${erased}::uuid[])`;
   const affected = await tx<{ record_id: string }[]>`
     select distinct record_id from field_assertions
     where ${elsewhere}
-      and (source_record_id = any(${eventIds}::uuid[]) or (${pointsAtRecord}))`;
+      and (source_record_id = any(${eventIds}::uuid[]) or (${pointsAtRecord})
+        or (${holdsRecord}))`;
   const locked = await lockRecordsForUpdate(tx, workspaceId, [
     ...new Set([...erased, ...affected.map((r) => r.record_id)]),
   ]);
@@ -145,7 +151,7 @@ export async function forgetRecord(
   // identity (6.4): the caller-chosen channel and external ID may identify.
   const initialErased = await tx<{ record_id: string }[]>`
     select distinct record_id from field_assertions
-    where ${elsewhere} and is_initial and (${pointsAtRecord})`;
+    where ${elsewhere} and is_initial and ((${pointsAtRecord}) or (${holdsRecord}))`;
   const identities = await tx<{ record_id: string; channel: string; external_id: string }[]>`
     select record_id, channel, external_id from event_records
     where workspace_id = ${workspaceId} and external_id is not null and channel is not null
@@ -164,11 +170,18 @@ export async function forgetRecord(
   const inboundRelations = await tx<RemovedClaim[]>`
     delete from field_assertions where ${elsewhere} and ${pointsAtRecord}
     returning record_id, field_id, status`;
+  const trimmed = await tx<RemovedClaim[]>`
+    update field_assertions set value = (
+      select coalesce(jsonb_agg(v order by v collate "C"), '[]'::jsonb)
+      from jsonb_array_elements_text(value) v
+      where v <> all(${recordIds}::text[]))
+    where ${elsewhere} and ${holdsRecord}
+    returning record_id, field_id, status`;
   const recomputed = await releaseAndRecompute(
     tx,
     context,
     locked.filter((r) => !erased.includes(r.id)),
-    [...cited, ...inboundRelations],
+    [...cited, ...inboundRelations, ...trimmed],
   );
 
   // Facts on other records: drop the deleted sources, then any fact left
@@ -214,7 +227,7 @@ export async function forgetRecord(
     events: eventIds.filter((id) => !recordIds.includes(id)).length,
     facts: ownFacts.length + orphaned.length,
     assertions: (counted?.assertions ?? 0) + cited.length,
-    inboundRelations: inboundRelations.length,
+    inboundRelations: inboundRelations.length + trimmed.length,
     suppressedHandles,
   };
   await tx`

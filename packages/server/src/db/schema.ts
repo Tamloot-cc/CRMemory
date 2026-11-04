@@ -290,10 +290,16 @@ export const recordLinks = pgTable(
   {
     id: id(),
     workspaceId: workspaceId(),
-    /** The many_to_one relation field this edge belongs to. */
+    /** The owning (many_to_one or many_to_many) relation field this edge belongs to. */
     fieldId: uuid('field_id').notNull(),
     sourceRecordId: uuid('source_record_id').notNull(),
     targetRecordId: uuid('target_record_id').notNull(),
+    /**
+     * Whether the field holds a set (many_to_many). Derived from the field by
+     * a trigger, never trusted from the writer, so the partial unique index
+     * below enforces one target per single-record field (5.3).
+     */
+    isCollection: boolean('is_collection').notNull().default(false),
     createdBy: jsonb('created_by').$type<Actor>().notNull(),
     createdAt: createdAt(),
   },
@@ -309,7 +315,15 @@ export const recordLinks = pgTable(
       [t.workspaceId, t.targetRecordId],
       [records.workspaceId, records.id],
     ),
-    uniqueIndex('record_links_source_field_uq').on(t.sourceRecordId, t.fieldId),
+    uniqueIndex('record_links_edge_uq').on(
+      t.workspaceId,
+      t.sourceRecordId,
+      t.fieldId,
+      t.targetRecordId,
+    ),
+    uniqueIndex('record_links_single_target_uq')
+      .on(t.sourceRecordId, t.fieldId)
+      .where(sql`not ${t.isCollection}`),
     index('record_links_target_idx').on(t.targetRecordId, t.fieldId),
   ],
 );

@@ -283,9 +283,7 @@ async function checkSameEvent(
     where workspace_id = ${context.workspaceId} and record_id = ${existing.record_id}
       and is_initial`;
   const original = new Map(initial.map((row) => [row.field_id, row.value]));
-  const fields = object.activeFields.filter(
-    (f) => f.settings.relationCardinality !== 'one_to_many',
-  );
+  const fields = object.activeFields.filter((f) => !f.settings.isInverse);
 
   // Relation values on both sides, resolved to their survivors in one read.
   const relationIds = fields
@@ -577,7 +575,7 @@ function activeRelationFieldIds(schema: CompiledSchema): string[] {
         field?.status === 'active' &&
         object.state.status === 'active' &&
         field.type === 'relation' &&
-        field.settings.relationCardinality !== 'one_to_many'
+        !field.settings.isInverse
       );
     })
     .map(([id]) => id);

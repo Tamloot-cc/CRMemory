@@ -1,4 +1,4 @@
-import type { Actor, PresentedRecord } from '@retainer/shared';
+import { type Actor, isCollectionRelation, type PresentedRecord } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { eventDetails } from '../memory/event-links.js';
@@ -61,7 +61,8 @@ export async function presentRecords(
       select l.source_record_id as record_id, l.field_id, l.target_record_id as other_id
       from record_links l
       join records t on t.id = l.target_record_id and t.deleted_at is null
-      where l.source_record_id = any(${ids}::uuid[])`,
+      where l.source_record_id = any(${ids}::uuid[])
+      order by l.target_record_id`,
     tx<{ record_id: string; field_id: string; other_id: string }[]>`
       select l.target_record_id as record_id, l.field_id, l.source_record_id as other_id
       from record_links l
@@ -73,9 +74,12 @@ export async function presentRecords(
   const values = new Map<string, Record<string, unknown>>(ids.map((id) => [id, {}]));
   for (const link of outgoing) {
     const field = schema.fieldOwners.get(link.field_id)?.fieldsById.get(link.field_id);
-    if (field?.status === 'active') {
-      (values.get(link.record_id) as Record<string, unknown>)[field.name] = link.other_id;
-    }
+    if (field?.status !== 'active') continue;
+    const record = values.get(link.record_id) as Record<string, unknown>;
+    if (isCollectionRelation(field)) {
+      // A set, in ID order; members that were deleted no longer resolve.
+      record[field.name] = [...((record[field.name] as string[] | undefined) ?? []), link.other_id];
+    } else record[field.name] = link.other_id;
   }
   for (const link of incoming) {
     // The edge belongs to the many_to_one field; show it on that field's inverse.
@@ -97,6 +101,8 @@ export async function presentRecords(
       if (field.type !== 'relation' && Object.hasOwn(row.data, field.key)) {
         fields[field.name] = row.data[field.key];
       }
+      // An empty set reads as [], not as a missing value.
+      if (isCollectionRelation(field) && !field.settings.isInverse) fields[field.name] = [];
     }
     Object.assign(fields, values.get(row.id));
     const event = events.get(row.id);

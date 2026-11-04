@@ -174,16 +174,34 @@ export async function mergeRecords(
   let inboundIds: string[] = [];
   const relationFieldIds = inboundRelationFields(context.schema, object);
   if (relationFieldIds.length > 0) {
+    // A single-record value is B; a set (many_to_many) holds B among others.
+    const pointsAtB = tx`(value = ${tx.json(b)}
+      or (jsonb_typeof(value) = 'array' and value @> ${tx.json([b])}))`;
     const inbound = await tx<{ record_id: string }[]>`
       select distinct record_id from field_assertions
       where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
-        and value = ${tx.json(b)} and record_id <> all(${pair}::uuid[])`;
+        and ${pointsAtB} and record_id <> all(${pair}::uuid[])`;
     inboundIds = inbound.map((r) => r.record_id).sort();
     await lockRecordsForUpdate(tx, workspaceId, inboundIds);
     await tx`
       update field_assertions set value = ${tx.json(a)}
       where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
         and value = ${tx.json(b)}`;
+    // In a set, B becomes A once: membership is deduplicated and kept in ID
+    // order (byte order, as the server sorts), so it still compares equal.
+    await tx`
+      update field_assertions set value = (
+        select coalesce(jsonb_agg(x order by x collate "C"), '[]'::jsonb)
+        from (select distinct case when v = ${b} then ${a} else v end as x
+          from jsonb_array_elements_text(value) v) d)
+      where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
+        and jsonb_typeof(value) = 'array' and value @> ${tx.json([b])}`;
+    // Edges follow; an edge to B whose source already links to A is dropped.
+    await tx`
+      delete from record_links d using record_links k
+      where d.workspace_id = ${workspaceId} and d.target_record_id = ${b}
+        and k.source_record_id = d.source_record_id and k.field_id = d.field_id
+        and k.target_record_id = ${a}`;
     await tx`
       update record_links set target_record_id = ${a}
       where workspace_id = ${workspaceId} and target_record_id = ${b}

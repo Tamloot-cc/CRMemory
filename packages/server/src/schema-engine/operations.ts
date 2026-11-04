@@ -19,8 +19,11 @@ const fieldSettingsSchema = z.strictObject({
   targetObject: z.string().min(1).optional(),
   /** Name of the read-only inverse field created on the target object. */
   inverseField: z.string().min(1).optional(),
-  /** Only the many_to_one side can be created; the inverse is derived. */
-  relationCardinality: z.literal('many_to_one').optional(),
+  /**
+   * The owning side: `many_to_one` (default, one record) or `many_to_many`
+   * (a set of records). The inverse is derived and read-only.
+   */
+  relationCardinality: z.enum(['many_to_one', 'many_to_many']).optional(),
   onDelete: z.enum(['set_null', 'cascade']).optional(),
   maxValues: z.number().int().positive().max(100).optional(),
 });

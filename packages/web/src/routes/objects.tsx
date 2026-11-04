@@ -8,7 +8,7 @@ import type {
   SavedView,
   UpdateViewInput,
 } from '@retainer/shared';
-import { aggregateOps } from '@retainer/shared';
+import { aggregateOps, filterOperatorsFor } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
 import {
@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
-import { filterValue, operatorsFor, PICKERS } from '../fields/common.js';
+import { filterValue, pickerFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import {
   Button,
@@ -282,7 +282,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               <EditableCell
                 key={f.name}
                 label={`${f.label} of ${label}`}
-                wide={!PICKERS[f.type]}
+                wide={!pickerFor(f)}
                 editor={(close) => (
                   <InlineEditor
                     record={{ ...r, relationReferences: references }}
@@ -475,6 +475,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               {...describeClause(
                 c,
                 object.fields.find((f) => f.name === c.field),
+                references,
               )}
               onRemove={() => setFilter({ clauses: clauses.filter((_, j) => j !== i), custom })}
             />
@@ -843,6 +844,14 @@ function SortMenu({
   );
 }
 
+/** What a filter's value starts as when its operator is chosen. */
+const initialFilterValue = (operator: string): unknown =>
+  operator === 'isNull' || operator === 'isEmpty'
+    ? true
+    : operator === 'containsAny' || operator === 'containsAll'
+      ? []
+      : '';
+
 /** First the field to filter on, from a searchable list; then its condition and value. */
 function FilterMenu({
   object,
@@ -861,8 +870,9 @@ function FilterMenu({
   function choose(name: string) {
     const f = object.fields.find((f) => f.name === name);
     setField(name);
-    setOperator(f ? (operatorsFor(f)[0] ?? 'isNull') : 'eq');
-    setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : '');
+    const first = f ? (filterOperatorsFor(f)[0] ?? 'isNull') : 'eq';
+    setOperator(first);
+    setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : initialFilterValue(first));
   }
   function apply() {
     if (!selected) return;
@@ -901,13 +911,13 @@ function FilterMenu({
                 label="Filter operator"
                 fill
                 value={operator}
-                options={operatorsFor(selected).map((o) => ({
+                options={filterOperatorsFor(selected).map((o) => ({
                   value: o,
                   label: operatorLabel(o),
                 }))}
                 onChange={(next) => {
                   setOperator(next);
-                  setValue(next === 'isNull' ? true : '');
+                  setValue(initialFilterValue(next));
                 }}
               />
               <FilterControl

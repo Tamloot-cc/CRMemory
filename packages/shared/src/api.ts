@@ -510,13 +510,17 @@ export const AGGREGATE_OPS = [
 ] as const;
 export type AggregateOp = (typeof AGGREGATE_OPS)[number];
 const EMPTINESS: AggregateOp[] = ['countEmpty', 'countNotEmpty', 'percentEmpty', 'percentNotEmpty'];
-/** The aggregates a field supports; none for an inverse (one-to-many) relation. */
+/**
+ * The aggregates a field supports: none for an inverse relation, only
+ * emptiness for a many_to_many one (a set has no single value to compare).
+ */
 export function aggregateOps(field: {
   type: FieldType;
-  settings: { relationCardinality?: string };
+  settings: { relationCardinality?: string; isInverse?: boolean };
 }): AggregateOp[] {
-  if (field.settings.relationCardinality === 'one_to_many') return [];
+  if (field.settings.isInverse || field.settings.relationCardinality === 'one_to_many') return [];
   const ops = [...EMPTINESS];
+  if (field.settings.relationCardinality === 'many_to_many') return ops;
   if (field.type === 'relation' || SORTABLE_TYPES.includes(field.type)) ops.push('countUnique');
   if (field.type === 'number' || field.type === 'money') ops.push('sum', 'avg');
   // The ordered types, which take `gt` and `lt` filters.
@@ -645,7 +649,10 @@ export type FilterOperator =
   | 'lt'
   | 'lte'
   | 'contains'
-  | 'isNull';
+  | 'isNull'
+  | 'containsAny'
+  | 'containsAll'
+  | 'isEmpty';
 export const FILTER_OPERATORS: Record<FieldType, readonly FilterOperator[]> = {
   text: ['eq', 'neq', 'in', 'contains'],
   number: ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'],
@@ -663,3 +670,22 @@ export const FILTER_OPERATORS: Record<FieldType, readonly FilterOperator[]> = {
   relation: ['eq', 'in'],
   json: [],
 };
+/**
+ * Filters on a many_to_many relation: whether its set holds any or all of
+ * some record IDs, or is empty. Sets have no order, so no comparisons.
+ */
+export const COLLECTION_FILTER_OPERATORS: readonly FilterOperator[] = [
+  'containsAny',
+  'containsAll',
+  'isEmpty',
+];
+/** The filter operators a field takes, including `isNull` where it applies. */
+export function filterOperatorsFor(field: {
+  type: FieldType;
+  settings: { relationCardinality?: string };
+}): readonly FilterOperator[] {
+  if (field.type === 'relation' && field.settings.relationCardinality === 'many_to_many') {
+    return COLLECTION_FILTER_OPERATORS;
+  }
+  return [...FILTER_OPERATORS[field.type], 'isNull'];
+}

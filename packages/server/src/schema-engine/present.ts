@@ -59,7 +59,7 @@ export function presentSchema(schema: CompiledSchema): ObjectView[] {
       isUnique: field.isUnique,
       isFilterable: field.isFilterable,
       isSearchable: field.isSearchable,
-      readOnly: field.settings.relationCardinality === 'one_to_many',
+      readOnly: field.settings.isInverse === true,
       owner: field.owner,
       isProtected: field.isProtected,
       ...(PROTECTED_OPTIONS.has(field.universalId)

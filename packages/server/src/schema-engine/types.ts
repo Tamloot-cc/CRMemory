@@ -21,6 +21,8 @@ export type StoredFieldSettings = {
   /** `relation`: universal ID of the field on the other side. */
   inverseFieldId?: string;
   relationCardinality?: RelationCardinality;
+  /** Set by the engine on the derived, read-only side of a relation. */
+  isInverse?: boolean;
   onDelete?: OnDeleteBehavior;
   maxValues?: number;
 };
