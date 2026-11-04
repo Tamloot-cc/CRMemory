@@ -1,4 +1,5 @@
 ---
+
 name: pr-babysit
 argument-hint: "[PR-number] [--merge]"
 description: Open a PR for the finished work in Retainer and stay with it until it's settled. Wait for CI and both review bots (Codex-review and Codex) to finish on the head commit. Assess every finding, fix the valid ones, answer the rest, then email the outcome. Squash-merge and clean up only with --merge. Use when the user says "PR this", "open a PR and babysit it", "babysit PR #12", or "commit, PR and merge when settled". Not for reviewing someone else's PR.
@@ -123,11 +124,11 @@ Send one email with the Resend `send-email` tool:
 both `text` and `html`, and use the idempotency key
 `retainer-pr-<PR#>-<YYYY-MM-DDTHHMM>` (UTC).
 
-| Outcome | Subject |
-|---------|---------|
-| Merged | `Retainer PR #N: squash-merged — <title>` |
+| Outcome       | Subject                                    |
+| ------------- | ------------------------------------------ |
+| Merged        | `Retainer PR #N: squash-merged — <title>`  |
 | Settled, open | `Retainer PR #N: settled — ready to merge` |
-| Stalled | `Retainer PR #N: stalled — <the blocker>` |
+| Stalled       | `Retainer PR #N: stalled — <the blocker>`  |
 
 Start with **In plain words**: two sentences, no jargon, saying what was
 missing and what the PR adds. Then include the PR link, each finding and how

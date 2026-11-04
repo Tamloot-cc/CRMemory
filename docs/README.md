@@ -6,18 +6,18 @@ matters: typed fields, plain-language facts and a log of interactions, each
 linked to who wrote it and where it came from. Retainer validates, stores,
 resolves conflicts and searches. It never calls a language model.
 
-| Guide                                       | For                                                             |
-| ------------------------------------------- | --------------------------------------------------------------- |
-| [Self-hosting](self-hosting.md)             | Running the server, workspaces and API keys, configuration      |
-| [Deploying to AWS](aws.md)                  | Lambda, API Gateway and RDS with Terraform, instead of Docker   |
-| [Connecting agents](agents.md)              | MCP over HTTP or stdio, the tools, how an agent should write    |
-| [TypeScript SDK](sdk.md)                    | `@retainer/sdk`: calling the REST API from your own code        |
-| [REST API](rest-api.md)                     | Authentication, errors, pagination, idempotency and every route |
-| [Releasing](releasing.md)                   | How maintainers cut a release                                   |
-| [Retainer and Twenty](twenty-comparison.md) | How Retainer's schema differs from Twenty's CRM schema          |
-| [Schema expressiveness coverage](schema-expressiveness-coverage.md) | Direct structural coverage and required remodeling across ten CRMs, plus Affinity |
-| [PostgreSQL and SurrealDB](postgres-surrealdb-evaluation.md) | Database tradeoffs and a proposed experiment for an agent-first CRM |
-| [Event types and record history](event-types-and-history-spec.md) | Superseded by the merged spec; kept as the original decision record |
+| Guide                                                                        | For                                                                                                                 |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| [Self-hosting](self-hosting.md)                                              | Running the server, workspaces and API keys, configuration                                                          |
+| [Deploying to AWS](aws.md)                                                   | Lambda, API Gateway and RDS with Terraform, instead of Docker                                                       |
+| [Connecting agents](agents.md)                                               | MCP over HTTP or stdio, the tools, how an agent should write                                                        |
+| [TypeScript SDK](sdk.md)                                                     | `@retainer/sdk`: calling the REST API from your own code                                                            |
+| [REST API](rest-api.md)                                                      | Authentication, errors, pagination, idempotency and every route                                                     |
+| [Releasing](releasing.md)                                                    | How maintainers cut a release                                                                                       |
+| [Retainer and Twenty](twenty-comparison.md)                                  | How Retainer's schema differs from Twenty's CRM schema                                                              |
+| [Schema expressiveness coverage](schema-expressiveness-coverage.md)          | Direct structural coverage and required remodeling across ten CRMs, plus Affinity                                   |
+| [PostgreSQL and SurrealDB](postgres-surrealdb-evaluation.md)                 | Database tradeoffs and a proposed experiment for an agent-first CRM                                                 |
+| [Event types and record history](event-types-and-history-spec.md)            | Superseded by the merged spec; kept as the original decision record                                                 |
 | [Schema, events and history: merged spec](schema-events-and-history-spec.md) | Consolidated proposal: event records, native collection/polymorphic relations, rollups, history and phased delivery |
 
 The design, the data model and the write rules are in

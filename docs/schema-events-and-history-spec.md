@@ -61,20 +61,20 @@ Implementation anchors: [relation metadata](../packages/shared/src/schema.ts),
 
 ## 3. Design decisions
 
-| Decision | Result |
-| --- | --- |
-| Objects have immutable class `entity` or `event` | Events share the field, assertion, query and view machinery. |
-| Evidence is an event record | An entity's current state is not a versioned source. |
-| Relations support independent target multiplicity and allowed object types | Multi-record and polymorphic references compose. |
-| Ordinary relations remain assertion-backed | Conflict resolution and provenance apply to whole relation values. |
-| Event links remain specialized | Matching, unresolved handles, additive logging and privacy keep their existing semantics. |
-| Shared reference rules apply to both link mechanisms | Workspace isolation, live-target checks, merge resolution and reference presentation stay consistent. |
-| An event's own relation fields attach it to their targets | Events modeled with typed relations appear in their targets' history, like `about` links. |
-| `remember` notes are a hidden object type | One resolution check hides them everywhere, instead of a channel filter on every path. |
-| Every attached event carries one tagged `via` | Participant, about, field and rollup attachment share one shape. |
-| Rollups follow current relations; explicit links retain their logged association | Historical attachment and current grouping are distinguishable. |
-| The timeline is assembled on read | No separate timeline store or promise of exact historical belief snapshots. |
-| Base identities remain required in this scope | Empty schemas require a separate redesign of built-in dependencies. |
+| Decision                                                                         | Result                                                                                                |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Objects have immutable class `entity` or `event`                                 | Events share the field, assertion, query and view machinery.                                          |
+| Evidence is an event record                                                      | An entity's current state is not a versioned source.                                                  |
+| Relations support independent target multiplicity and allowed object types       | Multi-record and polymorphic references compose.                                                      |
+| Ordinary relations remain assertion-backed                                       | Conflict resolution and provenance apply to whole relation values.                                    |
+| Event links remain specialized                                                   | Matching, unresolved handles, additive logging and privacy keep their existing semantics.             |
+| Shared reference rules apply to both link mechanisms                             | Workspace isolation, live-target checks, merge resolution and reference presentation stay consistent. |
+| An event's own relation fields attach it to their targets                        | Events modeled with typed relations appear in their targets' history, like `about` links.             |
+| `remember` notes are a hidden object type                                        | One resolution check hides them everywhere, instead of a channel filter on every path.                |
+| Every attached event carries one tagged `via`                                    | Participant, about, field and rollup attachment share one shape.                                      |
+| Rollups follow current relations; explicit links retain their logged association | Historical attachment and current grouping are distinguishable.                                       |
+| The timeline is assembled on read                                                | No separate timeline store or promise of exact historical belief snapshots.                           |
+| Base identities remain required in this scope                                    | Empty schemas require a separate redesign of built-in dependencies.                                   |
 
 An event and a managed workflow record are distinct. An appointment record can
 be rescheduled; an email confirming it is something that happened. Link them.
@@ -422,7 +422,7 @@ attached to the record, as one tagged shape:
 type Via =
   | { kind: 'participant' }
   | { kind: 'about' }
-  | { kind: 'field'; field: string }                   // event's own relation (6.3)
+  | { kind: 'field'; field: string } // event's own relation (6.3)
   | { kind: 'rollup'; field: string; record: string }; // 7.2
 ```
 
@@ -492,11 +492,11 @@ deduplicates tasks and retains the protected task status/due-date behavior.
 Expose `GET /v1/records/:id/timeline`, MCP `get_timeline`, an SDK method and a
 web timeline tab. Assemble it from source tables at read time:
 
-| Item | Membership | Time |
-| --- | --- | --- |
-| `event` | Directly attached (participant, about, the event's own relation field) and rolled-up events, each with `via` (7.1); never internal notes | Event `occurred_at` |
-| `field_change` | Subject record's eligible assertions (`active`, `superseded`) | Assertion `observed_at` |
-| `fact` | Subject record's facts, including superseded facts but excluding retracted/source-less facts | Fact `valid_from` |
+| Item           | Membership                                                                                                                               | Time                    |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `event`        | Directly attached (participant, about, the event's own relation field) and rolled-up events, each with `via` (7.1); never internal notes | Event `occurred_at`     |
+| `field_change` | Subject record's eligible assertions (`active`, `superseded`)                                                                            | Assertion `observed_at` |
+| `fact`         | Subject record's facts, including superseded facts but excluding retracted/source-less facts                                             | Fact `valid_from`       |
 
 `field_change` means an asserted value in the record's history. It does not
 prove that the assertion was ever the winner. Existing `superseded` status
@@ -538,17 +538,17 @@ unmatched-participant review rather than losing them during the rename.
 
 ## 10. Disposition of the other coverage recommendations
 
-| Capability | Decision and trigger |
-| --- | --- |
-| Native multi-record relations | Included, immediately after event replacement and before rollups. |
-| Polymorphic references | Included after multi-record relations; compose with either multiplicity. |
-| Association labels/metadata | Deferred. Participant roles are not a general association schema. A follow-up must define directed label vocabularies, per-edge provenance and mutation rules. |
-| One-to-one relations | Deferred. A follow-up must enforce target uniqueness transactionally under concurrent writes; writer-side checking is insufficient. |
-| List-scoped entry fields | Deferred until a concrete Attio/Affinity-style workflow requires native list ownership. Entry objects remain an acknowledged structural substitution. |
-| Configurable typed composites/collections | Deferred until concrete nested shapes establish validation and evolution requirements. JSON and child objects do not count as direct typed-shape coverage. |
-| Optional base inventory | Deferred. Person matching, task context and internal notes currently depend on base identities. Removing them needs capability configuration or replacement behavior first. |
-| Per-target inverses and member-level relation mutations | Deferred. Included relations have one owning write side and whole-value assertions. |
-| Assertion premises and inferred facts | Deferred until a real agent workflow needs them and invalidation/erasure rules are decided. |
+| Capability                                              | Decision and trigger                                                                                                                                                        |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native multi-record relations                           | Included, immediately after event replacement and before rollups.                                                                                                           |
+| Polymorphic references                                  | Included after multi-record relations; compose with either multiplicity.                                                                                                    |
+| Association labels/metadata                             | Deferred. Participant roles are not a general association schema. A follow-up must define directed label vocabularies, per-edge provenance and mutation rules.              |
+| One-to-one relations                                    | Deferred. A follow-up must enforce target uniqueness transactionally under concurrent writes; writer-side checking is insufficient.                                         |
+| List-scoped entry fields                                | Deferred until a concrete Attio/Affinity-style workflow requires native list ownership. Entry objects remain an acknowledged structural substitution.                       |
+| Configurable typed composites/collections               | Deferred until concrete nested shapes establish validation and evolution requirements. JSON and child objects do not count as direct typed-shape coverage.                  |
+| Optional base inventory                                 | Deferred. Person matching, task context and internal notes currently depend on base identities. Removing them needs capability configuration or replacement behavior first. |
+| Per-target inverses and member-level relation mutations | Deferred. Included relations have one owning write side and whole-value assertions.                                                                                         |
+| Assertion premises and inferred facts                   | Deferred until a real agent workflow needs them and invalidation/erasure rules are decided.                                                                                 |
 
 Premises, when designed, cite immutable assertion IDs rather than whole entity
 records. The earlier `assertion_premises` / `premise_assertion_id` proposal is
@@ -566,14 +566,14 @@ Every phase leaves `main` working and updates architecture, guides, API/SDK
 contracts and relevant web behavior together. Generate migrations from the
 database schema; never hand-edit generated migrations.
 
-| Phase | Deliverable | Dependency |
-| --- | --- | --- |
-| 0 | Protection for current base identities and server-dependent task fields, including the `done` option rule | None |
-| 1 | Complete event replacement: class/core schema, templates, the hidden internal-note type, storage, logging, edits, sources, initial-assertion retries, links, attachment through event relation fields, the `via` shape, retraction, privacy, queries/search/context, SDK/MCP/web and removal of old interaction paths | 0 |
-| 2 | Native multi-record relations: schema, `isInverse`, whole-set assertions, edge derivation with the database single-target index, inverses, filters, `cascade` rejection, merge/erase behavior, task discovery and UI | 0 |
-| 3 | Polymorphic references for single and collection relations: allowed targets, validation, incoming queries, schema evolution and object-deletion checks, and UI | 2 |
-| 4 | One-hop rollups over the completed relation model, the bounded rollup query and its indexes, explicit template-default review and context integration | 1, 3 |
-| 5 | Unified timeline through REST, MCP, SDK and web, including assertion-history semantics and pagination | 4 |
+| Phase | Deliverable                                                                                                                                                                                                                                                                                                           | Dependency |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| 0     | Protection for current base identities and server-dependent task fields, including the `done` option rule                                                                                                                                                                                                             | None       |
+| 1     | Complete event replacement: class/core schema, templates, the hidden internal-note type, storage, logging, edits, sources, initial-assertion retries, links, attachment through event relation fields, the `via` shape, retraction, privacy, queries/search/context, SDK/MCP/web and removal of old interaction paths | 0          |
+| 2     | Native multi-record relations: schema, `isInverse`, whole-set assertions, edge derivation with the database single-target index, inverses, filters, `cascade` rejection, merge/erase behavior, task discovery and UI                                                                                                  | 0          |
+| 3     | Polymorphic references for single and collection relations: allowed targets, validation, incoming queries, schema evolution and object-deletion checks, and UI                                                                                                                                                        | 2          |
+| 4     | One-hop rollups over the completed relation model, the bounded rollup query and its indexes, explicit template-default review and context integration                                                                                                                                                                 | 1, 3       |
+| 5     | Unified timeline through REST, MCP, SDK and web, including assertion-history semantics and pagination                                                                                                                                                                                                                 | 4          |
 
 Phase 2 does not depend on the event replacement, so phases 1 and 2 can be
 built in parallel. Whichever lands second extends the other: if phase 2 lands

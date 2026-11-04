@@ -13,7 +13,7 @@ behavior; each phase below updates it in the same change that implements it.
 **Context.** Retainer is in early exploration: there are no users and no data
 to preserve. Migrations in this spec may drop and recreate tables, rename
 columns and remove APIs without compatibility shims or backfills. That freedom
-covers Retainer's own storage only. The product guarantee that a *workspace's*
+covers Retainer's own storage only. The product guarantee that a _workspace's_
 data survives its own schema changes (rule 3) stays.
 
 ## 1. Current state, verified against the code
@@ -50,18 +50,18 @@ These points correct or extend it:
 
 ## 2. Decisions
 
-| #   | Decision                                                                                                                      | Answers                                                       |
-| --- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| D1  | Object types have a class, `entity` or `event`. Interactions become records of event-class object types.                     | Fixed kinds; custom interaction fields; one schema system     |
-| D2  | Event types carry protected core fields that the schema engine creates.                                                       | Which interaction information stays protected                 |
-| D3  | Server code protects exactly what it depends on: those objects and fields cannot be deleted or reshaped.                      | Base field gap (section 1)                                    |
-| D4  | Evidence is event records. A claim derived from other data cites the assertions it rests on, never a whole entity record.     | Records as sources; keeping the cited version                 |
-| D5  | An event and a managed workflow object are different things. Link them; do not merge them.                                   | One event serving a workflow and evidence                     |
-| D6  | A relation field can opt in to rolling up events: events of the source record show on the target record, read-time, one hop. | Reliable inclusion of related events                          |
-| D7  | A record timeline merges events, field changes and facts at read time, over REST and MCP.                                     | Event history versus field-change history; complete history   |
-| D8  | Explicit links stay fixed at logging time. Rollups follow the current relation.                                               | Historical links                                              |
-| D9  | Drop `interactions.metadata` and the separate interaction tables.                                                             | Metadata follow-up                                            |
-| D10 | Background maintenance is deferred. The consolidator stays deterministic.                                                    | Scope of background maintenance                               |
+| #   | Decision                                                                                                                     | Answers                                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| D1  | Object types have a class, `entity` or `event`. Interactions become records of event-class object types.                     | Fixed kinds; custom interaction fields; one schema system   |
+| D2  | Event types carry protected core fields that the schema engine creates.                                                      | Which interaction information stays protected               |
+| D3  | Server code protects exactly what it depends on: those objects and fields cannot be deleted or reshaped.                     | Base field gap (section 1)                                  |
+| D4  | Evidence is event records. A claim derived from other data cites the assertions it rests on, never a whole entity record.    | Records as sources; keeping the cited version               |
+| D5  | An event and a managed workflow object are different things. Link them; do not merge them.                                   | One event serving a workflow and evidence                   |
+| D6  | A relation field can opt in to rolling up events: events of the source record show on the target record, read-time, one hop. | Reliable inclusion of related events                        |
+| D7  | A record timeline merges events, field changes and facts at read time, over REST and MCP.                                    | Event history versus field-change history; complete history |
+| D8  | Explicit links stay fixed at logging time. Rollups follow the current relation.                                              | Historical links                                            |
+| D9  | Drop `interactions.metadata` and the separate interaction tables.                                                            | Metadata follow-up                                          |
+| D10 | Background maintenance is deferred. The consolidator stays deterministic.                                                    | Scope of background maintenance                             |
 
 Views, filters and dashboards over typed event information follow from D1:
 they already work per object type.
@@ -84,15 +84,15 @@ derived from `field_assertions`, custom fields, views, search, soft delete.
 
 What differs for event records:
 
-| Concern               | Event records                                                                                     |
-| --------------------- | ------------------------------------------------------------------------------------------------- |
-| Created by            | `log_event` only; `upsert_record` refuses event types on create                                   |
-| Identity columns      | `occurred_at`, `channel`, `external_id` (section 3.2); immutable after logging                    |
-| Links                 | Participants and `about` records (section 3.3)                                                    |
-| Citable as a source   | Yes; entity records are not                                                                       |
-| Deleting              | Retracts every claim citing it (today's interaction retraction, rule 2.1); same permissions       |
-| Merging               | Not allowed; deduplication is by `(channel, external_id)`; no merge suggestions                   |
-| Updating fields       | Non-core and core text fields through `upsert_record`, as assertions; identity columns never     |
+| Concern             | Event records                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------------- |
+| Created by          | `log_event` only; `upsert_record` refuses event types on create                              |
+| Identity columns    | `occurred_at`, `channel`, `external_id` (section 3.2); immutable after logging               |
+| Links               | Participants and `about` records (section 3.3)                                               |
+| Citable as a source | Yes; entity records are not                                                                  |
+| Deleting            | Retracts every claim citing it (today's interaction retraction, rule 2.1); same permissions  |
+| Merging             | Not allowed; deduplication is by `(channel, external_id)`; no merge suggestions              |
+| Updating fields     | Non-core and core text fields through `upsert_record`, as assertions; identity columns never |
 
 ### 3.2 Event core (D2)
 
@@ -197,11 +197,11 @@ Template defaults: `true` on `task.person`, `task.company`,
 `GET /v1/records/:id/timeline`, MCP `get_timeline` and the SDK return one
 stream for a record, newest first, cursor-paginated:
 
-| Item type      | Comes from                                                                             | Time            |
-| -------------- | -------------------------------------------------------------------------------------- | --------------- |
-| `event`        | Events linked to the record, and rolled-up events (with `via`)                         | `occurred_at`   |
-| `field_change` | The record's assertions that are or were the winning value (`active`, `superseded`)    | `observed_at`   |
-| `fact`         | The record's facts, including superseded ones                                          | `valid_from`    |
+| Item type      | Comes from                                                                          | Time          |
+| -------------- | ----------------------------------------------------------------------------------- | ------------- |
+| `event`        | Events linked to the record, and rolled-up events (with `via`)                      | `occurred_at` |
+| `field_change` | The record's assertions that are or were the winning value (`active`, `superseded`) | `observed_at` |
+| `fact`         | The record's facts, including superseded ones                                       | `valid_from`  |
 
 Filters: item types, field names, event types, and a time range. Field changes
 of related records do not roll up; open the related record's timeline.
@@ -242,15 +242,15 @@ the agent guides (`mcp/guides.ts`), `docs/` and the SDK for what it changes.
 Phases 1 to 3 change storage together and may share one generated migration
 series; no data migration is needed.
 
-| Phase | Scope                                                                                                                                                                                       | Depends on | Why here                                                                                    |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------- |
-| 0     | Protection rule (3.5) for today's schema: `is_protected` on objects and fields; protect `task.status` and `task.dueDate`.                                                                  | None       | Fixes a real gap now; small; independent of everything else                                 |
-| 1     | Schema engine: `class`, event core fields, `core` role, protection of core fields; base event types (3.4); event types in templates. No storage of event records yet.                     | 0          | Every later phase needs event types to exist                                                |
-| 2     | Write path: `event_records`, `event_links`, `log_event`, re-log and conflict rules, participant matching, `remember` notes on `note`, sources re-pointed (3.6, first bullet), event deletion as retraction, `forget`. Drop the old tables and `metadata`. | 1          | Moves storage in one step, while nothing depends on the old tables                          |
-| 3     | Read paths: `query_records` over events, search, `get_context` `recentEvents`, `describe_schema`; web app interaction screens moved to event records.                                    | 2          | Restores every read the old tables served                                                   |
-| 4     | Rollups (3.7): field setting, template defaults, rollups in event lists and context packs.                                                                                                 | 3          | Needs event reads; the timeline consumes it                                                 |
-| 5     | Timeline (3.8): REST, MCP, SDK; a web timeline tab.                                                                                                                                        | 4          | Closes the MCP field-history gap and the "complete history" question                        |
-| 6     | Premises (3.6, second bullet): `assertion_premises`, `premise_assertion_id`, `inferred` facts.                                                                                            | 2          | Last: nothing needs it until an agent workflow derives claims from other claims             |
+| Phase | Scope                                                                                                                                                                                                                                                     | Depends on | Why here                                                                        |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------- |
+| 0     | Protection rule (3.5) for today's schema: `is_protected` on objects and fields; protect `task.status` and `task.dueDate`.                                                                                                                                 | None       | Fixes a real gap now; small; independent of everything else                     |
+| 1     | Schema engine: `class`, event core fields, `core` role, protection of core fields; base event types (3.4); event types in templates. No storage of event records yet.                                                                                     | 0          | Every later phase needs event types to exist                                    |
+| 2     | Write path: `event_records`, `event_links`, `log_event`, re-log and conflict rules, participant matching, `remember` notes on `note`, sources re-pointed (3.6, first bullet), event deletion as retraction, `forget`. Drop the old tables and `metadata`. | 1          | Moves storage in one step, while nothing depends on the old tables              |
+| 3     | Read paths: `query_records` over events, search, `get_context` `recentEvents`, `describe_schema`; web app interaction screens moved to event records.                                                                                                     | 2          | Restores every read the old tables served                                       |
+| 4     | Rollups (3.7): field setting, template defaults, rollups in event lists and context packs.                                                                                                                                                                | 3          | Needs event reads; the timeline consumes it                                     |
+| 5     | Timeline (3.8): REST, MCP, SDK; a web timeline tab.                                                                                                                                                                                                       | 4          | Closes the MCP field-history gap and the "complete history" question            |
+| 6     | Premises (3.6, second bullet): `assertion_premises`, `premise_assertion_id`, `inferred` facts.                                                                                                                                                            | 2          | Last: nothing needs it until an agent workflow derives claims from other claims |
 
 Testing, per CLAUDE.md and ARCHITECTURE.md 12:
 
