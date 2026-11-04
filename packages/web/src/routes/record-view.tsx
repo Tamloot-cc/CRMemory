@@ -1,5 +1,5 @@
 import { RetainerApiError } from '@retainer/sdk';
-import type { AssertionView, FieldView, PresentedRecord } from '@retainer/shared';
+import type { AssertionView, FieldView, ObjectView, PresentedRecord } from '@retainer/shared';
 import {
   isCollectionRelation,
   isInverseRelation,
@@ -12,7 +12,7 @@ import { History, Maximize2, Pencil } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { api, canMutate, useWorkspace } from '../api/client.js';
-import { FieldPicker, pickerFor } from '../fields/common.js';
+import { FieldPicker, isPolymorphic, pickerFor, relationTargets } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge, AssertionSource, SourcedValue } from '../provenance/index.js';
 import {
@@ -87,6 +87,25 @@ export function useRecord(id: string) {
  */
 export const pointsAt = (field: FieldView, id: string) =>
   isCollectionRelation(field) ? { containsAny: [id] } : { eq: id };
+
+/**
+ * Polymorphic relations that may point at records of `object`, with the
+ * object each belongs to. They have no field on this side, so a record finds
+ * what links to it by filtering on them.
+ */
+export function polymorphicLinksTo(objects: ObjectView[], object: string) {
+  return objects.flatMap((o) =>
+    o.fields
+      .filter(
+        (f) =>
+          isPolymorphic(f) &&
+          f.isFilterable &&
+          !isInverseRelation(f) &&
+          relationTargets(f).includes(object),
+      )
+      .map((field) => ({ object: o, field })),
+  );
+}
 
 /** Where the memory tabs keep their tab and page: the URL on the record page, local state in the sheet. */
 type MemoryNav = {
@@ -194,7 +213,7 @@ export function RecordView({
       (f) =>
         f.type === 'relation' &&
         f.isFilterable &&
-        f.settings.targetObject === r.object &&
+        relationTargets(f).includes(r.object) &&
         !isInverseRelation(f),
     ) ?? [];
   const taskFilter = {
@@ -222,6 +241,7 @@ export function RecordView({
     canWrite = canMutate(session);
   const own = object?.fields.filter((f) => !isInverseRelation(f)) ?? [];
   const inverse = object?.fields.filter(isInverseRelation) ?? [];
+  const incoming = polymorphicLinksTo(schema.objects, r.object);
   async function retractFact() {
     if (!retract) return;
     setBusy(true);
@@ -266,7 +286,7 @@ export function RecordView({
           ))}
         </PropertyList>
       </Section>
-      {inverse.length ? (
+      {inverse.length || incoming.length ? (
         <Section title="Relations">
           <PropertyList>
             {inverse.map((f) => {
@@ -298,6 +318,19 @@ export function RecordView({
                 </Property>
               );
             })}
+            {incoming.map(({ object: o, field: f }) => (
+              <Property
+                key={`${o.nameSingular}.${f.name}`}
+                label={`${o.labelSingular} → ${f.label}`}
+              >
+                <ObjectLink
+                  object={o.nameSingular}
+                  filter={JSON.stringify({ [f.name]: pointsAt(f, rid) })}
+                >
+                  View {o.labelPlural.toLowerCase()} linking here
+                </ObjectLink>
+              </Property>
+            ))}
           </PropertyList>
         </Section>
       ) : null}

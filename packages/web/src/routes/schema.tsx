@@ -27,7 +27,7 @@ import {
   ShieldCheck,
   TriangleAlert,
 } from 'lucide-react';
-import { Suspense, useCallback, useMemo, useState } from 'react';
+import { Fragment, Suspense, useCallback, useMemo, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge } from '../provenance/index.js';
@@ -326,6 +326,8 @@ function DiagramTab() {
       edges: relationEdges(objects),
     };
   }, [schema.objects]);
+  // A polymorphic relation draws a line to each object it allows; count it once.
+  const relations = new Set(edges.map((e) => e.id.split(':')[0])).size;
   const open = useCallback(
     (object: string, field?: string) => void setSearch({ tab: undefined, object, field }),
     [setSearch],
@@ -350,9 +352,9 @@ function DiagramTab() {
             <DiagramKey end="many">Many</DiagramKey>
             <DiagramKey end="one">One</DiagramKey>
             <span>
-              {edges.length} {edges.length === 1 ? 'relation' : 'relations'}. Each card shows the
-              field that names its records and its relations. Drag to move, use the controls to
-              zoom, and click a card, a field or a line to open it.
+              {relations} {relations === 1 ? 'relation' : 'relations'}. Each card shows the field
+              that names its records and its relations. Drag to move, use the controls to zoom, and
+              click a card, a field or a line to open it.
             </span>
           </>
         }
@@ -572,7 +574,7 @@ function FieldSheet({
 }) {
   const { schema } = useWorkspace();
   const s = field.settings;
-  const { target, inverse } = relationEnds(field, schema.objects);
+  const { target, targets, inverse } = relationEnds(field, schema.objects);
   const flags = [
     ...FLAGS.map((f) => ({ ...f, on: f.on(field) })),
     {
@@ -631,17 +633,42 @@ function FieldSheet({
         <Section title="Relation">
           <PropertyList>
             <Property label="Links to">
-              {target ? (
-                <TextButton onClick={() => onNavigate(target.nameSingular)}>
-                  {target.labelPlural}
-                </TextButton>
+              {targets.length ? (
+                <Row>
+                  {/* "Companies, People or Deals" */}
+                  {targets.map(({ name, object: t }, i) => (
+                    <Fragment key={name}>
+                      {i && i === targets.length - 1 ? <Muted>or</Muted> : null}
+                      <span className="inline-flex items-center">
+                        {t ? (
+                          <TextButton onClick={() => onNavigate(t.nameSingular)}>
+                            {t.labelPlural}
+                          </TextButton>
+                        ) : (
+                          <Code>{name}</Code>
+                        )}
+                        {i < targets.length - 2 ? <Muted>,</Muted> : null}
+                      </span>
+                    </Fragment>
+                  ))}
+                </Row>
               ) : (
-                <Code>{s.targetObject ?? 'unknown'}</Code>
+                <Code>unknown</Code>
               )}
             </Property>
             <Property label="Cardinality">
-              {cardinality(object, target, isManyRelation(field))}
+              {cardinality(
+                object,
+                targets.flatMap((t) => (t.object ? [t.object] : [])),
+                isManyRelation(field),
+              )}
             </Property>
+            {targets.length > 1 ? (
+              <Property label="Polymorphic">
+                Links records of any of these objects. There is no field on the other side: filter
+                on this field to find what links to a record.
+              </Property>
+            ) : null}
             <Property label="Side">
               {isInverseRelation(field)
                 ? 'Inverse: derived from the other side, read only'

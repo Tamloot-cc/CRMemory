@@ -9,7 +9,7 @@ import type {
   RecordReference,
 } from '@retainer/shared';
 import { AGGREGATE_OPS, aggregateOps, SORTABLE_TYPES } from '@retainer/shared';
-import { dateText, microsToDecimal, moneyText } from '../fields/common.js';
+import { dateText, isPolymorphic, microsToDecimal, moneyText } from '../fields/common.js';
 import { clampWidth } from '../ui/data-grid.js';
 
 // ---------------------------------------------------------------------------
@@ -226,6 +226,8 @@ export function describeClause(
   clause: FilterClause,
   field: FieldView | undefined,
   references?: Record<string, RecordReference>,
+  /** Names the object of each record a polymorphic relation filter holds. */
+  objects?: ObjectView[],
 ): { field: string; operator: string; value?: string } {
   const name = field?.label ?? clause.field;
   if (clause.operator === 'isNull' || clause.operator === 'isEmpty')
@@ -233,7 +235,7 @@ export function describeClause(
   return {
     field: name,
     operator: operatorLabel(clause.operator),
-    value: formatFilterValue(clause.value, field, references),
+    value: formatFilterValue(clause.value, field, references, objects),
   };
 }
 
@@ -241,11 +243,17 @@ function formatFilterValue(
   value: unknown,
   field: FieldView | undefined,
   references?: Record<string, RecordReference>,
+  objects?: ObjectView[],
 ): string {
   if (Array.isArray(value))
-    return value.map((v) => formatFilterValue(v, field, references)).join(', ');
-  if (field?.type === 'relation' && typeof value === 'string' && references?.[value])
-    return references[value].label || 'Untitled record';
+    return value.map((v) => formatFilterValue(v, field, references, objects)).join(', ');
+  const reference = typeof value === 'string' ? references?.[value] : undefined;
+  if (field?.type === 'relation' && reference) {
+    const name = reference.label || 'Untitled record';
+    if (!isPolymorphic(field)) return name;
+    const object = objects?.find((o) => o.nameSingular === reference.object);
+    return `${name} (${object?.labelSingular ?? reference.object})`;
+  }
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   // Money filters are integer micros; anything else came from a hand-edited URL.
   if (field?.type === 'money' && Number.isSafeInteger(value))

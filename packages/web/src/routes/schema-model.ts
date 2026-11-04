@@ -6,6 +6,7 @@ import {
   type SchemaChangeStatus,
   type SchemaOperation,
 } from '@retainer/shared';
+import { joinOr, relationTargets } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import type { DiagramEdge } from '../ui/index.js';
 
@@ -21,14 +22,11 @@ export function typeDetail(field: FieldView, objects: ObjectView[]) {
     return `${n} ${n === 1 ? 'option' : 'options'}`;
   }
   if (field.type === 'relation') {
-    const target = findObject(objects, s.targetObject);
     const many = isManyRelation(field);
-    const name = target
-      ? many
-        ? target.labelPlural
-        : target.labelSingular
-      : (s.targetObject ?? 'unknown object');
-    return `${many ? 'Many' : 'One'} ${name}`;
+    const names = relationEnds(field, objects).targets.map(({ name, object }) =>
+      object ? (many ? object.labelPlural : object.labelSingular) : name,
+    );
+    return `${many ? 'Many' : 'One'} ${joinOr(names) || 'unknown object'}`;
   }
   if (s.maxValues) return `Up to ${s.maxValues}`;
   return null;
@@ -43,18 +41,33 @@ export function matchesField(field: FieldView, query: string) {
   );
 }
 
-/** A relation field's target object and, when it exists, the field on the other side. */
+/**
+ * A relation field's target objects (one, or several for a polymorphic
+ * relation), each `null` when it no longer exists; `target` is the only one,
+ * if there is exactly one; and, when it exists, the field on the other side.
+ */
 export function relationEnds(field: FieldView, objects: ObjectView[]) {
-  const target = findObject(objects, field.settings.targetObject);
+  const targets = relationTargets(field).map((name) => ({
+    name,
+    object: findObject(objects, name),
+  }));
+  const target = targets.length === 1 ? (targets[0]?.object ?? null) : null;
   const inverse = target?.fields.find((f) => f.name === field.settings.inverseField);
-  return { target, inverse };
+  return { target, targets, inverse };
 }
 
-/** "Each person has one company", or "… has many people" for the many side. */
-export function cardinality(object: ObjectView, target: ObjectView | null, many: boolean) {
-  const what = many
-    ? `many ${target?.labelPlural.toLowerCase() ?? 'records'}`
-    : `one ${target?.labelSingular.toLowerCase() ?? 'record'}`;
+/**
+ * "Each person has one company", or "… has many people" for the many side;
+ * "Each deal has one company or person" for a polymorphic relation.
+ */
+export function cardinality(
+  object: ObjectView,
+  target: ObjectView | readonly ObjectView[] | null,
+  many: boolean,
+) {
+  const targets = target === null ? [] : 'nameSingular' in target ? [target] : target;
+  const names = targets.map((t) => (many ? t.labelPlural : t.labelSingular).toLowerCase());
+  const what = `${many ? 'many' : 'one'} ${joinOr(names) || (many ? 'records' : 'record')}`;
   return `Each ${object.labelSingular.toLowerCase()} has ${what}`;
 }
 
@@ -70,18 +83,31 @@ const isOwning = (f: FieldView) => !isInverseRelation(f);
  * Company and Company → People): it is drawn from the owning field, and from
  * an inverse field only when that other side is missing. A many-to-many
  * relation (Deal → Contacts and Person → Deals) has a "many" end at both.
- * Relations to objects that no longer exist are left out.
+ * A polymorphic relation (Deal → Customer, a company or a person) has a line
+ * to each object it allows. Objects that no longer exist are left out.
  */
 export function relationEdges(objects: ObjectView[]): DiagramEdge[] {
   return objects.flatMap((object) =>
     object.fields.flatMap((field): DiagramEdge[] => {
       if (field.type !== 'relation') return [];
-      const { target, inverse } = relationEnds(field, objects);
+      const { target, targets, inverse } = relationEnds(field, objects);
+      const bothMany = field.settings.relationCardinality === 'many_to_many';
+      if (targets.length > 1) {
+        // Polymorphic: a line to each allowed object, which has no field back.
+        const allowed = targets.flatMap((t) => (t.object ? [t.object] : []));
+        const sentence = `${field.label}: ${cardinality(object, allowed, bothMany)}.`;
+        return allowed.map((dest) => ({
+          id: `${object.nameSingular}.${field.name}:${dest.nameSingular}`,
+          from: { node: object.nameSingular, row: field.name },
+          to: { node: dest.nameSingular },
+          ...(bothMany ? { toEnd: 'many' as const } : {}),
+          description: `${sentence} ${cardinality(dest, object, true)}.`,
+        }));
+      }
       if (!target || (!isOwning(field) && inverse && isOwning(inverse))) return [];
       const own = { node: object.nameSingular, row: field.name },
         other = { node: target.nameSingular, row: inverse?.name };
       const [source, dest] = isOwning(field) ? [object, target] : [target, object];
-      const bothMany = field.settings.relationCardinality === 'many_to_many';
       return [
         {
           id: `${object.nameSingular}.${field.name}`,

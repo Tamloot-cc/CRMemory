@@ -7,6 +7,7 @@ import {
   matchesField,
   parseStatus,
   relationEdges,
+  relationEnds,
   relativeTime,
   typeDetail,
 } from './schema-model.js';
@@ -189,6 +190,54 @@ describe('schema page model', () => {
     expect(typeDetail(deals, [deal, people])).toBe('Many Deals');
     expect([contacts, deals].map(isManyRelation)).toEqual([true, true]);
     expect(isManyRelation(person.fields[2] as FieldView)).toBe(false);
+  });
+
+  it('describes and draws a polymorphic relation to each object it allows', () => {
+    const customer = (many: boolean) =>
+      field({
+        name: 'customer',
+        label: 'Customer',
+        type: 'relation',
+        settings: {
+          targetObjects: ['company', 'person'],
+          relationCardinality: many ? 'many_to_many' : 'many_to_one',
+        },
+      });
+    const deal = object({
+      nameSingular: 'deal',
+      labelSingular: 'Deal',
+      labelPlural: 'Deals',
+      fields: [customer(false)],
+    });
+    const all = [deal, person, company];
+    expect(typeDetail(customer(false), all)).toBe('One Company or Person');
+    expect(typeDetail(customer(true), all)).toBe('Many Companies or People');
+    // A missing object keeps its API name in the type, and draws no line.
+    expect(typeDetail(customer(false), [deal, company])).toBe('One Company or person');
+    const ends = relationEnds(customer(false), all);
+    expect(ends.target).toBeNull();
+    expect(ends.inverse).toBeUndefined();
+    expect(ends.targets.map((t) => t.object?.nameSingular)).toEqual(['company', 'person']);
+    expect(cardinality(deal, [company, person], false)).toBe('Each deal has one company or person');
+    const polymorphic = (objects: ObjectView[]) =>
+      relationEdges(objects).filter((e) => e.from.node === 'deal');
+    expect(polymorphic(all)).toEqual([
+      {
+        id: 'deal.customer:company',
+        from: { node: 'deal', row: 'customer' },
+        to: { node: 'company' },
+        description: 'Customer: Each deal has one company or person. Each company has many deals.',
+      },
+      {
+        id: 'deal.customer:person',
+        from: { node: 'deal', row: 'customer' },
+        to: { node: 'person' },
+        description: 'Customer: Each deal has one company or person. Each person has many deals.',
+      },
+    ]);
+    const set = { ...deal, fields: [customer(true)] };
+    expect(polymorphic([set, person, company]).map((e) => e.toEnd)).toEqual(['many', 'many']);
+    expect(polymorphic([deal, company]).map((e) => e.to.node)).toEqual(['company']);
   });
 
   it('words cardinality the same way everywhere', () => {

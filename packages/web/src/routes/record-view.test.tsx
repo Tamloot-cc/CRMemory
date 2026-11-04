@@ -1,11 +1,17 @@
 import { RetainerApiError } from '@retainer/sdk';
-import type { FieldView, PresentedRecord, SchemaDescription, Session } from '@retainer/shared';
+import type {
+  FieldView,
+  ObjectView,
+  PresentedRecord,
+  SchemaDescription,
+  Session,
+} from '@retainer/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, WorkspaceContext } from '../api/client.js';
-import { InlineEditor, pointsAt, sameValue } from './record-view.js';
+import { InlineEditor, pointsAt, polymorphicLinksTo, sameValue } from './record-view.js';
 
 const stage: FieldView = {
   type: 'select',
@@ -167,6 +173,23 @@ describe('InlineEditor on a many-to-many set', () => {
     // Other fields compare as they are.
     expect(sameValue(stage, null, null)).toBe(true);
     expect(sameValue(stage, 'new', 'ready')).toBe(false);
+  });
+
+  it('finds the polymorphic relations that may point at an object', () => {
+    const customer: FieldView = {
+      ...contacts,
+      name: 'customer',
+      settings: { targetObjects: ['company', 'person'], relationCardinality: 'many_to_one' },
+    };
+    const deals = {
+      nameSingular: 'deal',
+      fields: [contacts, customer, { ...customer, name: 'hidden', isFilterable: false }],
+    } as unknown as ObjectView;
+    expect(
+      polymorphicLinksTo([deals], 'person').map((l) => [l.object.nameSingular, l.field.name]),
+    ).toEqual([['deal', 'customer']]);
+    expect(polymorphicLinksTo([deals], 'deal')).toEqual([]);
+    expect(pointsAt(customer, A)).toEqual({ eq: A });
   });
 
   it('finds records pointing here with eq on one record and containsAny on a set', () => {

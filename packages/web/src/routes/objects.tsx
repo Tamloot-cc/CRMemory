@@ -139,7 +139,7 @@ export function ObjectPage() {
 }
 
 function ObjectList({ name, object }: { name: string; object: ObjectView }) {
-  const { session } = useWorkspace();
+  const { session, schema } = useWorkspace();
   const { search, setSearch } = useView();
   const workspace = session.workspace.id;
   const [error, setError] = useState(''),
@@ -476,6 +476,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
                 c,
                 object.fields.find((f) => f.name === c.field),
                 references,
+                schema.objects,
               )}
               onRemove={() => setFilter({ clauses: clauses.filter((_, j) => j !== i), custom })}
             />
