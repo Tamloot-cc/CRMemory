@@ -51,7 +51,7 @@ export function createOpsHandler(config: Config) {
     // `max: 1`, because the deploy lock and the search rebuild are session
     // locks.
     if (parsed.data.command === 'migrate') {
-      const sql = createSql(config.DATABASE_URL, { max: 1 });
+      const sql = createSql(config.DATABASE_URL, { max: 1, keepConnections: true });
       try {
         return await withMigrationLock(sql, parsed.data.waitSeconds, async () => {
           await runMigrations(config.DATABASE_URL);

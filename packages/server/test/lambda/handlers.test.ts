@@ -9,7 +9,7 @@ import { loadConfig } from '../../src/config.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
 import { createApiHandler } from '../../src/lambda/api.js';
 import { createConsolidateHandler } from '../../src/lambda/consolidate.js';
-import { DEPLOY_LOCK } from '../../src/lambda/deploy-lock.js';
+import { DEPLOY_LOCK, withPassLock } from '../../src/lambda/deploy-lock.js';
 import { createOpsHandler } from '../../src/lambda/ops.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { databaseUrl, useTestDatabase } from '../helpers/db.js';
@@ -284,5 +284,30 @@ describe('deploy lock: one version at a time', () => {
     await expect(
       createOpsHandler(config())({ command: 'migrate', waitSeconds: 0 }),
     ).rejects.toThrow(/Expected \{"command":"migrate"\}/);
+  });
+
+  it('keeps the lock connection instead of retiring it', () => {
+    const kept = db.connect({ max: 1, keepConnections: true });
+    expect(kept.options.max_lifetime).toBeNull();
+    expect(db.connect({ max: 1 }).options.max_lifetime).not.toBeNull();
+  });
+
+  it('fails a pass whose connection, and so its lock, was replaced partway', async () => {
+    const sql = db.connect({ max: 1, keepConnections: true });
+    const pass = withPassLock(sql, async () => {
+      const [{ pid } = { pid: 0 }] = await sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      await db.owner`select pg_terminate_backend(${pid})`;
+      // The pool reconnects; the rest of the pass runs without the lock.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await sql`select 1`;
+          break;
+        } catch (error) {
+          if (attempt >= 5) throw error;
+        }
+      }
+      return 'done';
+    });
+    await expect(pass).rejects.toThrow(/Lost the deploy lock partway through/);
   });
 });

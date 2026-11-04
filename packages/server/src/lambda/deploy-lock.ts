@@ -9,18 +9,25 @@ import type { Sql } from '../db/client.js';
  * pass started meanwhile waits for the migration.
  *
  * Session locks: `sql` must have `max: 1`, so the lock, the work and the
- * unlock share one connection.
+ * unlock share one connection, and `keepConnections`, so postgres.js does
+ * not retire that connection (and the lock with it) partway through. If the
+ * connection is lost anyway, the pool reconnects without the lock; the
+ * unlock then finds nothing to release, and the run fails so it is seen.
  */
 export const DEPLOY_LOCK = 0x52544e03;
 
 /** Runs `work` holding the deploy lock shared (a consolidator pass). */
 export async function withPassLock<T>(sql: Sql, work: () => Promise<T>): Promise<T> {
   await sql`select pg_advisory_lock_shared(${DEPLOY_LOCK})`;
+  let result: T;
   try {
-    return await work();
+    result = await work();
   } finally {
-    await sql`select pg_advisory_unlock_shared(${DEPLOY_LOCK})`;
+    await releaseOrFail(
+      sql<{ released: boolean }[]>`select pg_advisory_unlock_shared(${DEPLOY_LOCK}) as released`,
+    );
   }
+  return result;
 }
 
 /**
@@ -45,9 +52,23 @@ export async function withMigrationLock<T>(
   } finally {
     await sql`select set_config('lock_timeout', '0', false)`;
   }
+  let result: T;
   try {
-    return await work();
+    result = await work();
   } finally {
-    await sql`select pg_advisory_unlock(${DEPLOY_LOCK})`;
+    await releaseOrFail(
+      sql<{ released: boolean }[]>`select pg_advisory_unlock(${DEPLOY_LOCK}) as released`,
+    );
+  }
+  return result;
+}
+
+async function releaseOrFail(unlock: PromiseLike<{ released: boolean }[]>) {
+  const [row] = await unlock;
+  if (!row?.released) {
+    throw new Error(
+      'Lost the deploy lock partway through (the database connection was replaced); ' +
+        'a migration may have run alongside this work.',
+    );
   }
 }

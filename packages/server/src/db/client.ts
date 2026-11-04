@@ -16,6 +16,13 @@ export type SqlOptions = {
    */
   role?: string;
   max?: number;
+  /**
+   * Keep connections open instead of retiring each after postgres.js's
+   * random 30–60 minutes. For pools that hold a session lock across many
+   * queries: a retired connection takes the lock with it, and the pool
+   * carries on with a new connection that does not hold it.
+   */
+  keepConnections?: boolean;
 };
 
 export function createSql(databaseUrl: string, options: SqlOptions = {}) {
@@ -23,6 +30,7 @@ export function createSql(databaseUrl: string, options: SqlOptions = {}) {
     max: options.max ?? 10,
     onnotice: false,
     ...(options.role ? { connection: { role: options.role } } : {}),
+    ...(options.keepConnections ? { max_lifetime: null } : {}),
   });
 }
 

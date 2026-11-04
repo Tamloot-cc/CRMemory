@@ -12,11 +12,15 @@ import { withPassLock } from './deploy-lock.js';
  * interval is not due, and one another run holds is skipped.
  *
  * Each pass holds the deploy lock shared, so a migration waits for it.
- * `sql` must have `max: 1` (see deploy-lock.ts).
+ * `sql` must have `max: 1` and keep its connection (see deploy-lock.ts).
  */
 export function createConsolidateHandler(
   config: Config,
-  sql: Sql = createSql(config.DATABASE_URL, { role: RUNTIME_ROLE, max: 1 }),
+  sql: Sql = createSql(config.DATABASE_URL, {
+    role: RUNTIME_ROLE,
+    max: 1,
+    keepConnections: true,
+  }),
 ) {
   setLogLevel(config.LOG_LEVEL);
   return async (): Promise<ConsolidatePass> => {
