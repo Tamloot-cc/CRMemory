@@ -79,8 +79,18 @@ while sharing a protected interaction core and evidence rules.
 
 This would be a dedicated definition mechanism, not necessarily object
 inheritance. Templates could supply initial types, and agents could extend them
-later. Retainer currently has fixed interaction kinds and free-form metadata,
-not schema-defined fields per kind. No implementation approach was selected.
+later. Retainer currently has five fixed interaction kinds shared by every
+workspace, with the same fields for every kind. Workspaces cannot add kinds or
+custom interaction fields. No implementation approach was selected.
+
+### Metadata follow-up
+
+Code inspection during the discussion confirmed that `interactions.metadata`
+exists as a JSONB column with an empty-object default, but the REST and MCP
+interaction-creation inputs do not accept it, and the insert leaves it at that
+default. It is not an available custom-fields mechanism. Its intended purpose
+has not been established; investigate whether it should hold source details,
+be replaced by typed interaction fields, or be removed. No choice was made.
 
 Open questions:
 
@@ -118,3 +128,50 @@ Retainer does not call language models.
 
 The scope and execution model of that maintenance remain open. The discussion
 ended without authorizing implementation or changing the architecture.
+
+## Second session: interactions and record history
+
+November 4, 2026. The discussion was parked without settling the history model.
+
+### Confirmed behavior
+
+- Every workspace has the same interaction fields and five fixed kinds; there
+  are no custom kinds or fields per kind. The metadata follow-up above remains
+  open.
+- One interaction can link to multiple records across object types, without
+  duplicating it. A postponement email can name the patient as a participant and
+  the appointment as an `about` record, appearing in both interaction lists.
+- An agent can then update the appointment date citing that email. Assertions
+  retain field-value history and provenance; a field update does not itself
+  create an interaction. Interactions describe events; assertion history records
+  field claims and their outcomes, not a complete audit of every operation.
+- Linking an appointment record to a patient does not automatically show the
+  appointment, or its interactions, in the patient's interaction list.
+
+### Principles carried forward
+
+- Avoid duplicate storage and competing sources of truth. Showing the same item
+  in multiple places is not duplication.
+- An entity's identity and changing state can justify a record of its own;
+  lifecycle is modeling guidance, not an absolute server rule.
+
+### Issues and decisions still open
+
+- **Interaction flexibility:** whether to add workspace-defined kinds and typed
+  fields, and how these relate to ordinary objects and the unused metadata column.
+- **Complete history:** whether a patient's interaction list should represent
+  their event history, or a broader history view should combine interactions,
+  related records and selected field changes. A current record value alone does
+  not describe the sequence of events.
+- **Reliable inclusion:** explicit agent-written links already work, but depend
+  on the agent remembering every relevant record. Consider deterministic linking
+  or history traversal configured per relationship; inheriting through every
+  relation could include unrelated information. No mechanism was selected.
+- **Historical links:** if relationships later change, should old events follow
+  the new relationship or retain their original associations? Keeping links fixed
+  at logging time was suggested, not agreed.
+- **Evidence:** whether records themselves should be citable sources remains
+  open; combining items in a history view does not resolve this.
+
+No new architecture or implementation was approved. Resume with the distinction
+between event history and field-change history before choosing a linking rule.
