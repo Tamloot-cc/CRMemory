@@ -4,7 +4,7 @@ variable "region" {
 }
 
 variable "name" {
-  description = "Prefix for every resource name. Function names start with it, and the GitHub deploy role may only touch functions named <name>-*."
+  description = "Prefix for every resource name. Function names start with it, and the GitHub deploy role may only touch functions named <name>-*. Unique per AWS account: IAM role names are account-wide, so a deployment in a second region needs a name of its own."
   type        = string
   default     = "retainer"
 

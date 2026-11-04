@@ -52,7 +52,11 @@ export AWS_REGION=eu-central-1
    ```
 
 2. Copy `deploy/aws/terraform.tfvars.example` to `deploy/aws/terraform.tfvars`
-   and set at least `region`. Both files are gitignored.
+   and set at least `region`. Both files are gitignored. `name` (default
+   `retainer`) prefixes every resource and must be unique in the AWS
+   account, because IAM role names are account-wide: a second deployment,
+   in this region or another, needs a name of its own (and
+   `state-bucket.sh <name>`).
 
 3. Build the Lambda package and create the infrastructure. The database takes
    5–10 minutes:

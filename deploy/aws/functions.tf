@@ -94,8 +94,10 @@ resource "aws_lambda_function" "this" {
   memory_size   = each.value.memory
   timeout       = each.value.timeout
 
+  # Read only when creating a function (code changes are ignored below), so
+  # plan, apply and destroy work from a checkout without a build.
   filename         = var.package_path
-  source_code_hash = filebase64sha256(var.package_path)
+  source_code_hash = fileexists(var.package_path) ? filebase64sha256(var.package_path) : null
 
   reserved_concurrent_executions = each.value.concurrency
 
