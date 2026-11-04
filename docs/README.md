@@ -15,6 +15,7 @@ resolves conflicts and searches. It never calls a language model.
 | [REST API](rest-api.md)                     | Authentication, errors, pagination, idempotency and every route |
 | [Releasing](releasing.md)                   | How maintainers cut a release                                   |
 | [Retainer and Twenty](twenty-comparison.md) | How Retainer's schema differs from Twenty's CRM schema          |
+| [Schema expressiveness coverage](schema-expressiveness-coverage.md) | Direct structural coverage and required remodeling across ten CRMs, plus Affinity |
 | [PostgreSQL and SurrealDB](postgres-surrealdb-evaluation.md) | Database tradeoffs and a proposed experiment for an agent-first CRM |
 | [Event types and record history](event-types-and-history-spec.md) | Proposed spec: interactions as event types, rollups, timelines and implementation order |
 
