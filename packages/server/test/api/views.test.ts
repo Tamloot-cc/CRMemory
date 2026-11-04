@@ -415,6 +415,29 @@ describe('views across schema changes', () => {
     });
   });
 
+  it('deletes the views of a deleted object', async () => {
+    const created = await schemaChange([
+      {
+        op: 'create_object',
+        object: {
+          nameSingular: 'ticket',
+          namePlural: 'tickets',
+          labelSingular: 'Ticket',
+          labelPlural: 'Tickets',
+          labelField: 'title',
+          fields: [{ name: 'title', label: 'Title', type: 'text' }],
+        },
+      },
+    ]);
+    expect(created.body.status).toBe('applied');
+    const view = await create({ name: 'Open tickets', kind: 'table' }, keys.dana, 'ticket');
+    expect(view.status).toBe(201);
+    expect((await schemaChange([{ op: 'delete_object', object: 'ticket' }])).status).toBe(200);
+    expect((await t.request(`/v1/views/${view.body.id}`, { key: keys.dana })).status).toBe(404);
+    const [row] = await db.owner`select count(*)::int as n from views where id = ${view.body.id}`;
+    expect(row?.n).toBe(0);
+  });
+
   it('leaves views alone when a change gives them nothing to repair', async () => {
     const view = await create({
       name: 'Open deals',

@@ -240,6 +240,10 @@ export async function persistSchema(
   // Objects whose saved views may name something this change makes unusable.
   const viewObjects = new Set<string>();
   for (const op of ops) {
+    // A deleted object is only deprecated, so its views don't cascade (1.4).
+    if (op.kind === 'deprecate_object') {
+      await tx`delete from views where object_type_id = ${objectIds.get(op.objectId) as string}`;
+    }
     if (
       op.kind === 'deprecate_field' ||
       op.kind === 'remove_option' ||
