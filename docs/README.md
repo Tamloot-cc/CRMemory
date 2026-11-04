@@ -15,6 +15,7 @@ resolves conflicts and searches. It never calls a language model.
 | [REST API](rest-api.md)                     | Authentication, errors, pagination, idempotency and every route |
 | [Releasing](releasing.md)                   | How maintainers cut a release                                   |
 | [Retainer and Twenty](twenty-comparison.md) | How Retainer's schema differs from Twenty's CRM schema          |
+| [PostgreSQL and SurrealDB](postgres-surrealdb-evaluation.md) | Database tradeoffs and a proposed experiment for an agent-first CRM |
 
 The design, the data model and the write rules are in
 [ARCHITECTURE.md](../ARCHITECTURE.md); the web app's design is in
