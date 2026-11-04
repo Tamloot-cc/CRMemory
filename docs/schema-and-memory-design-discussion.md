@@ -175,3 +175,29 @@ November 4, 2026. The discussion was parked without settling the history model.
 
 No new architecture or implementation was approved. Resume with the distinction
 between event history and field-change history before choosing a linking rule.
+
+## Third session: verification and spec
+
+November 4, 2026. Revisited with one premise made explicit: Retainer is in early
+exploration, with no users and no data to preserve, so migration cost no longer
+constrains the design. Protecting a workspace's data through its own schema
+changes remains a product guarantee.
+
+The claims above were checked against the code. Corrections:
+
+- Base objects cannot be deleted, but their fields can, including `task.status`
+  and `task.dueDate`, which context packs depend on.
+- Facts always cite an interaction: `remember` without a source creates a
+  hidden note interaction to cite.
+- Keeping explicit links fixed at logging time is already current behavior
+  (ARCHITECTURE.md 1.3), not just a suggestion.
+- Relations are many-to-one only; interaction links are the only many-to-many
+  links.
+- Field history is readable over REST but not over MCP.
+
+The open questions were answered in a proposed spec:
+[Event types and record history](event-types-and-history-spec.md). In short,
+interactions become records of event-class object types in the schema engine;
+evidence stays with events, and derived claims cite assertions; related events
+roll up through opted-in stable relations; and a record timeline merges events,
+field changes and facts at read time. The spec includes an implementation order.
