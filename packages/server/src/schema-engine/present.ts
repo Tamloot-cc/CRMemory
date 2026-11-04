@@ -22,8 +22,14 @@ const BASE_FIELD_NAMES = new Map<string, BaseFieldName>(
 
 /** Field settings with universal IDs turned back into API names. */
 function presentSettings(schema: CompiledSchema, field: FieldState): FieldSettings {
-  const { targetObjectId, inverseFieldId, ...rest } = field.settings;
+  const { targetObjectId, targetObjectIds, inverseFieldId, ...rest } = field.settings;
   const settings: FieldSettings = { ...rest };
+  if (targetObjectIds) {
+    settings.targetObjects = targetObjectIds.flatMap((id) => {
+      const target = schema.objectsByUniversalId.get(id);
+      return target ? [target.name] : [];
+    });
+  }
   if (targetObjectId) {
     const target = schema.objectsByUniversalId.get(targetObjectId);
     if (target) settings.targetObject = target.name;

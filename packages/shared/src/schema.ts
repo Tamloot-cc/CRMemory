@@ -110,6 +110,12 @@ export type FieldSettings = {
   options?: SelectOption[];
   /** `relation`: API name (singular) of the object on the other side. */
   targetObject?: string;
+  /**
+   * `relation`: the API names of the objects a polymorphic relation may
+   * point at (two or more), instead of `targetObject`. Such a relation has no
+   * inverse field: find the records pointing at one by filtering on it.
+   */
+  targetObjects?: string[];
   /** `relation`: API name of the field on the other side that points back. */
   inverseField?: string;
   relationCardinality?: RelationCardinality;

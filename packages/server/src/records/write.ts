@@ -4,7 +4,7 @@ import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { isSuppressed, suppressedOf, suppressibleHandles } from '../privacy/suppression.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+import { type FieldState, relationTargetIds } from '../schema-engine/types.js';
 import { identifiersFor, searchTextOf } from './derive.js';
 import { searchVector } from './search-sql.js';
 import { compareAssertions, pickWinner, type RankedAssertion, reviewReason } from './winner.js';
@@ -211,18 +211,19 @@ async function checkRelationTargets(
   ]);
   const errors = [];
   for (const [field, value] of relations) {
-    const targetObject = context.schema.objectsByUniversalId.get(
-      field.settings.targetObjectId ?? '',
-    );
+    const allowed = relationTargetIds(field.settings).flatMap((id) => {
+      const target = context.schema.objectsByUniversalId.get(id);
+      return target ? [target] : [];
+    });
     const resolved: string[] = [];
     for (const targetId of Array.isArray(value) ? value : [value]) {
       const target = byId.get(targetId);
       if (!target || target.deleted_at) {
         errors.push({ field: field.name, message: `no live record ${targetId}` });
-      } else if (target.object_type_id !== targetObject?.id) {
+      } else if (!allowed.some((o) => o.id === target.object_type_id)) {
         errors.push({
           field: field.name,
-          message: `record ${targetId} is not a ${targetObject?.name ?? 'valid target'}`,
+          message: `record ${targetId} is not a ${allowed.map((o) => o.name).join(' or ') || 'valid target'}`,
         });
       } else resolved.push(target.id);
     }

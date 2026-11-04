@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+import { type FieldState, relationTargetIds } from '../schema-engine/types.js';
 import { getRecord } from './read.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 import { sameValue } from './winner.js';
@@ -80,7 +80,10 @@ export function inboundRelationFields(schema: CompiledSchema, object: CompiledOb
   return schema.state.objects.flatMap((o) =>
     o.fields
       .filter(
-        (f) => f.type === 'relation' && f.settings.targetObjectId === object.state.universalId,
+        (f) =>
+          f.type === 'relation' &&
+          !f.settings.isInverse &&
+          relationTargetIds(f.settings).includes(object.state.universalId),
       )
       .map((f) => f.id as string),
   );

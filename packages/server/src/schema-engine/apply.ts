@@ -12,7 +12,13 @@ import {
   PROTECTED_OBJECT_IDS,
   PROTECTED_OPTIONS,
 } from './protection.js';
-import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
+import {
+  type FieldState,
+  type ObjectState,
+  relationTargetIds,
+  type SchemaIssue,
+  type SchemaState,
+} from './types.js';
 
 /**
  * A stable UUID derived from a seed (RFC 9562 version 8, from SHA-256). Used
@@ -119,7 +125,7 @@ export function applyOperations(
       issue(path, `universal ID ${universalId} already exists`);
       return;
     }
-    const { targetObject, inverseField, relationCardinality, onDelete, ...rest } =
+    const { targetObject, targetObjects, inverseField, relationCardinality, onDelete, ...rest } =
       definition.settings ?? {};
 
     const field: FieldState = {
@@ -141,26 +147,46 @@ export function applyOperations(
     };
 
     if (definition.type !== 'relation') {
-      if (targetObject || inverseField || relationCardinality || onDelete) {
-        issue(path, 'targetObject, inverseField and onDelete apply only to relation fields');
+      if (targetObject || targetObjects || inverseField || relationCardinality || onDelete) {
+        issue(
+          path,
+          'targetObject, targetObjects, inverseField and onDelete apply only to relation fields',
+        );
       }
       object.fields.push(field);
       return;
     }
 
-    if (!targetObject) {
-      issue(path, 'a relation needs settings.targetObject');
+    if (targetObject && targetObjects) {
+      issue(path, 'give settings.targetObject or settings.targetObjects, not both');
       return;
     }
-    // Pushed before resolving the target, so a self-relation finds it.
+    const refs = targetObjects ?? (targetObject ? [targetObject] : []);
+    if (refs.length === 0) {
+      issue(path, 'a relation needs settings.targetObject (or targetObjects for several)');
+      return;
+    }
+    // Pushed before resolving the targets, so a self-relation finds it.
     object.fields.push(field);
-    const target = findObject(targetObject, path);
-    if (!target) return;
+    const targets = refs.map((ref) => findObject(ref, path));
+    if (targets.some((t) => !t)) return;
+    const targetIds = [...new Set(targets.map((t) => (t as ObjectState).universalId))];
+    const target = targets[0] as ObjectState;
+    const polymorphic = targetIds.length > 1;
+    if (polymorphic && inverseField) {
+      // Per-target inverses are deferred (spec 5.1).
+      issue(
+        path,
+        'a relation with several targetObjects has no inverseField; find the records ' +
+          'pointing at one by filtering on this field',
+      );
+      return;
+    }
     // `onDelete: cascade` on a set is refused by validation (5.3).
     const collection = relationCardinality === 'many_to_many';
     field.settings = {
       ...field.settings,
-      targetObjectId: target.universalId,
+      ...(polymorphic ? { targetObjectIds: targetIds } : { targetObjectId: target.universalId }),
       relationCardinality: collection ? 'many_to_many' : 'many_to_one',
       onDelete: onDelete ?? 'set_null',
     };
@@ -324,12 +350,37 @@ export function applyOperations(
           );
           break;
         }
+        // Relations elsewhere that point only at the object go with it. One
+        // that may also point at other objects is never silently narrowed,
+        // which would reinterpret its values: replace it first (5.3).
+        const blocking = state.objects.flatMap((other) =>
+          other.status === 'active' && other !== object
+            ? other.fields
+                .filter((f) => {
+                  const ids = relationTargetIds(f.settings);
+                  return (
+                    f.status === 'active' && ids.length > 1 && ids.includes(object.universalId)
+                  );
+                })
+                .map((f) => `${other.nameSingular}.${f.name}`)
+            : [],
+        );
+        if (blocking.length > 0) {
+          issue(
+            object.nameSingular,
+            `cannot be deleted while ${blocking.join(', ')} may also point at other objects; ` +
+              'replace those fields with ones that leave it out first',
+          );
+          break;
+        }
         object.status = 'deprecated';
         for (const field of object.fields) deprecateField(field);
-        // Relations elsewhere that point at the object go with it.
         for (const other of state.objects) {
           for (const field of other.fields) {
-            if (field.status === 'active' && field.settings.targetObjectId === object.universalId) {
+            if (
+              field.status === 'active' &&
+              relationTargetIds(field.settings).includes(object.universalId)
+            ) {
               deprecateField(field);
             }
           }

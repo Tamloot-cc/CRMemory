@@ -155,7 +155,8 @@ Things worth knowing:
   `contacts`) takes the whole list of record IDs, and a write replaces it, so
   read the record first and send every member to keep; `[]` clears it. The
   other side of a relation (`readOnly`, `isInverse` in `describe_schema`) is
-  written from its owning side.
+  written from its owning side. A relation with `targetObjects` takes records of any
+  of those objects; find the records pointing at one by filtering on it.
 - **Participants and `about`.** Participants are who took part. A meeting
   with Dana about the Acme pilot lists Dana as a participant and the Acme
   company and the pilot project in `about`:

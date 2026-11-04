@@ -1,5 +1,11 @@
 import { type FieldType, INTERNAL_NOTE_TYPE_ID, MULTI_VALUE_TYPES } from '@retainer/shared';
-import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
+import {
+  type FieldState,
+  type ObjectState,
+  relationTargetIds,
+  type SchemaIssue,
+  type SchemaState,
+} from './types.js';
 
 const NAME_PATTERN = /^[a-z][a-zA-Z0-9]{0,62}$/;
 
@@ -232,10 +238,20 @@ function validateField(
 
   if (field.type !== 'relation') return;
 
-  const target = settings.targetObjectId ? objects.get(settings.targetObjectId) : undefined;
-  if (target?.status !== 'active') {
+  const targetIds = relationTargetIds(settings);
+  const targets = targetIds.map((id) => objects.get(id));
+  if (targets.length === 0 || targets.some((t) => t?.status !== 'active')) {
     issue(path, 'the relation target object does not exist or was deleted');
     return;
+  }
+  const target = targets[0] as ObjectState;
+  if (settings.targetObjectIds) {
+    if (new Set(targetIds).size < 2) {
+      issue(path, 'targetObjects needs two or more different objects');
+    }
+    if (settings.inverseFieldId || settings.isInverse) {
+      issue(path, 'a relation with several targetObjects has no inverse field');
+    }
   }
   const inverse = settings.inverseFieldId
     ? target.fields.find((f) => f.universalId === settings.inverseFieldId)

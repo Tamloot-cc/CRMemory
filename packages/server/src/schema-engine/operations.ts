@@ -17,6 +17,8 @@ const fieldSettingsSchema = z.strictObject({
   options: z.array(optionSchema).optional(),
   /** Singular API name (or universal ID) of the target object. */
   targetObject: z.string().min(1).optional(),
+  /** Singular API names (or universal IDs) of the objects a polymorphic relation may target. */
+  targetObjects: z.array(z.string().min(1)).min(1).max(20).optional(),
   /** Name of the read-only inverse field created on the target object. */
   inverseField: z.string().min(1).optional(),
   /**

@@ -363,6 +363,67 @@ describe('many_to_many relations', () => {
   });
 });
 
+describe('polymorphic relations', () => {
+  const customer = (settings: object) =>
+    ({
+      op: 'create_field',
+      object: 'task',
+      field: { name: 'customer', label: 'Customer', type: 'relation', settings },
+    }) as SchemaOperation;
+
+  it('stores every allowed target, and one target as an ordinary relation', () => {
+    const state = applyValid(base, [customer({ targetObjects: ['company', 'person'] })]);
+    expect(field(state, 'task', 'customer')?.settings).toMatchObject({
+      targetObjectIds: [BASE_OBJECT_IDS.company, BASE_OBJECT_IDS.person],
+      relationCardinality: 'many_to_one',
+    });
+    expect(field(state, 'task', 'customer')?.settings.targetObjectId).toBeUndefined();
+    const single = applyValid(base, [customer({ targetObjects: ['company', 'company'] })]);
+    expect(field(single, 'task', 'customer')?.settings).toMatchObject({
+      targetObjectId: BASE_OBJECT_IDS.company,
+    });
+    const set = applyValid(base, [
+      customer({ targetObjects: ['company', 'person'], relationCardinality: 'many_to_many' }),
+    ]);
+    expect(field(set, 'task', 'customer')?.settings.relationCardinality).toBe('many_to_many');
+  });
+
+  it('refuses an inverse, both target forms, and unknown targets', () => {
+    const messages = (settings: object) =>
+      issuesOf(base, [customer(settings)]).map((i) => i.message);
+    expect(messages({ targetObjects: ['company', 'person'], inverseField: 'owned' })[0]).toMatch(
+      /no inverseField/,
+    );
+    expect(messages({ targetObject: 'company', targetObjects: ['person'] })[0]).toMatch(/not both/);
+    expect(messages({ targetObjects: ['company', 'planet'] })[0]).toMatch(
+      /unknown object "planet"/,
+    );
+  });
+
+  it('refuses to delete one of several targets, naming the field', () => {
+    const state = applyValid(base, [
+      {
+        op: 'create_object',
+        object: {
+          nameSingular: 'household',
+          namePlural: 'households',
+          labelSingular: 'Household',
+          labelPlural: 'Households',
+          labelField: 'name',
+          fields: [{ name: 'name', label: 'Name', type: 'text' }],
+        },
+      },
+      customer({ targetObjects: ['company', 'household'] }),
+    ]);
+    expect(
+      issuesOf(state, [{ op: 'delete_object', object: 'household' }]).map((i) => i.message),
+    ).toEqual([expect.stringContaining('task.customer')]);
+    // Once the field is gone, the object can be deleted.
+    const without = applyValid(state, [{ op: 'delete_field', object: 'task', field: 'customer' }]);
+    applyValid(without, [{ op: 'delete_object', object: 'household' }]);
+  });
+});
+
 describe('event types', () => {
   const seeded = applyValid(
     base,

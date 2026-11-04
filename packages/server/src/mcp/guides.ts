@@ -72,8 +72,10 @@ const DESIGN_RULES = `### Use what Retainer already has
   A relation is many_to_one (one record: a deal's company) unless a record
   can link to several at once (a deal's contacts, a person's
   organizations): then set relationCardinality "many_to_many" rather than
-  creating a join object. Write a relation on its owning side; the inverse
-  (isInverse) is read-only. Avoid json.
+  creating a join object. A relation that can point at more than one
+  object (a deal's customer, a company or a person) takes targetObjects
+  instead of targetObject, and has no inverseField. Write a relation on its
+  owning side; the inverse (isInverse) is read-only. Avoid json.
 - Names are camelCase API names (nameSingular "deal", namePlural "deals";
   field "closeDate"); labels are what people read. Prefer a template's
   names to your own when they mean the same thing.

@@ -18,6 +18,11 @@ export type StoredFieldSettings = {
   options?: SelectOption[];
   /** `relation`: universal ID of the object on the other side. */
   targetObjectId?: string;
+  /**
+   * `relation`, polymorphic: universal IDs of the two or more objects it may
+   * point at, instead of `targetObjectId`.
+   */
+  targetObjectIds?: string[];
   /** `relation`: universal ID of the field on the other side. */
   inverseFieldId?: string;
   relationCardinality?: RelationCardinality;
@@ -162,4 +167,9 @@ export class SchemaValidationError extends Error {
     super(issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
     this.name = 'SchemaValidationError';
   }
+}
+
+/** The universal IDs of the objects a relation may point at. */
+export function relationTargetIds(settings: StoredFieldSettings): string[] {
+  return settings.targetObjectIds ?? (settings.targetObjectId ? [settings.targetObjectId] : []);
 }

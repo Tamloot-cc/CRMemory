@@ -118,8 +118,19 @@ inverse, read from the same `record_links` rows: `one_to_many` for a
 many-to-one field (`company.people`), `many_to_many` for a many-to-many
 one (`person.contactDeals`). The engine marks every inverse
 `settings.isInverse`, and only the owning side is written; `describe_schema`
-shows inverses as `readOnly`. Cardinality and target cannot change on an
+shows inverses as `readOnly`. Cardinality and targets cannot change on an
 existing field: create a new field instead.
+
+A relation may also be polymorphic: `targetObjects` names two or more
+objects it may point at (a deal's `customer`, a company or a person),
+instead of `targetObject`. Either multiplicity works. Stored settings hold
+the objects' universal IDs, so renames keep it. A polymorphic relation has
+no inverse field (per-target inverses are deferred); the records pointing at
+one target are found by filtering on the field. Deleting an object that a
+polymorphic relation may also point at is refused and names the field: the
+engine never narrows its targets, which would reinterpret existing values,
+so the field is replaced first. A relation whose only target is deleted is
+deprecated with it, as before.
 
 Setting a link is a field assertion whose value is the target record's ID,
 or for a set the whole array of IDs, so links follow the same write rules as
@@ -129,8 +140,8 @@ or stored: duplicates dropped, ordered by ID, `[]` to clear it, `null`
 refused; a required set needs at least one member. A write replaces the
 whole set as one assertion, ranked like any other; there is no implicit
 union, so two writers replacing a set do not each keep their members, and
-a pending set changes no edges. Every member must be a live record of the
-target object in the same workspace, or the whole write fails.
+a pending set changes no edges. Every member must be a live record of an
+allowed target object in the same workspace, or the whole write fails.
 
 The field's `onDelete` setting is applied by the application when the target
 is soft-deleted: `cascade` soft-deletes the source records too; `set_null`
