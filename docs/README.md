@@ -17,6 +17,7 @@ resolves conflicts and searches. It never calls a language model.
 | [Retainer and Twenty](twenty-comparison.md)                                  | How Retainer's schema differs from Twenty's CRM schema                                                              |
 | [Schema expressiveness coverage](schema-expressiveness-coverage.md)          | Direct structural coverage and required remodeling across ten CRMs, plus Affinity                                   |
 | [PostgreSQL and SurrealDB](postgres-surrealdb-evaluation.md)                 | Database tradeoffs and a proposed experiment for an agent-first CRM                                                 |
+| [SurrealDB migration spec](surrealdb-migration-spec.md)                      | Decided plan for a complete agent-first SurrealDB backend alongside PostgreSQL main                                 |
 | [Event types and record history](event-types-and-history-spec.md)            | Superseded by the merged spec; kept as the original decision record                                                 |
 | [Schema, events and history: merged spec](schema-events-and-history-spec.md) | Consolidated proposal: event records, native collection/polymorphic relations, rollups, history and phased delivery |
 
