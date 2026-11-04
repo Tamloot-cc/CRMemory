@@ -1,4 +1,9 @@
-import { FieldValueError, normalizeFieldValue, type ValueError } from '@retainer/shared';
+import {
+  FieldValueError,
+  isCollectionRelation,
+  type ValueError,
+  validateFieldValue,
+} from '@retainer/shared';
 
 export { normalizeFieldValue } from '@retainer/shared';
 
@@ -25,21 +30,19 @@ export function prepareValues(
       errors.push({
         field: name,
         message: `unknown field on ${object.name}`,
-        allowed: object.activeFields
-          .filter((f) => f.settings.relationCardinality !== 'one_to_many')
-          .map((f) => f.name),
+        allowed: object.activeFields.filter((f) => !f.settings.isInverse).map((f) => f.name),
       });
       continue;
     }
     if (value === undefined) continue;
-    if (value === null) {
+    if (value === null && !isCollectionRelation(field)) {
       if (!field.isNullable)
         errors.push({ field: name, message: 'is required and cannot be null' });
       else writes.set(field, null);
       continue;
     }
     try {
-      writes.set(field, normalizeFieldValue(field, value));
+      writes.set(field, validateFieldValue(field, value));
     } catch (error) {
       if (!(error instanceof FieldValueError)) throw error;
       errors.push({

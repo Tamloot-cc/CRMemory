@@ -30,7 +30,7 @@ export async function rewriteSearchText(
 
 /**
  * Rebuilds `records.search` that a migration left null because the way it
- * is built changed (5.1). Facts and interactions need no rebuild: their
+ * is built changed (5.1). Facts need no rebuild: their
  * search text depends only on their own columns, so such a migration
  * computes it in SQL.
  *

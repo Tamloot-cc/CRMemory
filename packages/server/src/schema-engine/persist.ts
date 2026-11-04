@@ -2,6 +2,7 @@ import type { Actor } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { identifiersFor } from '../records/derive.js';
 import { rewriteSearchText } from '../records/rebuild-search.js';
+import { deleteEventsOfType } from '../records/service.js';
 import { repairViews } from '../views/service.js';
 import { compileSchema } from './compiled.js';
 import { loadSchemaState } from './load.js';
@@ -170,11 +171,12 @@ export async function persistSchema(
     if (currentObjects.has(object.universalId)) continue;
     const [row] = await tx<{ id: string }[]>`
       insert into object_types (workspace_id, universal_id, owner, status, name_singular,
-        name_plural, label_singular, label_plural, description, created_by, created_at, updated_at)
+        name_plural, label_singular, label_plural, description, is_protected, class, created_by,
+        created_at, updated_at)
       values (${workspaceId}, ${object.universalId}, ${object.owner}, ${object.status},
         ${object.nameSingular}, ${object.namePlural}, ${object.labelSingular},
-        ${object.labelPlural}, ${object.description}, ${createdBy}, clock_timestamp(),
-        clock_timestamp())
+        ${object.labelPlural}, ${object.description}, ${object.isProtected}, ${object.class},
+        ${createdBy}, clock_timestamp(), clock_timestamp())
       returning id`;
     objectIds.set(object.universalId, row?.id as string);
   }
@@ -188,12 +190,12 @@ export async function persistSchema(
       const [row] = await tx<{ id: string }[]>`
         insert into fields (workspace_id, object_type_id, universal_id, key, name, label,
           description, type, settings, is_nullable, is_unique, is_filterable, is_searchable,
-          owner, status, created_by, created_at, updated_at)
+          is_protected, core_role, owner, status, created_by, created_at, updated_at)
         values (${workspaceId}, ${objectIds.get(object.universalId) as string},
           ${field.universalId}, ${field.key}, ${field.name}, ${field.label}, ${field.description},
           ${field.type}, ${tx.json(field.settings)}, ${field.isNullable}, ${field.isUnique},
-          ${field.isFilterable}, ${field.isSearchable}, ${field.owner}, ${field.status},
-          ${createdBy}, clock_timestamp(), clock_timestamp())
+          ${field.isFilterable}, ${field.isSearchable}, ${field.isProtected}, ${field.coreRole},
+          ${field.owner}, ${field.status}, ${createdBy}, clock_timestamp(), clock_timestamp())
         returning id`;
       fieldIds.set(field.universalId, row?.id as string);
     }
@@ -243,6 +245,22 @@ export async function persistSchema(
     // A deleted object is only deprecated, so its views don't cascade (1.4).
     if (op.kind === 'deprecate_object') {
       await tx`delete from views where object_type_id = ${objectIds.get(op.objectId) as string}`;
+      // Deleting an event type deletes its events through the same lifecycle
+      // as deleting one event (6.4): what cites them is retracted.
+      if (currentObjects.get(op.objectId)?.class === 'event') {
+        const [workspace] = await tx<{ schema_version: number }[]>`
+          select schema_version from workspaces where id = ${workspaceId}`;
+        await deleteEventsOfType(
+          tx,
+          {
+            workspaceId,
+            actor,
+            schema: compileSchema(current, workspace?.schema_version ?? 0),
+            confidenceThreshold: 1,
+          },
+          objectIds.get(op.objectId) as string,
+        );
+      }
     }
     if (
       op.kind === 'deprecate_field' ||

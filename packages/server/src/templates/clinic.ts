@@ -69,7 +69,11 @@ export const clinic: Template = {
             name: 'person',
             label: 'Patient',
             type: 'relation',
-            settings: { targetObject: BASE_OBJECT_IDS.person, inverseField: 'appointments' },
+            settings: {
+              targetObject: BASE_OBJECT_IDS.person,
+              inverseField: 'appointments',
+              rollUpEvents: true,
+            },
           },
         ],
       },

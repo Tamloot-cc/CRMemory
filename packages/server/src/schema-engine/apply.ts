@@ -1,8 +1,24 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { FieldType, SchemaOwner } from '@retainer/shared';
-import { BASE_OBJECT_IDS } from '../templates/base.js';
+import {
+  type CoreRole,
+  type FieldType,
+  INTERNAL_NOTE_TYPE_ID,
+  type SchemaOwner,
+} from '@retainer/shared';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
-import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
+import {
+  PROTECTED_FIELD_FLAGS,
+  PROTECTED_FIELD_IDS,
+  PROTECTED_OBJECT_IDS,
+  PROTECTED_OPTIONS,
+} from './protection.js';
+import {
+  type FieldState,
+  type ObjectState,
+  relationTargetIds,
+  type SchemaIssue,
+  type SchemaState,
+} from './types.js';
 
 /**
  * A stable UUID derived from a seed (RFC 9562 version 8, from SHA-256). Used
@@ -16,6 +32,23 @@ export function deriveUuid(seed: string): string {
   const hex = bytes.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+
+/**
+ * The core fields the engine gives every event type (6.1). Their universal
+ * IDs derive from the type's, so code-defined event types get the same core
+ * field IDs in every workspace.
+ */
+const CORE_FIELDS: Record<CoreRole, { name: string; label: string; description: string }> = {
+  title: { name: 'title', label: 'Title', description: 'A short title.' },
+  summary: {
+    name: 'summary',
+    label: 'Summary',
+    description: "The agent's own short summary of what happened.",
+  },
+};
+
+export const coreFieldUniversalId = (objectUniversalId: string, role: CoreRole) =>
+  deriveUuid(`${objectUniversalId}:core:${role}`);
 
 /** Types whose values make sense in structured filters by default. */
 const NOT_FILTERABLE_BY_DEFAULT: ReadonlySet<FieldType> = new Set(['json', 'address', 'full_name']);
@@ -43,13 +76,17 @@ export function applyOperations(
   const allUniversalIds = () =>
     new Set(state.objects.flatMap((o) => [o.universalId, ...o.fields.map((f) => f.universalId)]));
 
+  // The hidden internal-note type is never named by an operation (6.4).
+  const visible = (o: ObjectState) =>
+    o.status === 'active' && o.universalId !== INTERNAL_NOTE_TYPE_ID;
+
   function findObject(ref: string, path = ref): ObjectState | undefined {
     const object = state.objects.find(
-      (o) => o.status === 'active' && (o.universalId === ref || o.nameSingular === ref),
+      (o) => visible(o) && (o.universalId === ref || o.nameSingular === ref),
     );
     if (!object) {
       const known = state.objects
-        .filter((o) => o.status === 'active')
+        .filter(visible)
         .map((o) => o.nameSingular)
         .join(', ');
       issue(path, `unknown object "${ref}"; objects: ${known || 'none'}`);
@@ -88,8 +125,15 @@ export function applyOperations(
       issue(path, `universal ID ${universalId} already exists`);
       return;
     }
-    const { targetObject, inverseField, relationCardinality, onDelete, ...rest } =
-      definition.settings ?? {};
+    const {
+      targetObject,
+      targetObjects,
+      inverseField,
+      relationCardinality,
+      onDelete,
+      rollUpEvents,
+      ...rest
+    } = definition.settings ?? {};
 
     const field: FieldState = {
       universalId,
@@ -98,35 +142,68 @@ export function applyOperations(
       label: definition.label,
       description: definition.description ?? null,
       type: definition.type,
-      settings: { ...rest },
+      // Stored only when on, so off is one state (7.2).
+      settings: rollUpEvents ? { ...rest, rollUpEvents } : { ...rest },
       isNullable: definition.isNullable ?? true,
       isUnique: definition.isUnique ?? false,
       isFilterable: definition.isFilterable ?? !NOT_FILTERABLE_BY_DEFAULT.has(definition.type),
       isSearchable: definition.isSearchable ?? false,
+      isProtected: PROTECTED_FIELD_IDS.has(universalId),
+      coreRole: null,
       owner: context.owner,
       status: 'active',
     };
 
     if (definition.type !== 'relation') {
-      if (targetObject || inverseField || relationCardinality || onDelete) {
-        issue(path, 'targetObject, inverseField and onDelete apply only to relation fields');
+      if (
+        targetObject ||
+        targetObjects ||
+        inverseField ||
+        relationCardinality ||
+        onDelete ||
+        rollUpEvents !== undefined
+      ) {
+        issue(
+          path,
+          'targetObject, targetObjects, inverseField, onDelete and rollUpEvents apply only to ' +
+            'relation fields',
+        );
       }
       object.fields.push(field);
       return;
     }
 
-    if (!targetObject) {
-      issue(path, 'a relation needs settings.targetObject');
+    if (targetObject && targetObjects) {
+      issue(path, 'give settings.targetObject or settings.targetObjects, not both');
       return;
     }
-    // Pushed before resolving the target, so a self-relation finds it.
+    const refs = targetObjects ?? (targetObject ? [targetObject] : []);
+    if (refs.length === 0) {
+      issue(path, 'a relation needs settings.targetObject (or targetObjects for several)');
+      return;
+    }
+    // Pushed before resolving the targets, so a self-relation finds it.
     object.fields.push(field);
-    const target = findObject(targetObject, path);
-    if (!target) return;
+    const targets = refs.map((ref) => findObject(ref, path));
+    if (targets.some((t) => !t)) return;
+    const targetIds = [...new Set(targets.map((t) => (t as ObjectState).universalId))];
+    const target = targets[0] as ObjectState;
+    const polymorphic = targetIds.length > 1;
+    if (polymorphic && inverseField) {
+      // Per-target inverses are deferred (spec 5.1).
+      issue(
+        path,
+        'a relation with several targetObjects has no inverseField; find the records ' +
+          'pointing at one by filtering on this field',
+      );
+      return;
+    }
+    // `onDelete: cascade` on a set is refused by validation (5.3).
+    const collection = relationCardinality === 'many_to_many';
     field.settings = {
       ...field.settings,
-      targetObjectId: target.universalId,
-      relationCardinality: 'many_to_one',
+      ...(polymorphic ? { targetObjectIds: targetIds } : { targetObjectId: target.universalId }),
+      relationCardinality: collection ? 'many_to_many' : 'many_to_one',
       onDelete: onDelete ?? 'set_null',
     };
 
@@ -141,17 +218,44 @@ export function applyOperations(
         settings: {
           targetObjectId: object.universalId,
           inverseFieldId: universalId,
-          relationCardinality: 'one_to_many',
+          relationCardinality: collection ? 'many_to_many' : 'one_to_many',
+          isInverse: true,
         },
         isNullable: true,
         isUnique: false,
         isFilterable: false,
         isSearchable: false,
+        isProtected: false,
+        coreRole: null,
         owner: context.owner,
         status: 'active',
       };
       field.settings.inverseFieldId = inverse.universalId;
       target.fields.push(inverse);
+    }
+  }
+
+  /** The protected, searchable title and summary fields of a new event type (6.1). */
+  function addCoreFields(object: ObjectState): void {
+    for (const role of ['title', 'summary'] as const) {
+      const core = CORE_FIELDS[role];
+      object.fields.push({
+        universalId: coreFieldUniversalId(object.universalId, role),
+        key: nextKey(object, core.name),
+        name: core.name,
+        label: core.label,
+        description: core.description,
+        type: 'text',
+        settings: {},
+        isNullable: true,
+        isUnique: false,
+        isFilterable: true,
+        isSearchable: true,
+        isProtected: true,
+        coreRole: role,
+        owner: context.owner,
+        status: 'active',
+      });
     }
   }
 
@@ -175,6 +279,7 @@ export function applyOperations(
           issue(definition.nameSingular, `universal ID ${universalId} already exists`);
           break;
         }
+        const objectClass = definition.class ?? 'entity';
         const object: ObjectState = {
           universalId,
           nameSingular: definition.nameSingular,
@@ -183,17 +288,48 @@ export function applyOperations(
           labelPlural: definition.labelPlural,
           description: definition.description ?? null,
           labelFieldId: null,
+          isProtected: PROTECTED_OBJECT_IDS.has(universalId),
+          class: objectClass,
           owner: context.owner,
           status: 'active',
           fields: [],
         };
         state.objects.push(object);
+        if (objectClass === 'event') {
+          const taken = definition.fields.filter(
+            (f) => f.name === CORE_FIELDS.title.name || f.name === CORE_FIELDS.summary.name,
+          );
+          for (const field of taken) {
+            issue(
+              `${definition.nameSingular}.${field.name}`,
+              'every event type gets title and summary fields; list only its other fields',
+            );
+          }
+          if (taken.length > 0) break;
+          addCoreFields(object);
+          if (
+            definition.labelField !== undefined &&
+            definition.labelField !== CORE_FIELDS.title.name
+          ) {
+            issue(definition.nameSingular, "an event type's labelField is always its title");
+          }
+          for (const field of definition.fields) addField(object, field);
+          object.labelFieldId = coreFieldUniversalId(universalId, 'title');
+          break;
+        }
+        if (definition.fields.length === 0) {
+          issue(definition.nameSingular, 'an object needs at least one field');
+          break;
+        }
         for (const field of definition.fields) addField(object, field);
         const labelField = object.fields.find(
           (f) => f.name === definition.labelField && f.status === 'active',
         );
         if (labelField) object.labelFieldId = labelField.universalId;
-        else issue(definition.nameSingular, `labelField "${definition.labelField}" is not a field`);
+        else if (definition.labelField === undefined) {
+          issue(definition.nameSingular, 'an object needs a labelField');
+        } else
+          issue(definition.nameSingular, `labelField "${definition.labelField}" is not a field`);
         break;
       }
 
@@ -205,7 +341,9 @@ export function applyOperations(
         if (operation.description !== undefined) object.description = operation.description;
         if (operation.labelField !== undefined) {
           const field = findField(object, operation.labelField);
-          if (field) object.labelFieldId = field.universalId;
+          if (field && object.class === 'event' && field.coreRole !== 'title') {
+            issue(object.nameSingular, "an event type's labelField is always its title");
+          } else if (field) object.labelFieldId = field.universalId;
         }
         break;
       }
@@ -221,16 +359,44 @@ export function applyOperations(
       case 'delete_object': {
         const object = findObject(operation.object);
         if (!object) break;
-        if ((Object.values(BASE_OBJECT_IDS) as string[]).includes(object.universalId)) {
-          issue(object.nameSingular, 'base objects (person, company, task) cannot be deleted');
+        if (object.isProtected) {
+          issue(
+            object.nameSingular,
+            'is protected: Retainer depends on it, so it cannot be deleted (it can be renamed)',
+          );
+          break;
+        }
+        // Relations elsewhere that point only at the object go with it. One
+        // that may also point at other objects is never silently narrowed,
+        // which would reinterpret its values: replace it first (5.3).
+        const blocking = state.objects.flatMap((other) =>
+          other.status === 'active' && other !== object
+            ? other.fields
+                .filter((f) => {
+                  const ids = relationTargetIds(f.settings);
+                  return (
+                    f.status === 'active' && ids.length > 1 && ids.includes(object.universalId)
+                  );
+                })
+                .map((f) => `${other.nameSingular}.${f.name}`)
+            : [],
+        );
+        if (blocking.length > 0) {
+          issue(
+            object.nameSingular,
+            `cannot be deleted while ${blocking.join(', ')} may also point at other objects; ` +
+              'replace those fields with ones that leave it out first',
+          );
           break;
         }
         object.status = 'deprecated';
         for (const field of object.fields) deprecateField(field);
-        // Relations elsewhere that point at the object go with it.
         for (const other of state.objects) {
           for (const field of other.fields) {
-            if (field.status === 'active' && field.settings.targetObjectId === object.universalId) {
+            if (
+              field.status === 'active' &&
+              relationTargetIds(field.settings).includes(object.universalId)
+            ) {
               deprecateField(field);
             }
           }
@@ -256,11 +422,32 @@ export function applyOperations(
           );
           break;
         }
-        const isInverse = field.settings.relationCardinality === 'one_to_many';
-        const flags = ['isNullable', 'isUnique', 'isFilterable', 'isSearchable'] as const;
+        const isInverse = field.settings.isInverse === true;
+        const flags = PROTECTED_FIELD_FLAGS;
         if (isInverse && flags.some((flag) => operation[flag] !== undefined)) {
           issue(path, 'an inverse relation field only takes label and description changes');
           break;
+        }
+        const reshaped = flags.filter(
+          (flag) => operation[flag] !== undefined && operation[flag] !== field[flag],
+        );
+        if (field.isProtected && reshaped.length > 0) {
+          issue(
+            path,
+            `is protected: Retainer depends on it, so ${reshaped.join(', ')} cannot change ` +
+              '(it can be renamed, relabeled and described)',
+          );
+          break;
+        }
+        if (operation.rollUpEvents !== undefined) {
+          if (field.type !== 'relation') {
+            issue(path, 'rollUpEvents applies only to relation fields');
+            break;
+          }
+          // Only the current edges are read, so even a protected field takes
+          // it (7.2); validation refuses inverses and event types' fields.
+          const { rollUpEvents: _previous, ...settings } = field.settings;
+          field.settings = operation.rollUpEvents ? { ...settings, rollUpEvents: true } : settings;
         }
         if (operation.label !== undefined) field.label = operation.label;
         if (operation.description !== undefined) field.description = operation.description;
@@ -283,8 +470,12 @@ export function applyOperations(
         const field = object && findField(object, operation.field);
         if (!object || !field) break;
         const path = `${object.nameSingular}.${field.name}`;
-        if (field.settings.relationCardinality === 'one_to_many') {
-          issue(path, 'an inverse relation field is removed by deleting its many_to_one side');
+        if (field.settings.isInverse) {
+          issue(path, 'an inverse relation field is removed by deleting its owning side');
+          break;
+        }
+        if (field.isProtected) {
+          issue(path, 'is protected: Retainer depends on it, so it cannot be deleted');
           break;
         }
         if (object.labelFieldId === field.universalId) {
@@ -323,6 +514,13 @@ export function applyOperations(
           }
           if (operation.op === 'update_option') {
             options[index] = { value: operation.value, label: operation.label };
+          } else if (PROTECTED_OPTIONS.get(field.universalId)?.includes(operation.value)) {
+            issue(
+              path,
+              `option "${operation.value}" is protected: Retainer depends on it, so it cannot ` +
+                'be removed (its label can change)',
+            );
+            break;
           } else {
             options.splice(index, 1);
           }

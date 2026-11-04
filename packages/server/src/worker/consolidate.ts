@@ -1,6 +1,7 @@
 import type { Fragment } from 'postgres';
 import type { Sql } from '../db/client.js';
 import { inWorkspace, lockPrivacyShared, type Tx, tryLockConsolidator } from '../db/tx.js';
+import { liveFactSource } from '../memory/events.js';
 
 /**
  * The consolidator (4.2), run per workspace on a schedule. It never calls a
@@ -13,7 +14,8 @@ import { inWorkspace, lockPrivacyShared, type Tx, tryLockConsolidator } from '..
  * - Duplicate records are suggested, never merged: two live records of one
  *   object that share an email, phone or website domain, or whose labels
  *   are trigram-similar. A person decides (`POST /v1/records/:id/merge` or
- *   dismiss). A decided pair is never suggested again.
+ *   dismiss). A decided pair is never suggested again. Events are never
+ *   suggested: each is something that happened, logged from its own source.
  */
 
 /** Labels at least this trigram-similar suggest a duplicate (pg_trgm `similarity`). */
@@ -100,10 +102,7 @@ async function duplicatePairs(
       join records r on r.id = f.record_id and r.deleted_at is null
       where f.workspace_id = ${workspaceId} and f.deleted_at is null and f.superseded_by is null
         and ${scope}
-        and exists (
-          select 1 from fact_sources s
-          join interactions i on i.id = s.interaction_id and i.deleted_at is null
-          where s.fact_id = f.id)
+        and exists (${liveFactSource(tx, tx`f.id`)})
     ),
     grouped as (
       select id, first_value(id) over (
@@ -142,13 +141,13 @@ async function supersedeDuplicateFacts(
   const duplicates = pairs.map((p) => p.id);
   const canonicals = pairs.map((p) => p.canonical);
   await tx`
-    insert into fact_sources (workspace_id, fact_id, interaction_id, quote)
-    select distinct ${workspaceId}::uuid, p.canonical, s.interaction_id, s.quote
+    insert into fact_sources (workspace_id, fact_id, source_record_id, quote)
+    select distinct ${workspaceId}::uuid, p.canonical, s.source_record_id, s.quote
     from unnest(${duplicates}::uuid[], ${canonicals}::uuid[]) as p(id, canonical)
-    join fact_sources s on s.fact_id = p.id and s.interaction_id is not null
+    join fact_sources s on s.fact_id = p.id and s.source_record_id is not null
     where not exists (
       select 1 from fact_sources c
-      where c.fact_id = p.canonical and c.interaction_id = s.interaction_id
+      where c.fact_id = p.canonical and c.source_record_id = s.source_record_id
         and c.quote is not distinct from s.quote)`;
   await tx`
     update facts f set superseded_by = p.canonical
@@ -172,6 +171,8 @@ async function suggestMerges(
   cap: number,
 ): Promise<{ added: number; capped: boolean }> {
   const changed = () => (since === null ? tx`true` : tx`a.updated_at > ${since}`);
+  const entity = tx`a.object_type_id in (
+    select id from object_types where workspace_id = ${workspaceId} and class = 'entity')`;
   const isNew = (a: Fragment, b: Fragment) => tx`not exists (
     select 1 from merge_suggestions m
     where m.workspace_id = ${workspaceId} and m.record_a_id = ${a} and m.record_b_id = ${b})`;
@@ -188,6 +189,7 @@ async function suggestMerges(
       join records b on b.id = y.record_id and b.deleted_at is null
         and b.object_type_id = a.object_type_id
       where a.workspace_id = ${workspaceId} and a.deleted_at is null and ${changed()}
+        and ${entity}
         and ${isNew(tx`least(x.record_id, y.record_id)`, tx`greatest(x.record_id, y.record_id)`)}
       order by least(x.record_id, y.record_id), greatest(x.record_id, y.record_id),
         array_position(array['email', 'phone', 'domain'], x.kind)
@@ -207,6 +209,7 @@ async function suggestMerges(
         and b.id <> a.id and b.deleted_at is null and b.label % a.label
         and length(btrim(b.label)) >= ${MIN_LABEL_LENGTH}
       where a.workspace_id = ${workspaceId} and a.deleted_at is null and ${changed()}
+        and ${entity}
         and length(btrim(a.label)) >= ${MIN_LABEL_LENGTH}
         and ${isNew(tx`least(a.id, b.id)`, tx`greatest(a.id, b.id)`)}
       order by 1, 2

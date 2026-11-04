@@ -1,5 +1,7 @@
 import type {
+  CoreRole,
   FieldType,
+  ObjectClass,
   OnDeleteBehavior,
   RelationCardinality,
   SchemaOwner,
@@ -16,10 +18,19 @@ export type StoredFieldSettings = {
   options?: SelectOption[];
   /** `relation`: universal ID of the object on the other side. */
   targetObjectId?: string;
+  /**
+   * `relation`, polymorphic: universal IDs of the two or more objects it may
+   * point at, instead of `targetObjectId`.
+   */
+  targetObjectIds?: string[];
   /** `relation`: universal ID of the field on the other side. */
   inverseFieldId?: string;
   relationCardinality?: RelationCardinality;
+  /** Set by the engine on the derived, read-only side of a relation. */
+  isInverse?: boolean;
   onDelete?: OnDeleteBehavior;
+  /** Owning relation of an entity: attached events roll up to the target (7.2). */
+  rollUpEvents?: boolean;
   maxValues?: number;
 };
 
@@ -37,6 +48,10 @@ export type FieldState = {
   isUnique: boolean;
   isFilterable: boolean;
   isSearchable: boolean;
+  /** Set by the engine for fields server code depends on (protection.ts). */
+  isProtected: boolean;
+  /** An event type's core field; set by the engine, never by a client. */
+  coreRole: CoreRole | null;
   owner: SchemaOwner;
   status: SchemaStatus;
 };
@@ -51,6 +66,10 @@ export type ObjectState = {
   description: string | null;
   /** Universal ID of the label field. */
   labelFieldId: string | null;
+  /** Set by the engine for objects server code depends on (protection.ts). */
+  isProtected: boolean;
+  /** `entity` or `event`; fixed when the object is created. */
+  class: ObjectClass;
   owner: SchemaOwner;
   status: SchemaStatus;
   /** Every field, deprecated ones included, so keys are never reused. */
@@ -96,7 +115,8 @@ export type DiffOp =
         | 'isNullable'
         | 'isUnique'
         | 'isFilterable'
-        | 'isSearchable';
+        | 'isSearchable'
+        | 'rollUpEvents';
       from: string | boolean | null;
       to: string | boolean | null;
     }
@@ -150,4 +170,9 @@ export class SchemaValidationError extends Error {
     super(issues.map((issue) => `${issue.path}: ${issue.message}`).join('; '));
     this.name = 'SchemaValidationError';
   }
+}
+
+/** The universal IDs of the objects a relation may point at. */
+export function relationTargetIds(settings: StoredFieldSettings): string[] {
+  return settings.targetObjectIds ?? (settings.targetObjectId ? [settings.targetObjectId] : []);
 }

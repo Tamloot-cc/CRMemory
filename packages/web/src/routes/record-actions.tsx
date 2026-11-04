@@ -1,5 +1,5 @@
 import { RetainerApiError } from '@retainer/sdk';
-import type { ForgetResult, PresentedRecord } from '@retainer/shared';
+import type { ForgetResult, PresentedRecord, RecordReference } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Combine, MoreHorizontal, ShieldX, Trash2 } from 'lucide-react';
 import { useState } from 'react';
@@ -7,10 +7,10 @@ import { api, canMutate, useWorkspace } from '../api/client.js';
 import {
   Button,
   Dialog,
+  EventLink,
   Form,
   FormField,
   Input,
-  InteractionLink,
   Menu,
   MenuAction,
   MenuSeparator,
@@ -21,12 +21,13 @@ import {
   Stack,
 } from '../ui/index.js';
 import { MergePicker } from './merge.js';
-import { QueryError, recordTitle as title, useReport } from './state.js';
+import { eventTitle, objectByName, QueryError, recordTitle as title, useReport } from './state.js';
 import { describeImpact, forgetConfirmation } from './write-model.js';
 
 /**
  * The record's actions menu, in the sheet and on the record page: merge a
- * duplicate in, delete, and erase for privacy (admin). `onGone` leaves the
+ * duplicate in (not for events, which cannot be merged), delete, and erase
+ * for privacy (admin). `onGone` leaves the
  * screen after the record is deleted or erased; `requestedId` is the ID the
  * screen was opened with, which differs from the record's after a merge.
  */
@@ -39,9 +40,10 @@ export function RecordActions({
   requestedId: string;
   onGone: () => void;
 }) {
-  const { session } = useWorkspace(),
+  const { session, schema } = useWorkspace(),
     client = useQueryClient();
   const [action, setAction] = useState<'merge' | 'delete' | 'forget' | null>(null);
+  const isEvent = !!record.event || objectByName(schema, record.object)?.class === 'event';
   const canWrite = canMutate(session),
     canErase = canMutate(session, 'admin');
   if (!canWrite) return null;
@@ -66,11 +68,15 @@ export function RecordActions({
           </Button>
         }
       >
-        <MenuAction onSelect={() => setAction('merge')}>
-          <Combine size={14} />
-          Merge a duplicate…
-        </MenuAction>
-        <MenuSeparator />
+        {isEvent ? null : (
+          <>
+            <MenuAction onSelect={() => setAction('merge')}>
+              <Combine size={14} />
+              Merge a duplicate…
+            </MenuAction>
+            <MenuSeparator />
+          </>
+        )}
         <MenuAction destructive onSelect={() => setAction('delete')}>
           <Trash2 size={14} />
           Delete…
@@ -82,8 +88,10 @@ export function RecordActions({
           </MenuAction>
         ) : null}
       </Menu>
-      {action === 'merge' ? <MergePicker record={record} onClose={close} /> : null}
-      {action === 'delete' ? <DeleteDialog record={record} onClose={close} onGone={leave} /> : null}
+      {action === 'merge' && !isEvent ? <MergePicker record={record} onClose={close} /> : null}
+      {action === 'delete' ? (
+        <DeleteDialog record={record} isEvent={isEvent} onClose={close} onGone={leave} />
+      ) : null}
       {action === 'forget' ? <ForgetDialog record={record} onClose={close} onGone={leave} /> : null}
     </>
   );
@@ -96,7 +104,7 @@ type ActionProps = {
   onGone: () => void;
 };
 
-function DeleteDialog({ record, onClose, onGone }: ActionProps) {
+function DeleteDialog({ record, isEvent, onClose, onGone }: ActionProps & { isEvent: boolean }) {
   const { session, schema } = useWorkspace(),
     report = useReport();
   const [busy, setBusy] = useState(false),
@@ -111,6 +119,15 @@ function DeleteDialog({ record, onClose, onGone }: ActionProps) {
     setBusy(true);
     setError('');
     try {
+      if (isEvent) {
+        // Deleting an event also retracts the claims that cite it (6.4).
+        const result = await api.deleteEvent(record.id);
+        report(
+          `Deleted ${title(record)}: ${plural(result.retractedAssertions, 'value', 'values')} retracted, ${plural(result.recomputedRecordIds.length, 'record', 'records')} recomputed, ${plural(result.hiddenFactIds.length, 'fact', 'facts')} hidden.`,
+        );
+        onGone();
+        return;
+      }
       const result = await api.deleteRecord(record.id);
       const others = result.deletedRecordIds.filter((id) => id !== record.id).length;
       report(
@@ -131,7 +148,11 @@ function DeleteDialog({ record, onClose, onGone }: ActionProps) {
         if (!open && !busy) onClose();
       }}
       title={`Delete ${title(record)}?`}
-      description="It disappears from lists, search and the records that link to it. Its history stays stored, but it can’t be restored from the app."
+      description={
+        isEvent
+          ? 'The values it recorded are retracted and affected records recomputed. Facts with no other live sources are hidden. It can’t be restored from the app.'
+          : 'It disappears from lists, search and the records that link to it. Its history stays stored, but it can’t be restored from the app.'
+      }
     >
       <Stack>
         {error ? <Notice error>{error}</Notice> : null}
@@ -302,10 +323,8 @@ function ForgetDialog({ record, onClose, onGone }: ActionProps) {
         <Stack>
           <Muted>This erases, for good:</Muted>
           <Muted>· the record and any records merged into it, with their history and facts;</Muted>
-          <Muted>
-            · every interaction they took part in, whole, including what others said in it;
-          </Muted>
-          <Muted>· values and facts on other records that came only from those interactions.</Muted>
+          <Muted>· every event they took part in, whole, including what others said in it;</Muted>
+          <Muted>· values and facts on other records that came only from those events.</Muted>
           <Muted>
             Their emails and phones are blocked, so no record can add them again. Other records may
             still mention them; you’ll get a list to check.
@@ -340,14 +359,14 @@ function ForgetReport({ label, result }: { label: string; result: ForgetResult }
   const { counts, reviewCandidates: c } = result;
   const linked = [
     ...c.records.map((id) => <CandidateRecord key={id} id={id} />),
-    ...c.interactions.map((id) => <CandidateInteraction key={id} id={id} />),
+    ...c.events.map((id) => <CandidateEvent key={id} id={id} />),
   ];
   return (
     <Stack>
       <span>
         Erased {label}: {plural(counts.records, 'record', 'records')},{' '}
-        {plural(counts.interactions, 'interaction', 'interactions')},{' '}
-        {plural(counts.facts, 'fact', 'facts')} and {plural(counts.assertions, 'value', 'values')}.{' '}
+        {plural(counts.events, 'event', 'events')}, {plural(counts.facts, 'fact', 'facts')} and{' '}
+        {plural(counts.assertions, 'value', 'values')}.{' '}
         {plural(counts.suppressedHandles, 'email or phone is', 'emails and phones are')} blocked
         from coming back.
       </span>
@@ -367,7 +386,27 @@ function ForgetReport({ label, result }: { label: string; result: ForgetResult }
     </Stack>
   );
 }
-export function CandidateRecord({ id }: { id: string }) {
+/**
+ * A link to a record by ID. With `references` (a page's map of the records it
+ * names) it is named from the map, and a record missing from it shows as
+ * unavailable; without one, its label is fetched.
+ */
+export function CandidateRecord({
+  id,
+  references,
+}: {
+  id: string;
+  references?: Record<string, RecordReference>;
+}) {
+  if (!references) return <FetchedRecord id={id} />;
+  const reference = references[id];
+  return reference ? (
+    <RecordLink id={id}>{title(reference)}</RecordLink>
+  ) : (
+    <Muted>Unavailable record</Muted>
+  );
+}
+function FetchedRecord({ id }: { id: string }) {
   const { session } = useWorkspace();
   const record = useQuery({
     queryKey: [session.workspace.id, 'record', id, 'label'],
@@ -375,13 +414,11 @@ export function CandidateRecord({ id }: { id: string }) {
   });
   return <RecordLink id={id}>{record.data ? title(record.data) : 'Record'}</RecordLink>;
 }
-function CandidateInteraction({ id }: { id: string }) {
+function CandidateEvent({ id }: { id: string }) {
   const { session } = useWorkspace();
-  const interaction = useQuery({
-    queryKey: [session.workspace.id, 'interaction', id],
-    queryFn: ({ signal }) => api.interaction(id, signal),
+  const event = useQuery({
+    queryKey: [session.workspace.id, 'event', id],
+    queryFn: ({ signal }) => api.event(id, signal),
   });
-  return (
-    <InteractionLink id={id}>{interaction.data?.title || 'Untitled interaction'}</InteractionLink>
-  );
+  return <EventLink id={id}>{eventTitle({ title: event.data?.event?.title ?? null })}</EventLink>;
 }

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+import { type FieldState, relationTargetIds } from '../schema-engine/types.js';
 import { getRecord } from './read.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 import { sameValue } from './winner.js';
@@ -80,7 +80,10 @@ export function inboundRelationFields(schema: CompiledSchema, object: CompiledOb
   return schema.state.objects.flatMap((o) =>
     o.fields
       .filter(
-        (f) => f.type === 'relation' && f.settings.targetObjectId === object.state.universalId,
+        (f) =>
+          f.type === 'relation' &&
+          !f.settings.isInverse &&
+          relationTargetIds(f.settings).includes(object.state.universalId),
       )
       .map((f) => f.id as string),
   );
@@ -96,7 +99,7 @@ export function inboundRelationFields(schema: CompiledSchema, object: CompiledOb
  *    `FOR KEY SHARE`, so one that started earlier commits first and is seen
  *    here, and one that starts later waits and then follows the merge.
  * 3. Point inbound relation assertions and links at A, keeping provenance.
- * 4. Move B's assertions, facts and participant matches to A; drop B's
+ * 4. Move B's assertions, facts and event links to A; drop B's
  *    identifiers and links, then recompute the moved fields of A with the
  *    normal rules, which rebuilds identifiers and revalidates unique claims.
  * 5. For `emails`, `phones` and `links`, write the combined current winners
@@ -151,6 +154,14 @@ export async function mergeRecords(
     }
   }
   const object = objectOf(context.schema, survivor);
+  if (object.isEvent) {
+    throw new AppError(
+      422,
+      'invalid_merge',
+      'events cannot be merged: each is something that happened, logged from its own source. ' +
+        'Delete a duplicate event instead',
+    );
+  }
   if (merged.object_type_id !== survivor.object_type_id) {
     throw new AppError(
       422,
@@ -166,16 +177,34 @@ export async function mergeRecords(
   let inboundIds: string[] = [];
   const relationFieldIds = inboundRelationFields(context.schema, object);
   if (relationFieldIds.length > 0) {
+    // A single-record value is B; a set (many_to_many) holds B among others.
+    const pointsAtB = tx`(value = ${tx.json(b)}
+      or (jsonb_typeof(value) = 'array' and value @> ${tx.json([b])}))`;
     const inbound = await tx<{ record_id: string }[]>`
       select distinct record_id from field_assertions
       where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
-        and value = ${tx.json(b)} and record_id <> all(${pair}::uuid[])`;
+        and ${pointsAtB} and record_id <> all(${pair}::uuid[])`;
     inboundIds = inbound.map((r) => r.record_id).sort();
     await lockRecordsForUpdate(tx, workspaceId, inboundIds);
     await tx`
       update field_assertions set value = ${tx.json(a)}
       where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
         and value = ${tx.json(b)}`;
+    // In a set, B becomes A once: membership is deduplicated and kept in ID
+    // order (byte order, as the server sorts), so it still compares equal.
+    await tx`
+      update field_assertions set value = (
+        select coalesce(jsonb_agg(x order by x collate "C"), '[]'::jsonb)
+        from (select distinct case when v = ${b} then ${a} else v end as x
+          from jsonb_array_elements_text(value) v) d)
+      where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
+        and jsonb_typeof(value) = 'array' and value @> ${tx.json([b])}`;
+    // Edges follow; an edge to B whose source already links to A is dropped.
+    await tx`
+      delete from record_links d using record_links k
+      where d.workspace_id = ${workspaceId} and d.target_record_id = ${b}
+        and k.source_record_id = d.source_record_id and k.field_id = d.field_id
+        and k.target_record_id = ${a}`;
     await tx`
       update record_links set target_record_id = ${a}
       where workspace_id = ${workspaceId} and target_record_id = ${b}
@@ -188,13 +217,13 @@ export async function mergeRecords(
   const moved = await tx<{ field_id: string }[]>`
     update field_assertions set record_id = ${a} where record_id = ${b} returning field_id`;
   await tx`update facts set record_id = ${a} where record_id = ${b}`;
-  await tx`update interaction_participants set record_id = ${a} where record_id = ${b}`;
-  // An interaction is about a record once: drop an about link that now
-  // repeats another link to the survivor (1.3).
+  await tx`update event_links set record_id = ${a} where record_id = ${b}`;
+  // An event is about a record once: drop an about link that now repeats
+  // another link to the survivor (1.3).
   await tx`
-    delete from interaction_participants d using interaction_participants k
+    delete from event_links d using event_links k
     where d.workspace_id = ${workspaceId} and d.record_id = ${a} and d.link = 'about'
-      and k.interaction_id = d.interaction_id and k.record_id = ${a} and k.id <> d.id
+      and k.event_id = d.event_id and k.record_id = ${a} and k.id <> d.id
       and (k.link = 'participant' or k.position < d.position)`;
   // The survivor changed even when no field did (it gained B's facts), so
   // the consolidator's next run compares it again.

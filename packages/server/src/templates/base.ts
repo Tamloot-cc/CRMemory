@@ -1,3 +1,9 @@
+import {
+  BASE_EVENT_TYPE_IDS,
+  BASE_FIELD_IDS,
+  BASE_OBJECT_IDS,
+  INTERNAL_NOTE_TYPE_ID,
+} from '@retainer/shared';
 import type { SchemaOperation } from '../schema-engine/operations.js';
 
 /**
@@ -5,17 +11,69 @@ import type { SchemaOperation } from '../schema-engine/operations.js';
  * Universal IDs are fixed forever: upgrades and templates find these
  * objects and fields by them in every workspace.
  */
-export const BASE_OBJECT_IDS = {
-  company: '1f24f94d-6bc5-4955-b6ab-ac946e2b140a',
-  person: '7e87d873-8c93-4786-9a0b-95447310c8d3',
-  task: 'd0690d5f-d7f4-47ce-8007-0a81a276a70b',
-} as const;
+export { BASE_EVENT_TYPE_IDS, BASE_FIELD_IDS, BASE_OBJECT_IDS, INTERNAL_NOTE_TYPE_ID };
 
-/** Base fields that server code reads directly, such as open tasks in context packs (6.2). */
-export const BASE_FIELD_IDS = {
-  taskStatus: '107158ae-ba0f-482e-afe1-5e45bd6ccfd6',
-  taskDueDate: '368276ea-604d-4dcd-b6ad-796431a84a06',
-} as const;
+/**
+ * An event type (6.1) with only its core title and summary fields, which the
+ * schema engine adds. None of the base event types is protected: a
+ * workspace can delete the ones it does not use.
+ */
+function eventType(
+  key: keyof typeof BASE_EVENT_TYPE_IDS,
+  plural: string,
+  labelSingular: string,
+  labelPlural: string,
+  description: string,
+): SchemaOperation {
+  return {
+    op: 'create_object',
+    object: {
+      universalId: BASE_EVENT_TYPE_IDS[key],
+      class: 'event',
+      nameSingular: key,
+      namePlural: plural,
+      labelSingular,
+      labelPlural,
+      description,
+      fields: [],
+    },
+  };
+}
+
+/** The event types every workspace starts with. */
+export const BASE_EVENT_OPERATIONS: SchemaOperation[] = [
+  eventType('meeting', 'meetings', 'Meeting', 'Meetings', 'A meeting, in person or online.'),
+  eventType('call', 'calls', 'Call', 'Calls', 'A phone or video call.'),
+  eventType('email', 'emails', 'Email', 'Emails', 'An email or email thread.'),
+  eventType(
+    'message',
+    'messages',
+    'Message',
+    'Messages',
+    'A chat or text message, or a thread of them.',
+  ),
+  eventType('note', 'notes', 'Note', 'Notes', 'A note someone wrote down.'),
+];
+
+/**
+ * The hidden, protected event type of the notes `remember` creates for facts
+ * with no source (6.4). It is never named by an operation and never listed.
+ */
+export const INTERNAL_OPERATIONS: SchemaOperation[] = [
+  {
+    op: 'create_object',
+    object: {
+      universalId: INTERNAL_NOTE_TYPE_ID,
+      class: 'event',
+      nameSingular: 'internalNote',
+      namePlural: 'internalNotes',
+      labelSingular: 'Internal note',
+      labelPlural: 'Internal notes',
+      description: 'A note remember created for a fact that cites no source.',
+      fields: [],
+    },
+  },
+];
 
 export const BASE_OPERATIONS: SchemaOperation[] = [
   {

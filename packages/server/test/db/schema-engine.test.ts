@@ -4,6 +4,8 @@ import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import type { ApiKeyScope } from '../../src/db/schema.js';
 import { inWorkspace } from '../../src/db/tx.js';
 import { AppError } from '../../src/errors.js';
+import { logEventFor } from '../../src/memory/service.js';
+import { createRecord, readRecord } from '../../src/records/service.js';
 import { getSchema } from '../../src/schema-engine/compiled.js';
 import { decideSchemaChange, runSchemaChange } from '../../src/schema-engine/engine.js';
 import { loadSchemaState } from '../../src/schema-engine/load.js';
@@ -305,5 +307,80 @@ describe('templates', () => {
     const after = await getWorkspace(db.owner, id);
     expect(after).toEqual(before);
     expect(await fieldNames(id, 'deal')).toBeUndefined();
+  });
+});
+
+describe('event types', () => {
+  it('seeds the base event types, and hides the internal-note type from the schema', async () => {
+    const { id } = await newWorkspace();
+    const schema = await inWorkspace(app, id, (tx) => getSchema(tx, id));
+    const events = [...schema.objectsByName.values()].filter((o) => o.isEvent);
+    expect(events.map((o) => o.name).sort()).toEqual([
+      'call',
+      'email',
+      'meeting',
+      'message',
+      'note',
+    ]);
+    expect(schema.eventTypeIds).toHaveLength(5);
+    expect(schema.internalNote).toBeDefined();
+    expect(schema.visibleObjectIds).not.toContain(schema.internalNote?.id);
+  });
+
+  it('creates an event type with class "event" and its core fields', async () => {
+    const { id } = await newWorkspace();
+    const result = await change(id, [
+      {
+        op: 'create_object',
+        object: {
+          nameSingular: 'payment',
+          namePlural: 'payments',
+          labelSingular: 'Payment',
+          labelPlural: 'Payments',
+          class: 'event',
+          fields: [{ name: 'amount', label: 'Amount', type: 'money' }],
+        },
+      },
+    ]);
+    expect(result.status).toBe('applied');
+    expect(await fieldNames(id, 'payment')).toEqual(['title', 'summary', 'amount']);
+  });
+
+  it('deletes an event type through the event deletion lifecycle, atomically', async () => {
+    const { id } = await newWorkspace();
+    const caller = { workspaceId: id, actor: agent, scopes: ['read', 'write'] as ApiKeyScope[] };
+    const call = await logEventFor(app, caller, {
+      type: 'call',
+      channel: 'zoom',
+      externalId: 'z-1',
+      occurredAt: '2026-10-01T10:00:00Z',
+      title: 'Renewal call',
+      fields: {},
+      participants: [],
+      about: [],
+    });
+    const person = await createRecord(
+      app,
+      caller,
+      'person',
+      { emails: 'dana@acme.com', jobTitle: 'CTO' },
+      { source: call.id },
+    );
+    expect(person.record.fields.jobTitle).toBe('CTO');
+
+    const result = await change(id, [{ op: 'delete_object', object: 'call' }], admin, ALL);
+    expect(result.status).toBe('applied');
+
+    // The call is deleted with its type, and what it was cited for no longer counts.
+    const [row] = await db.owner<{ deleted_at: Date | null }[]>`
+      select deleted_at from records where id = ${call.id}`;
+    expect(row?.deleted_at).not.toBeNull();
+    const after = await readRecord(app, caller, person.id);
+    expect(after.fields.jobTitle ?? null).toBeNull();
+    const statuses = await db.owner<{ status: string }[]>`
+      select status from field_assertions
+      where record_id = ${person.id} and source_record_id = ${call.id}`;
+    // Both values (emails and jobTitle) cited the call.
+    expect(statuses.map((s) => s.status)).toEqual(['retracted', 'retracted']);
   });
 });

@@ -2,17 +2,23 @@ import type {
   Actor,
   ContextFact,
   ContextField,
-  ContextInteraction,
   ContextPack,
+  EventItem,
   OpenTask,
 } from '@retainer/shared';
+import { BASE_FIELD_IDS, BASE_OBJECT_IDS, TASK_DONE_OPTION } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
-import { isNote } from '../memory/interactions.js';
+import {
+  countEventHistory,
+  eventHistory,
+  type HistoryRow,
+  liveFactSource,
+  viaOf,
+} from '../memory/events.js';
 import { getRecord } from '../records/read.js';
 import { references } from '../records/references.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { BASE_FIELD_IDS, BASE_OBJECT_IDS } from '../templates/base.js';
+import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import { CHARS_PER_TOKEN, estimateTokens, fitSections, jsonLength } from './budget.js';
 
 /**
@@ -48,11 +54,11 @@ export async function contextPack(
   const rows = Math.floor(budgetChars / MIN_ITEM_CHARS) + 1;
   // Resolves merged IDs and refuses deleted records, like get_record.
   const record = await getRecord(tx, workspaceId, schema, recordId);
-  const [fields, tasks, facts, interactions] = await Promise.all([
+  const [fields, tasks, facts, events] = await Promise.all([
     currentFields(tx, workspaceId, schema, record.id, record.fields),
     openTasks(tx, workspaceId, schema, record.id, rows),
-    currentFacts(tx, workspaceId, record.id, rows),
-    recentInteractions(tx, workspaceId, record.id, rows),
+    currentFacts(tx, workspaceId, schema, record.id, rows),
+    recentEvents(tx, workspaceId, schema, record.id, rows),
   ]);
 
   // The record's values are always included. The sections get what is left
@@ -65,12 +71,12 @@ export async function contextPack(
     record: head,
     openTasks: [],
     facts: [],
-    recentInteractions: [],
-    omitted: { openTasks: tasks.total, facts: facts.total, recentInteractions: interactions.total },
+    recentEvents: [],
+    omitted: { openTasks: tasks.total, facts: facts.total, recentEvents: events.total },
     tokenEstimate: input.tokenBudget,
   };
   const { included } = fitSections(
-    { openTasks: tasks.items, facts: facts.items, recentInteractions: interactions.items },
+    { openTasks: tasks.items, facts: facts.items, recentEvents: events.items },
     Math.max(0, budgetChars - jsonLength(frame)),
   );
 
@@ -80,7 +86,7 @@ export async function contextPack(
     omitted: {
       openTasks: tasks.total - included.openTasks.length,
       facts: facts.total - included.facts.length,
-      recentInteractions: interactions.total - included.recentInteractions.length,
+      recentEvents: events.total - included.recentEvents.length,
     },
     tokenEstimate: input.tokenBudget,
   };
@@ -156,7 +162,9 @@ async function openTasks(
   const dueDate = field(BASE_FIELD_IDS.taskDueDate);
   const statusValue = status ? tx`t.data -> ${status.key}` : tx`null::jsonb`;
   const dueValue = dueDate ? tx`t.data -> ${dueDate.key}` : tx`null::jsonb`;
-  const notDone = status ? tx`and (t.data ->> ${status.key}) is distinct from 'done'` : tx``;
+  const notDone = status
+    ? tx`and (t.data ->> ${status.key}) is distinct from ${TASK_DONE_OPTION}`
+    : tx``;
   const dueOrder = dueDate ? tx`(t.data ->> ${dueDate.key}) asc nulls last,` : tx``;
 
   const rows = await tx<{ id: string; status: unknown; due_date: unknown; total: string }[]>`
@@ -200,6 +208,7 @@ async function openTasks(
 async function currentFacts(
   tx: Tx,
   workspaceId: string,
+  schema: CompiledSchema,
   recordId: string,
   limit: number,
 ): Promise<Section<ContextFact>> {
@@ -209,83 +218,81 @@ async function currentFacts(
       content: string;
       valid_from: Date;
       actor: Actor;
-      sources: string[];
+      sources: { id: string; type: string }[];
       total: string;
     }[]
   >`
     select f.id, f.content, f.valid_from, f.actor,
-      array(
-        select s.interaction_id from fact_sources s
-        join interactions i on i.id = s.interaction_id and i.deleted_at is null
-        where s.fact_id = f.id
-        order by i.occurred_at, s.id) as sources,
+      coalesce((
+        select json_agg(json_build_object('id', src.id, 'type', src.object_type_id)
+          order by e.occurred_at, s.id)
+        from fact_sources s
+        join records src on src.id = s.source_record_id and src.deleted_at is null
+        join event_records e on e.record_id = src.id
+        where s.fact_id = f.id), '[]'::json) as sources,
       count(*) over () as total
     from facts f
     where f.workspace_id = ${workspaceId} and f.record_id = ${recordId}
       and f.deleted_at is null and f.superseded_by is null and f.valid_to is null
-      and exists (
-        select 1 from fact_sources s
-        join interactions i on i.id = s.interaction_id and i.deleted_at is null
-        where s.fact_id = f.id)
+      and exists (${liveFactSource(tx, tx`f.id`)})
     order by f.valid_from desc, f.created_at desc, f.id
     limit ${limit}`;
   return {
-    items: rows.map((row) => ({
-      id: row.id,
-      content: row.content,
-      validFrom: row.valid_from.toISOString(),
-      writtenBy: row.actor,
-      sources: row.sources,
-    })),
+    items: rows.map((row) => {
+      // An internal note has no ID a caller can read (6.4): it is marked.
+      const internal = row.sources.some((s) => schema.objectsById.get(s.type)?.hidden);
+      return {
+        id: row.id,
+        content: row.content,
+        validFrom: row.valid_from.toISOString(),
+        writtenBy: row.actor,
+        sources: row.sources
+          .filter((s) => !schema.objectsById.get(s.type)?.hidden)
+          .map((s) => s.id),
+        ...(internal ? { internal: true as const } : {}),
+      };
+    }),
     total: Number(rows[0]?.total ?? 0),
   };
 }
 
 /**
- * Live interactions the record took part in or that are about it, newest
- * first, each saying which (`via`; a participant link wins). The notes
- * `remember` creates for uncited facts are left out: their text is the
- * fact's, already in `facts`.
+ * The record's event history (7.1, 7.2), newest first, each event once with
+ * how it is attached (`via`: participant, about, one of the event's own
+ * relation fields, then rolled up from a record pointing at this one).
+ * Internal notes are never listed: their text is the fact's, already in
+ * `facts`.
  */
-async function recentInteractions(
+async function recentEvents(
   tx: Tx,
   workspaceId: string,
+  schema: CompiledSchema,
   recordId: string,
   limit: number,
-): Promise<Section<ContextInteraction>> {
+): Promise<Section<EventItem>> {
   const rows = await tx<
-    {
-      id: string;
-      kind: string;
-      occurred_at: Date;
-      title: string | null;
-      summary: string | null;
-      via: 'participant' | 'about';
-      total: string;
-    }[]
+    (HistoryRow & { id: string; object_type_id: string; data: Record<string, unknown> })[]
   >`
-    select i.id, i.kind, i.occurred_at, i.title, i.summary, l.via, count(*) over () as total
-    from (
-      select p.interaction_id,
-        case when bool_or(p.link = 'participant') then 'participant' else 'about' end as via
-      from interaction_participants p
-      where p.workspace_id = ${workspaceId} and p.record_id = ${recordId}
-      group by p.interaction_id
-    ) l
-    join interactions i on i.id = l.interaction_id
-    where i.workspace_id = ${workspaceId} and i.deleted_at is null
-      and not ${isNote(tx)}
-    order by i.occurred_at desc, i.id
+    select r.id, r.object_type_id, r.data, h.occurred_at, h.rank, h.field_id, h.via_record_id
+    from ${eventHistory(tx, schema, workspaceId, recordId, { limit })} h
+    join records r on r.id = h.event_id
+    order by h.occurred_at desc, h.event_id desc
     limit ${limit}`;
+  // Counted over the deduplicated history, so `omitted` never counts an
+  // event twice (7.2).
+  const total =
+    rows.length < limit ? rows.length : await countEventHistory(tx, schema, workspaceId, recordId);
   return {
-    items: rows.map((row) => ({
-      id: row.id,
-      kind: row.kind,
-      occurredAt: row.occurred_at.toISOString(),
-      title: row.title,
-      summary: row.summary,
-      via: row.via,
-    })),
-    total: Number(rows[0]?.total ?? 0),
+    items: rows.map((row) => {
+      const object = schema.objectsById.get(row.object_type_id);
+      return {
+        id: row.id,
+        type: object?.name ?? 'unknown',
+        occurredAt: row.occurred_at.toISOString(),
+        ...eventText(object, row.data),
+        via: viaOf(schema, row),
+      };
+    }),
+    total,
   };
 }

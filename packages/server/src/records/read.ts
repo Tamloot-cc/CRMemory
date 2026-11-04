@@ -1,6 +1,7 @@
-import type { Actor, PresentedRecord } from '@retainer/shared';
+import { type Actor, isCollectionRelation, type PresentedRecord } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
+import { eventDetails } from '../memory/event-links.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { resolveRecordId } from './write.js';
 
@@ -8,6 +9,7 @@ export type { PresentedRecord } from '@retainer/shared';
 
 export type RecordRow = {
   id: string;
+  workspace_id: string;
   object_type_id: string;
   data: Record<string, unknown>;
   label: string | null;
@@ -19,6 +21,7 @@ export type RecordRow = {
 
 export const RECORD_COLUMNS = [
   'id',
+  'workspace_id',
   'object_type_id',
   'data',
   'label',
@@ -30,7 +33,10 @@ export const RECORD_COLUMNS = [
 
 const INVERSE_LIMIT = 100;
 
-/** Presents rows of any objects, reading their relations in two queries. */
+/**
+ * Presents rows of any objects, reading their relations in two queries and,
+ * for event records, their built-in columns and links in two more.
+ */
 export async function presentRecords(
   tx: Tx,
   schema: CompiledSchema,
@@ -38,6 +44,16 @@ export async function presentRecords(
 ): Promise<PresentedRecord[]> {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
+  const workspaceId = rows[0]?.workspace_id;
+  const events =
+    workspaceId === undefined
+      ? new Map()
+      : await eventDetails(
+          tx,
+          workspaceId,
+          schema,
+          rows.filter((r) => schema.objectsById.get(r.object_type_id)?.isEvent),
+        );
 
   // Links whose other end is deleted no longer resolve (set_null on delete).
   const [outgoing, incoming] = await Promise.all([
@@ -45,7 +61,8 @@ export async function presentRecords(
       select l.source_record_id as record_id, l.field_id, l.target_record_id as other_id
       from record_links l
       join records t on t.id = l.target_record_id and t.deleted_at is null
-      where l.source_record_id = any(${ids}::uuid[])`,
+      where l.source_record_id = any(${ids}::uuid[])
+      order by l.target_record_id`,
     tx<{ record_id: string; field_id: string; other_id: string }[]>`
       select l.target_record_id as record_id, l.field_id, l.source_record_id as other_id
       from record_links l
@@ -57,9 +74,12 @@ export async function presentRecords(
   const values = new Map<string, Record<string, unknown>>(ids.map((id) => [id, {}]));
   for (const link of outgoing) {
     const field = schema.fieldOwners.get(link.field_id)?.fieldsById.get(link.field_id);
-    if (field?.status === 'active') {
-      (values.get(link.record_id) as Record<string, unknown>)[field.name] = link.other_id;
-    }
+    if (field?.status !== 'active') continue;
+    const record = values.get(link.record_id) as Record<string, unknown>;
+    if (isCollectionRelation(field)) {
+      // A set, in ID order; members that were deleted no longer resolve.
+      record[field.name] = [...((record[field.name] as string[] | undefined) ?? []), link.other_id];
+    } else record[field.name] = link.other_id;
   }
   for (const link of incoming) {
     // The edge belongs to the many_to_one field; show it on that field's inverse.
@@ -81,8 +101,11 @@ export async function presentRecords(
       if (field.type !== 'relation' && Object.hasOwn(row.data, field.key)) {
         fields[field.name] = row.data[field.key];
       }
+      // An empty set reads as [], not as a missing value.
+      if (isCollectionRelation(field) && !field.settings.isInverse) fields[field.name] = [];
     }
     Object.assign(fields, values.get(row.id));
+    const event = events.get(row.id);
     return {
       id: row.id,
       object: object?.name ?? 'unknown',
@@ -92,13 +115,15 @@ export async function presentRecords(
       updatedAt: row.updated_at.toISOString(),
       createdBy: row.created_by,
       updatedBy: row.updated_by,
+      ...(event ? { event } : {}),
     };
   });
 }
 
 /**
  * One live record. A merged ID resolves to the surviving record (4.2); a
- * deleted record is not found.
+ * deleted record, and a record of the hidden internal-note type (6.4), are
+ * not found.
  */
 export async function getRecord(
   tx: Tx,
@@ -106,16 +131,32 @@ export async function getRecord(
   schema: CompiledSchema,
   id: string,
 ): Promise<PresentedRecord> {
+  const row = await findLiveRecord(tx, workspaceId, schema, id);
+  const [presented] = await presentRecords(tx, schema, [row]);
+  return presented as PresentedRecord;
+}
+
+/**
+ * The live, visible record an ID names, after merges, unpresented: for
+ * routes that need only its ID and object. Refuses what `getRecord` refuses.
+ */
+export async function findLiveRecord(
+  tx: Tx,
+  workspaceId: string,
+  schema: CompiledSchema,
+  id: string,
+): Promise<RecordRow> {
   const canonical = await resolveRecordId(tx, workspaceId, id);
   const [row] = await tx<(RecordRow & { deleted_at: Date | null })[]>`
     select ${tx(RECORD_COLUMNS)}, deleted_at from records
     where id = ${canonical} and workspace_id = ${workspaceId}`;
-  if (!row) throw notFound('record', { id });
+  if (!row || schema.objectsById.get(row.object_type_id)?.hidden) {
+    throw notFound('record', { id });
+  }
   if (row.deleted_at) {
     throw new AppError(404, 'record_deleted', `record ${canonical} was deleted`, {
       recordId: canonical,
     });
   }
-  const [presented] = await presentRecords(tx, schema, [row]);
-  return presented as PresentedRecord;
+  return row;
 }

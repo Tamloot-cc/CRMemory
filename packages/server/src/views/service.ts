@@ -15,12 +15,7 @@ import type { StoredViewConfig } from '../db/schema.js';
 import { inWorkspace, jsonValue, lockSchemaShared, type Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { checkAggregateOp } from '../records/aggregate.js';
-import {
-  BUILT_IN_COLUMNS,
-  compileFilter,
-  compileSort,
-  queryInputSchema,
-} from '../records/query.js';
+import { builtInNames, compileFilter, compileSort, queryInputSchema } from '../records/query.js';
 import type { Caller } from '../records/service.js';
 import { requireObject } from '../records/service.js';
 import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
@@ -76,7 +71,8 @@ type ConfigInput = Pick<CreateViewInput, keyof typeof configShape>;
 const invalidView = (message: string, details?: Record<string, unknown>) =>
   new AppError(422, 'invalid_view', message, details);
 
-const BUILT_IN = new Set(Object.keys(BUILT_IN_COLUMNS));
+/** An event type's calendar may be placed by when its events happened (7.1). */
+const OCCURRED_AT = 'occurredAt';
 const NESTING = new Set(['and', 'or', 'not']);
 
 // ---------------------------------------------------------------------------
@@ -88,9 +84,12 @@ class FieldNames {
   private readonly byName: Map<string, FieldState>;
   private readonly byKey: Map<string, FieldState>;
   private readonly allByKey: Map<string, FieldState>;
+  /** Built-in columns, stored under their own names. */
+  private readonly builtIn: Set<string>;
   readonly issues: string[] = [];
 
   constructor(readonly object: CompiledObject) {
+    this.builtIn = new Set(builtInNames(object));
     this.byName = object.fieldsByName;
     this.byKey = new Map(object.activeFields.map((f) => [f.key, f]));
     this.allByKey = new Map(object.state.fields.map((f) => [f.key, f]));
@@ -109,12 +108,12 @@ class FieldNames {
   }
 
   key(fieldName: string, path: string): string {
-    return BUILT_IN.has(fieldName) ? fieldName : this.field(fieldName, path).key;
+    return this.builtIn.has(fieldName) ? fieldName : this.field(fieldName, path).key;
   }
 
   /** The active field's name for a stored key, or undefined (recording why). */
   name(key: string, where: string): string | undefined {
-    if (BUILT_IN.has(key)) return key;
+    if (this.builtIn.has(key)) return key;
     const field = this.byKey.get(key);
     if (field) return field.name;
     const gone = this.allByKey.get(key);
@@ -293,12 +292,14 @@ function toStored(
   }
   if (given('dateField'))
     out.dateField = input.dateField
-      ? kindField(
-          input.dateField,
-          'dateField',
-          canPlaceBy,
-          'a calendar is placed by a filterable date or date-time field',
-        )
+      ? object.isEvent && input.dateField === OCCURRED_AT
+        ? OCCURRED_AT
+        : kindField(
+            input.dateField,
+            'dateField',
+            canPlaceBy,
+            'a calendar is placed by a filterable date or date-time field',
+          )
       : undefined;
   return out;
 }
@@ -371,6 +372,7 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
     fits: (field: FieldState) => boolean,
     needs: string,
   ): string | null => {
+    if (key === OCCURRED_AT && object.isEvent && what === 'The calendar date') return OCCURRED_AT;
     const fieldName = key && fields.name(key, what);
     if (!fieldName) return null;
     const field = object.fieldsByName.get(fieldName);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveParticipants } from './interactions.js';
+import { resolveParticipants } from './event-links.js';
 
 const A = '10000000-0000-4000-8000-00000000000a';
 const B = '10000000-0000-4000-8000-00000000000b';

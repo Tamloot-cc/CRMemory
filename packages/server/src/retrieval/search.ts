@@ -1,12 +1,12 @@
-import type { FactHit, InteractionHit, RecordHit, SearchResult } from '@retainer/shared';
+import type { EventHit, FactHit, RecordHit, SearchResult } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
-import { isNote } from '../memory/interactions.js';
+import { liveFactSource } from '../memory/events.js';
 import { exactQuery, prefixQuery } from '../records/search-sql.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 
 /**
- * Keyword search across records, facts and interactions (5.1). Postgres
+ * Keyword search across records, events and facts (5.1). Postgres
  * parses the query (`websearch_to_tsquery`: quoted phrases, `OR`, `-word`)
  * with the `simple` configuration the stored vectors use, accents folded.
  * Every word also matches as a prefix ("Dan" finds "Dana"); hits that match
@@ -32,12 +32,12 @@ export async function search(
   schema: CompiledSchema,
   input: SearchInput,
 ): Promise<SearchResult> {
-  const [records, facts, interactions] = await Promise.all([
+  const [records, facts, events] = await Promise.all([
     searchRecords(tx, workspaceId, schema, input),
     searchFacts(tx, workspaceId, input),
-    searchInteractions(tx, workspaceId, input),
+    searchEvents(tx, workspaceId, schema, input),
   ]);
-  return { records, facts, interactions };
+  return { records, facts, events };
 }
 
 /**
@@ -45,7 +45,7 @@ export async function search(
  * words as typed rank first, since `ts_rank_cd` scores a prefix match the
  * same as an exact one; each by `ts_rank_cd`.
  */
-function rank(tx: Tx, column: 'search' | 'f.search' | 'i.search', text: string) {
+function rank(tx: Tx, column: 'search' | 'f.search' | 'r.search', text: string) {
   return tx`ts_rank_cd(${tx.unsafe(column)}, ${exactQuery(tx, text)}, ${RANK_NORMALIZATION}) desc,
     ts_rank_cd(${tx.unsafe(column)}, ${prefixQuery(tx, text)}, ${RANK_NORMALIZATION}) desc`;
 }
@@ -68,7 +68,9 @@ async function searchRecords(
 
   const text = await tx<RecordRow[]>`
     select id, object_type_id, label from records
-    where workspace_id = ${workspaceId} and deleted_at is null and search @@ ${prefixQuery(tx, input.query)}
+    where workspace_id = ${workspaceId} and deleted_at is null
+      and object_type_id = any(${schema.entityTypeIds}::uuid[])
+      and search @@ ${prefixQuery(tx, input.query)}
     order by ${rank(tx, 'search', input.query)}, updated_at desc, id
     limit ${input.limit}`;
   if (text.length > 0) return present(text, 'text');
@@ -77,7 +79,8 @@ async function searchRecords(
   // still find its record by trigram similarity of the label.
   const similar = await tx<RecordRow[]>`
     select id, object_type_id, label from records
-    where workspace_id = ${workspaceId} and deleted_at is null and label % ${input.query}
+    where workspace_id = ${workspaceId} and deleted_at is null
+      and object_type_id = any(${schema.entityTypeIds}::uuid[]) and label % ${input.query}
     order by similarity(label, ${input.query}) desc, updated_at desc, id
     limit ${input.limit}`;
   return present(similar, 'similar_label');
@@ -90,10 +93,7 @@ async function searchFacts(tx: Tx, workspaceId: string, input: SearchInput): Pro
     join records r on r.id = f.record_id and r.deleted_at is null
     where f.workspace_id = ${workspaceId} and f.search @@ ${prefixQuery(tx, input.query)}
       and f.deleted_at is null and f.superseded_by is null and f.valid_to is null
-      and exists (
-        select 1 from fact_sources s
-        join interactions i on i.id = s.interaction_id and i.deleted_at is null
-        where s.fact_id = f.id)
+      and exists (${liveFactSource(tx, tx`f.id`)})
     order by ${rank(tx, 'f.search', input.query)}, f.valid_from desc, f.id
     limit ${input.limit}`;
   return rows.map((row) => ({
@@ -105,41 +105,47 @@ async function searchFacts(tx: Tx, workspaceId: string, input: SearchInput): Pro
 }
 
 /**
- * Live interactions. The notes `remember` creates for uncited facts are left
- * out: their text is the fact's, found (or hidden) with the fact itself.
+ * Live events of visible types, by their searchable fields (title and
+ * summary at least). Internal notes are left out: their text is the fact's,
+ * found (or hidden) with the fact itself.
  */
-async function searchInteractions(
+async function searchEvents(
   tx: Tx,
   workspaceId: string,
+  schema: CompiledSchema,
   input: SearchInput,
-): Promise<InteractionHit[]> {
+): Promise<EventHit[]> {
   const rows = await tx<
     {
       id: string;
-      kind: string;
+      object_type_id: string;
+      data: Record<string, unknown>;
       occurred_at: Date;
-      title: string | null;
-      summary: string | null;
       records: string[];
     }[]
   >`
-    select i.id, i.kind, i.occurred_at, i.title, i.summary,
+    select r.id, r.object_type_id, r.data, e.occurred_at,
       array(
-        select p.record_id from interaction_participants p
-        join records r on r.id = p.record_id and r.deleted_at is null
-        where p.interaction_id = i.id
-        order by p.position) as records
-    from interactions i
-    where i.workspace_id = ${workspaceId} and i.deleted_at is null and i.search @@ ${prefixQuery(tx, input.query)}
-      and not ${isNote(tx)}
-    order by ${rank(tx, 'i.search', input.query)}, i.occurred_at desc, i.id
+        select l.record_id from event_links l
+        join records t on t.id = l.record_id and t.deleted_at is null
+          and t.object_type_id = any(${schema.visibleObjectIds}::uuid[])
+        where l.event_id = r.id
+        order by l.position) as records
+    from records r
+    join event_records e on e.record_id = r.id
+    where r.workspace_id = ${workspaceId} and r.deleted_at is null
+      and r.object_type_id = any(${schema.eventTypeIds}::uuid[])
+      and r.search @@ ${prefixQuery(tx, input.query)}
+    order by ${rank(tx, 'r.search', input.query)}, e.occurred_at desc, r.id
     limit ${input.limit}`;
-  return rows.map((row) => ({
-    id: row.id,
-    kind: row.kind,
-    occurredAt: row.occurred_at.toISOString(),
-    title: row.title,
-    summary: row.summary,
-    records: [...new Set(row.records)],
-  }));
+  return rows.map((row) => {
+    const object = schema.objectsById.get(row.object_type_id);
+    return {
+      id: row.id,
+      type: object?.name ?? 'unknown',
+      occurredAt: row.occurred_at.toISOString(),
+      ...eventText(object, row.data),
+      records: [...new Set(row.records)],
+    };
+  });
 }

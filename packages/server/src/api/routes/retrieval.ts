@@ -3,11 +3,15 @@ import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
 import { contextInputSchema } from '../../retrieval/context.js';
 import { searchInputSchema } from '../../retrieval/search.js';
-import { contextFor, searchFor } from '../../retrieval/service.js';
+import { contextFor, searchFor, timelineFor } from '../../retrieval/service.js';
+import { timelineInputSchema } from '../../retrieval/timeline.js';
 import type { AppEnv } from '../http.js';
 import { idParam, readBody, zodError } from '../request.js';
 
-/** Keyword search and context packs (6.1), on the same services as the MCP tools. */
+/** Query parameters that take a list, as comma-separated values. */
+const LIST_PARAMS = new Set(['types', 'fields', 'eventTypes']);
+
+/** Keyword search, context packs and timelines (6.1), on the same services as the MCP tools. */
 export function retrievalRoutes(app: Hono<AppEnv>, sql: Sql) {
   app.post('/search', requireScope('read'), async (c) => {
     const input = await readBody(c, searchInputSchema);
@@ -22,5 +26,23 @@ export function retrievalRoutes(app: Hono<AppEnv>, sql: Sql) {
     );
     if (!parsed.success) throw zodError(parsed.error);
     return c.json(await contextFor(sql, c.get('caller'), id, parsed.data));
+  });
+
+  app.get('/records/:id/timeline', requireScope('read'), async (c) => {
+    const id = idParam(c);
+    const query: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(c.req.query())) {
+      query[key] = LIST_PARAMS.has(key)
+        ? value
+            .split(',')
+            .map((v) => v.trim())
+            .filter(Boolean)
+        : key === 'limit'
+          ? Number(value)
+          : value;
+    }
+    const parsed = timelineInputSchema.safeParse(query);
+    if (!parsed.success) throw zodError(parsed.error);
+    return c.json(await timelineFor(sql, c.get('caller'), id, parsed.data));
   });
 }

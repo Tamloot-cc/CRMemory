@@ -52,7 +52,7 @@ List routes take `limit` and `cursor` and return `nextCursor`, which is `null`
 on the last page. `GET /v1/review` pages each collection separately with
 `pendingAssertionsCursor`, `unresolvedParticipantsCursor` and
 `mergeSuggestionsCursor`, and returns `nextCursors` and `totals` for each.
-`GET /v1/interactions/:id/claims` does the same for assertions and facts with
+`GET /v1/events/:id/claims` does the same for assertions and facts with
 `assertionsCursor` and `factsCursor`.
 
 ## Idempotency
@@ -60,12 +60,13 @@ on the last page. `GET /v1/review` pages each collection separately with
 Creating a record, `remember` and merging accept an `Idempotency-Key` header
 (1–200 characters). A retry with the same key and the same body returns the
 original response; the same key with a different body fails with 422
-`idempotency_key_reused`. Logging an interaction is idempotent through its
-`(channel, externalId)` instead: logging it again with the same kind,
-`occurredAt`, title and summary returns it with `created: false`, after
-adding any participants and `about` records it did not have yet (listed in
-`added`). Nothing is removed by logging again; a different kind, time, title
-or summary is a 409 `interaction_conflict`.
+`idempotency_key_reused`. Logging an event is idempotent through its
+`(channel, externalId)` instead: logging it again with the same `type`,
+`occurredAt`, title, summary and `fields` returns it with `created: false`
+(status 200 instead of 201), after adding any participants and `about`
+records it did not have yet (listed in `added`). Nothing is removed by
+logging again; a different payload is a 409 `event_conflict`, and the
+identity of a deleted or erased event is a 409 `event_retracted`.
 
 ## Routes
 
@@ -89,22 +90,22 @@ or summary is a 409 `interaction_conflict`.
 | `PATCH /v1/records/:id`                           | `write`          | Update fields; optional `source` and `expectedUpdatedAt`             |
 | `GET /v1/records/:id/delete-impact`               | `read`           | What a delete would take with it through cascades, counted by object |
 | `POST /v1/records/delete-impact`                  | `read`           | The same for `{ "ids": [...] }` (at most 200) deleted together       |
-| `DELETE /v1/records/:id`                          | `write`          | Soft-delete a record                                                 |
+| `DELETE /v1/records/:id`                          | `write`          | Soft-delete a record; for events, also retract what cites them       |
 | `GET /v1/records/:id/assertions`                  | `read`           | Per-field history; `?field=`                                         |
-| `GET /v1/records/:id/interactions`                | `read`           | Interactions the record took part in or that are about it            |
+| `GET /v1/records/:id/events`                      | `read`           | The record's event history, rollups included, with `via`; `?link=`   |
 | `GET` · `POST /v1/records/:id/facts`              | `read` · `write` | List facts, or `remember` one                                        |
 | `DELETE /v1/facts/:id`                            | `write`          | Retract a fact                                                       |
 | `GET /v1/records/:id/context`                     | `read`           | Context pack; `?tokenBudget=` (default 2000, at most 16000)          |
+| `GET /v1/records/:id/timeline`                    | `read`           | Events, field values and facts, newest first; filters, cursor        |
 | `POST /v1/records/:id/merge`                      | `write`, user    | Merge `recordId` into this record                                    |
 | `POST /v1/records/:id/forget`                     | `admin`, user    | Erase a person for a privacy request; not reversible                 |
-| `POST /v1/interactions`                           | `write`          | Log an interaction; returns matched and unmatched participants       |
-| `POST /v1/interactions/query`                     | `read`           | Filter, count and page interactions by kind, channel, time or record |
-| `GET` · `DELETE /v1/interactions/:id`             | `read` · `write` | Read or retract an interaction                                       |
-| `POST /v1/interactions/:id/participants`          | `write`          | Add participants and `about` records; idempotent                     |
-| `DELETE /v1/interactions/:id/participants/:pid`   | `write`, user    | Remove one participant                                               |
-| `DELETE /v1/interactions/:id/about/:recordId`     | `write`, user    | Remove a record from the interaction's `about` list                  |
-| `GET /v1/interactions/:id/claims`                 | `read`           | Assertions and facts citing an interaction                           |
-| `POST /v1/search`                                 | `read`           | Keyword search across records, facts and interactions                |
+| `POST /v1/events`                                 | `write`          | Log an event; returns matched and unmatched participants             |
+| `GET` · `DELETE /v1/events/:id`                   | `read` · `write` | Read an event, or delete it and retract what cites it                |
+| `POST /v1/events/:id/links`                       | `write`          | Add participants and `about` records; idempotent                     |
+| `DELETE /v1/events/:id/participants/:pid`         | `write`, user    | Remove one participant                                               |
+| `DELETE /v1/events/:id/about/:recordId`           | `write`, user    | Remove a record from the event's `about` list                        |
+| `GET /v1/events/:id/claims`                       | `read`           | Assertions and facts citing an event                                 |
+| `POST /v1/search`                                 | `read`           | Keyword search across records, events and facts                      |
 | `GET /v1/review`                                  | `read`           | Pending values, merge suggestions, unresolved participants           |
 | `GET /v1/assertions/:id`                          | `read`           | One assertion with its review state                                  |
 | `POST /v1/assertions/:id/accept` · `/reject`      | `write`, user    | Decide a pending value                                               |
@@ -155,23 +156,23 @@ field being filterable, rewrites the views that named it; anything a read
 still has to drop is named in the view's `issues`. Saved views are display settings: they never change
 records, and moving a board card is a record `PATCH`.
 
-`POST /v1/interactions/query` reads the interaction log, which is not a
-record object. Its `filter` takes `kind` and `channel` (one value or a
-list), `externalId`, an `occurredAt` range (`gt`, `gte`, `lt`, `lte`), and
-`record`: interactions linked to that record, narrowed by `link`
-(`participant` or `about`). `order` is `newest` (default) or `oldest`, and
-`countBy: "kind" | "channel"` adds counts over every match. It returns
-`{ items, nextCursor, total, counts? }`; `limit: 0` returns only the totals.
-Retracted interactions and the notes `remember` creates are left out.
+Events are records of event types (`class: "event"` in `GET /v1/schema`):
+meetings, calls, emails, messages, notes and any type the workspace adds.
+They are logged with `POST /v1/events` and never created through
+`POST /v1/objects/:object/records` (422 `use_log_event`), but an existing
+event's fields can be corrected like any record's. Query them with
+`POST /v1/objects/:object/query` on their type, which also filters and
+sorts by the built-in `occurredAt`, `channel` and `externalId`, and takes
+`linked`: the events attached to one record, as a participant, `about` it,
+or through one of the event type's own relation fields, narrowed by `link`
+(`participant`, `about` or `field`). Merged record IDs resolve to their
+survivor. The notes `remember` creates for facts without a source are
+internal and never listed.
 
 ```json
 {
-  "filter": {
-    "record": "rec_5a1…",
-    "kind": "call",
-    "occurredAt": { "gte": "2026-10-01T00:00:00Z" }
-  },
-  "countBy": "kind",
-  "limit": 0
+  "linked": { "record": "rec_5a1…", "link": "participant" },
+  "filter": { "occurredAt": { "gte": "2026-10-01T00:00:00Z" } },
+  "sort": [{ "field": "occurredAt", "direction": "desc" }]
 }
 ```

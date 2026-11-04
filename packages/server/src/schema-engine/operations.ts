@@ -1,4 +1,4 @@
-import { FIELD_TYPES } from '@retainer/shared';
+import { FIELD_TYPES, OBJECT_CLASSES } from '@retainer/shared';
 import { z } from 'zod';
 
 /**
@@ -17,11 +17,18 @@ const fieldSettingsSchema = z.strictObject({
   options: z.array(optionSchema).optional(),
   /** Singular API name (or universal ID) of the target object. */
   targetObject: z.string().min(1).optional(),
+  /** Singular API names (or universal IDs) of the objects a polymorphic relation may target. */
+  targetObjects: z.array(z.string().min(1)).min(1).max(20).optional(),
   /** Name of the read-only inverse field created on the target object. */
   inverseField: z.string().min(1).optional(),
-  /** Only the many_to_one side can be created; the inverse is derived. */
-  relationCardinality: z.literal('many_to_one').optional(),
+  /**
+   * The owning side: `many_to_one` (default, one record) or `many_to_many`
+   * (a set of records). The inverse is derived and read-only.
+   */
+  relationCardinality: z.enum(['many_to_one', 'many_to_many']).optional(),
   onDelete: z.enum(['set_null', 'cascade']).optional(),
+  /** Events attached to the source also show on the target (7.2). */
+  rollUpEvents: z.boolean().optional(),
   maxValues: z.number().int().positive().max(100).optional(),
 });
 
@@ -40,14 +47,19 @@ export const fieldDefinitionSchema = z.strictObject({
 
 export const objectDefinitionSchema = z.strictObject({
   universalId: z.uuid().optional(),
+  /** `entity` (default) or `event`. An event type gets core title and summary fields. */
+  class: z.enum(OBJECT_CLASSES).optional(),
   nameSingular: z.string().min(1),
   namePlural: z.string().min(1),
   labelSingular: z.string().min(1).max(200),
   labelPlural: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
-  /** Name of the field shown when a record is referenced. */
-  labelField: z.string().min(1),
-  fields: z.array(fieldDefinitionSchema).min(1),
+  /**
+   * Name of the field shown when a record is referenced. Required for an
+   * entity; an event type's label is always its core title field.
+   */
+  labelField: z.string().min(1).optional(),
+  fields: z.array(fieldDefinitionSchema).default([]),
 });
 
 const objectRef = z.string().min(1);
@@ -85,6 +97,8 @@ export const schemaOperationSchema = z.discriminatedUnion('op', [
     isUnique: z.boolean().optional(),
     isFilterable: z.boolean().optional(),
     isSearchable: z.boolean().optional(),
+    /** Turn event rollups through this relation on or off (7.2); never destructive. */
+    rollUpEvents: z.boolean().optional(),
     /** Accepted only to explain that type changes are not supported. */
     type: z.enum(FIELD_TYPES).optional(),
   }),

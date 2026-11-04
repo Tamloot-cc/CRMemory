@@ -76,14 +76,18 @@ export const recruiting: Template = {
             name: 'person',
             label: 'Candidate',
             type: 'relation',
-            settings: { targetObject: BASE_OBJECT_IDS.person, inverseField: 'applications' },
+            settings: {
+              targetObject: BASE_OBJECT_IDS.person,
+              inverseField: 'applications',
+              rollUpEvents: true,
+            },
           },
           {
             universalId: 'a250a782-d640-4d51-b4a3-10b5385c93c7',
             name: 'job',
             label: 'Job',
             type: 'relation',
-            settings: { targetObject: JOB, inverseField: 'applications' },
+            settings: { targetObject: JOB, inverseField: 'applications', rollUpEvents: true },
           },
           {
             universalId: '4ec7bf6c-1368-4926-b92d-560b95752b8c',

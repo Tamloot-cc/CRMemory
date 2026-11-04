@@ -1,8 +1,15 @@
-import type { Actor, AssertionView, Provenance, RecordReference } from '@retainer/shared';
+import {
+  type Actor,
+  type AssertionView,
+  isCollectionRelation,
+  type Provenance,
+  type RecordReference,
+} from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
 import { notFound } from '../errors.js';
+import { presentSource } from '../memory/events.js';
 import { identifiersFor } from '../records/derive.js';
 import { getRecord, type PresentedRecord } from '../records/read.js';
 import { references } from '../records/references.js';
@@ -37,13 +44,15 @@ type AssertionRow = {
   confidence: number;
   observed_at: Date;
   created_at: Date;
-  source_interaction_id: string | null;
-  title: string | null;
+  source_record_id: string | null;
+  is_initial: boolean;
+  source_type: string | null;
+  source_data: Record<string, unknown> | null;
   occurred_at: Date | null;
   reviewed_by: Actor | null;
   reviewed_at: Date | null;
   stamp: string;
-  current_link: string | null;
+  current_links: string[] | null;
 };
 export async function assertions(
   tx: Tx,
@@ -55,10 +64,13 @@ export async function assertions(
 ) {
   const rows = await tx<
     AssertionRow[]
-  >`select a.*, a.created_at::text as stamp, r.object_type_id, r.label, r.data, i.title, i.occurred_at,
-    (select l.target_record_id from record_links l where l.source_record_id = r.id and l.field_id = a.field_id) as current_link
+  >`select a.*, a.created_at::text as stamp, r.object_type_id, r.label, r.data,
+    src.object_type_id as source_type, src.data as source_data, e.occurred_at,
+    (select array_agg(l.target_record_id::text order by l.target_record_id) from record_links l where l.source_record_id = r.id and l.field_id = a.field_id) as current_links
     from field_assertions a join records r on r.id = a.record_id
-    left join interactions i on i.id = a.source_interaction_id and i.deleted_at is null
+    left join records src on src.id = a.source_record_id and src.deleted_at is null
+      and src.object_type_id = any(${schema.visibleObjectIds}::uuid[])
+    left join event_records e on e.record_id = src.id
     where ${where} and ${after(tx, tx`a.created_at`, tx`a.id`, cursor, descending)}
     order by a.created_at ${tx.unsafe(descending ? 'desc' : 'asc')}, a.id ${tx.unsafe(descending ? 'desc' : 'asc')} limit ${limit + 1}`;
   const result = page(rows, limit);
@@ -84,7 +96,7 @@ export async function assertions(
   const targetIds = result.items.flatMap((r) => {
     const field = schema.fieldOwners.get(r.field_id)?.fieldsById.get(r.field_id);
     return field?.type === 'relation'
-      ? [r.value, r.current_link].filter((v): v is string => typeof v === 'string')
+      ? [r.value, r.current_links].flat().filter((v): v is string => typeof v === 'string')
       : [];
   });
   const refs = await references(tx, schema, [...holders.map((h) => h.record_id), ...targetIds]);
@@ -106,22 +118,22 @@ export async function assertions(
         field: field?.name ?? r.field_id,
         value: r.value,
         currentValue:
-          field?.type === 'relation' ? r.current_link : field ? (r.data[field.key] ?? null) : null,
+          field?.type === 'relation'
+            ? isCollectionRelation(field)
+              ? (r.current_links ?? [])
+              : (r.current_links?.[0] ?? null)
+            : field
+              ? (r.data[field.key] ?? null)
+              : null,
         status: r.status,
         reason: r.review_reason,
         actor: r.actor,
         confidence: r.confidence,
         observedAt: r.observed_at.toISOString(),
         createdAt: r.created_at.toISOString(),
-        sourceInteractionId: r.source_interaction_id,
-        source:
-          r.occurred_at && r.source_interaction_id
-            ? {
-                id: r.source_interaction_id,
-                title: r.title,
-                occurredAt: r.occurred_at.toISOString(),
-              }
-            : null,
+        sourceRecordId: r.source_record_id,
+        isInitial: r.is_initial,
+        source: presentSource(schema, r),
         conflictingRecord: holder ? (refs[holder.record_id] ?? null) : null,
         ...(field?.type === 'relation' ? { relationReferences: refs } : {}),
         reviewedBy: r.reviewed_by,
@@ -163,7 +175,7 @@ export async function enrichedRecord(
     );
     result.provenance = Object.fromEntries(
       (schema.objectsByName.get(record.object)?.activeFields ?? [])
-        .filter((f) => f.settings.relationCardinality !== 'one_to_many')
+        .filter((f) => !f.settings.isInverse)
         .map((f) => [
           f.name,
           {

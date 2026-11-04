@@ -9,6 +9,7 @@ import {
   encodeFilter,
   type FilterClause,
   formatAggregate,
+  isSortable,
   loadColumnPrefs,
   moveColumn,
   nextSort,
@@ -206,7 +207,69 @@ describe('filters', () => {
 it('names operators in words', () => {
   expect(operatorLabel('eq')).toBe('is');
   expect(operatorLabel('isNull')).toBe('is empty / not empty');
+  expect(operatorLabel('containsAny')).toBe('has any of');
+  expect(operatorLabel('containsAll')).toBe('has all of');
+  expect(operatorLabel('isEmpty')).toBe('is empty / not empty');
   expect(operatorLabel('unknown')).toBe('unknown');
+});
+
+describe('many-to-many relations', () => {
+  const contacts = field('contacts', {
+    type: 'relation',
+    isFilterable: true,
+    settings: { targetObject: 'person', relationCardinality: 'many_to_many' },
+  });
+  it('describes set filters with record labels where the list knows them', () => {
+    const references = { a: { id: 'a', object: 'person', label: 'Dana' } };
+    expect(
+      describeClause(
+        { field: 'contacts', operator: 'containsAll', value: ['a', 'b'] },
+        contacts,
+        references,
+      ),
+    ).toEqual({ field: 'Contacts', operator: 'has all of', value: 'Dana, b' });
+    expect(
+      describeClause({ field: 'contacts', operator: 'isEmpty', value: true }, contacts),
+    ).toEqual({ field: 'Contacts', operator: 'is empty' });
+    expect(
+      describeClause({ field: 'contacts', operator: 'isEmpty', value: false }, contacts).operator,
+    ).toBe('is not empty');
+  });
+  it('names the object of each record a polymorphic filter holds', () => {
+    const customer = field('customer', {
+      type: 'relation',
+      isFilterable: true,
+      settings: { targetObjects: ['company', 'person'], relationCardinality: 'many_to_one' },
+    });
+    const references = {
+      a: { id: 'a', object: 'company', label: 'Acme' },
+      b: { id: 'b', object: 'person', label: 'Acme' },
+    };
+    const objects = [
+      { nameSingular: 'company', labelSingular: 'Company' },
+    ] as unknown as ObjectView[];
+    expect(
+      describeClause(
+        { field: 'customer', operator: 'in', value: ['a', 'b', 'c'] },
+        customer,
+        references,
+        objects,
+      ).value,
+    ).toBe('Acme (Company), Acme (person), c');
+    // One object needs no name.
+    expect(
+      describeClause(
+        { field: 'contacts', operator: 'containsAny', value: ['a'] },
+        contacts,
+        references,
+        objects,
+      ).value,
+    ).toBe('Acme');
+  });
+  it('never sorts by a set', () => {
+    expect(isSortable(contacts)).toBe(false);
+    expect(isSortable(field('stage', { type: 'select', isFilterable: true }))).toBe(true);
+  });
 });
 
 describe('sort', () => {

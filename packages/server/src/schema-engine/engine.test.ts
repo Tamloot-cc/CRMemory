@@ -1,6 +1,13 @@
+import { BASE_EVENT_TYPE_IDS, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
-import { BASE_OBJECT_IDS, BASE_OPERATIONS, TEMPLATES } from '../templates/index.js';
-import { applyOperations, deriveUuid } from './apply.js';
+import {
+  BASE_EVENT_OPERATIONS,
+  BASE_OBJECT_IDS,
+  BASE_OPERATIONS,
+  INTERNAL_OPERATIONS,
+  TEMPLATES,
+} from '../templates/index.js';
+import { applyOperations, coreFieldUniversalId, deriveUuid } from './apply.js';
 import { classifyOp, diffSchemas, isDestructive } from './diff.js';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
 import type { SchemaState } from './types.js';
@@ -184,7 +191,7 @@ describe('apply', () => {
 
   it('protects base objects and label fields', () => {
     expect(issuesOf(base, [{ op: 'delete_object', object: 'person' }])[0]?.message).toContain(
-      'base objects',
+      'is protected',
     );
     expect(
       issuesOf(base, [{ op: 'delete_field', object: 'person', field: 'name' }])[0]?.message,
@@ -208,6 +215,456 @@ describe('apply', () => {
       'deprecate_field',
       'deprecate_object',
     ]);
+  });
+});
+
+describe('protection', () => {
+  const object = (state: SchemaState, name: string) =>
+    state.objects.find((o) => o.nameSingular === name);
+
+  it('protects the base objects and the task fields server code reads', () => {
+    expect(base.objects.filter((o) => o.isProtected).map((o) => o.nameSingular)).toEqual([
+      'company',
+      'person',
+      'task',
+    ]);
+    const protectedFields = base.objects.flatMap((o) =>
+      o.fields.filter((f) => f.isProtected).map((f) => `${o.nameSingular}.${f.name}`),
+    );
+    expect(protectedFields).toEqual(['task.status', 'task.dueDate']);
+  });
+
+  it('never protects what a template or a client creates', () => {
+    const all = Object.values(TEMPLATES).flatMap((t) => t.operations);
+    const desired = applyValid(base, all, 'system');
+    const added = desired.objects.filter(
+      (o) => !base.objects.some((b) => b.universalId === o.universalId),
+    );
+    expect(added.every((o) => !o.isProtected && o.fields.every((f) => !f.isProtected))).toBe(true);
+    expect(desired.objects.filter((o) => o.isProtected)).toHaveLength(3);
+    expect(added.length).toBeGreaterThan(0);
+  });
+
+  it('refuses to delete protected objects and fields', () => {
+    for (const name of ['person', 'company', 'task']) {
+      expect(issuesOf(base, [{ op: 'delete_object', object: name }])[0]?.message).toContain(
+        'is protected',
+      );
+    }
+    for (const name of ['status', 'dueDate']) {
+      expect(
+        issuesOf(base, [{ op: 'delete_field', object: 'task', field: name }])[0]?.message,
+      ).toContain('is protected');
+    }
+  });
+
+  it('allows renames, labels and descriptions of protected objects and fields', () => {
+    const desired = applyValid(base, [
+      { op: 'rename_object', object: 'task', nameSingular: 'todo', namePlural: 'todos' },
+      { op: 'update_object', object: 'todo', labelSingular: 'To-do', labelPlural: 'To-dos' },
+      { op: 'rename_field', object: 'todo', field: 'status', name: 'state' },
+      { op: 'update_field', object: 'todo', field: 'state', label: 'State', description: 'x' },
+      { op: 'rename_field', object: 'todo', field: 'dueDate', name: 'deadline' },
+    ]);
+    const todo = object(desired, 'todo');
+    expect(todo?.isProtected).toBe(true);
+    expect(field(desired, 'todo', 'state')).toMatchObject({ isProtected: true, label: 'State' });
+    expect(field(desired, 'todo', 'deadline')?.isProtected).toBe(true);
+  });
+
+  it('refuses to reshape a protected field', () => {
+    for (const change of [
+      { isNullable: false },
+      { isUnique: true },
+      { isFilterable: false },
+      { isSearchable: true },
+    ]) {
+      const [issue] = issuesOf(base, [
+        { op: 'update_field', object: 'task', field: 'status', ...change },
+      ]);
+      expect(issue?.message).toContain('is protected');
+    }
+    // Setting a flag to the value it already has changes nothing.
+    applyValid(base, [{ op: 'update_field', object: 'task', field: 'status', isFilterable: true }]);
+  });
+
+  it('keeps the done option but lets other task statuses change', () => {
+    const [issue] = issuesOf(base, [
+      { op: 'remove_option', object: 'task', field: 'status', value: 'done' },
+    ]);
+    expect(issue?.message).toContain('option "done" is protected');
+
+    const desired = applyValid(base, [
+      {
+        op: 'add_option',
+        object: 'task',
+        field: 'status',
+        option: { value: 'blocked', label: 'Blocked' },
+      },
+      { op: 'update_option', object: 'task', field: 'status', value: 'done', label: 'Finished' },
+      { op: 'remove_option', object: 'task', field: 'status', value: 'in_progress' },
+    ]);
+    expect(field(desired, 'task', 'status')?.settings.options).toEqual([
+      { value: 'todo', label: 'To do' },
+      { value: 'done', label: 'Finished' },
+      { value: 'blocked', label: 'Blocked' },
+    ]);
+  });
+});
+
+describe('many_to_many relations', () => {
+  const contacts = (settings: object) =>
+    ({
+      op: 'create_field',
+      object: 'task',
+      field: {
+        name: 'watchers',
+        label: 'Watchers',
+        type: 'relation',
+        settings: { targetObject: 'person', relationCardinality: 'many_to_many', ...settings },
+      },
+    }) as SchemaOperation;
+
+  it('creates an owning set and a read-only many_to_many inverse', () => {
+    const state = applyValid(base, [contacts({ inverseField: 'watching' })]);
+    const owner = field(state, 'task', 'watchers');
+    expect(owner?.settings).toMatchObject({
+      relationCardinality: 'many_to_many',
+      onDelete: 'set_null',
+    });
+    expect(owner?.settings.isInverse).toBeUndefined();
+    expect(field(state, 'person', 'watching')?.settings).toMatchObject({
+      relationCardinality: 'many_to_many',
+      isInverse: true,
+      inverseFieldId: owner?.universalId,
+    });
+  });
+
+  it('marks the inverse of a many_to_one relation too', () => {
+    expect(field(base, 'company', 'people')?.settings.isInverse).toBe(true);
+    expect(field(base, 'person', 'company')?.settings.isInverse).toBeUndefined();
+  });
+
+  it('refuses cascade, and changes or deletes on the inverse side', () => {
+    expect(issuesOf(base, [contacts({ onDelete: 'cascade' })]).map((i) => i.message)).toEqual([
+      'onDelete: cascade is not allowed on a many_to_many relation; use set_null',
+    ]);
+    const state = applyValid(base, [contacts({ inverseField: 'watching' })]);
+    expect(
+      issuesOf(state, [{ op: 'delete_field', object: 'person', field: 'watching' }]).map(
+        (i) => i.message,
+      ),
+    ).toEqual(['an inverse relation field is removed by deleting its owning side']);
+    expect(
+      issuesOf(state, [
+        { op: 'update_field', object: 'person', field: 'watching', isFilterable: true },
+      ]).map((i) => i.message),
+    ).toEqual(['an inverse relation field only takes label and description changes']);
+  });
+});
+
+describe('polymorphic relations', () => {
+  const customer = (settings: object) =>
+    ({
+      op: 'create_field',
+      object: 'task',
+      field: { name: 'customer', label: 'Customer', type: 'relation', settings },
+    }) as SchemaOperation;
+
+  it('stores every allowed target, and one target as an ordinary relation', () => {
+    const state = applyValid(base, [customer({ targetObjects: ['company', 'person'] })]);
+    expect(field(state, 'task', 'customer')?.settings).toMatchObject({
+      targetObjectIds: [BASE_OBJECT_IDS.company, BASE_OBJECT_IDS.person],
+      relationCardinality: 'many_to_one',
+    });
+    expect(field(state, 'task', 'customer')?.settings.targetObjectId).toBeUndefined();
+    const single = applyValid(base, [customer({ targetObjects: ['company', 'company'] })]);
+    expect(field(single, 'task', 'customer')?.settings).toMatchObject({
+      targetObjectId: BASE_OBJECT_IDS.company,
+    });
+    const set = applyValid(base, [
+      customer({ targetObjects: ['company', 'person'], relationCardinality: 'many_to_many' }),
+    ]);
+    expect(field(set, 'task', 'customer')?.settings.relationCardinality).toBe('many_to_many');
+  });
+
+  it('refuses an inverse, both target forms, and unknown targets', () => {
+    const messages = (settings: object) =>
+      issuesOf(base, [customer(settings)]).map((i) => i.message);
+    expect(messages({ targetObjects: ['company', 'person'], inverseField: 'owned' })[0]).toMatch(
+      /no inverseField/,
+    );
+    expect(messages({ targetObject: 'company', targetObjects: ['person'] })[0]).toMatch(/not both/);
+    expect(messages({ targetObjects: ['company', 'planet'] })[0]).toMatch(
+      /unknown object "planet"/,
+    );
+  });
+
+  it('refuses to delete one of several targets, naming the field', () => {
+    const state = applyValid(base, [
+      {
+        op: 'create_object',
+        object: {
+          nameSingular: 'household',
+          namePlural: 'households',
+          labelSingular: 'Household',
+          labelPlural: 'Households',
+          labelField: 'name',
+          fields: [{ name: 'name', label: 'Name', type: 'text' }],
+        },
+      },
+      customer({ targetObjects: ['company', 'household'] }),
+    ]);
+    expect(
+      issuesOf(state, [{ op: 'delete_object', object: 'household' }]).map((i) => i.message),
+    ).toEqual([expect.stringContaining('task.customer')]);
+    // Once the field is gone, the object can be deleted.
+    const without = applyValid(state, [{ op: 'delete_field', object: 'task', field: 'customer' }]);
+    applyValid(without, [{ op: 'delete_object', object: 'household' }]);
+  });
+});
+
+describe('event rollups', () => {
+  const toggle = (on: boolean): SchemaOperation => ({
+    op: 'update_field',
+    object: 'person',
+    field: 'company',
+    rollUpEvents: on,
+  });
+
+  it('turns on and off as an additive change, storing only on', () => {
+    const on = applyValid(base, [toggle(true)]);
+    expect(field(on, 'person', 'company')?.settings.rollUpEvents).toBe(true);
+    const ops = diffSchemas(base, on);
+    expect(ops).toEqual([
+      expect.objectContaining({ kind: 'update_field', property: 'rollUpEvents', to: true }),
+    ]);
+    expect(isDestructive(ops)).toBe(false);
+    const off = applyValid(on, [toggle(false)]);
+    expect(field(off, 'person', 'company')?.settings).not.toHaveProperty('rollUpEvents');
+    expect(diffSchemas(base, off)).toEqual([]);
+    expect(isDestructive(diffSchemas(on, off))).toBe(false);
+    const created = applyValid(base, [
+      {
+        op: 'create_field',
+        object: 'task',
+        field: {
+          name: 'account',
+          label: 'Account',
+          type: 'relation',
+          settings: { targetObject: 'company', rollUpEvents: false },
+        },
+      },
+    ]);
+    expect(field(created, 'task', 'account')?.settings).not.toHaveProperty('rollUpEvents');
+  });
+
+  it('is refused on inverses, event types and other field types', () => {
+    const message = (state: SchemaState, operations: SchemaOperation[]) =>
+      issuesOf(state, operations)[0]?.message;
+    expect(
+      message(base, [
+        { op: 'update_field', object: 'company', field: 'people', rollUpEvents: true },
+      ]),
+    ).toMatch(/not its inverse/);
+    expect(
+      message(base, [
+        { op: 'update_field', object: 'person', field: 'jobTitle', rollUpEvents: true },
+      ]),
+    ).toMatch(/only to relation fields/);
+    expect(
+      message(base, [
+        {
+          op: 'create_field',
+          object: 'task',
+          field: { name: 'memo', label: 'Memo', type: 'text', settings: { rollUpEvents: true } },
+        },
+      ]),
+    ).toMatch(/rollUpEvents/);
+    expect(
+      message(base, [
+        {
+          op: 'create_object',
+          object: {
+            class: 'event',
+            nameSingular: 'payment',
+            namePlural: 'payments',
+            labelSingular: 'Payment',
+            labelPlural: 'Payments',
+            fields: [
+              {
+                name: 'payer',
+                label: 'Payer',
+                type: 'relation',
+                settings: { targetObject: 'company', rollUpEvents: true },
+              },
+            ],
+          },
+        },
+      ]),
+    ).toMatch(/already attaches the event/);
+  });
+
+  it('is on in templates only for relations a record belongs to', () => {
+    const on = Object.values(TEMPLATES).flatMap((template) => {
+      const state = applyValid(base, template.operations, 'system');
+      return state.objects.flatMap((o) =>
+        o.fields.filter((f) => f.settings.rollUpEvents).map((f) => `${o.nameSingular}.${f.name}`),
+      );
+    });
+    // Affiliations, ownership and contact assignments stay off (7.2).
+    expect(on.sort()).toEqual([
+      'application.job',
+      'application.person',
+      'appointment.person',
+      'proposal.project',
+      'viewing.person',
+      'viewing.property',
+    ]);
+  });
+});
+
+describe('event types', () => {
+  const seeded = applyValid(
+    base,
+    [...BASE_EVENT_OPERATIONS, ...INTERNAL_OPERATIONS] as SchemaOperation[],
+    'system',
+  );
+  const object = (state: SchemaState, name: string) =>
+    state.objects.find((o) => o.nameSingular === name);
+  const payment = {
+    op: 'create_object',
+    object: {
+      nameSingular: 'payment',
+      namePlural: 'payments',
+      labelSingular: 'Payment',
+      labelPlural: 'Payments',
+      class: 'event',
+      fields: [{ name: 'amount', type: 'money' }],
+    },
+  } as SchemaOperation;
+
+  it('seeds the base event types and the internal-note type with fixed universal IDs', () => {
+    const events = seeded.objects.filter((o) => o.class === 'event');
+    expect(Object.fromEntries(events.map((o) => [o.nameSingular, o.universalId]))).toEqual({
+      ...BASE_EVENT_TYPE_IDS,
+      internalNote: INTERNAL_NOTE_TYPE_ID,
+    });
+    // Base event types can be deleted when unused; the internal one cannot.
+    expect(events.filter((o) => o.isProtected).map((o) => o.nameSingular)).toEqual([
+      'internalNote',
+    ]);
+    expect(base.objects.every((o) => o.class === 'entity')).toBe(true);
+  });
+
+  it('gives a new event type protected title and summary fields, the title as its label', () => {
+    const state = applyValid(seeded, [payment]);
+    const created = object(state, 'payment');
+    const title = created?.fields.find((f) => f.coreRole === 'title');
+    const summary = created?.fields.find((f) => f.coreRole === 'summary');
+    expect(title).toMatchObject({
+      name: 'title',
+      type: 'text',
+      isProtected: true,
+      isSearchable: true,
+      universalId: coreFieldUniversalId(created?.universalId as string, 'title'),
+    });
+    expect(summary).toMatchObject({ name: 'summary', type: 'text', isProtected: true });
+    expect(created?.labelFieldId).toBe(title?.universalId);
+    expect(created?.fields.map((f) => f.name)).toEqual(['title', 'summary', 'amount']);
+  });
+
+  it('derives the same core field IDs for a code-defined type every time', () => {
+    const again = applyValid(base, BASE_EVENT_OPERATIONS as SchemaOperation[], 'system');
+    const ids = (state: SchemaState) => object(state, 'call')?.fields.map((f) => f.universalId);
+    expect(ids(again)).toEqual(ids(seeded));
+  });
+
+  it('refuses core fields in the definition and a label other than the title', () => {
+    const withTitle = {
+      ...payment,
+      object: {
+        ...(payment as { object: object }).object,
+        fields: [{ name: 'title', type: 'text' }],
+      },
+    } as SchemaOperation;
+    expect(
+      issuesOf(seeded, [withTitle])
+        .map((i) => i.message)
+        .join(' '),
+    ).toMatch(/title/);
+    const otherLabel = {
+      ...payment,
+      object: { ...(payment as { object: object }).object, labelField: 'amount' },
+    } as SchemaOperation;
+    expect(issuesOf(seeded, [otherLabel]).map((i) => i.message)).toContain(
+      "an event type's labelField is always its title",
+    );
+    expect(
+      issuesOf(seeded, [{ op: 'update_object', object: 'call', labelField: 'summary' }]).map(
+        (i) => i.message,
+      ),
+    ).toContain("an event type's labelField is always its title");
+  });
+
+  it('protects the core fields of every event type', () => {
+    expect(
+      issuesOf(seeded, [{ op: 'delete_field', object: 'meeting', field: 'summary' }])
+        .map((i) => i.message)
+        .join(' '),
+    ).toContain('protected');
+    // Renaming a core field is allowed; it keeps its role.
+    const renamed = applyValid(seeded, [
+      { op: 'rename_field', object: 'meeting', field: 'title', name: 'subject' },
+    ]);
+    expect(field(renamed, 'meeting', 'subject')?.coreRole).toBe('title');
+  });
+
+  it('still requires fields and a labelField on an entity', () => {
+    const widget = (fields: object[]) =>
+      ({
+        op: 'create_object',
+        object: {
+          nameSingular: 'widget',
+          namePlural: 'widgets',
+          labelSingular: 'Widget',
+          labelPlural: 'Widgets',
+          fields,
+        },
+      }) as SchemaOperation;
+    expect(
+      issuesOf(seeded, [widget([])])
+        .map((i) => i.message)
+        .join(' '),
+    ).toContain('at least one');
+    expect(
+      issuesOf(seeded, [widget([{ name: 'name', type: 'text' }])]).map((i) => i.message),
+    ).toContain('an object needs a labelField');
+  });
+
+  it('reserves the built-in event column names as event field names', () => {
+    for (const name of ['occurredAt', 'channel', 'externalId', 'participants', 'about', 'via']) {
+      const op = {
+        op: 'create_field',
+        object: 'call',
+        field: { name, type: 'text' },
+      } as SchemaOperation;
+      expect(issuesOf(seeded, [op]).length, name).toBeGreaterThan(0);
+    }
+  });
+
+  it('hides the internal-note type from name lookups', () => {
+    expect(
+      issuesOf(seeded, [
+        {
+          op: 'create_field',
+          object: 'internalNote',
+          field: { name: 'extra', type: 'text' },
+        } as SchemaOperation,
+      ])
+        .map((i) => i.message)
+        .join(' '),
+    ).toMatch(/internalNote/);
   });
 });
 
@@ -246,7 +703,7 @@ describe('validate', () => {
   });
 
   it.each([
-    ['interaction', 'interactions', 'log_interaction'],
+    ['interaction', 'interactions', 'log_event'],
     ['fact', 'facts', 'remember'],
   ])('points an object named %s at the built-in feature', (singular, plural, tool) => {
     for (const message of createObject(singular, plural)) expect(message).toContain(tool);
@@ -343,7 +800,7 @@ describe('diff and classify', () => {
       [{ op: 'rename_field', object: 'person', field: 'jobTitle', name: 'role' }],
       [{ op: 'rename_object', object: 'task', nameSingular: 'todo', namePlural: 'todos' }],
       [{ op: 'delete_field', object: 'person', field: 'jobTitle' }],
-      [{ op: 'remove_option', object: 'task', field: 'status', value: 'done' }],
+      [{ op: 'remove_option', object: 'task', field: 'status', value: 'in_progress' }],
       [{ op: 'update_field', object: 'person', field: 'jobTitle', isNullable: false }],
       [
         {

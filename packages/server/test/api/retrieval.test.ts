@@ -33,18 +33,18 @@ const create = async (object: string, values: Record<string, unknown>, key = key
   return res.body.id as string;
 };
 
-const logInteraction = async (body: Record<string, unknown>) => {
-  const res = await t.request('/v1/interactions', {
-    key: keys.agent,
-    body: { kind: 'call', channel: 'zoom', occurredAt: '2026-10-29T14:00:00+02:00', ...body },
+const logEvent = async (body: Record<string, unknown>, key = keys.agent) => {
+  const res = await t.request('/v1/events', {
+    key,
+    body: { type: 'call', channel: 'zoom', occurredAt: '2026-10-29T14:00:00+02:00', ...body },
   });
   expect(res.status).toBe(201);
   return res.body.id as string;
 };
 
-const rememberFact = async (record: string, text: string, source?: string) => {
+const rememberFact = async (record: string, text: string, source?: string, key = keys.agent) => {
   const res = await t.request(`/v1/records/${record}/facts`, {
-    key: keys.agent,
+    key,
     body: { text, ...(source ? { source } : {}) },
   });
   expect(res.status).toBe(201);
@@ -55,11 +55,11 @@ const search = (body: Record<string, unknown>, key = keys.agent) =>
   t.request('/v1/search', { key, body });
 
 describe('POST /v1/search', () => {
-  it('finds records, facts and interactions, grouped by type with their record IDs', async () => {
+  it('finds records, facts and events, grouped by type with their record IDs', async () => {
     const tag = word();
     const email = `${tag}@acme.test`;
     const dana = await create('person', { name: `Dana ${tag}`, emails: email });
-    const call = await logInteraction({
+    const call = await logEvent({
       title: `Renewal call ${tag}`,
       summary: 'Talked about pricing.',
       participants: [{ handle: email }, { handle: 'nobody@acme.test' }],
@@ -78,10 +78,10 @@ describe('POST /v1/search', () => {
           validFrom: '2026-10-29T12:00:00.000Z',
         },
       ],
-      interactions: [
+      events: [
         {
           id: call,
-          kind: 'call',
+          type: 'call',
           occurredAt: '2026-10-29T12:00:00.000Z',
           title: `Renewal call ${tag}`,
           summary: 'Talked about pricing.',
@@ -126,11 +126,11 @@ describe('POST /v1/search', () => {
     // Every word must match: one that starts no word excludes the hit.
     expect(await ids(`${tag} zz${tag}`)).toEqual([]);
 
-    const call = await logInteraction({ title: `Kickoff ${tag}meetings` });
+    const call = await logEvent({ title: `Kickoff ${tag}meetings` });
     const dana = await create('person', { name: `Dana ${word()}` });
     await rememberFact(dana, `Prefers ${tag}meetings in person`, call);
     const res = await search({ query: `${tag}meet` });
-    expect(res.body.interactions.map((i: { id: string }) => i.id)).toEqual([call]);
+    expect(res.body.events.map((i: { id: string }) => i.id)).toEqual([call]);
     expect(res.body.facts.map((f: { record: string }) => f.record)).toEqual([dana]);
   });
 
@@ -189,12 +189,12 @@ describe('POST /v1/search', () => {
     expect(again.body.records.map((r: { id: string }) => r.id)).toEqual([exact]);
   });
 
-  it('hides deleted records, retracted facts and interactions, and facts with no live source', async () => {
+  it('hides deleted records, retracted facts and events, and facts with no live source', async () => {
     const tag = word();
     const email = `${tag}@acme.test`;
     const person = await create('person', { name: `Gone ${tag}`, emails: email });
     const kept = await create('company', { name: `Kept ${tag}` });
-    const call = await logInteraction({ title: `Call ${tag}`, participants: [{ handle: email }] });
+    const call = await logEvent({ title: `Call ${tag}`, participants: [{ handle: email }] });
     await rememberFact(kept, `Cited ${tag}`, call);
     const retracted = await rememberFact(kept, `Retracted ${tag}`);
     await rememberFact(person, `About the deleted ${tag}`);
@@ -209,14 +209,54 @@ describe('POST /v1/search', () => {
     expect(res.body.records.map((r: { id: string }) => r.id)).toEqual([kept]);
     expect(res.body.facts.map((f: { content: string }) => f.content)).toEqual([`Cited ${tag}`]);
     // The call stays; its deleted participant is no longer listed.
-    expect(res.body.interactions).toMatchObject([{ id: call, records: [] }]);
+    expect(res.body.events).toMatchObject([{ id: call, records: [] }]);
 
     expect(
-      (await t.request(`/v1/interactions/${call}`, { key: keys.agent, method: 'DELETE' })).status,
+      (await t.request(`/v1/events/${call}`, { key: keys.agent, method: 'DELETE' })).status,
     ).toBe(200);
     res = await search({ query: tag });
-    expect(res.body.interactions).toEqual([]);
+    expect(res.body.events).toEqual([]);
     expect(res.body.facts).toEqual([]);
+  });
+
+  it('lists the records an event links, as participants and about, in order', async () => {
+    const tag = word();
+    const email = `${word()}@acme.test`;
+    const dana = await create('person', { name: word(), emails: email });
+    const acme = await create('company', { name: word() });
+    const call = await logEvent({
+      title: `Pricing ${tag}`,
+      participants: [{ handle: email }, { recordId: dana }],
+      about: [acme, dana],
+    });
+    const meeting = await logEvent({ type: 'meeting', summary: `Kickoff ${tag}` });
+    const res = await search({ query: tag });
+    expect(res.body.records).toEqual([]);
+    expect(res.body.events).toEqual([
+      expect.objectContaining({ id: call, type: 'call', records: [dana, acme] }),
+      expect.objectContaining({
+        id: meeting,
+        type: 'meeting',
+        title: null,
+        summary: `Kickoff ${tag}`,
+        records: [],
+      }),
+    ]);
+  });
+
+  it('never lists internal notes: their text is found with the fact', async () => {
+    const tag = word();
+    const dana = await create('person', { name: word() });
+    const fact = await rememberFact(dana, `Uncited ${tag} detail`);
+    const res = await search({ query: tag });
+    expect(res.body).toEqual({
+      records: [],
+      facts: [expect.objectContaining({ id: fact, record: dana })],
+      events: [],
+    });
+    // Once the fact is retracted, nothing finds the note's text.
+    await t.request(`/v1/facts/${fact}`, { key: keys.agent, method: 'DELETE' });
+    expect((await search({ query: tag })).body).toEqual({ records: [], facts: [], events: [] });
   });
 
   it("never returns another workspace's rows", async () => {
@@ -224,13 +264,13 @@ describe('POST /v1/search', () => {
     await create('company', { name: `Private ${tag}` });
     const res = await search({ query: tag }, otherKey);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ records: [], facts: [], interactions: [] });
+    expect(res.body).toEqual({ records: [], facts: [], events: [] });
   });
 
-  it('reserves the channel of remember notes, so no logged interaction is hidden as one', async () => {
-    const res = await t.request('/v1/interactions', {
+  it('reserves the channel of remember notes, so no logged event is hidden as one', async () => {
+    const res = await t.request('/v1/events', {
       key: keys.agent,
-      body: { kind: 'note', channel: 'retainer', occurredAt: '2026-10-29T14:00:00+02:00' },
+      body: { type: 'note', channel: 'retainer', occurredAt: '2026-10-29T14:00:00+02:00' },
     });
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toContain('reserved');
@@ -245,7 +285,7 @@ describe('POST /v1/search', () => {
     expect((await search({ query: '!!!' })).body).toEqual({
       records: [],
       facts: [],
-      interactions: [],
+      events: [],
     });
   });
 });
@@ -254,7 +294,7 @@ describe('GET /v1/records/:id/context', () => {
   const context = (id: string, query = '', key = keys.agent) =>
     t.request(`/v1/records/${id}/context${query}`, { key });
 
-  it('packs values with provenance, open tasks, facts and recent interactions', async () => {
+  it('packs values with provenance, open tasks, facts and recent events', async () => {
     const tag = word();
     const email = `${tag}@acme.test`;
     const noa = await create('person', { name: 'Noa Shapira', emails: email });
@@ -281,20 +321,20 @@ describe('GET /v1/records/:id/context', () => {
     await create('task', { title: 'Finished', status: 'done', dueDate: '2026-10-01', person: noa });
     await create('task', { title: 'Unrelated', status: 'todo' });
 
-    const demo = await logInteraction({
-      kind: 'meeting',
+    const demo = await logEvent({
+      type: 'meeting',
       occurredAt: '2026-10-21T09:00:00Z',
       title: 'Demo',
       summary: 'Showed the data platform.',
       participants: [{ handle: email }],
     });
-    const followUp = await logInteraction({
+    const followUp = await logEvent({
       occurredAt: '2026-10-25T09:00:00Z',
       title: 'Follow-up',
       participants: [{ handle: email }],
     });
     const sso = await rememberFact(noa, 'Needs SSO before agreeing to a pilot', demo);
-    // Uncited: its note interaction is not listed again under interactions.
+    // Uncited: its internal note is not listed under recentEvents, and has no readable ID.
     const budget = await rememberFact(noa, 'Budget is approved for Q1');
 
     const res = await context(noa);
@@ -333,7 +373,8 @@ describe('GET /v1/records/:id/context', () => {
         content: 'Budget is approved for Q1',
         validFrom: expect.any(String),
         writtenBy: { type: 'agent', id: 'inbox' },
-        sources: [expect.any(String)],
+        sources: [],
+        internal: true,
       },
       {
         id: sso,
@@ -343,27 +384,150 @@ describe('GET /v1/records/:id/context', () => {
         sources: [demo],
       },
     ]);
-    expect(pack.recentInteractions).toEqual([
+    expect(pack.recentEvents).toEqual([
       {
         id: followUp,
-        kind: 'call',
+        type: 'call',
         occurredAt: '2026-10-25T09:00:00.000Z',
         title: 'Follow-up',
         summary: null,
-        via: 'participant',
+        via: { kind: 'participant' },
       },
       {
         id: demo,
-        kind: 'meeting',
+        type: 'meeting',
         occurredAt: '2026-10-21T09:00:00.000Z',
         title: 'Demo',
         summary: 'Showed the data platform.',
-        via: 'participant',
+        via: { kind: 'participant' },
       },
     ]);
-    expect(pack.omitted).toEqual({ openTasks: 0, facts: 0, recentInteractions: 0 });
+    expect(pack.omitted).toEqual({ openTasks: 0, facts: 0, recentEvents: 0 });
     expect(pack.tokenEstimate).toBe(Math.ceil(JSON.stringify(pack).length / 4));
     expect(pack.tokenEstimate).toBeLessThanOrEqual(2000);
+  });
+
+  it('says how each event is attached, once per event, participant before about before field', async () => {
+    // Its own workspace: the relation field on call changes the schema.
+    const own = await t.setupWorkspace(
+      { name: `Via ${word()}`, template: 'sales' },
+      {
+        agent: { actor: { type: 'agent', id: 'inbox' }, scopes: ['read', 'write'] },
+        admin: { actor: { type: 'user', id: 'dana' }, scopes: ['admin'] },
+      },
+    );
+    const change = await t.request('/v1/schema/changes', {
+      key: own.keys.admin,
+      body: {
+        operations: [
+          {
+            op: 'create_field',
+            object: 'call',
+            field: {
+              name: 'account',
+              label: 'Account',
+              type: 'relation',
+              settings: { targetObject: 'company', inverseField: 'accountCalls' },
+            },
+          },
+        ],
+      },
+    });
+    expect(change.body.status).toBe('applied');
+
+    const key = own.keys.agent;
+    const email = `${word()}@acme.test`;
+    const dana = await create('person', { name: 'Dana Via', emails: email }, key);
+    const acme = await create('company', { name: 'Acme Via' }, key);
+    const other = await create('company', { name: 'Other Via' }, key);
+    const both = await logEvent(
+      {
+        occurredAt: '2026-10-05T09:00:00Z',
+        participants: [{ handle: email }],
+        about: [dana, acme],
+        fields: { account: acme },
+      },
+      key,
+    );
+    const aboutOnly = await logEvent(
+      { type: 'meeting', occurredAt: '2026-10-04T09:00:00Z', about: [dana] },
+      key,
+    );
+    const byField = await logEvent(
+      { occurredAt: '2026-10-03T09:00:00Z', fields: { account: acme } },
+      key,
+    );
+    // The fact's internal note is about acme, yet never listed as an event.
+    const fact = await rememberFact(acme, 'Pays annually', undefined, key);
+
+    const recent = async (id: string) =>
+      (await context(id, '', key)).body.recentEvents.map((e: { id: string; via: unknown }) => [
+        e.id,
+        e.via,
+      ]);
+    expect(await recent(dana)).toEqual([
+      [both, { kind: 'participant' }],
+      [aboutOnly, { kind: 'about' }],
+    ]);
+    expect(await recent(acme)).toEqual([
+      [both, { kind: 'about' }],
+      [byField, { kind: 'field', field: 'account' }],
+    ]);
+    const pack = (await context(acme, '', key)).body;
+    expect(pack.omitted.recentEvents).toBe(0);
+    expect(pack.facts).toEqual([
+      expect.objectContaining({ id: fact, sources: [], internal: true }),
+    ]);
+
+    // `linked` on the event type's query sees the same attachments.
+    const linked = async (link?: string) =>
+      (
+        await t.request('/v1/objects/call/query', {
+          key,
+          body: { linked: { record: acme, ...(link ? { link } : {}) } },
+        })
+      ).body.records
+        .map((r: { id: string }) => r.id)
+        .sort();
+    expect(await linked()).toEqual([both, byField].sort());
+    expect(await linked('field')).toEqual([both, byField].sort());
+    expect(await linked('about')).toEqual([both]);
+
+    // The field follows its current value: reassigning it moves the event.
+    const moved = await t.request(`/v1/records/${byField}`, {
+      key,
+      method: 'PATCH',
+      body: { values: { account: other } },
+    });
+    expect(moved.status).toBe(200);
+    expect(await recent(acme)).toEqual([[both, { kind: 'about' }]]);
+    expect(await recent(other)).toEqual([[byField, { kind: 'field', field: 'account' }]]);
+
+    // A deleted relation field no longer attaches anything.
+    const dropped = await t.request('/v1/schema/changes', {
+      key: own.keys.admin,
+      body: { operations: [{ op: 'delete_field', object: 'call', field: 'account' }] },
+    });
+    expect(dropped.body.status).toBe('applied');
+    expect(await recent(other)).toEqual([]);
+  });
+
+  it('leaves out deleted events and the facts that rested only on them', async () => {
+    const email = `${word()}@acme.test`;
+    const noa = await create('person', { name: `Noa ${word()}`, emails: email });
+    const call = await logEvent({ title: 'Gone', participants: [{ handle: email }] });
+    const kept = await logEvent({
+      title: 'Kept',
+      about: [noa],
+      occurredAt: '2026-10-01T09:00:00Z',
+    });
+    await rememberFact(noa, 'Only from the deleted call', call);
+    expect(
+      (await t.request(`/v1/events/${call}`, { key: keys.agent, method: 'DELETE' })).status,
+    ).toBe(200);
+    const pack = (await context(noa)).body;
+    expect(pack.recentEvents.map((e: { id: string }) => e.id)).toEqual([kept]);
+    expect(pack.facts).toEqual([]);
   });
 
   it('fits the sections to the budget, always keeping the values, and counts what it left out', async () => {
@@ -379,8 +543,8 @@ describe('GET /v1/records/:id/context', () => {
     expect(tiny.body).toMatchObject({
       openTasks: [],
       facts: [],
-      recentInteractions: [],
-      omitted: { openTasks: 3, facts: 1, recentInteractions: 0 },
+      recentEvents: [],
+      omitted: { openTasks: 3, facts: 1, recentEvents: 0 },
     });
 
     // Room for two tasks and the fact: the third task does not fit, and the
@@ -390,8 +554,8 @@ describe('GET /v1/records/:id/context', () => {
       ...full.body,
       openTasks: [],
       facts: [],
-      recentInteractions: [],
-      omitted: { openTasks: 3, facts: 1, recentInteractions: 0 },
+      recentEvents: [],
+      omitted: { openTasks: 3, facts: 1, recentEvents: 0 },
     }).length;
     // Each item costs its JSON and a comma; 5 tokens of slack is far less than a task.
     const task = JSON.stringify(full.body.openTasks[0]).length + 1;
@@ -400,7 +564,7 @@ describe('GET /v1/records/:id/context', () => {
     const some = await context(company, `?tokenBudget=${budget}`);
     expect(some.body.openTasks).toHaveLength(2);
     expect(some.body.facts).toHaveLength(1);
-    expect(some.body.omitted).toEqual({ openTasks: 1, facts: 0, recentInteractions: 0 });
+    expect(some.body.omitted).toEqual({ openTasks: 1, facts: 0, recentEvents: 0 });
   });
 
   it('never sends more than the budget once the values fit, framing included', async () => {
@@ -480,5 +644,51 @@ describe('GET /v1/records/:id/context', () => {
       expect(res.status, bad).toBe(400);
     }
     expect((await context(company, '?tokenBudget=16000')).status).toBe(200);
+  });
+});
+
+describe('GET /v1/records/:id/timeline', () => {
+  const timeline = (record: string, query = '', key = keys.agent) =>
+    t.request(`/v1/records/${record}/timeline${query}`, { key });
+
+  it('pages events, values and facts with comma-separated filters', async () => {
+    const deal = await create('deal', { name: `Deal ${word()}`, stage: 'lead' });
+    const call = await logEvent({ about: [deal] });
+    await rememberFact(deal, `Fact ${word()}`, call);
+
+    const all = await timeline(deal);
+    expect(all.status).toBe(200);
+    expect(all.body.record).toBe(deal);
+    const kinds = all.body.items.map((i: { kind: string }) => i.kind);
+    expect(kinds).toEqual(expect.arrayContaining(['event', 'field_change', 'fact']));
+
+    const first = await timeline(deal, '?types=event,fact&limit=1');
+    expect(first.body.items).toHaveLength(1);
+    const second = await timeline(
+      deal,
+      `?types=event,fact&limit=1&cursor=${encodeURIComponent(first.body.nextCursor)}`,
+    );
+    expect(second.status).toBe(200);
+    expect(
+      [...first.body.items, ...second.body.items].map((i: { kind: string }) => i.kind).sort(),
+    ).toEqual(['event', 'fact']);
+
+    const stage = await timeline(deal, '?fields=stage');
+    expect(stage.body.items).toMatchObject([{ kind: 'field_change', field: 'stage' }]);
+  });
+
+  it('refuses bad filters and foreign cursors, and stays in its workspace', async () => {
+    const deal = await create('deal', { name: `Deal ${word()}` });
+    const other = await create('deal', { name: `Deal ${word()}` });
+    expect((await timeline(deal, '?types=emails')).status).toBe(400);
+    expect((await timeline(deal, '?limit=0')).status).toBe(400);
+    expect((await timeline(deal, '?from=yesterday')).status).toBe(400);
+    expect((await timeline(deal, '?fields=nope')).body.error.code).toBe('unknown_field');
+    const page = await timeline(deal, '?limit=1');
+    const cursor = encodeURIComponent(page.body.nextCursor);
+    const foreign = await timeline(other, `?limit=1&cursor=${cursor}`);
+    expect(foreign.status).toBe(400);
+    expect(foreign.body.error.code).toBe('invalid_cursor');
+    expect((await timeline(deal, '', otherKey)).status).toBe(404);
   });
 });

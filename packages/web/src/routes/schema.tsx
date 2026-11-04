@@ -1,6 +1,9 @@
 import {
   type BuiltInView,
+  type CoreRole,
+  type EventColumn,
   type FieldView,
+  isInverseRelation,
   type ObjectView,
   SCHEMA_CHANGE_STATUSES,
   type SchemaChange,
@@ -21,10 +24,10 @@ import {
   Lightbulb,
   Lock,
   type LucideIcon,
-  MessagesSquare,
+  ShieldCheck,
   TriangleAlert,
 } from 'lucide-react';
-import { Suspense, useCallback, useMemo, useState } from 'react';
+import { Fragment, Suspense, useCallback, useMemo, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge } from '../provenance/index.js';
@@ -33,6 +36,7 @@ import {
   Button,
   CardGrid,
   Check,
+  CheckLabel,
   Code,
   Diagram,
   DiagramKey,
@@ -66,9 +70,11 @@ import {
   Tr,
 } from '../ui/index.js';
 import {
+  canRollUpEvents,
   cardinality,
   describeOperation,
   findObject,
+  isManyRelation,
   matchesField,
   parseStatus,
   relationEdges,
@@ -191,8 +197,22 @@ export function SchemaPage() {
 }
 
 const BUILT_IN_ICONS: Record<BuiltInView['name'], LucideIcon> = {
-  interaction: MessagesSquare,
   fact: Lightbulb,
+};
+
+/** The built-in columns every event record has beside its fields. */
+const EVENT_COLUMN_INFO: Record<EventColumn, { label: string; description: string }> = {
+  occurredAt: { label: 'Occurred at', description: 'When it happened' },
+  channel: { label: 'Channel', description: 'Where it was logged from, e.g. gmail or zoom' },
+  externalId: {
+    label: 'External ID',
+    description: 'Its ID in that channel; logging it again adds to the same event',
+  },
+};
+
+const CORE_ROLE_TEXT: Record<CoreRole, string> = {
+  title: 'Core field: the event’s title, which names it. It can be renamed but not deleted.',
+  summary: 'Core field: the event’s summary. It can be renamed but not deleted.',
 };
 
 function ObjectsTab() {
@@ -206,6 +226,18 @@ function ObjectsTab() {
   const builtIn = named ?? (object ? undefined : builtIns[0]);
   const field = object?.fields.find((f) => f.name === search.field);
   const select = (object: string, field?: string) => void setSearch({ object, field });
+  const entities = objects.filter((o) => o.class !== 'event'),
+    eventTypes = objects.filter((o) => o.class === 'event');
+  const navItem = (o: ObjectView) => (
+    <NavItem
+      key={o.nameSingular}
+      icon={objectIcon(o.nameSingular)}
+      label={o.labelPlural}
+      meta={o.fields.length}
+      active={o.nameSingular === object?.nameSingular}
+      onSelect={() => select(o.nameSingular)}
+    />
+  );
   return (
     <>
       {!schema.workspace.templates.length ? <TemplatePicker /> : null}
@@ -223,19 +255,9 @@ function ObjectsTab() {
         <SplitView
           nav={
             <>
-              {objects.length ? (
-                <NavList label="Objects">
-                  {objects.map((o) => (
-                    <NavItem
-                      key={o.nameSingular}
-                      icon={objectIcon(o.nameSingular)}
-                      label={o.labelPlural}
-                      meta={o.fields.length}
-                      active={o.nameSingular === object?.nameSingular}
-                      onSelect={() => select(o.nameSingular)}
-                    />
-                  ))}
-                </NavList>
+              {entities.length ? <NavList label="Objects">{entities.map(navItem)}</NavList> : null}
+              {eventTypes.length ? (
+                <NavList label="Event types">{eventTypes.map(navItem)}</NavList>
               ) : null}
               {builtIns.length ? (
                 <NavList label="Built-in">
@@ -306,6 +328,8 @@ function DiagramTab() {
       edges: relationEdges(objects),
     };
   }, [schema.objects]);
+  // A polymorphic relation draws a line to each object it allows; count it once.
+  const relations = new Set(edges.map((e) => e.id.split(':')[0])).size;
   const open = useCallback(
     (object: string, field?: string) => void setSearch({ tab: undefined, object, field }),
     [setSearch],
@@ -330,9 +354,9 @@ function DiagramTab() {
             <DiagramKey end="many">Many</DiagramKey>
             <DiagramKey end="one">One</DiagramKey>
             <span>
-              {edges.length} {edges.length === 1 ? 'relation' : 'relations'}. Each card shows the
-              field that names its records and its relations. Drag to move, use the controls to
-              zoom, and click a card, a field or a line to open it.
+              {relations} {relations === 1 ? 'relation' : 'relations'}. Each card shows the field
+              that names its records and its relations. Drag to move, use the controls to zoom, and
+              click a card, a field or a line to open it.
             </span>
           </>
         }
@@ -342,8 +366,8 @@ function DiagramTab() {
 }
 
 /**
- * Interactions or facts: part of every workspace and fixed by Retainer, so
- * there is nothing to change here; agents write them through their own tools.
+ * Facts: part of every workspace and fixed by Retainer, so there is nothing
+ * to change here; agents write them through their own tools.
  */
 function BuiltInDetail({ builtIn }: { builtIn: BuiltInView }) {
   return (
@@ -417,6 +441,7 @@ function ObjectDetail({
           <>
             <Code>{object.nameSingular}</Code>
             <Code>{object.namePlural}</Code>
+            {object.class === 'event' ? <Badge>Event</Badge> : null}
             <OwnerBadge owner={object.owner} />
             {label ? <span>Records named by {label.label}</span> : null}
           </>
@@ -476,6 +501,20 @@ function ObjectDetail({
                         <Lock size={13} aria-label="Read only" />
                       </Tooltip>
                     ) : null}
+                    {f.coreRole || f.isProtected ? (
+                      <Tooltip
+                        content={
+                          f.coreRole
+                            ? CORE_ROLE_TEXT[f.coreRole]
+                            : 'Protected: Retainer depends on it. It can be renamed but not deleted.'
+                        }
+                      >
+                        <ShieldCheck
+                          size={13}
+                          aria-label={f.coreRole ? 'Core field' : 'Protected'}
+                        />
+                      </Tooltip>
+                    ) : null}
                   </Row>
                   <Code>{f.name}</Code>
                 </Td>
@@ -501,6 +540,25 @@ function ObjectDetail({
           description={query ? `Nothing in ${object.labelPlural} matches “${query}”.` : undefined}
         />
       )}
+      {object.class === 'event' ? (
+        <Section title="Event columns">
+          <Muted>
+            Every {object.labelSingular.toLowerCase()} has these besides its fields. Events are
+            created only by logging them (<Code>log_event</Code>), with their participants and the
+            records they are about.
+          </Muted>
+          <PropertyList>
+            {(object.eventColumns ?? []).map((c) => (
+              <Property key={c} label={EVENT_COLUMN_INFO[c].label}>
+                <Row>
+                  <Code>{c}</Code>
+                  <Muted>{EVENT_COLUMN_INFO[c].description}</Muted>
+                </Row>
+              </Property>
+            ))}
+          </PropertyList>
+        </Section>
+      ) : null}
     </>
   );
 }
@@ -518,14 +576,14 @@ function FieldSheet({
 }) {
   const { schema } = useWorkspace();
   const s = field.settings;
-  const { target, inverse } = relationEnds(field, schema.objects);
+  const { target, targets, inverse } = relationEnds(field, schema.objects);
   const flags = [
     ...FLAGS.map((f) => ({ ...f, on: f.on(field) })),
     {
       label: 'Read only',
       on: field.readOnly,
       yes:
-        s.relationCardinality === 'one_to_many' && target && inverse
+        isInverseRelation(field) && target && inverse
           ? `The inverse side; write ${target.labelSingular} → ${inverse.label} instead`
           : 'Written by the server, not directly',
       no: 'Agents and people can write it',
@@ -558,6 +616,13 @@ function FieldSheet({
               Names {object.labelPlural.toLowerCase()} wherever they are referenced
             </Property>
           ) : null}
+          {field.coreRole ? (
+            <Property label="Core field">{CORE_ROLE_TEXT[field.coreRole]}</Property>
+          ) : field.isProtected ? (
+            <Property label="Protected">
+              Retainer depends on it. It can be renamed but not deleted.
+            </Property>
+          ) : null}
           {s.maxValues ? <Property label="Most values">{s.maxValues}</Property> : null}
           {field.universalId ? (
             <Property label="Universal ID">
@@ -570,16 +635,46 @@ function FieldSheet({
         <Section title="Relation">
           <PropertyList>
             <Property label="Links to">
-              {target ? (
-                <TextButton onClick={() => onNavigate(target.nameSingular)}>
-                  {target.labelPlural}
-                </TextButton>
+              {targets.length ? (
+                <Row>
+                  {/* "Companies, People or Deals" */}
+                  {targets.map(({ name, object: t }, i) => (
+                    <Fragment key={name}>
+                      {i && i === targets.length - 1 ? <Muted>or</Muted> : null}
+                      <span className="inline-flex items-center">
+                        {t ? (
+                          <TextButton onClick={() => onNavigate(t.nameSingular)}>
+                            {t.labelPlural}
+                          </TextButton>
+                        ) : (
+                          <Code>{name}</Code>
+                        )}
+                        {i < targets.length - 2 ? <Muted>,</Muted> : null}
+                      </span>
+                    </Fragment>
+                  ))}
+                </Row>
               ) : (
-                <Code>{s.targetObject ?? 'unknown'}</Code>
+                <Code>unknown</Code>
               )}
             </Property>
             <Property label="Cardinality">
-              {cardinality(object, target, s.relationCardinality === 'one_to_many')}
+              {cardinality(
+                object,
+                targets.flatMap((t) => (t.object ? [t.object] : [])),
+                isManyRelation(field),
+              )}
+            </Property>
+            {targets.length > 1 ? (
+              <Property label="Polymorphic">
+                Links records of any of these objects. There is no field on the other side: filter
+                on this field to find what links to a record.
+              </Property>
+            ) : null}
+            <Property label="Side">
+              {isInverseRelation(field)
+                ? 'Inverse: derived from the other side, read only'
+                : 'Owning: written here'}
             </Property>
             {s.inverseField ? (
               <Property label="Other side">
@@ -590,6 +685,11 @@ function FieldSheet({
                 ) : (
                   <Code>{s.inverseField}</Code>
                 )}
+              </Property>
+            ) : null}
+            {canRollUpEvents(object, field) ? (
+              <Property label="Roll up events">
+                <RollUpEventsSwitch object={object} field={field} />
               </Property>
             ) : null}
             {s.onDelete ? (
@@ -630,6 +730,60 @@ function FieldSheet({
         </PropertyList>
       </Section>
     </Sheet>
+  );
+}
+
+/**
+ * Turns event rollup on or off for an owning relation field, as an
+ * `update_field` change: additive, so it applies without review. Read only
+ * without `schema:write`.
+ */
+export function RollUpEventsSwitch({ object, field }: { object: ObjectView; field: FieldView }) {
+  const { session } = useWorkspace(),
+    client = useQueryClient();
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  const on = field.settings.rollUpEvents === true;
+  const allowed = canMutate(session, 'schema:write');
+  async function change(next: boolean) {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.proposeSchemaChange([
+        { op: 'update_field', object: object.nameSingular, field: field.name, rollUpEvents: next },
+      ]);
+      if (result.status === 'failed') setError(result.change?.error ?? 'The change failed');
+      else if (result.status === 'proposed') setError('Proposed: it applies once approved');
+      await client.invalidateQueries({ queryKey: [session.workspace.id] });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Stack gap="small">
+      {allowed ? (
+        <CheckLabel>
+          <Input
+            type="checkbox"
+            role="switch"
+            aria-label="Roll up events"
+            checked={on}
+            disabled={busy}
+            onChange={(e) => void change(e.target.checked)}
+          />
+          <span>{on ? 'On' : 'Off'}</span>
+        </CheckLabel>
+      ) : (
+        <Check value={on} />
+      )}
+      <Muted small>
+        Events attached to a {object.labelSingular.toLowerCase()} also appear on the record it
+        points to. Turn it on only when regrouping old events after a reassignment is right.
+      </Muted>
+      {error ? <Notice error>{error}</Notice> : null}
+    </Stack>
   );
 }
 

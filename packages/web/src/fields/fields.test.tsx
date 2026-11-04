@@ -11,6 +11,8 @@ import {
   filterValue,
   microsToDecimal,
   PICKERS,
+  pickerFor,
+  relationIds,
 } from './common.js';
 import { fields } from './index.js';
 
@@ -102,6 +104,7 @@ const f = (type: FieldView['type']): FieldView => ({
   isSearchable: false,
   readOnly: false,
   owner: 'system',
+  isProtected: false,
 });
 describe('field registry and numeric precision', () => {
   it('covers every field type', () => {
@@ -170,6 +173,54 @@ it('edits composite lists as whole values, promotes primary and enforces the cap
   expect((screen.getByRole('textbox', { name: 'Email 1' }) as HTMLInputElement).value).toBe(
     'b@test.com',
   );
+});
+
+describe('many-to-many relations', () => {
+  const A = '10000000-0000-4000-8000-00000000000a',
+    B = '10000000-0000-4000-8000-00000000000b',
+    C = '10000000-0000-4000-8000-00000000000c';
+  const contacts: FieldView = {
+    ...f('relation'),
+    label: 'Contacts',
+    settings: { targetObject: 'person', relationCardinality: 'many_to_many' },
+  };
+  it('edits a set from a list that stays open, and one record from a list that saves', () => {
+    expect(pickerFor(contacts)).toBe('many');
+    expect(pickerFor({ ...contacts, settings: { relationCardinality: 'many_to_one' } })).toBe(
+      'one',
+    );
+    expect(pickerFor(f('text'))).toBeUndefined();
+  });
+  it('reads a value as record IDs, whether one, a set or none', () => {
+    expect(relationIds([A, B])).toEqual([A, B]);
+    expect(relationIds(A)).toEqual([A]);
+    expect(relationIds(null)).toEqual([]);
+    expect(relationIds('')).toEqual([]);
+  });
+  it('shows a set in full, or its first two and a count in a list cell', () => {
+    const { unmount } = render(<FieldDisplay field={contacts} value={[A, B, C]} />);
+    expect(screen.getAllByText('Unavailable reference')).toHaveLength(3);
+    unmount();
+    render(<FieldDisplay field={contacts} value={[A, B, C]} compact />);
+    expect(screen.getAllByText('Unavailable reference')).toHaveLength(2);
+    expect(screen.getByText('+1')).toBeTruthy();
+  });
+  it('shows an empty set as empty', () => {
+    render(<FieldDisplay field={contacts} value={[]} />);
+    expect(screen.getByText('—')).toBeTruthy();
+  });
+  it('filters a set by records it holds any or all of, or by being empty', () => {
+    expect(filterValue(contacts, 'containsAny', [A, B])).toEqual([A, B]);
+    expect(filterValue(contacts, 'containsAll', [A])).toEqual([A]);
+    expect(() => filterValue(contacts, 'containsAny', [])).toThrow('Choose at least one record');
+    expect(() => filterValue(contacts, 'containsAll', '')).toThrow('Choose at least one record');
+    expect(filterValue(contacts, 'isEmpty', true)).toBe(true);
+    expect(filterValue(contacts, 'isEmpty', false)).toBe(false);
+  });
+  it('validates a set the way the server stores it', () => {
+    expect(validateFieldValue(contacts, [B, A, B])).toEqual([A, B]);
+    expect(() => validateFieldValue(contacts, null)).toThrow();
+  });
 });
 
 it('treats empty composites as empty without hiding zero or false', () => {

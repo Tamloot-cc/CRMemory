@@ -123,6 +123,9 @@ function validateSearch(raw: Record<string, unknown>): ViewSearch {
     'object',
     'field',
     'status',
+    'kind',
+    'fields',
+    'eventTypes',
   ] as const)
     if (typeof raw[key] === 'string') result[key] = raw[key];
   return result;
@@ -164,8 +167,8 @@ const routeTree = rootRoute.addChildren([
   }),
   createRoute({
     getParentRoute: () => rootRoute,
-    path: '/i/$id',
-    component: lazyRouteComponent(() => import('./routes/interaction.js'), 'InteractionPage'),
+    path: '/e/$id',
+    component: lazyRouteComponent(() => import('./routes/event.js'), 'EventPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,

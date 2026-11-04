@@ -38,12 +38,39 @@ describe('GET /v1/schema', () => {
       initialized: false,
       schemaVersion: 1,
     });
-    expect(res.body.objects.map((o: { nameSingular: string }) => o.nameSingular)).toEqual([
+    const objects = res.body.objects as { nameSingular: string; class: string }[];
+    expect(objects.filter((o) => o.class === 'entity').map((o) => o.nameSingular)).toEqual([
       'company',
       'person',
       'task',
     ]);
-    const person = res.body.objects[1];
+    // The base event types; the internal-note type stays hidden (6.4).
+    expect(
+      objects
+        .filter((o) => o.class === 'event')
+        .map((o) => o.nameSingular)
+        .sort(),
+    ).toEqual(['call', 'email', 'meeting', 'message', 'note']);
+    const meeting = res.body.objects.find(
+      (o: { nameSingular: string }) => o.nameSingular === 'meeting',
+    );
+    expect(meeting).toMatchObject({
+      labelField: 'title',
+      eventColumns: expect.arrayContaining(['occurredAt', 'channel', 'externalId']),
+    });
+    expect(
+      meeting.fields.map((f: { name: string; coreRole?: string }) => [f.name, f.coreRole]),
+    ).toEqual(
+      expect.arrayContaining([
+        ['title', 'title'],
+        ['summary', 'summary'],
+      ]),
+    );
+    expect(res.body.builtIns.map((b: { name: string }) => b.name)).toEqual(['fact']);
+    const person = objects.find((o) => o.nameSingular === 'person') as never as {
+      labelField: string;
+      fields: { name: string }[];
+    };
     expect(person.labelField).toBe('name');
     expect(person.fields.find((f: { name: string }) => f.name === 'company')).toMatchObject({
       type: 'relation',
@@ -55,7 +82,9 @@ describe('GET /v1/schema', () => {
       },
       readOnly: false,
     });
-    const company = res.body.objects[0];
+    const company = objects.find((o) => o.nameSingular === 'company') as never as {
+      fields: { name: string }[];
+    };
     expect(company.fields.find((f: { name: string }) => f.name === 'people')).toMatchObject({
       readOnly: true,
       settings: {

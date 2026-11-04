@@ -1,5 +1,11 @@
-import { type FieldType, MULTI_VALUE_TYPES } from '@retainer/shared';
-import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
+import { type FieldType, INTERNAL_NOTE_TYPE_ID, MULTI_VALUE_TYPES } from '@retainer/shared';
+import {
+  type FieldState,
+  type ObjectState,
+  relationTargetIds,
+  type SchemaIssue,
+  type SchemaState,
+} from './types.js';
 
 const NAME_PATTERN = /^[a-z][a-zA-Z0-9]{0,62}$/;
 
@@ -7,15 +13,19 @@ const reserved = (names: string[], reason: string) => names.map((name) => [name,
 
 /**
  * Object names that would be confused with API resources, each with the
- * reason the validation error gives. Interactions and facts are built in,
+ * reason the validation error gives. Events and facts are built in,
  * so their reason says what to use instead: an agent told only "reserved"
  * renames its object and builds a twin of the built-in feature.
  */
 export const RESERVED_OBJECT_NAMES: ReadonlyMap<string, string> = new Map([
   ...reserved(
-    ['interaction', 'interactions'],
-    'meetings, calls, emails and messages are built in: log them as interactions ' +
-      '(log_interaction, or POST /v1/interactions) instead of creating an object',
+    ['interaction', 'interactions', 'event', 'events'],
+    'meetings, calls, emails and messages are event types (class "event"): log them with ' +
+      'log_event (or POST /v1/events), or create your own event type with class "event"',
+  ),
+  ...reserved(
+    ['internalNote', 'internalNotes'],
+    'it names the notes remember creates for facts with no source',
   ),
   ...reserved(
     ['fact', 'facts'],
@@ -59,6 +69,18 @@ export const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set([
   'createdBy',
   'updatedBy',
   'mergedIntoId',
+]);
+
+/** Field names an event type cannot use: its built-in columns and links (6.1, 6.2). */
+export const RESERVED_EVENT_FIELD_NAMES: ReadonlySet<string> = new Set([
+  'type',
+  'occurredAt',
+  'channel',
+  'externalId',
+  'participants',
+  'about',
+  'event',
+  'via',
 ]);
 
 /**
@@ -111,10 +133,11 @@ export function validateSchema(state: SchemaState): SchemaIssue[] {
 
   for (const object of active) {
     const path = object.nameSingular;
+    const internal = object.universalId === INTERNAL_NOTE_TYPE_ID;
     for (const name of [object.nameSingular, object.namePlural]) {
       if (!NAME_PATTERN.test(name)) {
         issue(path, `"${name}" must be camelCase: a lowercase letter, then letters and digits`);
-      } else if (RESERVED_OBJECT_NAMES.has(name)) {
+      } else if (RESERVED_OBJECT_NAMES.has(name) && !internal) {
         issue(path, `"${name}" is reserved: ${RESERVED_OBJECT_NAMES.get(name)}`);
       }
     }
@@ -132,6 +155,7 @@ export function validateSchema(state: SchemaState): SchemaIssue[] {
       validateField(object, field, byUniversalId, issue);
     }
 
+    if (object.class === 'event') validateEventCore(object, issue);
     const labelField = object.fields.find((f) => f.universalId === object.labelFieldId);
     if (labelField?.status !== 'active') {
       issue(path, 'labelField must be an active field of the object');
@@ -144,6 +168,27 @@ export function validateSchema(state: SchemaState): SchemaIssue[] {
   }
 
   return issues;
+}
+
+/**
+ * An event type has exactly one active title and one active summary field,
+ * protected text fields, and its title is its label field (6.1). Entities
+ * have no core fields.
+ */
+function validateEventCore(
+  object: ObjectState,
+  issue: (path: string, message: string) => void,
+): void {
+  for (const role of ['title', 'summary'] as const) {
+    const core = object.fields.filter((f) => f.status === 'active' && f.coreRole === role);
+    if (core.length !== 1 || core[0]?.type !== 'text' || !core[0]?.isProtected) {
+      issue(object.nameSingular, `an event type needs exactly one protected ${role} field`);
+    }
+  }
+  const title = object.fields.find((f) => f.status === 'active' && f.coreRole === 'title');
+  if (title && object.labelFieldId !== title.universalId) {
+    issue(object.nameSingular, "an event type's labelField is always its title");
+  }
 }
 
 function validateField(
@@ -159,6 +204,11 @@ function validateField(
     issue(path, `"${field.name}" must be camelCase: a lowercase letter, then letters and digits`);
   } else if (RESERVED_FIELD_NAMES.has(field.name)) {
     issue(path, `"${field.name}" is reserved for a built-in record property`);
+  } else if (object.class === 'event' && RESERVED_EVENT_FIELD_NAMES.has(field.name)) {
+    issue(path, `"${field.name}" is reserved for a built-in event property`);
+  }
+  if (field.coreRole && object.class !== 'event') {
+    issue(path, 'only an event type has core fields');
   }
 
   if (field.type === 'select' || field.type === 'multi_select') {
@@ -171,6 +221,21 @@ function validateField(
     }
   } else if (settings.options) {
     issue(path, 'options apply only to select and multi_select fields');
+  }
+
+  if (settings.rollUpEvents !== undefined && field.type !== 'relation') {
+    issue(path, 'rollUpEvents applies only to relation fields');
+  }
+  if (settings.rollUpEvents && settings.isInverse) {
+    issue(path, 'rollUpEvents belongs on the owning side of a relation, not its inverse');
+  }
+  if (settings.rollUpEvents && object.class === 'event') {
+    // An event's own relation field already attaches it to the target (6.3).
+    issue(
+      path,
+      "rollUpEvents applies to an entity's relations; an event's own relation field " +
+        'already attaches the event to its target',
+    );
   }
 
   if (settings.maxValues !== undefined && !MULTI_VALUE_TYPES.has(field.type)) {
@@ -188,30 +253,57 @@ function validateField(
 
   if (field.type !== 'relation') return;
 
-  const target = settings.targetObjectId ? objects.get(settings.targetObjectId) : undefined;
-  if (target?.status !== 'active') {
+  const targetIds = relationTargetIds(settings);
+  const targets = targetIds.map((id) => objects.get(id));
+  if (targets.length === 0 || targets.some((t) => t?.status !== 'active')) {
     issue(path, 'the relation target object does not exist or was deleted');
     return;
+  }
+  const target = targets[0] as ObjectState;
+  if (settings.targetObjectIds) {
+    if (new Set(targetIds).size < 2) {
+      issue(path, 'targetObjects needs two or more different objects');
+    }
+    if (settings.inverseFieldId || settings.isInverse) {
+      issue(path, 'a relation with several targetObjects has no inverse field');
+    }
   }
   const inverse = settings.inverseFieldId
     ? target.fields.find((f) => f.universalId === settings.inverseFieldId)
     : undefined;
 
-  if (settings.relationCardinality === 'many_to_one') {
+  const cardinality = settings.relationCardinality;
+  if (!settings.isInverse) {
+    if (cardinality !== 'many_to_one' && cardinality !== 'many_to_many') {
+      issue(path, 'relationCardinality must be many_to_one or many_to_many');
+    }
     if (settings.inverseFieldId && inverse?.status !== 'active') {
       issue(path, 'the inverse field of this relation is missing');
     }
     if (inverse && inverse.settings.inverseFieldId !== field.universalId) {
       issue(path, 'the inverse field does not point back at this relation');
     }
-  } else if (settings.relationCardinality === 'one_to_many') {
-    if (inverse?.status !== 'active') {
-      issue(path, 'an inverse relation needs an active many_to_one field on the other side');
-    } else if (inverse.settings.relationCardinality !== 'many_to_one') {
-      issue(path, 'the other side of an inverse relation must be many_to_one');
+    if (cardinality === 'many_to_many') {
+      if (settings.onDelete === 'cascade') {
+        // Cascades follow links at any depth: deleting one contact would
+        // delete every deal that lists it (5.3).
+        issue(path, 'onDelete: cascade is not allowed on a many_to_many relation; use set_null');
+      }
+      if (field.isUnique) issue(path, 'a many_to_many relation cannot be unique');
+    }
+  } else {
+    if (inverse?.status !== 'active' || inverse.settings.isInverse) {
+      issue(path, 'an inverse relation needs an active owning field on the other side');
+    } else {
+      const expected =
+        inverse.settings.relationCardinality === 'many_to_many' ? 'many_to_many' : 'one_to_many';
+      if (cardinality !== expected) {
+        issue(
+          path,
+          `the inverse of a ${inverse.settings.relationCardinality} relation is ${expected}`,
+        );
+      }
     }
     if (!field.isNullable) issue(path, 'an inverse relation field cannot be required');
-  } else {
-    issue(path, 'relationCardinality must be many_to_one or one_to_many');
   }
 }

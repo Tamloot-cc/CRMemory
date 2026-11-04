@@ -13,8 +13,9 @@ It combines two ideas:
 - **Memory with provenance** (inspired by
   [Honcho](https://github.com/plastic-labs/honcho), but agent-written):
   agents read conversations with their own models and write typed field
-  values, plain-language facts and a log of interactions. Every value records
-  who wrote it and which interaction it came from.
+  values, plain-language facts and a log of events (meetings, calls,
+  emails and anything else that happens). Every value records who wrote it
+  and which event it came from.
 
 Retainer never calls a language model. Agents decide what to remember;
 Retainer validates it, resolves conflicts, keeps its history and makes it
@@ -30,11 +31,11 @@ checklist that build step 1 completed.
 
 ### 1.1 Schema (metadata)
 
-| Table            | Holds                                                                                                                       |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `object_types`   | The kinds of things tracked: `person`, `company`, `task` in every workspace, more from templates (3.1), plus custom objects |
-| `fields`         | The fields of each object: type, settings, flags (`is_nullable`, `is_unique`, `is_filterable`, `is_searchable`)             |
-| `schema_changes` | Every applied, proposed, rejected or failed change, with its operations and actor                                           |
+| Table            | Holds                                                                                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `object_types`   | The kinds of things tracked: `person`, `company`, `task` and the base event types in every workspace, more from templates (3.1), plus custom objects. `class` is `entity` or `event` (1.3) |
+| `fields`         | The fields of each object: type, settings, flags (`is_nullable`, `is_unique`, `is_filterable`, `is_searchable`), and `core_role` (`title` or `summary`) on an event type's core fields     |
+| `schema_changes` | Every applied, proposed, rejected or failed change, with its operations and actor                                                                                                          |
 
 Every schema row carries:
 
@@ -49,6 +50,37 @@ Every schema row carries:
   `records.data`. Renaming a field changes `name`, never `key`, so a rename
   never touches the data. Keys are never reused, even after a field is
   deleted.
+
+- `is_protected`: set by the schema engine, never by a client, on objects and
+  fields that server code depends on (below).
+
+#### Protection
+
+Server code finds the schema elements it depends on by universal ID, never
+by API name, and the engine protects each of them. Today these are the base
+objects `person`, `company` and `task`, the fields `task.status` and
+`task.dueDate` (open tasks in context packs, 6.2), and the hidden
+internal-note event type (1.3). The list lives in
+`schema-engine/protection.ts`; any new server dependency on a schema
+element protects it in the same change. The core `title` and `summary`
+fields of every event type are protected the same way. The base event types
+themselves are not: an unused one can be deleted like any object.
+
+- A protected object cannot be deleted. Its API names and labels can change.
+- A protected field cannot be deleted or reshaped: renames, labels and
+  descriptions are allowed; changes to type, `is_nullable`, `is_unique`,
+  `is_filterable` and `is_searchable` are rejected.
+- Only the select option values server code reads are protected:
+  `task.status` keeps its `done` option, whose label can change. Other
+  options can be added, relabeled and removed, so a workspace can add
+  statuses such as `blocked`.
+- Protection does not freeze record values.
+
+`describe_schema` shows `isProtected` on objects and fields and
+`protectedOptions` on fields, and marks base elements with `baseObject`
+(`person`, `company`, `task`) or `baseField` (`taskStatus`,
+`taskDueDate`), so a client finds them after a rename without reading
+universal IDs.
 
 Workspaces carry a `schema_version` that increments on every applied change.
 API and MCP schemas are cached per `(workspace, schema_version)`.
@@ -79,22 +111,59 @@ not schema fields.
 
 #### Relations
 
-A `relation` field is defined on the many-to-one side (`person.company`).
-The one-to-many side (`company.people`) is its inverse, read from the same
-`record_links` rows. Setting a link is a field assertion whose value is the
-target record's ID, so links follow the same write rules as other fields;
-`record_links` is derived from those assertions, like `records.data`. The
-field's `onDelete` setting is applied by the application when the target is
-soft-deleted: `cascade` soft-deletes the source records too; `set_null` (the
-default) keeps the edge and the assertion, and reads skip the deleted
-target. The database cascade only covers hard deletes of edges, not the
-asserted relation values. A many-to-one field permits at most one edge per
-`(source_record_id, field_id)`, enforced by a unique index on `record_links
-(source_record_id, field_id)`; inverse fields are read-only. A relation
-assertion is accepted only when the target is a live record of the target
-object in the same workspace. Hard deletion deletes relation assertions that
-point at the deleted record (2.1, step 3), so a rebuild cannot recreate
-dangling links.
+A `relation` field is defined on its owning side: `many_to_one` for one
+record (`person.company`) or `many_to_many` for a set of records
+(`deal.contacts`). The other side, if named with `inverseField`, is its
+inverse, read from the same `record_links` rows: `one_to_many` for a
+many-to-one field (`company.people`), `many_to_many` for a many-to-many
+one (`person.contactDeals`). The engine marks every inverse
+`settings.isInverse`, and only the owning side is written; `describe_schema`
+shows inverses as `readOnly`. Cardinality and targets cannot change on an
+existing field: create a new field instead.
+
+A relation may also be polymorphic: `targetObjects` names two or more
+objects it may point at (a deal's `customer`, a company or a person),
+instead of `targetObject`. Either multiplicity works. Stored settings hold
+the objects' universal IDs, so renames keep it. A polymorphic relation has
+no inverse field (per-target inverses are deferred); the records pointing at
+one target are found by filtering on the field. Deleting an object that a
+polymorphic relation may also point at is refused and names the field: the
+engine never narrows its targets, which would reinterpret existing values,
+so the field is replaced first. A relation whose only target is deleted is
+deprecated with it, as before.
+
+Setting a link is a field assertion whose value is the target record's ID,
+or for a set the whole array of IDs, so links follow the same write rules as
+other fields; `record_links` is derived from the winning assertion, one row
+per target, like `records.data`. A set is normalized before it is compared
+or stored: duplicates dropped, ordered by ID, `[]` to clear it, `null`
+refused; a required set needs at least one member. A write replaces the
+whole set as one assertion, ranked like any other; there is no implicit
+union, so two writers replacing a set do not each keep their members, and
+a pending set changes no edges. Every member must be a live record of an
+allowed target object in the same workspace, or the whole write fails.
+
+The field's `onDelete` setting is applied by the application when the target
+is soft-deleted: `cascade` soft-deletes the source records too; `set_null`
+(the default) keeps the edge and the assertion, and reads skip the deleted
+target. `cascade` is refused on many-to-many fields, since cascades follow
+links at any depth and deleting one contact would delete every deal listing
+it. The database cascade only covers hard deletes of edges, not the
+asserted relation values.
+
+`record_links.is_collection` marks a set's edges. A trigger sets it from the
+field, never from the writer, and refuses edges on an inverse or
+non-relation field; a unique index on `(workspace_id, source_record_id,
+field_id, target_record_id)` keeps each edge once, and a partial unique
+index on `(source_record_id, field_id) where not is_collection` holds a
+single-record field to one edge in the database itself, even for a writer
+that bypasses the application. Merges point sets at the survivor, once.
+Hard deletion deletes single-record assertions that point at the deleted
+record and removes it from every set assertion, current or past (2.1,
+step 3), so a rebuild cannot recreate dangling links.
+
+Sets filter with `containsAny` and `containsAll` (lists of record IDs) and
+`isEmpty`; they take no comparisons and cannot be sorted.
 
 #### Actor
 
@@ -140,7 +209,7 @@ with `forget` (restoring a record is not in v1), so writes cannot silently
 recreate them. A match on a
 soft-deleted record follows `merged_into_id` when set; otherwise the
 participant stays unresolved and is listed in `GET /v1/review`, rather than
-attaching new interactions to a hidden record.
+attaching new events to a hidden record.
 
 #### Why JSONB and not a table per object
 
@@ -176,13 +245,14 @@ install can add them later as an opt-in.
 
 ### 1.3 Memory
 
-| Table                      | Holds                                                                                                                                                                                                                                                                                                 |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `interactions`             | A log of what happened, written by the agent: `kind` (meeting, call, email, message, note), `channel`, `occurred_at`, `title`, an agent-written `summary`, `external_id` (unique per workspace and channel, so logging the same source twice is a no-op). No transcripts or message bodies            |
-| `interaction_participants` | The records linked to an interaction, in the order logged. `link = 'participant'`: who took part, as a normalized `handle` (email or phone) and/or a `record_id`, a free-text `role`, and an `unmatched_reason` when no record was matched. `link = 'about'`: a record it concerns (only `record_id`) |
-| `field_assertions`         | A claimed value for one field of one record: value, actor, source interaction, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`)                                                                        |
-| `facts`                    | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                              |
-| `fact_sources`             | What a fact rests on: an interaction (with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                                         |
+| Table                       | Holds                                                                                                                                                                                                                                                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `event_records`             | One row per event record: `occurred_at`, `channel` and `external_id` (unique per workspace and channel when set, so logging the same source twice is a no-op). Immutable once logged, except that erasure clears `channel` and `external_id` (2.1). A deferred trigger requires the row for every event record |
+| `event_links`               | The records linked to an event, in the order logged. `link = 'participant'`: who took part, as a normalized `handle` (email or phone) and/or a `record_id`, a free-text `role`, and an `unmatched_reason` when no record was matched. `link = 'about'`: a record it concerns (only `record_id`)                |
+| `event_identity_tombstones` | Keyed HMACs of erased event identities, with the ID of the key that made each (2.1). No raw channel, external ID, text or record ID                                                                                                                                                                            |
+| `field_assertions`          | A claimed value for one field of one record: value, actor, source event (`source_record_id`), `is_initial`, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`)                                                    |
+| `facts`                     | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                                       |
+| `fact_sources`              | What a fact rests on: an event (`source_record_id`, with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                                    |
 
 `field_assertions.observed_at` and `facts.valid_from` come from the source
 (rules 2.2 and 2.6); `valid_from` has no `now()` default, so backfilled
@@ -193,45 +263,158 @@ Retainer stores what the agent chose to record, not the conversation itself.
 A summary or quote is stored like any other value, so an agent should not put
 in it what the workspace should not keep.
 
-Participants are who took part. `about` lists the records an interaction
-concerns, of any object: the company, project or tasks of a meeting with Dana
-about the Acme pilot. Both make the interaction show in those records'
-context packs, searches and interaction queries; only participants are
-attendees. The agent names `about` records explicitly. Retainer does not
-infer them, for example from a participant's company, since that would move
-old meetings when a person changes jobs. A record is linked once per
-interaction: `about` skips a record already linked, a record added as a
-participant replaces its `about` link, and a merge drops the `about` link
-that would repeat another. Adding links locks every record involved
-`FOR KEY SHARE`, as relation writes do (4.2), so a concurrent merge either
-commits first and the link goes to the survivor, or waits and then moves
-the new link with the rest.
+#### Events
 
-Logging an interaction again with the same `(workspace_id, channel,
-external_id)` returns the existing one when its kind, `occurred_at` instant,
-title and summary are the same. Participants and `about` records it does not
-have yet are added, after the existing ones, and the response lists them in
-`added`; nothing is removed this way, so retries, and syncs that log the
+An object type has a class. `entity` is the default: people, companies,
+deals, anything with a lifecycle. `event` is something that happened at a
+point in time and is logged from a source: a meeting, call, email, message
+or note, or a type the workspace adds, such as a payment or a site visit.
+Events are records: they have fields, assertions, relation fields, views and
+search like any other record, plus the built-in columns `occurredAt`,
+`channel` and `externalId` from `event_records`, which `query_records` can
+filter and sort by and a calendar view can use as its date.
+
+Every workspace has the base event types `meeting`, `call`, `email`,
+`message` and `note`, with universal IDs (3.1). Creating an object with
+`class: "event"` gives it two core fields, with roles `title` and
+`summary`: searchable text, protected (1.1), and `title` is the label
+field. The rest of an event type's fields are ordinary fields. The names
+`type`, `occurredAt`, `channel`, `externalId`, `participants`, `about`,
+`event` and `via` are reserved on event types.
+
+Only logging creates events. `log_event` (`POST /v1/events`) takes `type`,
+`occurredAt`, `channel`, `externalId`, `title`, `summary`, `fields` (the
+type's other fields, by name), `participants` and `about`, and writes the
+record, its `event_records` row, its initial field values and its links in
+one transaction. `upsert_record` and record creation refuse event types
+(`422 use_log_event`), but can correct an existing event's fields: later
+edits are ordinary assertions with no source and the write time as
+`observed_at`, ranked as usual. Events cannot be merged or suggested as
+duplicates: each is something that happened, logged from its own source.
+
+The values logging writes are the event's initial values: their assertions
+are marked `is_initial`, cite the event itself as their source, and have
+the event's `occurred_at` as `observed_at`. No other copy of the payload is
+kept, so erasure has one place to clean (2.1).
+
+Logging again with the same `(workspace_id, channel, external_id)` returns
+the existing event when its type, `occurred_at` instant and initial values
+are the same. A retry is compared with the initial assertions, not the
+current values, so later edits never break it. Relation values are compared
+after resolving merged record IDs to their survivors on both sides. A field
+added since logging counts as absent from the original, so a retry that
+supplies it conflicts; one that names a field deleted since logging fails
+validation, like any write. Participants and `about` records the event does
+not have yet are added, after the existing ones, and the response lists them
+in `added`; nothing is removed this way, so retries, and syncs that log the
 original list again, are no-ops. A participant is the same one when its role
 and handle match, or its role and record (after merges) when it has no
 handle; an erased handle (2.1) matches another erased handle with the same
-role. Adding a participant changes no field value or fact, only which records
-list the interaction. The interaction row is locked while links are added, so
-concurrent additions each land once. A different kind, time, title or summary
-returns a conflict (`interaction_conflict`); it is never silently ignored.
-Logging the identity of a retracted interaction again is also a conflict
-(`interaction_retracted`): the unique index still holds the retracted row,
-and restoring a source is not in v1. `channel` must distinguish source
-accounts when their external IDs can overlap. Without `external_id`, callers
-do not get deduplication. An edited source needs a new `external_id` in v1;
-creating it does not retract the old source's claims; a person retracts the
-old interaction (`DELETE /v1/interactions/:id`).
+role. Adding a participant changes no field value or fact, only which
+records list the event. A different payload returns `event_conflict`; it is
+never silently ignored. Logging the identity of a deleted event, or one
+erased by `forget`, returns `event_retracted`; restoring a source is not in
+v1. Logging takes a transaction-scoped advisory lock on the identity, so
+concurrent logs of one source create one event. `channel` must distinguish
+source accounts when their external IDs can overlap. Without `external_id`,
+callers do not get deduplication. An edited source needs a new
+`external_id`; creating it does not retract the old source's claims; a
+person deletes the old event (`DELETE /v1/events/:id`).
 
-`POST /v1/interactions/:id/participants` adds participants and `about`
-records to a logged interaction by ID, with the same matching. Removing one
-(`DELETE /v1/interactions/:id/participants/:participantId` or
+Participants are who took part. `about` lists the records an event
+concerns, of any object, entities or other events, but not the event
+itself: the company, project or tasks of a meeting with Dana about the Acme
+pilot. The agent names `about` records explicitly. Retainer does not infer
+them, for example from a participant's company, since that would move old
+meetings when a person changes jobs. A record is linked once per event:
+`about` skips a record already linked, a record added as a participant
+replaces its `about` link, and a merge drops the `about` link that would
+repeat another. Adding links locks every record involved `FOR KEY SHARE`,
+as relation writes do (4.2), so a concurrent merge either commits first and
+the link goes to the survivor, or waits and then moves the new link with
+the rest.
+
+A relation field on an event type, such as a call's `deal` or a payment's
+`invoice`, also attaches the event to the record it points at. It follows
+the current value: unlike `about`, a corrected relation moves the event.
+Agents are told to prefer `about` for what an event concerns and to keep
+relation fields for structure the type owns.
+
+An event is attached directly to a record in three ways, and every list of
+a record's events says which, as `via`: `{ kind: 'participant' }`,
+`{ kind: 'about' }` or `{ kind: 'field', field }`. An event attached in
+several ways appears once, with that precedence. `query_records` on an event
+type takes `linked: { record, link? }` for these events, and
+`GET /v1/records/:id/events` and context packs (6.2) list them across types,
+newest first.
+
+#### Rollups
+
+An owning relation field of an entity can set `rollUpEvents`. Then the
+events attached directly to a record (any of the three ways) also appear in
+the history of the records it points at through that field, with
+`via: { kind: 'rollup', field, record }` naming the field and the record
+they came from: a company sees the calls about its deals. It works for
+single-record, `many_to_many` and polymorphic fields and needs no inverse.
+
+- It is read-time: nothing is copied, so `update_field` turns it on or off
+  at any time, as an additive change (no review), and a changed relation
+  regroups the events at once. `via` describes the current grouping, never
+  who took part back then; explicit participants and `about` are unaffected.
+- One hop. What a record has only by rollup does not roll up again, and
+  direction is always source to target. An event's own relation field
+  attaches it (above) and does not use up the hop: a payment attached to an
+  invoice through `payment.invoice` rolls up once through `invoice.company`,
+  never onward through the company's `parent`.
+- Events only: facts and field values stay on their record.
+- An event appears once. A direct attachment wins over a rollup, and among
+  several rollup paths the one with the smallest field ID, then source
+  record ID, so the same `via` comes back on every read. Pages, counts and
+  context budgets see each event once.
+- It cannot be set on an inverse field, nor on an event type's fields.
+
+A company with thousands of deals is a wide fan-out, so the query never
+gathers it: it reads the incoming edges through `record_links_target_idx`
+(workspace, target, field, covering the source), takes each live source's
+own newest page of directly attached events (through `event_links
+(workspace, record_id, link)`, the event types' relation edges and
+`event_records (record_id, occurred_at)`), and merges those, deduplicated,
+into one keyset page on (`occurred_at`, ID). An event's position among one
+source's events is never later than its position overall, so that covers
+the page and every path to its events. Context packs and
+`GET /v1/records/:id/events` share it, and an integration test checks its
+plan on a seeded fan-out.
+
+The engine cannot prove a relation is stable, so the setting says nothing
+about permanence. Template defaults leave it off on affiliations, ownership
+and contact assignments (`person.company`, `deal.company`,
+`deal.pointOfContact`, `property.owner`, `project.company`,
+`project.primaryContact`, `proposal.company`, `job.company`, the task
+relations), where reassigning should not regroup old events. They turn it
+on only where a record belongs to its target and a change is a correction:
+`appointment.person`, `viewing.property`, `viewing.person`,
+`application.person`, `application.job` and `proposal.project`.
+
+`POST /v1/events/:id/links` adds participants and `about` records to a
+logged event by ID, with the same matching. Removing one
+(`DELETE /v1/events/:id/participants/:participantId` or
 `/about/:recordId`) is a person's decision, like other changes that hide
 data: an agent's key gets 403.
+
+#### Internal notes
+
+Every fact cites an event (rule 2.1). When `remember` gets no `source`, it
+logs an internal note: the fact's text as its summary, the record as its
+one `about` link, channel `retainer` (which `log_event` rejects). Internal
+notes are records of their own hidden, protected event type with a fixed
+universal ID, not of the user-visible `note` type, so hiding them is one
+check in object resolution rather than one on every path: `describe_schema`
+omits the type; query, view, search, record and write routes resolve it as
+not found; context packs and event lists never include it. Its records
+change only through `remember` and the fact and privacy lifecycle. A fact
+presents such a source as `{ event: null, internal: true }` instead of an ID
+callers cannot read. Notes a person or agent logs as `note` events are
+ordinary events.
 
 ### 1.4 Views
 
@@ -299,22 +482,24 @@ object deletes its views with it.
 ## 2. Write rules
 
 1. **Nothing is written without an actor and, for derived data, a source.**
-   A field write may cite an interaction as its source (`source` on
+   A field write may cite an event as its source (`source` on
    `upsert_record`); without one, the actor is the source. Every fact cites
-   an interaction: the agent passes one, or `remember` creates a `note`
-   interaction for it.
+   an event: the agent passes one, or `remember` creates an internal note
+   for it (1.3). A source must be a live event record of a visible type in
+   the same workspace: an entity is refused (`invalid_source`), a deleted
+   event too (`source_retracted`).
 2. **Precedence decides a field's value**:
    `user` > `integration` > `agent` > `system`. Within the same precedence,
    the assertion with the latest
-   `observed_at` wins (the source interaction's `occurred_at`, or the write
+   `observed_at` wins (the source event's `occurred_at`, or the write
    time for direct writes), then server-assigned `created_at`, then assertion
    ID as a deterministic tie-breaker. This prevents an old email from
    overwriting a newer claim at the same precedence. Higher-precedence claims
    remain authoritative until explicitly changed. Clearing a nullable field
    is an assertion with a `null` value; missing keys mean no change. Composite
    fields are replaced as a whole in v1, including their additional values.
-   `observed_at` is set by the server: the cited interaction's `occurred_at`,
-   or the write time when no interaction is cited. Callers cannot set it
+   `observed_at` is set by the server: the cited event's `occurred_at`,
+   or the write time when no event is cited. Callers cannot set it
    directly.
 3. **Agents never silently overwrite people, and are never silently
    ignored.** If the winning assertion is a `user` or `integration` one and
@@ -353,7 +538,7 @@ object deletes its views with it.
 6. **Facts are never deleted by the system, only superseded.** Two times are
    kept apart: `valid_from` / `valid_to` say when a fact was true in the
    world; `created_at` says when it was recorded. `valid_from` is the cited
-   interaction's `occurred_at`, or the write time for the `note` that
+   event's `occurred_at`, or the write time for the internal note that
    `remember` creates; v1 takes no separate effective date. Supersession
    records a correction and preserves provenance. A person can retract a
    fact (soft delete) or hard-delete data for privacy (2.1). Exact historical
@@ -362,32 +547,42 @@ object deletes its views with it.
 
 ### 2.1 Deletion and privacy
 
-Soft delete (`deleted_at`) is the default for records, facts and
-interactions. Reads exclude deleted parents as well as deleted rows: a
-record's facts are hidden with it. Retracting an interaction also excludes
-the claims that cite it and recomputes field winners. Facts with other live
-sources may remain; a fact with no live source is hidden on read.
-A write citing an interaction (including accepting a pending claim from it)
-locks it in share mode before locking any record, and retraction locks it
-exclusively before locking the affected records, so a claim either commits before the retraction (and is retracted
-with the rest) or sees the source retracted and fails.
+Soft delete (`deleted_at`) is the default for records, events included,
+and facts. Reads exclude deleted parents as well as deleted rows: a
+record's facts are hidden with it, and links to a deleted record drop out
+of an event's participants and `about`. Deleting an event
+(`DELETE /v1/events/:id`, or `DELETE /v1/records/:id` on one) also retracts
+the claims that cite it and recomputes field winners, and returns how far
+that reached; the event's own initial values are not retracted. Facts with
+other live sources may remain; a fact with no live source is hidden on
+read. Deleting an event type deletes its records through the same
+lifecycle, in the same transaction.
+A write citing an event (including accepting a pending claim from it)
+locks it `FOR KEY SHARE` before locking any record, and deletion locks it
+`FOR UPDATE` before locking the affected records, so a claim either commits before the deletion (and is retracted
+with the rest) or sees the source deleted and fails.
 Restoring a source is not in v1; when added, it must revalidate its derived
 claims before exposing them.
 
 `forget` (admin scope) is the hard delete for privacy requests. First collect
-the record's identifiers, participant interactions, dependent facts,
+the record's identifiers, participant events, dependent facts,
 assertions and inbound relation assertions, before cascades or `SET NULL`
 can erase those dependencies. Then, in a coordinated deletion operation:
 
 1. add normalized emails and phones to a workspace suppression list using a
    keyed HMAC (a plain hash of a guessable email/phone is insufficient);
-2. hard-delete interactions it took part in and the notes `remember` wrote
-   about it, with their source quotes, and remove their assertions and facts
-   that have no live source. An interaction that is only `about` the record
+2. hard-delete events it took part in and the internal notes `remember`
+   wrote about it, with their source quotes, and remove their assertions and
+   facts that have no live source. An event that is only `about` the record
    (a meeting about a company) is someone else's conversation: it stays, and
-   only the link is deleted;
-3. invalidate inbound relation assertions and recompute surviving records'
-   field values, links, identifiers and search text;
+   only the link is deleted. An erased event's identity is replaced by a
+   tombstone (below);
+3. invalidate inbound relation assertions (removing the record from sets)
+   and recompute surviving records'
+   field values, links, identifiers and search text. A surviving event whose
+   initial values this erases loses its `channel` and `external_id`, which
+   are caller-chosen strings that may identify the person, and gets a
+   tombstone when it had an external ID;
 4. hard-delete the record, its assertions, facts, links and identifiers;
 5. write a minimal audit entry (actor ID, time, counts), without copied names,
    handles, summaries, quotes or field values.
@@ -404,9 +599,10 @@ How this is built:
   with an admin key cannot erase a person.
 - **What it covers.** The record and every record merged into it. Its
   handles are its current email and phone identifiers, every email or
-  phone it was ever claimed to have, and the handles of interactions it
-  was matched in. It "took part in" an interaction when a participant row
-  points at it or carries one of those handles.
+  phone it was ever claimed to have, and the handles of events it was
+  matched in. It "took part in" an event when a participant link points at
+  it or carries one of those handles. A forgotten event record is erased
+  as an event.
 - **Boundary.** A workspace advisory lock. Every write takes it in shared
   mode after the schema lock; `forget` takes it exclusively, so it waits
   for in-flight writes and blocks new ones until it commits. A record
@@ -418,13 +614,26 @@ How this is built:
   the handles. The HMAC covers the workspace ID, kind and normalized
   handle. Without the key, `forget` fails with `503 not_configured`; if a
   workspace already has suppressions, writes that could add a handle fail
-  closed. Changing the key forgets earlier suppressions.
+  closed. To rotate the key, set the new one and list the old ones in
+  `RETAINER_SUPPRESSION_PREVIOUS_KEYS`: lookups try every key, so earlier
+  suppressions keep matching. Dropping an old key without listing it
+  forgets the handles it suppressed.
+- **Event identities.** A tombstone stores the workspace, the key's ID and
+  a keyed HMAC of the JSON encoding of `(workspace_id, channel,
+  external_id)` under a domain separator of its own, so it never equals a
+  handle's HMAC. It is a retained suppression token, not anonymization.
+  `log_event` checks it, under the identity's lock and the shared privacy
+  lock, before creating an event or adding retry links, and returns
+  `event_retracted` on a match. A tombstone made with a key that is no
+  longer configured cannot be checked, so logging in that workspace fails
+  closed with `503 not_configured` until the key is listed again. Events
+  without an external ID get no tombstone and no deduplication guarantee.
 - **Idempotency.** Stored responses whose text contains an erased record,
-  interaction or fact ID are deleted.
-- **Response.** IDs and counts only: records, interactions, facts and
-  assertions deleted, inbound relations removed, handles suppressed, the
-  records recomputed, and review candidates (other live records, facts and
-  interactions matching the name by phrase search or a handle by text).
+  event or fact ID are deleted.
+- **Response.** IDs and counts only: records, events, facts and assertions
+  deleted, inbound relations removed, handles suppressed, the records
+  recomputed, and review candidates (other live records, facts and events
+  matching the name by phrase search or a handle by text).
 - **Shared phones.** The check skips handles the written record already
   holds, so another live record that shares a suppressed phone keeps it
   and can still be edited, but no other record can add it.
@@ -437,9 +646,9 @@ found. Backup retention and deletion after restore are the operator's
 responsibility. Suppression entries remain personal data with restricted
 access and a documented retention policy.
 
-Shared interactions are deleted whole (step 2), even when other people took
+Shared events are deleted whole (step 2), even when other people took
 part. This is the simpler rule and fully removes the person's words, at the
-cost of losing what that interaction said about the others. Redacting only
+cost of losing what that event said about the others. Redacting only
 the person, or keeping other people's facts with a "deleted for privacy"
 source, is a possible later refinement.
 
@@ -495,9 +704,9 @@ claims are populated atomically when uniqueness is enabled.
 
 In v1, deleting schema metadata means deprecating it and hiding it from new
 writes, not cascading away assertions. Deleting an object also deprecates
-relations that point at it; base objects and an object's label field cannot
-be deleted. Removing an option needs approval and fails while live records
-use it. A relation's target, cardinality and `onDelete` are fixed once
+relations that point at it; protected objects and fields (1.1) and an
+object's label field cannot be deleted. Removing an option needs approval
+and fails while live records use it. A relation's target, cardinality and `onDelete` are fixed once
 created; there is no operation to change them.
 
 Standard objects ship as code (definitions with fixed `universal_id`s) and
@@ -509,8 +718,9 @@ yet; the fixed `universal_id`s are what such an upgrade will match on.
 
 Every workspace is created with three base objects: `person` (name, emails,
 phones, address, job title, company), `company` (name, domain, address,
-people) and `task` (title, status, due date, assignee, person, company).
-Nobody builds a workspace from scratch.
+people) and `task` (title, status, due date, assignee, person, company),
+the base event types `meeting`, `call`, `email`, `message` and `note`, and
+the hidden internal-note type (1.3). Nobody builds a workspace from scratch.
 
 Templates add the objects and fields a kind of business needs. They ship
 as code in `packages/server/src/templates/`, with fixed `universal_id`s
@@ -580,17 +790,17 @@ The agent reads the conversation with its own model and decides what is
 worth keeping. Retainer only stores, validates and resolves. After a
 meeting, call or email thread, an agent typically:
 
-1. **Logs the interaction** with `log_interaction`: kind, channel, time,
-   title, its own short summary, the source's external ID, the participants
-   as handles (emails, phones) and/or record IDs, and in `about` the records
-   it concerns (1.3).
-2. **Updates records** with `upsert_record`, citing the interaction as
-   `source` so the values carry its date and provenance (rule 2.2).
-3. **Stores facts** with `remember`, citing the same interaction and an
-   optional quote.
+1. **Logs the event** with `log_event`: its type, channel, time, title, its
+   own short summary, the type's other fields, the source's external ID, the
+   participants as handles (emails, phones) and/or record IDs, and in
+   `about` the records it concerns (1.3).
+2. **Updates records** with `upsert_record`, citing the event as `source`
+   so the values carry its date and provenance (rule 2.2).
+3. **Stores facts** with `remember`, citing the same event and an optional
+   quote.
 4. **Creates tasks** someone committed to, as `task` records.
 
-Participants are resolved synchronously when the interaction is logged:
+Participants are resolved synchronously when the event is logged:
 handles are normalized (lowercased email, E.164 phone) and matched against
 unique identifiers in `record_identifiers`. Matched participants are linked;
 the response lists the unmatched ones so the agent can create those people
@@ -718,23 +928,19 @@ deterministic and testable.
 
 ## 5. Read paths
 
-| Operation                          | What it returns                                                                                                 |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`), its objects and fields, and `builtIns`              |
-| `query_interactions`               | Interactions by kind, channel, `occurred_at` range and linked record, with totals and counts by kind or channel |
-| `query_records`                    | Structured filter, sort and pagination over one object                                                          |
-| `get_record`                       | One record with its fields and links                                                                            |
-| `search`                           | Keyword search (Postgres full-text) across records, facts and interactions                                      |
-| `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent interaction summaries, fitted to the budget  |
+| Operation                          | What it returns                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`), its objects and fields, and `builtIns`                 |
+| `query_records`                    | Structured filter, sort and pagination over one object; for an event type, its built-in columns and `linked` (1.3) |
+| `get_record`                       | One record with its fields and links; an event also with its built-in columns, participants and `about`            |
+| `search`                           | Keyword search (Postgres full-text) across records, events and facts                                               |
+| `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent events, fitted to the budget                    |
+| `get_timeline(record, filters)`    | The record's history, newest first: events, asserted field values and facts (6.2)                                  |
 
-`builtIns` lists interactions and facts, apart from `objects`, so a person
-reading the schema sees that the workspace keeps them and no client mistakes
-them for something `upsert_record` writes. They are not objects: an
-interaction is a source, not a claim, its participants are many-to-many, and
-retraction and `forget` depend on its own table (1.3, 2.1). For the same
-reason `query_interactions` reads the `interactions` table directly rather
-than through the records query. It leaves out retracted interactions and the
-notes `remember` creates, as context packs and search do.
+`builtIns` lists facts, apart from `objects`, so a person reading the
+schema sees that the workspace keeps them and no client mistakes them for
+something `upsert_record` writes. Event types are objects of class `event`
+(1.3); the internal-note type is never listed.
 
 Every read hides soft-deleted parents/rows and superseded facts by default.
 An explicit history mode can list retained assertions and facts with their
@@ -752,19 +958,20 @@ folding). No embeddings, no BM25 extension.
 
 #### What is indexed
 
-| Source         | Search text                                                                                                                   | Column and index                                     |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `records`      | Values of `is_searchable` fields, plus the domain of each email and link; the label field (usually the name) weighted highest | `search tsvector`, GIN on `(workspace_id, search)`   |
-| `records`      | The label field as plain text, e.g. "Dana Levi"                                                                               | `label text`, trigram GIN on `(workspace_id, label)` |
-| `facts`        | `content`                                                                                                                     | `search tsvector`, GIN on `(workspace_id, search)`   |
-| `interactions` | `title` (weighted higher) and `summary`                                                                                       | `search tsvector`, GIN on `(workspace_id, search)`   |
+| Source    | Search text                                                                                                                                     | Column and index                                     |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `records` | Values of `is_searchable` fields, plus the domain of each email and link; the label field (usually the name, an event's title) weighted highest | `search tsvector`, GIN on `(workspace_id, search)`   |
+| `records` | The label field as plain text, e.g. "Dana Levi"                                                                                                 | `label text`, trigram GIN on `(workspace_id, label)` |
+| `facts`   | `content`                                                                                                                                       | `search tsvector`, GIN on `(workspace_id, search)`   |
 
 The server computes every `search` and `label` value in the same
 transaction that writes the row (for records, the one that recomputes
 `records.data`). They are not Postgres generated columns, because which
-record fields are searchable lives in schema metadata. Each fact carries its
-`record_id` and each interaction its matched record IDs (possibly none or
-several), so a hit on a fact or interaction also points to records.
+record fields are searchable lives in schema metadata. Events are records,
+so they share the records index; an event's title and summary are always
+searchable (1.3). Each fact carries its `record_id` and each event hit its
+linked record IDs (possibly none or several), so a hit on a fact or event
+also points to records.
 
 Every index leads with `workspace_id` (`btree_gin`), so a common word is
 matched within one workspace inside the index instead of across every
@@ -785,7 +992,7 @@ Postgres keeps an email or a host as one word ("dana@acme.com",
 also add their bare domain ("acme.com"), and "acme" finds both.
 
 Stored search values are rebuilt when the way they are built changes. Facts
-and interactions are searched by their own columns, so the migration that
+are searched by their own column, so the migration that
 makes the change computes their new values in SQL; a test checks that it
 matches what the write path stores. Record search text depends on schema
 metadata, so that migration sets it to null instead, and every server boot
@@ -805,9 +1012,9 @@ Upgrades stop the old version first (`docs/self-hosting.md`).
    server then turns every word into a prefix (`'dan':*`) by rewriting the
    parsed query's text, so "Dan" finds "Dana" and "meet" finds "meetings",
    for people typing in the web app and for agents alike.
-2. The server runs one query each on records, facts and interactions.
+2. The server runs one query each on entity records, events and facts.
    Workspace and liveness filters (and, for facts, "current, not
-   superseded") apply before ranking and limit. The `note` interactions
+   superseded") apply before ranking and limit. The internal notes
    `remember` creates are left out: their text is the fact's, so it is found
    with the fact, or hidden with it once the fact is retracted.
 3. Each list is ranked with `ts_rank_cd`, using length normalization so long
@@ -817,8 +1024,8 @@ Upgrades stop the old version first (`docs/self-hosting.md`).
 4. If the records query finds nothing, even by prefix, the server matches
    `records.label` by trigram similarity, so "Dana Levy" finds "Dana Levi".
 5. Results come back grouped by type. Each hit carries its record IDs and
-   its text as stored: a record's label, a fact's content, an interaction's
-   title and summary. A record hit says whether it matched the text or only
+   its text as stored: a record's label, a fact's content, an event's type,
+   time, title and summary. A record hit says whether it matched the text or only
    a similar label. Scores from the three lists are not comparable and are
    not merged.
 
@@ -867,10 +1074,11 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `GET /v1/records/:id/delete-impact`               | Records a delete would cascade to, at any depth, counted by object                                                                      |
 | `POST /v1/records/delete-impact`                  | The same for several records deleted together, overlaps counted once                                                                    |
 | `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                                                                                   |
-| `GET /v1/records/:id/interactions`                | Paginated interactions a record took part in or that are about it                                                                       |
+| `GET /v1/records/:id/events`                      | Paginated events attached to a record, newest first, each with `via`; `link` narrows to participant, about or field (1.3)               |
 | `GET /v1/assertions/:id`                          | One assertion, including status and review details                                                                                      |
-| `GET /v1/interactions/:id/claims`                 | Paginated assertions and facts citing an interaction                                                                                    |
+| `GET /v1/events/:id/claims`                       | Paginated assertions and facts citing an event                                                                                          |
 | `GET /v1/records/:id/context`                     | Context pack                                                                                                                            |
+| `GET /v1/records/:id/timeline`                    | The record's timeline (6.2): `types`, `fields`, `eventTypes` (comma-separated), `from`, `to`, `limit`, `cursor`                         |
 | `POST /v1/records/:id/merge`                      | Merge another record into this one                                                                                                      |
 | `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                                                                                  |
 | `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                                                                                    |
@@ -878,12 +1086,11 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records                                                             |
 | `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                                                                                         |
 | `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                                                                              |
-| `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)                                                                    |
-| `POST /v1/interactions/query`                     | Filter, count and page interactions (5)                                                                                                 |
-| `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                                                                                          |
-| `POST /v1/interactions/:id/participants`          | Add participants and `about` records (1.3)                                                                                              |
-| `DELETE /v1/interactions/:id/participants/:pid`   | Remove a participant (a person only)                                                                                                    |
-| `DELETE /v1/interactions/:id/about/:recordId`     | Remove an `about` record (a person only)                                                                                                |
+| `POST /v1/events`                                 | Log an event: 201 when created, 200 for a retry; returns matched and unmatched participants (4.1)                                       |
+| `GET` · `DELETE /v1/events/:id`                   | Read an event, or delete it and retract what cites it (2.1)                                                                             |
+| `POST /v1/events/:id/links`                       | Add participants and `about` records (1.3)                                                                                              |
+| `DELETE /v1/events/:id/participants/:pid`         | Remove a participant (a person only)                                                                                                    |
+| `DELETE /v1/events/:id/about/:recordId`           | Remove an `about` record (a person only)                                                                                                |
 | `POST /v1/search`                                 | Keyword search (5.1)                                                                                                                    |
 
 Web sign-in and sign-out use `POST` and `DELETE /auth/session`, outside
@@ -905,10 +1112,9 @@ Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
 
 `describe_schema`, `list_templates`, `apply_template`, `get_guide`,
-`query_records`, `query_interactions`, `get_record`, `search`, `get_context`,
-`upsert_record`, `log_interaction`, `remember`, `propose_schema_change`.
-`query_interactions` is one fixed tool, not one per object, so it keeps the
-list from growing.
+`query_records`, `get_record`, `search`, `get_context`, `get_timeline`, `upsert_record`,
+`log_event`, `remember`, `propose_schema_change`. Events are listed with
+`query_records` on their type, so no tool is needed per event type.
 
 **Guides.** `get_guide(name)` returns step-by-step instructions, as
 markdown, for a task an agent does rarely. Each guide is also an MCP prompt
@@ -930,7 +1136,8 @@ at `discover_schema` when the workspace is not initialized.
 mid-task, long after setup, so the `propose_schema_change` description
 carries the short form and the server instructions point to the guide.
 Each reserved object name carries its reason, so an object named
-`interaction` or `fact` fails with the built-in feature to use instead.
+`interaction`, `event` or `fact` fails with the feature to use instead
+(`log_event`, or an event type; `remember`).
 
 In v1 an agent is connected to exactly one workspace through one API key.
 Every call acts on that workspace, so no tool takes a workspace parameter.
@@ -942,15 +1149,15 @@ Inputs are validated at runtime against the workspace schema, and validation
 errors name the field and the allowed values so the agent can retry.
 
 `remember(record, text, source?, quote?)` writes one `stated` fact at once,
-citing `source` (an interaction ID) with an optional quote. Without
-`source`, it creates a `note` interaction for the fact to cite.
+citing `source` (an event ID) with an optional quote. Without `source`, it
+creates an internal note for the fact to cite (1.3).
 
-`upsert_record` accepts an optional `source` (an interaction ID). Values
-from a conversation should cite it, so they carry the interaction's date as
+`upsert_record` accepts an optional `source` (an event ID). Values from a
+conversation should cite it, so they carry the event's date as
 `observed_at` (rule 2.2) and an older email cannot overwrite a newer claim.
 
 The tool descriptions spell out the workflow in 4.1, so an agent knows to
-log the interaction first and cite it in the writes that follow.
+log the event first and cite it in the writes that follow.
 
 #### Finding the record to update
 
@@ -986,7 +1193,7 @@ after the write, as `get_record` returns it.
 
 An agent that knows only a name or a phone number searches first
 (`search` or `query_records`), then updates by `id`. With several
-candidates, it tells them apart by company, email or recent interactions, or
+candidates, it tells them apart by company, email or recent events, or
 asks its user.
 
 Create-style writes (`remember`, record creation and merge requests) accept
@@ -996,8 +1203,8 @@ result, and reuse with a different payload fails. Identifier matching alone
 does not make note creation or assertion history idempotent. A merge
 request is already idempotent by state (B already merged into A is a
 no-op). Keys are stored in `idempotency_keys` (workspace, operation, key,
-request hash, result, expiry); `interactions.external_id` only covers
-logging interactions.
+request hash, result, expiry); `event_records.external_id` only covers
+logging events.
 
 Several agents can share a workspace. Each uses its own API key, so every
 write is attributed to the agent that made it; between agents the latest
@@ -1005,19 +1212,19 @@ write is attributed to the agent that made it; between agents the latest
 
 #### Responses of the memory tools
 
-Record writes return the shape shown above. `log_interaction`, `remember`
+Record writes return the shape shown above. `log_event`, `remember`
 and `get_context` return the following. IDs are UUIDs; the examples shorten
 them and add a type prefix for readability.
 
 ```
-→ log_interaction {
-    "kind": "call", "channel": "zoom", "externalId": "zoom-8812-3390",
+→ log_event {
+    "type": "call", "channel": "zoom", "externalId": "zoom-8812-3390",
     "occurredAt": "2026-10-29T14:00:00+02:00", "title": "Acme renewal call",
-    "summary": "…",
+    "summary": "…", "fields": {},
     "participants": [ { "handle": "dana@acme.com", "role": "customer" },
                       { "handle": "ron.peretz@acme.com", "role": "customer" } ],
     "about": [ "rec_a11…" ] }
-← { "id": "int_51b…", "created": true,
+← { "id": "evt_51b…", "type": "call", "created": true,
     "participants": {
       "matched":   [ { "id": "ip_1…", "handle": "dana@acme.com", "role": "customer", "recordId": "rec_9f2…" } ],
       "unmatched": [ { "id": "ip_2…", "handle": "ron.peretz@acme.com", "role": "customer", "reason": "no_match" } ] },
@@ -1025,7 +1232,7 @@ them and add a type prefix for readability.
 ```
 
 `created` is `false` when the same `(channel, externalId)` was already
-logged with the same kind, time, title and summary (1.3); the response then
+logged with the same type, time and initial values (1.3); the response then
 also has `added`, the participants and `about` records this call added, in
 the same shapes. Handles come back normalized, in the order logged; `handle`
 or `role` is `null` when not given. Each participant's `id` names the link,
@@ -1037,29 +1244,28 @@ soft-deleted record that was not merged; it is also listed in
 handle; `candidates` lists their IDs, 1.2) or `suppressed` (the handle was
 erased by `forget`; it is not stored, and `handle` is `null`, 2.1).
 
-`DELETE /v1/interactions/:id` returns how far the retraction reached:
+`DELETE /v1/events/:id` returns how far the retraction reached:
 `{ id, deleted: true, retractedAssertions, recomputedRecordIds,
 hiddenFactIds }`, the last being facts whose only live source it was.
+`DELETE /v1/records/:id` returns the same counts when what it deletes
+includes events.
 
 ```
 → remember {
     "record": "rec_9f2…", "text": "Legal review at Acme usually takes two weeks.",
-    "source": "int_51b…", "quote": "legal usually needs two weeks with these" }
+    "source": "evt_51b…", "quote": "legal usually needs two weeks with these" }
 ← { "fact": {
       "id": "fct_77a…", "record": "rec_9f2…",
       "content": "Legal review at Acme usually takes two weeks.",
       "kind": "stated", "validFrom": "2026-10-29T12:00:00Z", "validTo": null,
       "writtenBy": { "type": "agent", "id": "…", "name": "Inbox agent" },
-      "sources": [ { "interaction": "int_51b…", "quote": "legal usually needs two weeks with these" } ] },
-    "noteInteraction": null }
+      "sources": [ { "event": "evt_51b…", "quote": "legal usually needs two weeks with these" } ] } }
 ```
 
-`validFrom` is the cited interaction's `occurred_at` (rule 2.6). Without
-`source`, `noteInteraction` is the ID of the `note` interaction created for
-the fact to cite, and `validFrom` is the write time. The note has channel
-`retainer`, the fact's text as its summary, and the record as its one
-`about` record, with no participants. The `retainer` channel is reserved for these
-notes: `log_interaction` rejects it, so retrieval can tell them apart. A `quote` needs a `source`. A retry with the
+`validFrom` is the cited event's `occurred_at` (rule 2.6). Without
+`source`, the fact rests on an internal note (1.3), `validFrom` is the
+write time, and its source is presented as
+`{ "event": null, "internal": true, "quote": null }`. A `quote` needs a `source`. A retry with the
 same idempotency key returns the same response.
 `GET /v1/records/:id/facts` returns `{ record, facts, nextCursor }` with facts
 in this shape, newest `validFrom` first, listing only live sources. It pages
@@ -1075,10 +1281,11 @@ with `limit` (default 100, at most 500) and `cursor`.
     "openTasks": [ { "id": "rec_c40…", "title": "Send SSO docs to Noa", "status": "todo", "dueDate": "2026-11-04" } ],
     "facts": [ { "id": "fct_1e2…", "content": "Needs SSO before agreeing to a pilot",
                  "validFrom": "2026-10-21T09:00:00Z", "writtenBy": { "type": "agent", … },
-                 "sources": [ "int_9d0…" ] } ],
-    "recentInteractions": [ { "id": "int_9d0…", "kind": "meeting", "occurredAt": "2026-10-21T09:00:00Z",
-                              "title": "Globex data-platform demo", "summary": "…", "via": "participant" } ],
-    "omitted": { "openTasks": 0, "facts": 4, "recentInteractions": 11 },
+                 "sources": [ "evt_9d0…" ] } ],
+    "recentEvents": [ { "id": "evt_9d0…", "type": "meeting", "occurredAt": "2026-10-21T09:00:00Z",
+                        "title": "Globex data-platform demo", "summary": "…",
+                        "via": { "kind": "participant" } } ],
+    "omitted": { "openTasks": 0, "facts": 4, "recentEvents": 11 },
     "tokenEstimate": 1380 }
 ```
 
@@ -1090,10 +1297,10 @@ A context pack is assembled by fixed rules (5):
 - The other sections fill in this order until the budget is spent: open
   tasks (tasks linked to the record through an active relation field whose
   status is not `done`, earliest due date first, undated last), current facts (not superseded or retracted,
-  newest `validFrom` first), then recent interactions the record took part in
-  or that are about it (newest first, each with `via: "participant"` or
-  `"about"`, without the notes `remember` created, whose text is already a
-  fact). Items
+  newest `validFrom` first; a fact resting only on an internal note is
+  marked `internal: true`), then recent events in the record's history
+  (attached directly or rolled up, newest first, each once with `via`, 1.3,
+  without internal notes, whose text is already a fact). Items
   are never cut mid-text; a section stops at the last whole item that fits.
 - `omitted` counts the items left out of each section, so the agent knows
   to read more with `search` or the REST routes.
@@ -1104,6 +1311,45 @@ A context pack is assembled by fixed rules (5):
   once the record's values fit, the pack's JSON is never longer than
   `tokenBudget × 4` characters. `tokenEstimate` is that length in tokens. No
   fixed row limit applies; the budget alone decides what is left out.
+
+#### Timeline
+
+`get_timeline` and `GET /v1/records/:id/timeline` show how a record got to
+where it is. They return `{ record, items, nextCursor }`, assembled from the
+source tables at read time:
+
+| Item           | What is included                                                                     | `at`                     |
+| -------------- | ------------------------------------------------------------------------------------ | ------------------------ |
+| `event`        | The record's event history: direct and rolled-up events, each once with `via` (1.3)  | The event's `occurredAt` |
+| `field_change` | Each `active` or `superseded` assertion for one of its active fields                 | `observedAt`             |
+| `fact`         | Its facts, current, superseded or ended; never retracted or resting on no live event | `validFrom`              |
+
+A `field_change` is a value someone asserted, not proof the record ever
+held it: `superseded` only means another assertion won later, or won
+already. It carries the assertion ID, `status`, `current` (whether it is the
+value the record holds now), the actor, confidence and the event it cites,
+and the asserted value, never a diff. For a set that is the whole asserted
+membership. A client wanting "added" or "removed" compares against the
+winning value at that time, which the API does not claim to know. Pending
+and rejected assertions stay in review and the assertion routes. Internal
+notes never appear as events; a fact resting on one says `internal: true`.
+
+Items are ordered by `at` descending, then kind (`event`, `field_change`,
+`fact`), then ID descending. Each kind is read by keyset from its own table,
+at most a page of each, and Postgres merges them, so equal times page
+exactly; the event branch is the deduplicated rollup query (1.3), so an
+event counts once before the limit. The opaque cursor holds the whole sort
+key and a digest of the record and filters, and is refused (`invalid_cursor`)
+for another record or other filters. Filters: `types`, `fields` (field
+names, matched by field identity, so a rename keeps a cursor valid),
+`eventTypes`, and `from` (inclusive) to `to` (exclusive). `fields` or
+`eventTypes` alone narrows the page to its kind; with `types`, each filter
+applies to its own kind and the others come back too.
+
+Pages reflect current visibility and relations, not a snapshot: a backdated
+event or a changed relation can change later pages. Exact intervals during
+which a value was the winner, and an audit stream of retractions, are not
+part of it.
 
 ---
 
@@ -1124,8 +1370,8 @@ external origin (for example `https://retainer.example`). CSRF checks compare
 the browser Origin to this configured value; forwarded headers are not trusted.
 The setting also controls the cookie's public host and Secure handling.
 
-Web read routes add paginated assertion history, record interactions,
-interaction claims, review totals/cursors, and optional winning provenance
+Web read routes add paginated assertion history, record events, event
+claims, review totals/cursors, and optional winning provenance
 and batched relation references. Object queries accept an optional `search`
 keyword string for full-text lookup within one object; workspace-wide search
 is `POST /v1/search` (5.1). All use the same runtime role and RLS as other
@@ -1138,7 +1384,7 @@ routes. They do not change the assertion-backed write rules.
   include `workspace_id` (or equivalent enforced checks), since independent
   UUID foreign keys do not prevent cross-workspace references. Validate
   field/object compatibility in addition to tenant membership.
-  `interaction_participants` and `fact_sources` carry `workspace_id`, and
+  `event_records`, `event_links` and `fact_sources` carry `workspace_id`, and
   tenant tables use composite foreign keys `(workspace_id, parent_id)`
   referencing a unique `(workspace_id, id)` on each parent.
 - API-key lookup happens before the workspace is known, so `api_keys` is
@@ -1229,6 +1475,10 @@ CSS 4 and shadcn-style UI primitives. Static files are served by Hono at
 `/app` when `RETAINER_WEB_DIR` is set; the Docker image includes the build.
 
 ## 10. Build order
+
+The order the first release was built in, kept as a record. Interactions
+were later replaced by events (1.3,
+[docs/schema-events-and-history-spec.md](docs/schema-events-and-history-spec.md)).
 
 1. Schema engine with base objects and templates, assertion-backed records
    CRUD, REST, API keys and the workspace/key CLI (including direct-write
@@ -1339,7 +1589,7 @@ model inside it, so every layer except 5 is deterministic.
 | 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                 | Vitest, no database                                                                                 | Every PR               |
 | 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget` | Vitest against real Postgres; each test file gets a fresh database                                  | Every PR               |
 | 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                           | The Hono app called in-process against a real database                                              | Every PR               |
-| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an interaction and cite it, review a conflict, search, get context         | The MCP client, directly and through the stdio bridge, and REST, against the app and real Postgres  | Every PR (from step 2) |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an event and cite it, review a conflict, search, get context               | The MCP client, directly and through the stdio bridge, and REST, against the app and real Postgres  | Every PR (from step 2) |
 | 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation         | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
 
 Browser tests use Playwright against the built app and real Postgres, with a

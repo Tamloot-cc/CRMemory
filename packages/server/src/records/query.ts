@@ -1,7 +1,9 @@
 import {
-  FILTER_OPERATORS,
+  EVENT_ATTACHMENTS,
   type FieldType,
   type FilterOperator,
+  filterOperatorsFor,
+  isCollectionRelation,
   type RecordPage,
   SORTABLE_TYPES,
 } from '@retainer/shared';
@@ -9,6 +11,7 @@ import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
+import { directAttachments } from '../memory/events.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import { relationReferences } from '../web/reads.js';
@@ -25,7 +28,6 @@ import { normalizeFieldValue } from './values.js';
 export type Filter = { and?: Filter[]; or?: Filter[]; not?: Filter } & Record<string, unknown>;
 
 type Operator = FilterOperator;
-const OPERATORS_BY_TYPE = FILTER_OPERATORS;
 const SORTABLE: ReadonlySet<FieldType> = new Set(SORTABLE_TYPES);
 
 export const queryInputSchema = z.strictObject({
@@ -48,6 +50,16 @@ export const queryInputSchema = z.strictObject({
   limit: z.number().int().min(1).max(200).default(50),
   cursor: z.string().optional(),
   include: z.array(z.enum(['relationReferences'])).optional(),
+  linked: z
+    .strictObject({
+      record: z.uuid(),
+      link: z.enum(EVENT_ATTACHMENTS).optional(),
+    })
+    .optional()
+    .describe(
+      'Event types only: events directly attached to this record, as a participant, about it, ' +
+        "or through one of the event's own relation fields (link: field).",
+    ),
 });
 export type QueryInput = z.infer<typeof queryInputSchema>;
 
@@ -57,6 +69,39 @@ export const BUILT_IN_COLUMNS: Record<string, 'created_at' | 'updated_at' | 'id'
   createdAt: 'created_at',
   updatedAt: 'updated_at',
 };
+
+/** An event record's built-in columns (6.1), filterable and sortable like fields. */
+const EVENT_COLUMN_NAMES: Record<string, 'occurred_at' | 'channel' | 'external_id'> = {
+  occurredAt: 'occurred_at',
+  channel: 'channel',
+  externalId: 'external_id',
+};
+
+type BuiltIn = { expr: Fragment; type: 'uuid' | 'timestamptz' | 'text' };
+
+/** A built-in column of `object` by API name, as a SQL expression over `records r`. */
+function builtInColumn(tx: Tx, object: CompiledObject, name: string): BuiltIn | undefined {
+  const record = BUILT_IN_COLUMNS[name];
+  if (record) {
+    return { expr: tx`${tx(`r.${record}`)}`, type: record === 'id' ? 'uuid' : 'timestamptz' };
+  }
+  const event = object.isEvent ? EVENT_COLUMN_NAMES[name] : undefined;
+  if (event) {
+    return {
+      expr: tx`(select ${tx(`e.${event}`)} from event_records e where e.record_id = r.id)`,
+      type: event === 'occurred_at' ? 'timestamptz' : 'text',
+    };
+  }
+  return undefined;
+}
+
+/** Built-in column names an object's filters and sorts take. */
+export function builtInNames(object: CompiledObject): string[] {
+  return [
+    ...Object.keys(BUILT_IN_COLUMNS),
+    ...(object.isEvent ? Object.keys(EVENT_COLUMN_NAMES) : []),
+  ];
+}
 
 const invalidFilter = (message: string, details?: Record<string, unknown>) =>
   new AppError(422, 'invalid_filter', message, details);
@@ -105,7 +150,7 @@ function compileCondition(
   name: string,
   condition: unknown,
 ): Fragment {
-  const builtIn = BUILT_IN_COLUMNS[name];
+  const builtIn = builtInColumn(tx, object, name);
   const conditions =
     condition !== null && typeof condition === 'object' && !Array.isArray(condition)
       ? (condition as Record<string, unknown>)
@@ -113,23 +158,20 @@ function compileCondition(
   const parts: Fragment[] = [];
 
   if (builtIn) {
+    const ordered = builtIn.type !== 'text';
+    const allowed = ordered ? ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'] : ['eq', 'neq', 'in'];
     for (const [op, value] of Object.entries(conditions)) {
-      const column = tx(`r.${builtIn}`);
-      const cast =
-        builtIn === 'id' ? tx`${value as string}::uuid` : tx`${value as string}::timestamptz`;
+      const column = builtIn.expr;
+      const type = tx.unsafe(builtIn.type);
       const sqlOp = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
       if (op === 'in' && Array.isArray(value)) {
-        parts.push(
-          builtIn === 'id'
-            ? tx`${column} = any(${value as string[]}::uuid[])`
-            : tx`${column} = any(${value as string[]}::timestamptz[])`,
-        );
-      } else if (sqlOp) {
-        parts.push(tx`${column} ${tx.unsafe(sqlOp)} ${cast}`);
+        parts.push(tx`${column} = any(${value as string[]}::${type}[])`);
+      } else if (sqlOp && allowed.includes(op) && typeof value === 'string') {
+        parts.push(tx`${column} ${tx.unsafe(sqlOp)} ${value}::${type}`);
       } else {
-        throw invalidFilter(`${name} does not support "${op}"`, {
+        throw invalidFilter(`${name} does not support "${op}" with that value`, {
           field: name,
-          allowed: ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'],
+          allowed,
         });
       }
     }
@@ -149,7 +191,7 @@ function compileCondition(
       allowed: filterableNames(object),
     });
   }
-  const allowed = [...OPERATORS_BY_TYPE[field.type], 'isNull'];
+  const allowed = filterOperatorsFor(field);
 
   for (const [op, raw] of Object.entries(conditions)) {
     if (!(allowed as string[]).includes(op)) {
@@ -165,7 +207,7 @@ function compileCondition(
 
 function filterableNames(object: CompiledObject): string[] {
   return [
-    ...Object.keys(BUILT_IN_COLUMNS),
+    ...builtInNames(object),
     ...object.activeFields.filter((f) => f.isFilterable).map((f) => f.name),
   ];
 }
@@ -195,6 +237,24 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
     if (typeof raw !== 'boolean') throw invalidFilter(`${field.name}.isNull takes true or false`);
     const empty = emptyValue(tx, field);
     return raw ? empty : tx`not ${empty}`;
+  }
+
+  if (isCollectionRelation(field)) {
+    if (op === 'isEmpty') {
+      if (typeof raw !== 'boolean')
+        throw invalidFilter(`${field.name}.isEmpty takes true or false`);
+      const empty = emptyValue(tx, field);
+      return raw ? empty : tx`not ${empty}`;
+    }
+    if (!Array.isArray(raw) || raw.length === 0 || raw.some((id) => typeof id !== 'string')) {
+      throw invalidFilter(`${field.name}.${op} takes a non-empty array of record IDs`);
+    }
+    const ids = [...new Set(raw as string[])];
+    if (op === 'containsAny') {
+      return tx`exists (select 1 ${liveLinks(tx, field)} and l.target_record_id = any(${ids}::uuid[]))`;
+    }
+    return tx`(select count(distinct l.target_record_id) ${liveLinks(tx, field)}
+      and l.target_record_id = any(${ids}::uuid[])) = ${ids.length}`;
   }
 
   if (field.type === 'relation') {
@@ -252,7 +312,9 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
   if (op === 'neq' && field.type !== 'date_time') {
     return tx`not (r.data @> ${tx.json(jsonValue({ [key]: value }))})`;
   }
-  const sqlOp = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
+  const sqlOp = (
+    { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' } as Record<string, string>
+  )[op];
   if (!sqlOp) throw invalidFilter(`unsupported operator ${op}`);
   return tx`${typed(tx, field)} ${tx.unsafe(sqlOp)} ${castParam(tx, field, value)}`;
 }
@@ -296,9 +358,9 @@ export function compileSort(tx: Tx, object: CompiledObject, sort: QueryInput['so
   const parts: Fragment[] = [];
   for (const { field: name, direction } of sort ?? []) {
     const dir = tx.unsafe(direction === 'desc' ? 'desc' : 'asc');
-    const builtIn = BUILT_IN_COLUMNS[name];
+    const builtIn = builtInColumn(tx, object, name);
     if (builtIn) {
-      parts.push(tx`${tx(`r.${builtIn}`)} ${dir}`);
+      parts.push(tx`${builtIn.expr} ${dir} nulls last`);
       continue;
     }
     const field = object.fieldsByName.get(name);
@@ -306,7 +368,7 @@ export function compileSort(tx: Tx, object: CompiledObject, sort: QueryInput['so
       throw invalidFilter(`cannot sort by "${name}"`, {
         field: name,
         allowed: [
-          ...Object.keys(BUILT_IN_COLUMNS),
+          ...builtInNames(object),
           ...object.activeFields
             .filter((f) => f.isFilterable && SORTABLE.has(f.type))
             .map((f) => f.name),
@@ -340,13 +402,45 @@ function decodeCursor(cursor: string | undefined): number {
 export function matchingRecords(
   tx: Tx,
   workspaceId: string,
+  schema: CompiledSchema,
   object: CompiledObject,
-  input: Pick<QueryInput, 'filter' | 'search'>,
+  input: Pick<QueryInput, 'filter' | 'search' | 'linked'>,
 ): Fragment {
   const where = input.filter ? compileFilter(tx, object, input.filter) : tx`true`;
   return tx`r.workspace_id = ${workspaceId} and r.object_type_id = ${object.id}
     and r.deleted_at is null and ${where}
-    ${input.search ? tx`and r.search @@ ${plainPrefixQuery(tx, input.search)}` : tx``}`;
+    ${input.search ? tx`and r.search @@ ${plainPrefixQuery(tx, input.search)}` : tx``}
+    ${input.linked ? tx`and ${linkedTo(tx, workspaceId, schema, object, input.linked)}` : tx``}`;
+}
+
+/**
+ * Events directly attached to a record (7.1): a merged record ID counts as
+ * its survivor. A record that is deleted or of a hidden object links
+ * nothing, as every read of it does. Only event types take `linked`.
+ */
+function linkedTo(
+  tx: Tx,
+  workspaceId: string,
+  schema: CompiledSchema,
+  object: CompiledObject,
+  linked: NonNullable<QueryInput['linked']>,
+): Fragment {
+  if (!object.isEvent) {
+    throw invalidFilter(`linked applies to event types; ${object.name} is an entity`, {
+      field: 'linked',
+    });
+  }
+  const record = tx`(select s.id from records m
+    join records s on s.id = coalesce(m.merged_into_id, m.id) and s.deleted_at is null
+      and s.object_type_id = any(${schema.visibleObjectIds}::uuid[])
+    where m.id = ${linked.record} and m.workspace_id = ${workspaceId})`;
+  return tx`r.id in (select d.event_id from ${directAttachments(
+    tx,
+    schema,
+    workspaceId,
+    record,
+    linked.link,
+  )} d)`;
 }
 
 /** `from … where …` over the live targets record `r` links to through `field`. */
@@ -374,7 +468,7 @@ export async function queryRecords(
   const columns = RECORD_COLUMNS.map((c) => `r.${c}`);
   const rows = await tx<RecordRow[]>`
     select ${tx.unsafe(columns.join(', '))} from records r
-    where ${matchingRecords(tx, workspaceId, object, input)}
+    where ${matchingRecords(tx, workspaceId, schema, object, input)}
     order by ${compileSort(tx, object, input.sort)}
     limit ${input.limit + 1} offset ${offset}`;
   const page = rows.slice(0, input.limit);

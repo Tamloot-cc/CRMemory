@@ -8,7 +8,7 @@ import type {
   SavedView,
   UpdateViewInput,
 } from '@retainer/shared';
-import { aggregateOps } from '@retainer/shared';
+import { aggregateOps, filterOperatorsFor } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
 import {
@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
-import { filterValue, operatorsFor, PICKERS } from '../fields/common.js';
+import { filterValue, pickerFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import {
   Button,
@@ -139,7 +139,7 @@ export function ObjectPage() {
 }
 
 function ObjectList({ name, object }: { name: string; object: ObjectView }) {
-  const { session } = useWorkspace();
+  const { session, schema } = useWorkspace();
   const { search, setSearch } = useView();
   const workspace = session.workspace.id;
   const [error, setError] = useState(''),
@@ -147,6 +147,8 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
     [bulk, setBulk] = useState<'merge' | 'delete' | null>(null),
     [viewDialog, setViewDialog] = useState<'new' | 'edit' | 'delete' | null>(null);
   const writable = canMutate(session);
+  // Events are created only by logging them, and cannot be merged.
+  const isEvent = object.class === 'event';
   const [localPrefs, setLocalPrefs] = useState(() =>
     loadColumnPrefs(() => localStorage, workspace, name),
   );
@@ -280,7 +282,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               <EditableCell
                 key={f.name}
                 label={`${f.label} of ${label}`}
-                wide={!PICKERS[f.type]}
+                wide={!pickerFor(f)}
                 editor={(close) => (
                   <InlineEditor
                     record={{ ...r, relationReferences: references }}
@@ -395,7 +397,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               onReset={() => savePrefs({ order: defaultColumnOrder(object), widths: {} })}
             />
           ) : null}
-          {writable ? (
+          {writable && !isEvent ? (
             <Button variant="primary" size="small" onClick={() => setCreating(true)}>
               <Plus size={14} />
               New {object.labelSingular.toLowerCase()}
@@ -413,7 +415,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           }
         >
           <Muted>{selectedIds.length} selected</Muted>
-          {selectedIds.length === 2 ? (
+          {selectedIds.length === 2 && !isEvent ? (
             <Button size="small" onClick={() => setBulk('merge')}>
               <Combine size={14} />
               Merge…
@@ -473,6 +475,8 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               {...describeClause(
                 c,
                 object.fields.find((f) => f.name === c.field),
+                references,
+                schema.objects,
               )}
               onRemove={() => setFilter({ clauses: clauses.filter((_, j) => j !== i), custom })}
             />
@@ -578,7 +582,9 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
             description={
               effective.filter
                 ? 'No records match these filters.'
-                : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
+                : isEvent
+                  ? `Ask your agent to log ${object.labelPlural.toLowerCase()}, and they will show up here.`
+                  : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
             }
           />
         </Inset>
@@ -619,7 +625,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           {nextCursor && !totals.data ? ' · more available' : ''}
         </GridFooter>
       ) : null}
-      {creating ? (
+      {creating && !isEvent ? (
         <CreateRecordDialog
           object={object}
           onClose={() => setCreating(false)}
@@ -629,7 +635,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           }}
         />
       ) : null}
-      {bulk === 'merge' && selectedIds.length === 2 ? (
+      {bulk === 'merge' && selectedIds.length === 2 && !isEvent ? (
         <MergeDialog ids={selectedIds as [string, string]} onClose={() => setBulk(null)} />
       ) : null}
       {bulk === 'delete' && selectedIds.length ? (
@@ -784,6 +790,9 @@ function SortMenu({
   const [direction, setDirection] = useState<'asc' | 'desc'>('asc');
   const options = [
     ...object.fields.filter(isSortable).map(fieldOption),
+    ...(object.eventColumns?.includes('occurredAt')
+      ? [{ value: 'occurredAt', label: 'Occurred' }]
+      : []),
     ...BUILT_IN_SORTS.map((s) => ({ value: s.name, label: s.label })),
   ];
   const current = sort ? (options.find((o) => o.value === sort.field)?.label ?? sort.field) : '';
@@ -836,6 +845,14 @@ function SortMenu({
   );
 }
 
+/** What a filter's value starts as when its operator is chosen. */
+const initialFilterValue = (operator: string): unknown =>
+  operator === 'isNull' || operator === 'isEmpty'
+    ? true
+    : operator === 'containsAny' || operator === 'containsAll'
+      ? []
+      : '';
+
 /** First the field to filter on, from a searchable list; then its condition and value. */
 function FilterMenu({
   object,
@@ -854,8 +871,9 @@ function FilterMenu({
   function choose(name: string) {
     const f = object.fields.find((f) => f.name === name);
     setField(name);
-    setOperator(f ? (operatorsFor(f)[0] ?? 'isNull') : 'eq');
-    setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : '');
+    const first = f ? (filterOperatorsFor(f)[0] ?? 'isNull') : 'eq';
+    setOperator(first);
+    setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : initialFilterValue(first));
   }
   function apply() {
     if (!selected) return;
@@ -894,13 +912,13 @@ function FilterMenu({
                 label="Filter operator"
                 fill
                 value={operator}
-                options={operatorsFor(selected).map((o) => ({
+                options={filterOperatorsFor(selected).map((o) => ({
                   value: o,
                   label: operatorLabel(o),
                 }))}
                 onChange={(next) => {
                   setOperator(next);
-                  setValue(next === 'isNull' ? true : '');
+                  setValue(initialFilterValue(next));
                 }}
               />
               <FilterControl

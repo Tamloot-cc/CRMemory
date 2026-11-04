@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
-import { logInteractionFor, remember } from '../../src/memory/service.js';
+import { logEventFor, remember } from '../../src/memory/service.js';
 import { rebuildSearchText } from '../../src/records/rebuild-search.js';
 import { type Caller, createRecord, mergeRecord } from '../../src/records/service.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
@@ -14,20 +14,24 @@ let app: Sql;
 const AGENT: Actor = { type: 'agent', id: 'inbox' };
 const USER: Actor = { type: 'user', id: 'maya' };
 
-/** The data statements of migration 0010, which rewrites every stored vector. */
+/**
+ * The data statements of migration 0010, which rewrites every stored vector.
+ * Its `interactions` statement is left out: migration 0013 dropped that
+ * table, and events are records, rebuilt with the rest.
+ */
 const migration = readFileSync(
   new URL('../../drizzle/0010_search_fold.sql', import.meta.url),
   'utf8',
 )
   .split('--> statement-breakpoint')
-  .filter((statement) => !statement.includes('CREATE FUNCTION'));
+  .filter((statement) => !statement.includes('CREATE FUNCTION'))
+  .filter((statement) => !statement.includes('"interactions"'));
 
 /** Every stored search vector, by table and ID. */
 async function vectors(): Promise<Record<string, string | null>> {
   const rows = await db.owner<{ key: string; search: string | null }[]>`
     select 'records:' || id as key, search::text from records
-    union all select 'facts:' || id, search::text from facts
-    union all select 'interactions:' || id, search::text from interactions`;
+    union all select 'facts:' || id, search::text from facts`;
   return Object.fromEntries(rows.map((r) => [r.key, r.search]));
 }
 
@@ -63,17 +67,18 @@ beforeAll(async () => {
       company: acme.id,
     });
     const twin = await createRecord(app, as(AGENT), 'person', { name: 'José Muñoz' });
-    const call = await logInteractionFor(app, as(AGENT), {
-      kind: 'call',
+    const call = await logEventFor(app, as(AGENT), {
+      type: 'call',
       channel: 'zoom',
       occurredAt: '2026-10-01T10:00:00Z',
       title: 'Café kickoff',
       summary: 'Pricing for the Zürich office.',
+      fields: {},
       participants: [{ recordId: jose.id }],
       about: [],
     });
     await remember(app, as(AGENT), jose.id, { text: 'Prefers crème brûlée', source: call.id });
-    // An uncited fact also logs a note interaction with no title.
+    // An uncited fact also logs an internal note event with no title.
     await remember(app, as(AGENT), jose.id, { text: 'Lives in Malmö' });
     mergedIds.push((await mergeRecord(app, as(USER), jose.id, { recordId: twin.id })).mergedId);
   }
@@ -85,14 +90,15 @@ describe('rebuilding search text after migration 0010 (5.1)', () => {
     for (const id of mergedIds) expect(written[`records:${id}`]).toBeNull();
 
     await runMigration();
-    expect(await nothingStale()).toBe(4);
-    // Facts and interactions are already rewritten by the migration.
+    expect(await nothingStale()).toBe(8);
+    // Facts are already rewritten by the migration.
     expect(Object.entries(await vectors()).filter(([key]) => !key.startsWith('records:'))).toEqual(
       Object.entries(written).filter(([key]) => !key.startsWith('records:')),
     );
 
-    // Two records per workspace in batches of two: a full batch, then an empty one.
-    expect(await rebuildSearchText(db.connect({ max: 1 }), { batch: 2 })).toBe(4);
+    // Four records per workspace (a company, a person, the call and the
+    // internal note) in batches of two: two full batches, then an empty one.
+    expect(await rebuildSearchText(db.connect({ max: 1 }), { batch: 2 })).toBe(8);
     expect(await vectors()).toEqual(written);
     expect(await rebuildSearchText(db.connect({ max: 1 }))).toBe(0);
   });
@@ -112,7 +118,7 @@ describe('rebuilding search text after migration 0010 (5.1)', () => {
     const runs = await Promise.all(
       Array.from({ length: 3 }, () => rebuildSearchText(db.connect({ max: 1 }), { batch: 1 })),
     );
-    expect(runs.reduce((sum, n) => sum + n, 0)).toBe(4);
+    expect(runs.reduce((sum, n) => sum + n, 0)).toBe(8);
     expect(await nothingStale()).toBe(0);
     expect(await vectors()).toEqual(written);
   });

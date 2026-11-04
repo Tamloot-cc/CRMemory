@@ -2,6 +2,7 @@ import type { GetPromptResult } from '@modelcontextprotocol/client';
 import { FIELD_TYPES } from '@retainer/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GUIDE_NAMES } from '../../src/mcp/guides.js';
+import { schemaOperationSchema } from '../../src/schema-engine/operations.js';
 import { type McpTestClient, startTestApp, type TestApp } from '../helpers/app.js';
 import { useTestDatabase } from '../helpers/db.js';
 
@@ -24,10 +25,10 @@ const TOOLS = [
   'get_context',
   'get_guide',
   'get_record',
+  'get_timeline',
   'list_templates',
-  'log_interaction',
+  'log_event',
   'propose_schema_change',
-  'query_interactions',
   'query_records',
   'remember',
   'search',
@@ -152,6 +153,9 @@ describe('connecting', () => {
   it('lists the tools, none of which takes a workspace', async () => {
     const { tools } = await agent.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual(TOOLS);
+    // Events replaced interactions (9): log_event logs them, query_records lists them.
+    expect(tools.map((tool) => tool.name)).not.toContain('log_interaction');
+    expect(tools.map((tool) => tool.name)).not.toContain('query_interactions');
     for (const tool of tools) {
       expect(tool.description?.length).toBeGreaterThan(40);
       expect(Object.keys(tool.inputSchema.properties ?? {})).not.toContain('workspace');
@@ -163,17 +167,18 @@ describe('connecting', () => {
     expect(agent.getInstructions()).toContain('describe_schema');
   });
 
-  it('spells out the memory workflow: log the interaction first, then cite it (4.1)', async () => {
+  it('spells out the memory workflow: log the event first, then cite it (4.1)', async () => {
     const instructions = agent.getInstructions() ?? '';
-    const log = instructions.indexOf('1. log_interaction');
+    const log = instructions.indexOf('1. log_event');
     expect(log).toBeGreaterThan(-1);
     expect(instructions.indexOf('2. upsert_record with source')).toBeGreaterThan(log);
     expect(instructions.indexOf('3. remember')).toBeGreaterThan(log);
     const byName = await toolsByName(agent);
     expect(byName.get('upsert_record')?.inputSchema.properties).toHaveProperty('source');
-    expect(byName.get('upsert_record')?.description).toContain('log_interaction');
-    expect(byName.get('remember')?.description).toContain('log_interaction');
-    expect(byName.get('log_interaction')?.description).toContain('source');
+    expect(byName.get('upsert_record')?.description).toContain('log_event');
+    expect(byName.get('remember')?.description).toContain('log_event');
+    expect(byName.get('log_event')?.description).toContain('source');
+    expect(byName.get('query_records')?.inputSchema.properties).toHaveProperty('linked');
   });
 });
 
@@ -197,13 +202,24 @@ describe('the discover_schema guide', () => {
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 
-  it.each(GUIDE_NAMES)('%s names only tools, field types and guides that exist', async (name) => {
-    const res = await agent.call<string>('get_guide', { name });
-    const known = new Set<string>([...TOOLS, ...FIELD_TYPES, ...GUIDE_NAMES]);
-    const named = new Set(res.body.match(/\b[a-z]+(?:_[a-z]+)+\b/g));
-    expect(named).toContain('log_interaction');
-    expect([...named].filter((word) => !known.has(word))).toEqual([]);
-  });
+  it.each(GUIDE_NAMES)(
+    '%s names only tools, operations, field types and guides that exist',
+    async (name) => {
+      const res = await agent.call<string>('get_guide', { name });
+      const operations = schemaOperationSchema.options.map((o) => o.shape.op.value);
+      const cardinalities = ['many_to_one', 'many_to_many', 'one_to_many'];
+      const known = new Set<string>([
+        ...TOOLS,
+        ...operations,
+        ...FIELD_TYPES,
+        ...GUIDE_NAMES,
+        ...cardinalities,
+      ]);
+      const named = new Set(res.body.match(/\b[a-z]+(?:_[a-z]+)+\b/g));
+      expect(named).toContain('log_event');
+      expect([...named].filter((word) => !known.has(word))).toEqual([]);
+    },
+  );
 
   it('rejects an unknown guide and lists the known ones', async () => {
     const res = await agent.call('get_guide', { name: 'import_data' });
@@ -247,7 +263,7 @@ describe('the schema_design guide', () => {
     const byName = await toolsByName(agent);
     const propose = byName.get('propose_schema_change')?.description ?? '';
     expect(propose).toContain('get_guide("schema_design")');
-    expect(propose).toContain('log_interaction');
+    expect(propose).toContain('log_event');
     expect(byName.get('list_templates')?.description).toContain('initialized');
   });
 
@@ -274,8 +290,9 @@ describe('describe_schema, list_templates and apply_template', () => {
       initialized: false,
       templates: [],
     });
+    // Every workspace starts with the base objects and event types (6.1).
     expect(before.body.objects.map((o: { nameSingular: string }) => o.nameSingular).sort()).toEqual(
-      ['company', 'person', 'task'],
+      ['call', 'company', 'email', 'meeting', 'message', 'note', 'person', 'task'],
     );
 
     const list = await fresh.call('list_templates');
@@ -320,11 +337,17 @@ describe('describe_schema, list_templates and apply_template', () => {
     expect(mcp.body).toEqual(rest.body);
   });
 
-  it('lists interactions and facts as built-ins, apart from the objects', async () => {
+  it('lists event types as objects of class "event", and facts as the one built-in', async () => {
     const res = await agent.call('describe_schema');
-    expect(res.body.builtIns.map((b: { name: string }) => b.name)).toEqual(['interaction', 'fact']);
-    expect(res.body.builtIns[0].writeWith).toContain('log_interaction');
-    expect(res.body.objects.map((o: { name: string }) => o.name)).not.toContain('interaction');
+    expect(res.body.builtIns.map((b: { name: string }) => b.name)).toEqual(['fact']);
+    expect(res.body.builtIns[0].writeWith).toContain('remember');
+    const objects = res.body.objects as { nameSingular: string; class: string }[];
+    const events = objects.filter((o) => o.class === 'event').map((o) => o.nameSingular);
+    expect(events.sort()).toEqual(['call', 'email', 'meeting', 'message', 'note']);
+    expect(objects.find((o) => o.nameSingular === 'person')?.class).toBe('entity');
+    // Neither interactions nor the hidden internal-note type are listed.
+    expect(objects.map((o) => o.nameSingular)).not.toContain('interaction');
+    expect(JSON.stringify(res.body)).not.toMatch(/internal.?note/i);
   });
 });
 
@@ -640,17 +663,17 @@ describe('scopes', () => {
   });
 });
 
-describe('the memory workflow (4.1): log_interaction, then cite it', () => {
+describe('the memory workflow (4.1): log_event, then cite it', () => {
   let external = 0;
   const logCall = async (args: Record<string, unknown> = {}, client = agent) =>
-    client.call('log_interaction', {
-      kind: 'call',
+    client.call('log_event', {
+      type: 'call',
       channel: 'zoom',
       occurredAt: '2026-10-29T14:00:00+02:00',
       ...args,
     });
 
-  it('logs an interaction and returns matched and unmatched participants (6.2)', async () => {
+  it('logs an event and returns matched and unmatched participants (6.2)', async () => {
     const dana = await createPerson();
     const danaEmail = dana.record.fields.emails as { primary: string };
     const res = await logCall({
@@ -666,6 +689,7 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
     expect(res.isError).toBe(false);
     expect(res.body).toEqual({
       id: expect.any(String),
+      type: 'call',
       created: true,
       participants: {
         matched: [
@@ -695,7 +719,7 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
     });
   });
 
-  it('links the records an interaction is about, and finds it with query_interactions', async () => {
+  it('links the records an event is about, and finds it with query_records and linked (7.1)', async () => {
     const dana = await createPerson();
     const acme = await agent.call('upsert_record', {
       object: 'company',
@@ -715,21 +739,36 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
       added: { about: [acme.body.id] },
     });
 
-    const found = await agent.call('query_interactions', {
-      filter: { record: acme.body.id, link: 'about' },
-      countBy: 'kind',
+    const found = await agent.call('query_records', {
+      object: 'call',
+      linked: { record: acme.body.id, link: 'about' },
     });
     expect(found.isError).toBe(false);
-    expect(found.body).toMatchObject({ total: 1, counts: { call: 1 }, nextCursor: null });
-    expect(found.body.items.map((i: { id: string }) => i.id)).toEqual([first.body.id]);
+    expect(found.body).toMatchObject({ nextCursor: null });
+    expect(found.body.records.map((r: { id: string }) => r.id)).toEqual([first.body.id]);
+    expect(found.body.records[0]).toMatchObject({
+      object: 'call',
+      event: { channel: 'zoom', externalId, about: [acme.body.id] },
+    });
+    // Dana is a participant, not an about record.
+    const asParticipant = await agent.call('query_records', {
+      object: 'call',
+      linked: { record: dana.id, link: 'participant' },
+    });
+    expect(asParticipant.body.records.map((r: { id: string }) => r.id)).toEqual([first.body.id]);
+    const notAbout = await agent.call('query_records', {
+      object: 'call',
+      linked: { record: dana.id, link: 'about' },
+    });
+    expect(notAbout.body.records).toEqual([]);
 
     const context = await agent.call('get_context', { record: acme.body.id });
-    expect(context.body.recentInteractions).toEqual([
-      expect.objectContaining({ id: first.body.id, via: 'about' }),
+    expect(context.body.recentEvents).toEqual([
+      expect.objectContaining({ id: first.body.id, type: 'call', via: { kind: 'about' } }),
     ]);
   });
 
-  it('returns one interaction for concurrent calls with the same externalId', async () => {
+  it('returns one event for concurrent calls with the same externalId', async () => {
     const args = { externalId: `zoom-${++external}`, title: 'Concurrent call' };
     const results = await Promise.all([
       logCall(args, agent),
@@ -743,14 +782,14 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
 
     const conflict = await logCall({ ...args, title: 'Edited title' });
     expect(conflict.isError).toBe(true);
-    expect(conflict.body.error).toMatchObject({ code: 'interaction_conflict' });
+    expect(conflict.body.error).toMatchObject({ code: 'event_conflict' });
   });
 
-  it('cites the interaction in upsert_record, so an older email loses to a newer call', async () => {
+  it('cites the event in upsert_record, so an older email loses to a newer call', async () => {
     const dana = await createPerson();
     const call = await logCall({ occurredAt: '2026-10-28T10:00:00Z' });
     const mail = await logCall({
-      kind: 'email',
+      type: 'email',
       channel: 'gmail',
       occurredAt: '2026-09-01T10:00:00Z',
     });
@@ -785,10 +824,10 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
     });
     expect(unknown.isError).toBe(true);
     expect(unknown.body.error.code).toBe('invalid_source');
-    expect(unknown.body.error.message).toContain('log_interaction');
+    expect(unknown.body.error.message).toContain('log_event');
   });
 
-  it('remembers a fact citing the interaction (6.2)', async () => {
+  it('remembers a fact citing the event (6.2)', async () => {
     const dana = await createPerson();
     const call = await logCall();
     const res = await agent.call('remember', {
@@ -807,16 +846,15 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
         validFrom: '2026-10-29T12:00:00.000Z',
         validTo: null,
         writtenBy: { type: 'agent', id: 'inbox', name: 'Inbox agent' },
-        sources: [{ interaction: call.body.id, quote: 'legal usually needs two weeks with these' }],
+        sources: [{ event: call.body.id, quote: 'legal usually needs two weeks with these' }],
       },
-      noteInteraction: null,
     });
 
+    // Without a source the fact rests on an internal note, which has no
+    // readable ID (6.4).
     const note = await agent.call('remember', { record: dana.id, text: 'Prefers WhatsApp.' });
-    expect(note.body.noteInteraction).toEqual(expect.any(String));
-    expect(note.body.fact.sources).toEqual([
-      { interaction: note.body.noteInteraction, quote: null },
-    ]);
+    expect(Object.keys(note.body)).toEqual(['fact']);
+    expect(note.body.fact.sources).toEqual([{ event: null, internal: true, quote: null }]);
   });
 
   it('replays concurrent remember calls with the same idempotency key', async () => {
@@ -829,7 +867,11 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
     ]);
     expect(results.every((r) => !r.isError)).toBe(true);
     expect(new Set(results.map((r) => r.body.fact.id)).size).toBe(1);
-    expect(new Set(results.map((r) => r.body.noteInteraction)).size).toBe(1);
+    for (const result of results) expect(result.body).toEqual(results[0]?.body);
+    const pack = await agent.call('get_context', { record: dana.id });
+    expect(pack.body.facts).toEqual([
+      expect.objectContaining({ content: 'Budget approved for Q1.', internal: true }),
+    ]);
   });
 
   it('needs the write scope to log or remember', async () => {
@@ -855,12 +897,107 @@ describe('the memory workflow (4.1): log_interaction, then cite it', () => {
   });
 });
 
+describe('events are records (6.2, 7.1)', () => {
+  const logMeeting = (args: Record<string, unknown>) =>
+    agent.call('log_event', { type: 'meeting', channel: 'calendar', ...args });
+
+  it('lists the events linked to a record with query_records, by built-in column', async () => {
+    const dana = await createPerson();
+    const ids: string[] = [];
+    for (const [day, channel] of [
+      ['01', 'calendar'],
+      ['03', 'calendar'],
+      ['02', 'teams'],
+    ] as const) {
+      const res = await logMeeting({
+        channel,
+        occurredAt: `2026-10-${day}T09:00:00Z`,
+        title: `Sync ${day}`,
+        participants: [{ recordId: dana.id }],
+      });
+      expect(res.isError).toBe(false);
+      ids.push(res.body.id);
+    }
+    await logMeeting({ occurredAt: '2026-10-04T09:00:00Z', title: 'Without Dana' });
+
+    const newest = await agent.call('query_records', {
+      object: 'meeting',
+      linked: { record: dana.id },
+      sort: [{ field: 'occurredAt', direction: 'desc' }],
+    });
+    expect(newest.isError).toBe(false);
+    expect(newest.body.records.map((r: { id: string }) => r.id)).toEqual([ids[1], ids[2], ids[0]]);
+    const onCalendar = await agent.call('query_records', {
+      object: 'meeting',
+      linked: { record: dana.id, link: 'participant' },
+      filter: { channel: 'calendar', occurredAt: { gte: '2026-10-02T00:00:00Z' } },
+    });
+    expect(onCalendar.body.records.map((r: { id: string }) => r.id)).toEqual([ids[1]]);
+
+    // linked applies to event types only.
+    const entity = await agent.call('query_records', {
+      object: 'company',
+      linked: { record: dana.id },
+    });
+    expect(entity.isError).toBe(true);
+    expect(entity.body.error.details).toMatchObject({ field: 'linked' });
+  });
+
+  it('refuses to create an event with upsert_record, but edits one that exists', async () => {
+    const created = await agent.call('upsert_record', {
+      object: 'meeting',
+      values: { title: 'Made up' },
+    });
+    expect(created.isError).toBe(true);
+    expect(created.body.error).toMatchObject({
+      code: 'use_log_event',
+      details: { object: 'meeting' },
+    });
+    expect(created.body.error.message).toContain('log_event');
+
+    const logged = await logMeeting({
+      occurredAt: '2026-10-05T09:00:00Z',
+      externalId: 'mcp-edit-1',
+      title: 'Kickoff',
+    });
+    const edited = await agent.call('upsert_record', {
+      object: 'meeting',
+      id: logged.body.id,
+      values: { title: 'Kickoff with Acme' },
+    });
+    expect(edited.isError).toBe(false);
+    expect(edited.body).toMatchObject({ id: logged.body.id, created: false });
+    expect(edited.body.record.event).toMatchObject({ title: 'Kickoff with Acme' });
+    // Retries compare with what was first logged, so the edit does not break them.
+    const retry = await logMeeting({
+      occurredAt: '2026-10-05T09:00:00Z',
+      externalId: 'mcp-edit-1',
+      title: 'Kickoff',
+    });
+    expect(retry.body).toMatchObject({ id: logged.body.id, created: false });
+  });
+
+  it('refuses an unknown or entity type, and the reserved channel', async () => {
+    const base = { channel: 'zoom', occurredAt: '2026-10-05T09:00:00Z' };
+    const entity = await agent.call('log_event', { ...base, type: 'person' });
+    expect(entity.body.error).toMatchObject({ code: 'not_an_event_type' });
+    expect(entity.body.error.details.eventTypes).toEqual(
+      expect.arrayContaining(['meeting', 'call', 'email', 'message', 'note']),
+    );
+    const unknown = await agent.call('log_event', { ...base, type: 'interaction' });
+    expect(unknown.body.error.code).toBe('not_found');
+    const reserved = await agent.call('log_event', { ...base, type: 'note', channel: 'retainer' });
+    expect(reserved.isError).toBe(true);
+    expect(JSON.stringify(reserved.body)).toContain('reserved');
+  });
+});
+
 describe('finding and reading a record (5): search, then get_context', () => {
-  it('finds a misspelled name, then reads its values, facts and interactions', async () => {
+  it('finds a misspelled name, then reads its values, facts and events', async () => {
     const dana = await createPerson({ name: 'Dana Mizrahi-Katz', jobTitle: 'CFO' });
     const danaEmail = (dana.record.fields.emails as { primary: string }).primary;
-    const call = await agent.call('log_interaction', {
-      kind: 'call',
+    const call = await agent.call('log_event', {
+      type: 'call',
       channel: 'zoom',
       occurredAt: '2026-10-29T14:00:00+02:00',
       title: 'Budget planning',
@@ -890,8 +1027,20 @@ describe('finding and reading a record (5): search, then get_context', () => {
     expect(pack.body.facts).toMatchObject([
       { content: 'Signs off on anything above 50k.', sources: [call.body.id] },
     ]);
-    expect(pack.body.recentInteractions).toMatchObject([{ id: call.body.id }]);
+    expect(pack.body.recentEvents).toMatchObject([
+      { id: call.body.id, type: 'call', title: 'Budget planning', via: { kind: 'participant' } },
+    ]);
     expect(pack.body.tokenEstimate).toBeLessThanOrEqual(500);
+
+    const history = await reader.call('get_timeline', { record: dana.id });
+    expect(history.isError).toBe(false);
+    expect(history.body.items.map((i: { kind: string }) => i.kind)).toEqual(
+      expect.arrayContaining(['event', 'field_change', 'fact']),
+    );
+    const titles = await reader.call('get_timeline', { record: dana.id, fields: ['jobTitle'] });
+    expect(titles.body.items).toMatchObject([
+      { kind: 'field_change', field: 'jobTitle', value: 'CFO', current: true },
+    ]);
   });
 
   it('names the problem in validation errors and stays in its workspace', async () => {
@@ -906,7 +1055,7 @@ describe('finding and reading a record (5): search, then get_context', () => {
     const foreign = await outsider.call('get_context', { record: dana.id });
     expect(foreign.body.error.code).toBe('not_found');
     const nothing = await outsider.call('search', { query: 'Ofri' });
-    expect(nothing.body).toEqual({ records: [], facts: [], interactions: [] });
+    expect(nothing.body).toEqual({ records: [], facts: [], events: [] });
   });
 });
 
@@ -937,8 +1086,8 @@ describe('after a person merges and forgets (4.2, 2.1)', () => {
 
     // Later the agent logs a meeting with her: the handle is not stored, and
     // creating her again is refused.
-    const logged = await agent.call('log_interaction', {
-      kind: 'meeting',
+    const logged = await agent.call('log_event', {
+      type: 'meeting',
       channel: 'calendar',
       occurredAt: '2026-10-30T09:00:00Z',
       participants: [{ handle: emails.primary, role: 'customer' }],

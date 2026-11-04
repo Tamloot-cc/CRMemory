@@ -1,4 +1,4 @@
-import type { FieldType, SchemaOwner, SchemaStatus } from '@retainer/shared';
+import type { CoreRole, FieldType, ObjectClass, SchemaOwner, SchemaStatus } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import type { FieldState, ObjectState, SchemaState, StoredFieldSettings } from './types.js';
 
@@ -11,6 +11,8 @@ type ObjectRow = {
   label_plural: string;
   description: string | null;
   label_field_id: string | null;
+  is_protected: boolean;
+  class: ObjectClass;
   owner: SchemaOwner;
   status: SchemaStatus;
 };
@@ -29,6 +31,8 @@ type FieldRow = {
   is_unique: boolean;
   is_filterable: boolean;
   is_searchable: boolean;
+  is_protected: boolean;
+  core_role: CoreRole | null;
   owner: SchemaOwner;
   status: SchemaStatus;
 };
@@ -38,12 +42,13 @@ export async function loadSchemaState(tx: Tx, workspaceId: string): Promise<Sche
   const [objectRows, fieldRows] = await Promise.all([
     tx<ObjectRow[]>`
       select id, universal_id, name_singular, name_plural, label_singular, label_plural,
-        description, label_field_id, owner, status
+        description, label_field_id, is_protected, class, owner, status
       from object_types where workspace_id = ${workspaceId}
       order by created_at, id`,
     tx<FieldRow[]>`
       select id, object_type_id, universal_id, key, name, label, description, type, settings,
-        is_nullable, is_unique, is_filterable, is_searchable, owner, status
+        is_nullable, is_unique, is_filterable, is_searchable, is_protected, core_role, owner,
+        status
       from fields where workspace_id = ${workspaceId}
       order by created_at, id`,
   ]);
@@ -66,6 +71,8 @@ export async function loadSchemaState(tx: Tx, workspaceId: string): Promise<Sche
       isUnique: row.is_unique,
       isFilterable: row.is_filterable,
       isSearchable: row.is_searchable,
+      isProtected: row.is_protected,
+      coreRole: row.core_role,
       owner: row.owner,
       status: row.status,
     });
@@ -83,6 +90,8 @@ export async function loadSchemaState(tx: Tx, workspaceId: string): Promise<Sche
     labelFieldId: row.label_field_id
       ? (universalIdByFieldId.get(row.label_field_id) ?? null)
       : null,
+    isProtected: row.is_protected,
+    class: row.class,
     owner: row.owner,
     status: row.status,
     fields: fieldsByObject.get(row.id) ?? [],

@@ -31,6 +31,15 @@ beforeAll(async () => {
 });
 
 let n = 0;
+const logEvent = async (body: Record<string, unknown>) => {
+  const res = await t.request('/v1/events', {
+    key: keys.agent,
+    body: { type: 'call', channel: 'phone', occurredAt: '2026-10-01T09:00:00Z', ...body },
+  });
+  expect(res.status).toBe(201);
+  return res.body.id as string;
+};
+
 const createPerson = async (values: Record<string, unknown> = {}) => {
   const res = await t.request('/v1/objects/person/records', {
     key: keys.agent,
@@ -41,6 +50,29 @@ const createPerson = async (values: Record<string, unknown> = {}) => {
 };
 
 describe('POST /v1/records/:id/merge', () => {
+  it('moves the merged record’s event links to the survivor', async () => {
+    const a = await createPerson();
+    const b = await createPerson({ emails: 'merge.b@acme.test' });
+    const call = await logEvent({ participants: [{ handle: 'merge.b@acme.test' }] });
+    const note = await logEvent({ type: 'note', about: [b], occurredAt: '2026-09-01T09:00:00Z' });
+    const res = await t.request(`/v1/records/${a}/merge`, {
+      key: keys.user,
+      body: { recordId: b },
+    });
+    expect(res.status).toBe(200);
+    const events = await t.request(`/v1/records/${a}/events`, { key: keys.reader });
+    expect(events.body.items.map((e: { id: string; via: unknown }) => [e.id, e.via])).toEqual([
+      [call, { kind: 'participant' }],
+      [note, { kind: 'about' }],
+    ]);
+    // `linked` takes the merged ID as its survivor.
+    const linked = await t.request('/v1/objects/call/query', {
+      key: keys.reader,
+      body: { linked: { record: b } },
+    });
+    expect(linked.body.records.map((r: { id: string }) => r.id)).toEqual([call]);
+  });
+
   it('merges as a user and returns the survivor', async () => {
     const a = await createPerson();
     const b = await createPerson({ jobTitle: 'CEO' });
@@ -149,6 +181,67 @@ describe('POST /v1/records/:id/forget', () => {
     expect(foreign.status).toBe(404);
   });
 
+  it('erases the events the person took part in and keeps those only about them', async () => {
+    const id = await createPerson({ name: 'Rina Erased', emails: 'rina@erased.test' });
+    const colleague = await createPerson({ name: 'Colleague Kept' });
+    const tookPart = await logEvent({
+      externalId: 'erase-call-1',
+      title: 'Pricing call',
+      participants: [{ handle: 'rina@erased.test' }, { recordId: colleague }],
+    });
+    const aboutOnly = await logEvent({ type: 'meeting', title: 'Board prep', about: [id] });
+    const mention = await logEvent({ type: 'email', title: 'Intro to Rina Erased' });
+    const cited = await t.request(`/v1/records/${colleague}`, {
+      key: keys.agent,
+      method: 'PATCH',
+      body: { values: { jobTitle: 'Buyer' }, source: tookPart },
+    });
+    expect(cited.status).toBe(200);
+    // An uncited fact: its internal note is erased with the person.
+    expect(
+      (
+        await t.request(`/v1/records/${id}/facts`, {
+          key: keys.agent,
+          body: { text: 'Prefers email.' },
+        })
+      ).status,
+    ).toBe(201);
+
+    const res = await t.request(`/v1/records/${id}/forget`, { key: keys.admin, method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id,
+      forgotten: true,
+      counts: { records: 1, events: 2, facts: 1 },
+      recomputedRecordIds: [colleague],
+      reviewCandidates: { records: [], facts: [], events: [mention] },
+    });
+    expect(JSON.stringify(res.body)).not.toContain('rina@erased.test');
+
+    expect((await t.request(`/v1/events/${tookPart}`, { key: keys.reader })).status).toBe(404);
+    const kept = await t.request(`/v1/events/${aboutOnly}`, { key: keys.reader });
+    expect(kept.status).toBe(200);
+    expect(kept.body.event.about).toEqual([]);
+    const colleagueRead = await t.request(`/v1/records/${colleague}`, { key: keys.reader });
+    expect(colleagueRead.body.fields.jobTitle).toBeUndefined();
+    const history = await t.request(`/v1/records/${colleague}/events`, { key: keys.reader });
+    expect(history.body.items).toEqual([]);
+
+    // The erased event's identity stays suppressed.
+    const relog = await t.request('/v1/events', {
+      key: keys.agent,
+      body: {
+        type: 'call',
+        channel: 'phone',
+        externalId: 'erase-call-1',
+        occurredAt: '2026-10-01T09:00:00Z',
+        title: 'Pricing call',
+      },
+    });
+    expect(relog.status).toBe(409);
+    expect(relog.body.error.code).toBe('event_retracted');
+  });
+
   it('erases the record and returns counts and review candidates only', async () => {
     const id = await createPerson({ name: 'Avi Erased', emails: 'avi@erased.test' });
     const res = await t.request(`/v1/records/${id}/forget`, { key: keys.admin, method: 'POST' });
@@ -158,14 +251,14 @@ describe('POST /v1/records/:id/forget', () => {
       forgotten: true,
       counts: {
         records: 1,
-        interactions: 0,
+        events: 0,
         facts: 0,
         assertions: 2,
         inboundRelations: 0,
         suppressedHandles: 1,
       },
       recomputedRecordIds: [],
-      reviewCandidates: { records: [], facts: [], interactions: [] },
+      reviewCandidates: { records: [], facts: [], events: [] },
     });
     expect((await t.request(`/v1/records/${id}`, { key: keys.reader })).status).toBe(404);
     const again = await t.request('/v1/objects/person/records', {

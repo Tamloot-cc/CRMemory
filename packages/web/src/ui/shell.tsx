@@ -15,18 +15,23 @@ import {
   Inbox,
   LogOut,
   type LucideIcon,
+  Mail,
+  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  Phone,
   Search,
   Shapes,
+  StickyNote,
   UserRound,
+  UsersRound,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { cn, Kbd, NavigationContext } from './core.js';
 
 const COLLAPSED_KEY = 'retainer:sidebar:collapsed';
 
-/** Icons for the objects the built-in templates define; anything else gets a box. */
+/** Icons for the objects and event types the built-in templates define; anything else gets a box. */
 const OBJECT_ICONS: Record<string, LucideIcon> = {
   person: UserRound,
   company: Building2,
@@ -39,6 +44,11 @@ const OBJECT_ICONS: Record<string, LucideIcon> = {
   application: FileText,
   proposal: FileSignature,
   appointment: CalendarDays,
+  meeting: UsersRound,
+  call: Phone,
+  email: Mail,
+  message: MessageSquare,
+  note: StickyNote,
 };
 
 /** The sidebar icon for an object, by its singular API name. */

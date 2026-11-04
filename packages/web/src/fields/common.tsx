@@ -5,16 +5,23 @@ import type {
   FullNameValue,
   LinksValue,
   MoneyValue,
+  ObjectView,
   PhonesValue,
+  PresentedRecord,
   RecordReference,
 } from '@retainer/shared';
-import { FILTER_OPERATORS, normalizeFieldValue } from '@retainer/shared';
-import { useQuery } from '@tanstack/react-query';
+import {
+  isCollectionRelation,
+  isPolymorphic,
+  normalizeFieldValue,
+  relationTargets,
+} from '@retainer/shared';
+import { useQueries } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import { Plus, Star, X } from 'lucide-react';
-import { type ComponentType, useState } from 'react';
-import { api, useWorkspace } from '../api/client.js';
-import { recordTitle, useDebounced } from '../routes/state.js';
+import { type ComponentType, type ReactNode, useContext, useState } from 'react';
+import { api, useWorkspace, WorkspaceContext } from '../api/client.js';
+import { objectByName, objectLabel, recordTitle, useDebounced } from '../routes/state.js';
 import {
   Badge,
   Button,
@@ -69,6 +76,43 @@ export const PICKERS: Partial<Record<FieldView['type'], 'one' | 'many'>> = {
   relation: 'one',
   boolean: 'one',
 };
+/** How a field is picked in place, if it is: a many_to_many relation takes a set. */
+export const pickerFor = (field: Pick<FieldView, 'type' | 'settings'>) =>
+  isCollectionRelation(field) ? 'many' : PICKERS[field.type];
+/** "Company", "Company or Person", "Company, Person or Deal". */
+export function joinOr(words: string[]) {
+  return words.length > 1
+    ? `${words.slice(0, -1).join(', ')} or ${words[words.length - 1]}`
+    : (words[0] ?? '');
+}
+/** The object a polymorphic relation's record belongs to, after its name. */
+function ObjectTag({ children }: { children: ReactNode }) {
+  // Read as "Acme (Company)"; the parentheses are only for screen readers.
+  return (
+    <Badge>
+      <span className="sr-only">(</span>
+      {children}
+      <span className="sr-only">)</span>
+    </Badge>
+  );
+}
+/** A record's name, with its object when the field links several (`object`). */
+function TargetName({ title, object }: { title: ReactNode; object?: string }) {
+  return object ? (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="truncate">{title}</span> <ObjectTag>{object}</ObjectTag>
+    </span>
+  ) : (
+    title
+  );
+}
+/** A relation value's record IDs: one, a set, or none. */
+export const relationIds = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((id): id is string => typeof id === 'string' && !!id)
+    : typeof value === 'string' && value
+      ? [value]
+      : [];
 export function isEmptyFor(type: FieldView['type'], value: unknown): boolean {
   if (value === null || value === undefined || value === '') return true;
   if (Array.isArray(value)) return value.length === 0;
@@ -172,22 +216,10 @@ export function FieldDisplay({ field, value, compact = false, references = {} }:
         </span>
       );
     }
-    case 'relation': {
-      const ids = Array.isArray(value) ? value : [value];
+    case 'relation':
       return (
-        <Row>
-          {ids.map((id) =>
-            references[String(id)] ? (
-              <RecordLink key={String(id)} id={String(id)}>
-                {references[String(id)]?.label || 'Untitled record'}
-              </RecordLink>
-            ) : (
-              <Muted key={String(id)}>Unavailable reference</Muted>
-            ),
-          )}
-        </Row>
+        <RelationDisplay field={field} value={value} compact={compact} references={references} />
       );
-    }
     case 'json':
       return compact ? (
         <Tooltip content={JSON.stringify(value, null, 2)}>
@@ -231,6 +263,39 @@ export function FieldDisplay({ field, value, compact = false, references = {} }:
     }
   }
 }
+/**
+ * Linked records by name. A list cell shows the first two of a set and how
+ * many more there are. A polymorphic relation tags each with its object, so
+ * "Acme (Company)" and "Acme (Person)" can be told apart.
+ */
+function RelationDisplay({ field, value, compact, references = {} }: DisplayProps) {
+  const workspace = useContext(WorkspaceContext);
+  const tagged = isPolymorphic(field);
+  const ids = relationIds(value);
+  return (
+    <Row>
+      {(compact ? ids.slice(0, 2) : ids).map((id) => {
+        const reference = references[id];
+        if (!reference) return <Muted key={id}>Unavailable reference</Muted>;
+        const name = recordTitle(reference);
+        return tagged ? (
+          <span key={id} className="inline-flex min-w-0 items-center gap-1.5">
+            <RecordLink id={id}>{name}</RecordLink>{' '}
+            <ObjectTag>
+              {workspace ? objectLabel(workspace.schema, reference.object) : reference.object}
+            </ObjectTag>
+          </span>
+        ) : (
+          <RecordLink key={id} id={id}>
+            {name}
+          </RecordLink>
+        );
+      })}
+      {compact && ids.length > 2 ? <Badge>+{ids.length - 2}</Badge> : null}
+    </Row>
+  );
+}
+
 /** Exact decimal-to-micros conversion; never multiply a floating-point input. */
 export function decimalToMicros(raw: string): number {
   if (!/^-?\d+(\.\d{0,6})?$/.test(raw))
@@ -317,10 +382,39 @@ function currencyOptions(current: string): PickerOption[] {
     : [{ value: current, label: current }, ...currencies];
 }
 
+/** Most records a picker lists for one search, shared among a polymorphic relation's objects. */
+const PICKER_LIMIT = 50;
 /**
- * Records of a relation's target object matching a search, as options. The
- * current value stays listed even when the search doesn't return it. Fetches
- * only while `enabled` (the list is open), once typing pauses.
+ * Lists of records, one per object, merged by taking each list's next record
+ * in turn, so every object's best matches come first. Ranks aren't
+ * comparable across objects, so this is as fair as a merge gets.
+ */
+export function interleave<T>(lists: T[][]): T[] {
+  const merged: T[] = [];
+  for (let i = 0; lists.some((l) => i < l.length); i++)
+    for (const list of lists) if (i < list.length) merged.push(list[i] as T);
+  return merged;
+}
+/**
+ * A picker option for a record. Where the field links several objects, its
+ * object is named after it ("Acme (Company)"), on screen and to search.
+ */
+function recordOption(title: string, id: string, object?: string): PickerOption {
+  return object
+    ? {
+        value: id,
+        label: `${title} (${object})`,
+        content: <TargetName title={title} object={object} />,
+      }
+    : { value: id, label: title };
+}
+
+/**
+ * Records of a relation's target objects matching a search, as options: one
+ * query per allowed object (one, unless the relation is polymorphic), never
+ * one per record. The current value (each member of a set) stays listed while
+ * nothing is typed, even when the results don't include it. Fetches only
+ * while `enabled` (the list is open), once typing pauses.
  */
 function useRelationOptions(
   field: FieldView,
@@ -331,39 +425,55 @@ function useRelationOptions(
   const workspace = useWorkspace();
   const [search, setSearch] = useState('');
   const query = useDebounced(search.trim());
-  const target = workspace.schema.objects.find(
-    (o) => o.nameSingular === field.settings.targetObject,
-  );
-  const results = useQuery({
-    queryKey: [workspace.session.workspace.id, 'relationPicker', target?.nameSingular, query],
-    queryFn: ({ signal }) =>
-      api.queryRecords(
-        target?.nameSingular ?? '',
-        { search: query || undefined, limit: 50 },
-        signal,
-      ),
-    enabled: !!target && enabled,
-    placeholderData: (previous) => previous,
+  const targets = relationTargets(field)
+    .map((name) => objectByName(workspace.schema, name))
+    .filter((o): o is ObjectView => !!o);
+  const tagged = isPolymorphic(field);
+  const limit = Math.max(10, Math.ceil(PICKER_LIMIT / Math.max(targets.length, 1)));
+  const results = useQueries({
+    queries: targets.map((target) => ({
+      queryKey: [
+        workspace.session.workspace.id,
+        'relationPicker',
+        target.nameSingular,
+        query,
+        ...(tagged ? [limit] : []),
+      ],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        api.queryRecords(target.nameSingular, { search: query || undefined, limit }, signal),
+      enabled,
+      placeholderData: <T,>(previous: T) => previous,
+    })),
   });
-  // Remember labels of records seen, so the chosen one keeps its name.
-  const [seen, setSeen] = useState<Record<string, string>>({});
-  const records = results.data?.records ?? [];
-  const options: PickerOption[] = records.map((r) => ({ value: r.id, label: recordTitle(r) }));
-  const current = typeof value === 'string' && value ? value : null;
-  const currentLabel = current
-    ? (references?.[current]?.label ?? seen[current] ?? 'Current record')
-    : null;
-  if (current && currentLabel && !options.some((o) => o.value === current) && !query)
-    options.unshift({ value: current, label: currentLabel });
-  const remember = (id: string) => {
-    const label = options.find((o) => o.value === id)?.label;
-    if (label) setSeen((s) => ({ ...s, [id]: label }));
+  const objectOf = (name: string | undefined) =>
+    tagged && name ? objectLabel(workspace.schema, name) : undefined;
+  // Remember records seen, so the chosen one keeps its name.
+  const [seen, setSeen] = useState<Record<string, PickerOption>>({});
+  const records = interleave(results.map((r) => (r.data?.records ?? []) as PresentedRecord[]));
+  const options: PickerOption[] = records.map((r) =>
+    recordOption(recordTitle(r), r.id, objectOf(r.object)),
+  );
+  const current = relationIds(value);
+  const optionOf = (id: string): PickerOption => {
+    const reference = references?.[id];
+    if (reference) return recordOption(recordTitle(reference), id, objectOf(reference.object));
+    return seen[id] ?? { value: id, label: 'Current record' };
   };
+  const first = current[0] ? optionOf(current[0]) : null;
+  const currentLabel = first ? (first.content ?? first.label) : null;
+  if (!query)
+    options.unshift(...current.filter((id) => !options.some((o) => o.value === id)).map(optionOf));
+  const remember = (ids: string | string[]) => {
+    const found = options.filter((o) => relationIds(ids).includes(o.value));
+    if (found.length)
+      setSeen((s) => ({ ...s, ...Object.fromEntries(found.map((o) => [o.value, o])) }));
+  };
+  const error = results.find((r) => r.error)?.error;
   // The typed search is still settling, or its results are still on the way.
-  const searching = search.trim() !== query || results.isPlaceholderData;
-  const status = results.error
-    ? results.error.message
-    : searching || (results.isFetching && !results.data)
+  const searching = search.trim() !== query || results.some((r) => r.isPlaceholderData);
+  const status = error
+    ? error.message
+    : searching || results.some((r) => r.isFetching && !r.data)
       ? 'Searching…'
       : undefined;
   return {
@@ -373,7 +483,7 @@ function useRelationOptions(
     setSearch,
     remember,
     currentLabel,
-    noun: target?.labelPlural.toLowerCase() ?? 'records',
+    noun: targets.length ? joinOr(targets.map((t) => t.labelPlural.toLowerCase())) : 'records',
   };
 }
 
@@ -426,6 +536,26 @@ export function FieldPicker(props: InputProps) {
 }
 function RelationPicker({ field, value, onChange, references }: InputProps) {
   const r = useRelationOptions(field, value, references);
+  if (isCollectionRelation(field)) {
+    const members = relationIds(value);
+    return (
+      <OptionList
+        label={field.label}
+        placeholder={`Search ${r.noun}…`}
+        multiple
+        options={r.options}
+        selected={members}
+        onSearchChange={r.setSearch}
+        searching={r.searching}
+        status={r.status}
+        empty={`No ${r.noun} found`}
+        onPick={(v) => {
+          r.remember(v);
+          onChange(toggleValue(members, v));
+        }}
+      />
+    );
+  }
   return (
     <OptionList
       label={field.label}
@@ -440,9 +570,44 @@ function RelationPicker({ field, value, onChange, references }: InputProps) {
     />
   );
 }
-function RelationInput({ field, value, onChange, references }: InputProps) {
+/**
+ * A relation chosen from a menu. `multiple` picks a set of records; it
+ * defaults to whether the field holds one, and a filter turns it on to
+ * match any of several records.
+ */
+function RelationInput({
+  field,
+  value,
+  onChange,
+  references,
+  multiple = isCollectionRelation(field),
+}: InputProps & { multiple?: boolean }) {
   const [open, setOpen] = useState(false);
   const r = useRelationOptions(field, value, references, open);
+  const openChange = (next: boolean) => {
+    setOpen(next);
+    // The list's search box starts empty each time; so does the query.
+    if (!next) r.setSearch('');
+  };
+  if (multiple)
+    return (
+      <SelectMenu
+        label={field.label}
+        fill
+        multiple
+        placeholder={`Choose ${field.label.toLowerCase()}`}
+        options={r.options}
+        value={relationIds(value)}
+        onOpenChange={openChange}
+        onSearchChange={r.setSearch}
+        searching={r.searching}
+        status={r.status}
+        onChange={(ids) => {
+          r.remember(ids);
+          onChange(ids);
+        }}
+      />
+    );
   return (
     <SelectMenu
       label={field.label}
@@ -451,11 +616,7 @@ function RelationInput({ field, value, onChange, references }: InputProps) {
       options={[...clearOption(field, field.isNullable && !!value), ...r.options]}
       value={typeof value === 'string' ? value : null}
       fallback={r.currentLabel}
-      onOpenChange={(next) => {
-        setOpen(next);
-        // The list's search box starts empty each time; so does the query.
-        if (!next) r.setSearch('');
-      }}
+      onOpenChange={openChange}
       onSearchChange={r.setSearch}
       searching={r.searching}
       status={r.status}
@@ -743,8 +904,9 @@ export function FieldFilter({
   value,
   onChange,
   operator,
+  references,
 }: InputProps & { operator: string }) {
-  if (operator === 'isNull')
+  if (operator === 'isNull' || operator === 'isEmpty')
     return (
       <SelectMenu
         label="Is empty"
@@ -755,6 +917,21 @@ export function FieldFilter({
         ]}
         value={value === false ? 'false' : 'true'}
         onChange={(v) => onChange(v === 'true')}
+      />
+    );
+  // Records a set holds any or all of; or, for one record, any of several.
+  if (
+    operator === 'containsAny' ||
+    operator === 'containsAll' ||
+    (field.type === 'relation' && operator === 'in')
+  )
+    return (
+      <RelationInput
+        field={field}
+        multiple
+        value={relationIds(value)}
+        onChange={onChange}
+        references={references}
       />
     );
   if (field.type === 'money')
@@ -790,7 +967,16 @@ export function FieldFilter({
   return <FieldInput field={field} value={value} onChange={onChange} />;
 }
 export function filterValue(field: FieldView, operator: string, value: unknown): unknown {
-  if (operator === 'isNull') return value !== false;
+  if (operator === 'isNull' || operator === 'isEmpty') return value !== false;
+  if (
+    operator === 'containsAny' ||
+    operator === 'containsAll' ||
+    (field.type === 'relation' && operator === 'in')
+  ) {
+    const ids = relationIds(value);
+    if (!ids.length) throw new Error('Choose at least one record');
+    return ids;
+  }
   if (field.type === 'money') return decimalToMicros(String(value));
   if (operator === 'in') {
     const parsed = Array.isArray(value)
@@ -809,4 +995,3 @@ export function filterValue(field: FieldView, operator: string, value: unknown):
     return value;
   return normalizeFieldValue(field, value);
 }
-export const operatorsFor = (field: FieldView) => [...FILTER_OPERATORS[field.type], 'isNull'];

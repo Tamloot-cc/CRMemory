@@ -14,7 +14,7 @@ export type { SchemaDescription } from '@retainer/shared';
 
 /**
  * describe_schema and GET /v1/schema: the workspace, its objects and fields,
- * and the built-in interactions and facts (5).
+ * and the built-in facts (5).
  */
 export async function describeSchema(sql: Sql, caller: Caller): Promise<SchemaDescription> {
   const { workspaceId } = caller;

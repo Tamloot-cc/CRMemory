@@ -14,6 +14,8 @@ const field = (overrides: Partial<FieldState>): FieldState => ({
   isUnique: false,
   isFilterable: true,
   isSearchable: false,
+  isProtected: false,
+  coreRole: null,
   owner: 'system',
   status: 'active',
   ...overrides,

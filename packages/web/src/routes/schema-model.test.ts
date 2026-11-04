@@ -1,17 +1,21 @@
 import type { FieldView, ObjectView } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  canRollUpEvents,
   cardinality,
   describeOperation,
+  isManyRelation,
   matchesField,
   parseStatus,
   relationEdges,
+  relationEnds,
   relativeTime,
   typeDetail,
 } from './schema-model.js';
 import { sortObjects } from './state.js';
 
 const field = (over: Partial<FieldView> & Pick<FieldView, 'name' | 'type'>): FieldView => ({
+  isProtected: false,
   label: over.name,
   description: null,
   settings: {},
@@ -24,6 +28,8 @@ const field = (over: Partial<FieldView> & Pick<FieldView, 'name' | 'type'>): Fie
   ...over,
 });
 const object = (over: Partial<ObjectView> & Pick<ObjectView, 'nameSingular'>): ObjectView => ({
+  isProtected: false,
+  class: 'entity',
   namePlural: `${over.nameSingular}s`,
   labelSingular: over.nameSingular,
   labelPlural: `${over.nameSingular}s`,
@@ -73,6 +79,7 @@ const company = object({
         targetObject: 'person',
         inverseField: 'company',
         relationCardinality: 'one_to_many',
+        isInverse: true,
       },
     }),
   ],
@@ -106,7 +113,7 @@ describe('schema page model', () => {
           name: 'staff',
           label: 'Staff',
           type: 'relation',
-          settings: { targetObject: 'person', relationCardinality: 'one_to_many' },
+          settings: { targetObject: 'person', relationCardinality: 'one_to_many', isInverse: true },
         }),
         field({ name: 'ghost', label: 'Ghost', type: 'relation', settings: { targetObject: 'x' } }),
       ],
@@ -121,6 +128,126 @@ describe('schema page model', () => {
         { node: 'company', row: 'staff' },
       ],
     ]);
+  });
+
+  it('draws a many-to-many relation once, from its owning set, many at both ends', () => {
+    const deal = object({
+      nameSingular: 'deal',
+      labelSingular: 'Deal',
+      labelPlural: 'Deals',
+      fields: [
+        field({
+          name: 'contacts',
+          label: 'Contacts',
+          type: 'relation',
+          settings: {
+            targetObject: 'person',
+            inverseField: 'deals',
+            relationCardinality: 'many_to_many',
+          },
+        }),
+      ],
+    });
+    const people = object({
+      nameSingular: 'person',
+      labelSingular: 'Person',
+      labelPlural: 'People',
+      fields: [
+        field({
+          name: 'deals',
+          label: 'Deals',
+          type: 'relation',
+          readOnly: true,
+          settings: {
+            targetObject: 'deal',
+            inverseField: 'contacts',
+            relationCardinality: 'many_to_many',
+            isInverse: true,
+          },
+        }),
+      ],
+    });
+    // Listed inverse first, so the inverse is the one skipped, not the first seen.
+    expect(relationEdges([people, deal])).toEqual([
+      {
+        id: 'deal.contacts',
+        from: { node: 'deal', row: 'contacts' },
+        to: { node: 'person', row: 'deals' },
+        toEnd: 'many',
+        description: 'Contacts: Each deal has many people. Each person has many deals.',
+      },
+    ]);
+    // Without its owning side, the inverse draws the line, pointing the same way.
+    expect(relationEdges([people, { ...deal, fields: [] }])).toEqual([
+      expect.objectContaining({
+        from: { node: 'deal', row: undefined },
+        to: { node: 'person', row: 'deals' },
+        toEnd: 'many',
+      }),
+    ]);
+    const [contacts] = deal.fields as [FieldView];
+    const [deals] = people.fields as [FieldView];
+    expect(typeDetail(contacts, [deal, people])).toBe('Many People');
+    expect(typeDetail(deals, [deal, people])).toBe('Many Deals');
+    expect([contacts, deals].map(isManyRelation)).toEqual([true, true]);
+    expect(isManyRelation(person.fields[2] as FieldView)).toBe(false);
+  });
+
+  it('describes and draws a polymorphic relation to each object it allows', () => {
+    const customer = (many: boolean) =>
+      field({
+        name: 'customer',
+        label: 'Customer',
+        type: 'relation',
+        settings: {
+          targetObjects: ['company', 'person'],
+          relationCardinality: many ? 'many_to_many' : 'many_to_one',
+        },
+      });
+    const deal = object({
+      nameSingular: 'deal',
+      labelSingular: 'Deal',
+      labelPlural: 'Deals',
+      fields: [customer(false)],
+    });
+    const all = [deal, person, company];
+    expect(typeDetail(customer(false), all)).toBe('One Company or Person');
+    expect(typeDetail(customer(true), all)).toBe('Many Companies or People');
+    // A missing object keeps its API name in the type, and draws no line.
+    expect(typeDetail(customer(false), [deal, company])).toBe('One Company or person');
+    const ends = relationEnds(customer(false), all);
+    expect(ends.target).toBeNull();
+    expect(ends.inverse).toBeUndefined();
+    expect(ends.targets.map((t) => t.object?.nameSingular)).toEqual(['company', 'person']);
+    expect(cardinality(deal, [company, person], false)).toBe('Each deal has one company or person');
+    const polymorphic = (objects: ObjectView[]) =>
+      relationEdges(objects).filter((e) => e.from.node === 'deal');
+    expect(polymorphic(all)).toEqual([
+      {
+        id: 'deal.customer:company',
+        from: { node: 'deal', row: 'customer' },
+        to: { node: 'company' },
+        description: 'Customer: Each deal has one company or person. Each company has many deals.',
+      },
+      {
+        id: 'deal.customer:person',
+        from: { node: 'deal', row: 'customer' },
+        to: { node: 'person' },
+        description: 'Customer: Each deal has one company or person. Each person has many deals.',
+      },
+    ]);
+    const set = { ...deal, fields: [customer(true)] };
+    expect(polymorphic([set, person, company]).map((e) => e.toEnd)).toEqual(['many', 'many']);
+    expect(polymorphic([deal, company]).map((e) => e.to.node)).toEqual(['company']);
+  });
+
+  it('offers event rollup only on owning relations of entities', () => {
+    const [name, , toCompany] = person.fields as [FieldView, FieldView, FieldView];
+    const [people] = company.fields as [FieldView];
+    expect(canRollUpEvents(person, toCompany)).toBe(true);
+    expect(canRollUpEvents(company, people)).toBe(false);
+    expect(canRollUpEvents(person, name)).toBe(false);
+    expect(canRollUpEvents({ class: 'event' }, toCompany)).toBe(false);
   });
 
   it('words cardinality the same way everywhere', () => {
@@ -173,6 +300,12 @@ describe('schema page model', () => {
     expect(
       d({ op: 'update_field', object: 'person', field: 'name', isUnique: true, isNullable: false }),
     ).toBe('Change Person → Name: required, unique');
+    expect(d({ op: 'update_field', object: 'person', field: 'company', rollUpEvents: true })).toBe(
+      'Change Person → Company: roll up events',
+    );
+    expect(d({ op: 'update_field', object: 'person', field: 'company', rollUpEvents: false })).toBe(
+      'Change Person → Company: stop rolling up events',
+    );
     expect(
       d({
         op: 'create_field',

@@ -1,7 +1,9 @@
+import { isInverseRelation } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams } from '@tanstack/react-router';
+import { Link, useParams } from '@tanstack/react-router';
 import { useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
+import { fields } from '../fields/index.js';
 import { ActorBadge } from '../provenance/index.js';
 import {
   Badge,
@@ -12,23 +14,30 @@ import {
   Notice,
   Page,
   Panel,
+  Property,
+  PropertyList,
   RecordLink,
   Row,
   Stack,
   Tabs,
 } from '../ui/index.js';
-import { CandidateRecord } from './record-actions.js';
+import { EventDetailsView } from './event-details.js';
 import { AssertionCard } from './record-view.js';
-import { QueryError, useView } from './state.js';
-export function InteractionPage() {
+import { eventTitle, objectByName, QueryError, useView } from './state.js';
+
+/**
+ * One event (`GET /v1/events/:id`): its type, time, channel, participants and
+ * `about` records, its other fields, and the claims that cite it.
+ */
+export function EventPage() {
   const { id } = useParams({ strict: false }) as { id: string };
-  const { session } = useWorkspace(),
+  const { session, schema } = useWorkspace(),
     client = useQueryClient(),
     { search, setSearch } = useView();
   const tab = search.tab === 'facts' ? 'facts' : 'assertions';
   const query = useQuery({
-    queryKey: [session.workspace.id, 'interaction', id],
-    queryFn: ({ signal }) => api.interaction(id, signal),
+    queryKey: [session.workspace.id, 'event', id],
+    queryFn: ({ signal }) => api.event(id, signal),
   });
   const claims = useQuery({
     queryKey: [session.workspace.id, 'claims', id, tab, search.cursor],
@@ -39,15 +48,17 @@ export function InteractionPage() {
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(''),
     [deleted, setDeleted] = useState(false);
-  async function retract() {
+  const canWrite = canMutate(session);
+  async function remove() {
     setBusy(true);
     try {
-      const result = await api.retractInteraction(id);
+      const result = await api.deleteEvent(id);
       setMessage(
-        `Interaction retracted: ${result.retractedAssertions} assertions retracted, ${result.recomputedRecordIds.length} records recomputed, ${result.hiddenFactIds.length} facts hidden.`,
+        `Event deleted: ${result.retractedAssertions} assertions retracted, ${result.recomputedRecordIds.length} records recomputed, ${result.hiddenFactIds.length} facts hidden.`,
       );
       setDeleted(true);
       setConfirm(false);
+      client.removeQueries({ queryKey: [session.workspace.id, 'event', id] });
       await client.invalidateQueries({ queryKey: [session.workspace.id] });
     } catch (e) {
       setMessage((e as Error).message);
@@ -57,67 +68,65 @@ export function InteractionPage() {
   }
   if (deleted)
     return (
-      <Page title="Interaction retracted">
+      <Page title="Event deleted">
         <Notice>{message}</Notice>
       </Page>
     );
-  if (!query.data)
+  const r = query.data;
+  if (!r?.event)
     return (
-      <Page title="Interaction">
-        {query.error ? <QueryError error={query.error} /> : <Notice>Loading interaction…</Notice>}
+      <Page title="Event">
+        {query.error ? (
+          <QueryError error={query.error} retry={() => void query.refetch()} />
+        ) : r ? (
+          <Notice error>This record is not an event.</Notice>
+        ) : (
+          <Notice>Loading event…</Notice>
+        )}
       </Page>
     );
-  const i = query.data;
+  const e = r.event;
+  const type = objectByName(schema, r.object);
+  // Title and summary show above; the type's other fields are listed here.
+  const others = (type?.fields ?? []).filter((f) => !f.coreRole && !isInverseRelation(f));
   return (
     <Page
-      eyebrow={i.kind}
-      title={i.title || 'Untitled interaction'}
-      description={`${i.channel} · ${new Date(i.occurredAt).toLocaleString()}`}
+      eyebrow={type?.labelSingular ?? r.object}
+      title={eventTitle(e)}
+      description={`${e.channel ?? 'Channel erased'} · ${new Date(e.occurredAt).toLocaleString()}`}
       actions={
-        canMutate(session) ? (
-          <Button onClick={() => setConfirm(true)}>Retract interaction</Button>
-        ) : null
+        <>
+          <Button asChild variant="ghost" size="small">
+            <Link to="/r/$id" params={{ id: r.id }}>
+              {canWrite ? 'Edit fields' : 'Open as record'}
+            </Link>
+          </Button>
+          {canWrite ? <Button onClick={() => setConfirm(true)}>Delete event</Button> : null}
+        </>
       }
     >
       {message ? <Notice>{message}</Notice> : null}
       <Panel title="Summary">
         <Stack>
-          {i.summary ? <p>{i.summary}</p> : <Muted>No summary</Muted>}
-          <ActorBadge actor={i.createdBy} />
+          {e.summary ? <p>{e.summary}</p> : <Muted>No summary</Muted>}
+          <ActorBadge actor={r.createdBy} />
         </Stack>
       </Panel>
-      <Panel title="Participants">
-        <Stack>
-          {i.participants.matched.map((p) => (
-            <Row key={p.id}>
-              <RecordLink id={p.recordId ?? ''}>{p.handle || 'Matched participant'}</RecordLink>
-              {p.role ? <Badge>{p.role}</Badge> : null}
-            </Row>
-          ))}
-          {i.participants.unmatched.map((p) => (
-            <Row key={p.id}>
-              <span>{p.handle || 'Unknown participant'}</span>
-              <Badge tone="pending">{p.reason}</Badge>
-              {p.role ? <Badge>{p.role}</Badge> : null}
-              {p.candidates?.map((id) => (
-                <RecordLink key={id} id={id}>
-                  Candidate record
-                </RecordLink>
-              ))}
-            </Row>
-          ))}
-          {!i.participants.matched.length && !i.participants.unmatched.length ? (
-            <Muted>No participants</Muted>
-          ) : null}
-        </Stack>
+      <Panel title="Details">
+        <EventDetailsView id={r.id} event={e} editable={canWrite} />
       </Panel>
-      {i.about.length ? (
-        <Panel title="About">
-          <Stack>
-            {i.about.map((id) => (
-              <CandidateRecord key={id} id={id} />
-            ))}
-          </Stack>
+      {others.length ? (
+        <Panel title="Fields">
+          <PropertyList>
+            {others.map((f) => {
+              const Display = fields[f.type].Display;
+              return (
+                <Property key={f.name} label={f.label}>
+                  <Display field={f} value={r.fields[f.name]} references={r.relationReferences} />
+                </Property>
+              );
+            })}
+          </PropertyList>
         </Panel>
       ) : null}
       <Tabs
@@ -125,7 +134,7 @@ export function InteractionPage() {
         onChange={(tab) => void setSearch({ tab, cursor: undefined })}
         items={[
           { value: 'assertions', label: 'Field assertions' },
-          { value: 'facts', label: 'Facts citing this interaction' },
+          { value: 'facts', label: 'Facts citing this event' },
         ]}
       />
       {claims.error ? <QueryError error={claims.error} /> : null}
@@ -141,9 +150,9 @@ export function InteractionPage() {
                   <RecordLink id={f.record}>View record</RecordLink>
                   <ActorBadge actor={f.writtenBy} />
                   {f.sources
-                    .filter((s) => s.interaction === id && s.quote)
+                    .filter((s) => s.event === id && s.quote)
                     .map((s) => (
-                      <blockquote key={`${s.interaction}:${s.quote}`}>{s.quote}</blockquote>
+                      <blockquote key={`${s.event}:${s.quote}`}>{s.quote}</blockquote>
                     ))}
                 </Stack>
               </Panel>
@@ -170,11 +179,11 @@ export function InteractionPage() {
         onOpenChange={(open) => {
           if (!busy) setConfirm(open);
         }}
-        title="Retract this interaction?"
-        description="Its assertions will be retracted and affected records recomputed. Facts with no other live sources will be hidden."
+        title="Delete this event?"
+        description="The values it recorded are retracted and affected records recomputed. Facts with no other live sources are hidden."
       >
-        <Button variant="destructive" disabled={busy} onClick={() => void retract()}>
-          Retract interaction
+        <Button variant="destructive" disabled={busy} onClick={() => void remove()}>
+          Delete event
         </Button>
       </Dialog>
     </Page>

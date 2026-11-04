@@ -308,7 +308,7 @@ export function Diagram({
           animated: lit,
           zIndex: lit ? 1 : 0,
           markerStart: markerId('many', lit),
-          markerEnd: markerId('one', lit),
+          markerEnd: markerId(e.toEnd ?? 'one', lit),
           interactionWidth: 14,
           style: { ...lineStroke(lit), opacity: hover && !lit ? 0.25 : lit ? 1 : 0.7 },
           ariaLabel: e.description,

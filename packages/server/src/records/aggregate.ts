@@ -10,7 +10,7 @@ import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
-import type { CompiledObject } from '../schema-engine/compiled.js';
+import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import { emptyValue, liveLinks, matchingRecords, queryInputSchema, typed } from './query.js';
 
@@ -81,6 +81,7 @@ function columns(tx: Tx, field: FieldState, op: AggregateOp, n: number): Fragmen
 export async function aggregateRecords(
   tx: Tx,
   workspaceId: string,
+  schema: CompiledSchema,
   object: CompiledObject,
   input: AggregateInput,
 ): Promise<AggregateResult> {
@@ -103,7 +104,7 @@ export async function aggregateRecords(
   if (!group) {
     const [row] = await tx<Record<string, number | string | null>[]>`
       select ${selected} from records r
-      where ${matchingRecords(tx, workspaceId, object, input)}`;
+      where ${matchingRecords(tx, workspaceId, schema, object, input)}`;
     return valuesOf(requests, row);
   }
   // One pass: a row per value of the group field, and the overall row
@@ -114,7 +115,7 @@ export async function aggregateRecords(
   const rows = await tx<Record<string, number | string | null>[]>`
     select r.g, grouping(r.g) as overall, ${selected}
     from (select r.*, r.data ->> ${group.key} as g from records r
-      where ${matchingRecords(tx, workspaceId, object, input)}) r
+      where ${matchingRecords(tx, workspaceId, schema, object, input)}) r
     group by grouping sets ((r.g), ())`;
   const overall = rows.find((r) => Number(r.overall) === 1);
   return {

@@ -1,13 +1,35 @@
-import type { FieldSettings, ObjectView } from '@retainer/shared';
+import {
+  BASE_FIELD_IDS,
+  BASE_OBJECT_IDS,
+  type BaseFieldName,
+  type BaseObjectName,
+  EVENT_COLUMNS,
+  type FieldSettings,
+  type ObjectView,
+} from '@retainer/shared';
 import type { CompiledSchema } from './compiled.js';
+import { PROTECTED_OPTIONS } from './protection.js';
 import type { FieldState } from './types.js';
 
 export type { FieldView, ObjectView } from '@retainer/shared';
 
+const BASE_OBJECT_NAMES = new Map<string, BaseObjectName>(
+  Object.entries(BASE_OBJECT_IDS).map(([name, id]) => [id, name as BaseObjectName]),
+);
+const BASE_FIELD_NAMES = new Map<string, BaseFieldName>(
+  Object.entries(BASE_FIELD_IDS).map(([name, id]) => [id, name as BaseFieldName]),
+);
+
 /** Field settings with universal IDs turned back into API names. */
 function presentSettings(schema: CompiledSchema, field: FieldState): FieldSettings {
-  const { targetObjectId, inverseFieldId, ...rest } = field.settings;
+  const { targetObjectId, targetObjectIds, inverseFieldId, ...rest } = field.settings;
   const settings: FieldSettings = { ...rest };
+  if (targetObjectIds) {
+    settings.targetObjects = targetObjectIds.flatMap((id) => {
+      const target = schema.objectsByUniversalId.get(id);
+      return target ? [target.name] : [];
+    });
+  }
   if (targetObjectId) {
     const target = schema.objectsByUniversalId.get(targetObjectId);
     if (target) settings.targetObject = target.name;
@@ -27,6 +49,12 @@ export function presentSchema(schema: CompiledSchema): ObjectView[] {
     description: object.state.description,
     labelField: object.labelField?.name ?? null,
     owner: object.state.owner,
+    isProtected: object.state.isProtected,
+    class: object.state.class,
+    ...(object.state.class === 'event' ? { eventColumns: [...EVENT_COLUMNS] } : {}),
+    ...(BASE_OBJECT_NAMES.has(object.state.universalId)
+      ? { baseObject: BASE_OBJECT_NAMES.get(object.state.universalId) }
+      : {}),
     fields: object.activeFields.map((field) => ({
       name: field.name,
       label: field.label,
@@ -37,8 +65,16 @@ export function presentSchema(schema: CompiledSchema): ObjectView[] {
       isUnique: field.isUnique,
       isFilterable: field.isFilterable,
       isSearchable: field.isSearchable,
-      readOnly: field.settings.relationCardinality === 'one_to_many',
+      readOnly: field.settings.isInverse === true,
       owner: field.owner,
+      isProtected: field.isProtected,
+      ...(PROTECTED_OPTIONS.has(field.universalId)
+        ? { protectedOptions: [...(PROTECTED_OPTIONS.get(field.universalId) ?? [])] }
+        : {}),
+      ...(BASE_FIELD_NAMES.has(field.universalId)
+        ? { baseField: BASE_FIELD_NAMES.get(field.universalId) }
+        : {}),
+      ...(field.coreRole ? { coreRole: field.coreRole } : {}),
     })),
   }));
 }

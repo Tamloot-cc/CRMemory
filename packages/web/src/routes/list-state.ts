@@ -6,10 +6,12 @@ import type {
   MoneyValue,
   ObjectView,
   QueryInput,
+  RecordReference,
 } from '@retainer/shared';
-import { AGGREGATE_OPS, aggregateOps, SORTABLE_TYPES } from '@retainer/shared';
+import { AGGREGATE_OPS, aggregateOps, isPolymorphic, SORTABLE_TYPES } from '@retainer/shared';
 import { dateText, microsToDecimal, moneyText } from '../fields/common.js';
 import { clampWidth } from '../ui/data-grid.js';
+import { objectLabel, recordTitle } from './state.js';
 
 // ---------------------------------------------------------------------------
 // Columns: which fields show, in what order, at what width. Saved per object.
@@ -196,7 +198,7 @@ export function addClause(clauses: FilterClause[], clause: FilterClause): Filter
   return clauses.map((c, j) => (j === i ? clause : c));
 }
 
-const OPERATOR_LABELS: Record<FilterOperator | 'isNull', string> = {
+const OPERATOR_LABELS: Record<FilterOperator, string> = {
   eq: 'is',
   neq: 'is not',
   in: 'is any of',
@@ -206,6 +208,9 @@ const OPERATOR_LABELS: Record<FilterOperator | 'isNull', string> = {
   lt: '<',
   lte: '≤',
   isNull: 'is empty / not empty',
+  containsAny: 'has any of',
+  containsAll: 'has all of',
+  isEmpty: 'is empty / not empty',
 };
 
 /** Words for an operator in menus: `eq` reads "is". */
@@ -214,22 +219,41 @@ export const operatorLabel = (operator: string) =>
     ? OPERATOR_LABELS[operator as keyof typeof OPERATOR_LABELS]
     : operator;
 
+/**
+ * A filter chip's words. Related records read as their labels when
+ * `references` (from the list's records) knows them, else as their IDs.
+ */
 export function describeClause(
   clause: FilterClause,
   field: FieldView | undefined,
+  references?: Record<string, RecordReference>,
+  /** Names the object of each record a polymorphic relation filter holds. */
+  objects?: ObjectView[],
 ): { field: string; operator: string; value?: string } {
   const name = field?.label ?? clause.field;
-  if (clause.operator === 'isNull')
+  if (clause.operator === 'isNull' || clause.operator === 'isEmpty')
     return { field: name, operator: clause.value === false ? 'is not empty' : 'is empty' };
   return {
     field: name,
     operator: operatorLabel(clause.operator),
-    value: formatFilterValue(clause.value, field),
+    value: formatFilterValue(clause.value, field, references, objects),
   };
 }
 
-function formatFilterValue(value: unknown, field: FieldView | undefined): string {
-  if (Array.isArray(value)) return value.map((v) => formatFilterValue(v, field)).join(', ');
+function formatFilterValue(
+  value: unknown,
+  field: FieldView | undefined,
+  references?: Record<string, RecordReference>,
+  objects?: ObjectView[],
+): string {
+  if (Array.isArray(value))
+    return value.map((v) => formatFilterValue(v, field, references, objects)).join(', ');
+  const reference = typeof value === 'string' ? references?.[value] : undefined;
+  if (field?.type === 'relation' && reference) {
+    const name = recordTitle(reference);
+    if (!isPolymorphic(field)) return name;
+    return `${name} (${objectLabel({ objects: objects ?? [] }, reference.object)})`;
+  }
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   // Money filters are integer micros; anything else came from a hand-edited URL.
   if (field?.type === 'money' && Number.isSafeInteger(value))
