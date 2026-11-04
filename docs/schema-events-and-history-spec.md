@@ -27,11 +27,12 @@ List-scoped fields, configurable composites, association labels, one-to-one
 constraints, optional base objects and assertion premises have explicit
 dispositions below. They do not block this scope.
 
-Retainer is in early exploration. The original proposal assumes no deployed
-user data needs preserving; verify that assumption before implementation.
-Under that assumption, storage and API changes need no compatibility shims or
-backfills. This does not waive the product guarantee that a workspace's own
-schema edits preserve its data under the existing schema evolution rules.
+Retainer is in early exploration and has not been released, so no deployed
+user data needs preserving. Storage and API changes need no compatibility
+shims or backfills. If a release ships before a phase lands, that phase must
+add its own migration plan first. This does not waive the product guarantee
+that a workspace's own schema edits preserve its data under the existing
+schema evolution rules.
 
 ## 2. Current implementation baseline
 
@@ -68,6 +69,9 @@ Implementation anchors: [relation metadata](../packages/shared/src/schema.ts),
 | Ordinary relations remain assertion-backed | Conflict resolution and provenance apply to whole relation values. |
 | Event links remain specialized | Matching, unresolved handles, additive logging and privacy keep their existing semantics. |
 | Shared reference rules apply to both link mechanisms | Workspace isolation, live-target checks, merge resolution and reference presentation stay consistent. |
+| An event's own relation fields attach it to their targets | Events modeled with typed relations appear in their targets' history, like `about` links. |
+| `remember` notes are a hidden object type | One resolution check hides them everywhere, instead of a channel filter on every path. |
+| Every attached event carries one tagged `via` | Participant, about, field and rollup attachment share one shape. |
 | Rollups follow current relations; explicit links retain their logged association | Historical attachment and current grouping are distinguishable. |
 | The timeline is assembled on read | No separate timeline store or promise of exact historical belief snapshots. |
 | Base identities remain required in this scope | Empty schemas require a separate redesign of built-in dependencies. |
@@ -88,8 +92,13 @@ clear protection or core roles.
 - Protected objects cannot be deleted. Their API names and display labels may
   change because server code resolves them through universal IDs.
 - Protected fields cannot be deleted or reshaped. Permit API-name renames,
-  labels and descriptions; reject changes to type, settings, nullability,
-  uniqueness, searchability and filterability.
+  labels and descriptions; reject changes to type, nullability, uniqueness,
+  searchability and filterability.
+- Protect only the select option values server code reads. `task.status`
+  keeps its `done` option: it cannot be removed and its value cannot change,
+  though its label can. Other options on a protected select field can be
+  added, relabeled and removed, so a workspace can add statuses such as
+  `blocked`.
 - The event title remains the label field. Reject changes that detach the
   label role from it. Core roles are unique within an event type.
 - Any future server dependency on a schema element must protect it in the
@@ -140,6 +149,14 @@ the same relationship. A single-target field may declare `inverseField`.
 Multi-target fields initially have no declared inverse field; callers query
 incoming links instead. Per-target inverse declarations are deferred.
 
+Cardinality alone no longer identifies the read-only side: today the engine
+treats `one_to_many` as "inverse" (`schema-engine/apply.ts`), but the inverse
+of a `many_to_many` field is also many-to-many. Add an engine-set
+`settings.isInverse` to every inverse field and replace the cardinality checks
+with it. The inverse of a `many_to_one` field stays `one_to_many`; the inverse
+of a `many_to_many` field is `many_to_many` with `isInverse: true`.
+`describe_schema` shows `isInverse` so agents know which side to write.
+
 ### 5.2 Values and conflict resolution
 
 - A single-record relation takes a record ID, or `null` if nullable.
@@ -164,19 +181,24 @@ applied membership change.
 ### 5.3 Storage, lifecycle and queries
 
 `record_links` remains derived from the winning relation assertion, with one
-row per resolved target. Replace source/field uniqueness with uniqueness on
-workspace, source, field and target. Enforce the single-target maximum in the
-same locked recomputation transaction; never rely on callers to enforce it.
+row per resolved target. Add an `is_collection` column copied from the field's
+multiplicity. Make `(workspace, source, field, target)` unique, and keep a
+partial unique index on `(source, field)` where `is_collection` is false, so
+the database itself enforces the single-target maximum. The locked
+recomputation transaction still validates it first, for a clear error.
 Retraction recomputes the entire winning relation value and its edges.
 
 Keep assertions out of `records.data` for relation fields, as today. New
 foreign keys include the workspace. Keep indexed incoming-edge lookup.
 
-Existing `set_null` and `cascade` deletion behavior carries over to each
-target: soft-deleted targets disappear from readable membership while their
-assertions remain; `cascade` deletes the owning source when a referenced
-target is deleted. Document that consequence for collection fields. Merges
-redirect targets and deduplicate membership without merging event records.
+`set_null` behavior carries over to each target: soft-deleted targets
+disappear from readable membership while their assertions remain. Reject
+`onDelete: cascade` on collection fields. Cascades follow links at any depth
+(`cascadeSet` in `records/write.ts`), so deleting one contact would delete
+every deal that lists it. Revisit only with a concrete need and a guarded
+semantics, such as cascading when the last member goes. Single-record fields
+keep `cascade`, including multi-target ones. Merges redirect targets and
+deduplicate membership without merging event records.
 Hard erasure removes a forgotten target from every historical collection
 assertion as well as from live edges, so recomputation cannot restore it.
 
@@ -189,8 +211,22 @@ allowed target type without N+1 reads. Views store field keys as today.
 Changing multiplicity or allowed target types is a schema evolution operation,
 not a reinterpretation of existing assertions. Initially reject these edits on
 an existing field; introduce a new field under the normal evolution rules.
-Reject deletion of an object still named by another active relation until its
-dependencies are handled through the schema engine.
+
+Deleting an object type keeps today's behavior for relations that target it
+(`delete_object` in `schema-engine/apply.ts`), extended to multiple targets:
+
+- A relation whose only allowed target is the deleted type is deprecated with
+  it, as today.
+- A multi-target relation that also allows other types is rejected: the
+  deletion fails and names the field. The caller first replaces that field
+  under the evolution rules above. The engine never silently narrows allowed
+  targets, because that would reinterpret existing assertions.
+- Deleting an object deprecates it and hides its records. Event `about` and
+  participant links to those records are kept but drop out of reads, like
+  links to deleted records.
+- Deleting an event type also follows the retraction lifecycle in 6.4.
+
+These rules apply equally to unused base event types (6.1).
 
 ### 5.4 Why event links remain separate
 
@@ -200,7 +236,8 @@ characteristics, but are not ordinary relation field values:
 - Participants may have unresolved email/phone handles, roles and unmatched
   reasons. A valid unresolved participant is not a dangling record reference.
 - Re-logging adds missing links rather than replacing a ranked collection.
-- Removing links has person-only permissions and event-specific privacy rules.
+- Only `user` actors can remove links, and removal follows event-specific
+  privacy rules.
 - These built-ins are not custom fields and cannot be deleted or reshaped.
 
 Preserve a dedicated `event_links` table and lifecycle. Share target validation,
@@ -234,9 +271,11 @@ Identity is across event types: changing type under an existing identity is
 a conflict. Channel must distinguish source accounts with overlapping IDs.
 
 The base template adds meeting, call, email, message and note event types
-with universal IDs. Only note is protected; unused other event types can be
-deleted under normal object deletion rules. Industry templates may add types
-and custom fields such as duration or payment amount.
+with universal IDs. None of them is protected; unused ones can be deleted
+under normal object deletion rules (5.3). The engine also creates a hidden,
+protected internal-note event type in every workspace for `remember` (6.4).
+Industry templates may add types and custom fields such as duration or
+payment amount.
 
 ### 6.2 Logging and editing
 
@@ -252,10 +291,16 @@ Core text is supplied only through top-level title/summary, not duplicated in
   title, summary and custom values returns the event and adds missing links.
   A differing payload returns `event_conflict`; deleted identity returns
   `event_retracted`. Without external ID, there is no source deduplication.
-- Store an immutable normalized initial logging payload for retry comparison,
-  keyed by stable field/object identities. Compare against this payload,
-  rather than current winning fields, so later edits do not break retries.
-  This payload is covered by erasure rules; it must not retain forgotten data.
+- The assertions written by the logging transaction are the event's initial
+  values. Mark them `is_initial`. They cite the event itself as source, and
+  their `observed_at` is the event's `occurred_at`. Retries compare against
+  these rows, rather than current winning fields, so later edits do not break
+  retries. No separate payload copy is stored, so erasure has one place to
+  clean. A retry that names a field deleted since logging is a validation
+  error, as for any write. A field added since logging is compared as absent
+  from the original, so a retry supplying it conflicts.
+- Later edits through `upsert_record` are ordinary assertions with no source
+  and server time as `observed_at`, and they rank as usual.
 - Editing the displayed summary does not revise downstream claims or their
   observation times. Claims cite the event, not a snapshot of all its fields.
   A changed external source is logged with a new external ID; retract the old
@@ -268,18 +313,52 @@ rules to `event_links`. `about` may target any live entity or event. A record
 linked directly appears once, with participant taking precedence over about.
 No implicit company link is inferred from a person's current employer.
 
-### 6.3 Evidence, notes and privacy
+### 6.3 Relation fields on event types
+
+An event type may have its own relation fields, such as `call.deal` or
+`payment.invoice`. The event is then the source of a `record_links` edge, and
+the target counts as related to the event. Without this rule, an agent that
+records "this call was about this deal" as a relation field would find the
+call missing from the deal's history.
+
+- Every live edge from an event-class record to a target attaches that event
+  to the target's event history: `linked`, `recentEvents` and the timeline.
+  The attachment shows as `via: { kind: 'field', field }` (7.2).
+- This is direct attachment, not a rollup. It needs no opt-in and does not
+  chain into rollups.
+- It follows the current relation value. Unlike `about`, a corrected or
+  reassigned relation moves the event.
+- Guides prefer `about` for "what this event concerns" and keep relation
+  fields for typed structure the event type owns, such as the invoice a
+  payment settles.
+
+### 6.4 Evidence, notes and privacy
 
 Replace assertion and fact interaction-source references with
 `source_record_id`. Sources must be live event records in the same workspace;
 an entity record cannot be a source. Source time continues to determine
 `observed_at` and fact `valid_from` under the existing rules.
 
-Facts still require event evidence. Without `source`, `remember` creates a
-note with reserved channel `retainer`, the fact text as summary and the subject
-as its `about` link. Public logging rejects that channel. Exclude these
-internal notes from ordinary search, queries, context event lists and timeline
-event items; the fact represents them. User-logged notes remain visible.
+Facts still require event evidence. Without `source`, `remember` creates an
+internal note with reserved channel `retainer`, the fact text as summary and
+the subject as its `about` link. Public logging rejects that channel.
+
+Internal notes are records of their own hidden, protected event type with a
+fixed universal ID, not of the user-visible `note` type. Filtering them by
+channel inside `note` would need a check on every read and write path: query,
+views, search, record reads by ID, the web app's lists, counts, `upsert_record`
+and record deletion. One missed path would leak a note or let a caller edit
+the text behind a fact. Hiding the whole object type puts the check in one
+place, object resolution:
+
+- `describe_schema` omits the type. Query, view, search, record and write
+  routes resolve it as not found. Context event lists and timeline event
+  items never include it; the fact represents the note.
+- Its records change only through `remember` and the fact and privacy
+  lifecycle (this section). They cannot be edited or deleted as records.
+- Fact presentation marks such a source as internal instead of exposing a
+  record ID that callers cannot read.
+- User-logged notes, of the base `note` type, remain ordinary events.
 
 Deleting an event retracts citing assertions, recomputes affected records and
 hides facts with no remaining live source. Preserve current permissions and
@@ -288,19 +367,38 @@ same retraction lifecycle to its records atomically; it cannot bypass it.
 
 `forget` retains the current participant-versus-about policy, including
 keeping events only about the forgotten record. Apply erasure to event fields,
-links, initial logging payloads and collection assertions. If retaining a
-logging payload would retain erased content, replace it with a content-free
-retracted-identity tombstone and reject later retries. Never use deduplication
-storage as a second copy of erased data. Port the existing privacy tests.
+links, initial assertions and collection assertions. When erasure removes an
+event's initial values, keep only its content-free identity
+(`channel`, `external_id`) as a retracted tombstone and reject later retries.
+Never use deduplication storage as a second copy of erased data. Port the
+existing privacy tests.
 
 ## 7. Event retrieval and rollups
 
 ### 7.1 Direct retrieval
 
 `query_records` supports event types, their built-in columns and
-`linked: { record, link? }` for direct event links. Cross-type record history
-uses the timeline. Search uses event searchable fields through the existing
-Postgres full-text machinery.
+`linked: { record, link? }` for direct attachment, where `link` is
+`participant`, `about` or `field` (6.3). Cross-type record history uses the
+timeline. Search uses event searchable fields through the existing Postgres
+full-text machinery.
+
+Every event item in an event list, context pack or timeline says how it is
+attached to the record, as one tagged shape:
+
+```ts
+type Via =
+  | { kind: 'participant' }
+  | { kind: 'about' }
+  | { kind: 'field'; field: string }                   // event's own relation (6.3)
+  | { kind: 'rollup'; field: string; record: string }; // 7.2
+```
+
+This replaces today's `via: 'participant' | 'about'` string
+(`packages/shared/src/api.ts`, ARCHITECTURE.md section 6). An event attached
+in several ways appears once, with precedence `participant`, `about`,
+`field`, `rollup`. Event items carry `type` (the event type's API name) where
+interaction items carried `kind`.
 
 `describe_schema` includes object class, core roles, protection and new relation
 settings. Interaction ceases to be a separate built-in; fact remains one.
@@ -311,9 +409,14 @@ create a useful dashboard. Calendar views may select `occurredAt`.
 ### 7.2 Rollup semantics
 
 An owning relation field can set `settings.rollUpEvents`, default false.
-For each current edge `source --field--> target`, events directly linked to
+For each current edge `source --field--> target`, events directly attached to
 source appear in target's event history. This works for single-record,
 multi-record and polymorphic fields. It does not depend on an inverse field.
+
+`rollUpEvents` can be changed after the field is created, because nothing is
+stored and turning it off restores the earlier reads. `update_field` gains a
+`rollUpEvents` parameter, which is not a destructive change and needs no
+review. Protected fields accept it.
 
 - Read-time, exactly one relation hop. Do not copy links or recursively roll
   up events that source itself received by rollup.
@@ -321,7 +424,16 @@ multi-record and polymorphic fields. It does not depend on an inverse field.
 - Rollups apply only to events, not facts or related-record field assertions.
 - Deduplicate by event ID before pagination, counts and context budgeting.
   Direct attachment takes precedence. For multiple rollup paths, return one
-  deterministic `via: { field, record }`, chosen by stable field and source IDs.
+  deterministic `via: { kind: 'rollup', field, record }`, chosen by stable
+  field and source IDs.
+- Rollups can fan out widely: a company with thousands of deals, each with
+  events. The phase that adds them defines the query as a keyset-paginated
+  merge over `occurred_at` that never materializes the full set. It adds the
+  indexes the merge needs: `event_links (workspace, record_id, link)`,
+  covering occurrence time through `event_records`, and incoming
+  `record_links` by target and field. Context packs and the timeline share
+  this query, and an integration test checks its plan on a seeded large
+  fan-out.
 - A changed relation changes the rollup. `via` describes present grouping,
   never historical participation. Explicit event links are unaffected.
 - The engine cannot prove a relation is stable. Guides and templates must
@@ -347,7 +459,7 @@ web timeline tab. Assemble it from source tables at read time:
 
 | Item | Membership | Time |
 | --- | --- | --- |
-| `event` | Direct and rolled-up events, excluding internal fact notes | Event `occurred_at` |
+| `event` | Directly attached (participant, about, the event's own relation field) and rolled-up events, each with `via` (7.1); never internal notes | Event `occurred_at` |
 | `field_change` | Subject record's eligible assertions (`active`, `superseded`) | Assertion `observed_at` |
 | `fact` | Subject record's facts, including superseded facts but excluding retracted/source-less facts | Fact `valid_from` |
 
@@ -356,6 +468,13 @@ prove that the assertion was ever the winner. Existing `superseded` status
 does not establish that fact. Include assertion ID, current status, actor,
 source and current-winner indication; the UI must label nonwinning claims
 accordingly. Pending/rejected assertions remain in review/assertion APIs.
+
+A `field_change` carries the asserted value, not a diff. For a collection
+relation, that value is the whole asserted set. The previous item in the
+timeline need not be the previous winner, since nonwinning claims appear too,
+so a diff against it would be misleading. A client that wants "added/removed"
+compares against the winning value at that point, and the API does not claim
+to know it (see the last paragraph of this section).
 
 Order by descending item time, then a fixed item-kind order, then item ID.
 Use the entire tuple in an opaque cursor bound to the record and filters.
@@ -414,12 +533,18 @@ database schema; never hand-edit generated migrations.
 
 | Phase | Deliverable | Dependency |
 | --- | --- | --- |
-| 0 | Protection for current base identities and server-dependent task fields | None |
-| 1 | Complete event replacement: class/core schema, templates, storage, logging, edits, sources, retry payloads, links, retraction, privacy, queries/search/context, SDK/MCP/web and removal of old interaction paths | 0 |
-| 2 | Native multi-record relations: schema, whole-set assertions, edge derivation, inverses, filters, merge/erase behavior, task discovery and UI | 1 |
-| 3 | Polymorphic references for single and collection relations: allowed targets, validation, incoming queries, schema evolution checks and UI | 2 |
-| 4 | One-hop rollups over the completed relation model, explicit template-default review and context integration | 3 |
+| 0 | Protection for current base identities and server-dependent task fields, including the `done` option rule | None |
+| 1 | Complete event replacement: class/core schema, templates, the hidden internal-note type, storage, logging, edits, sources, initial-assertion retries, links, attachment through event relation fields, the `via` shape, retraction, privacy, queries/search/context, SDK/MCP/web and removal of old interaction paths | 0 |
+| 2 | Native multi-record relations: schema, `isInverse`, whole-set assertions, edge derivation with the database single-target index, inverses, filters, `cascade` rejection, merge/erase behavior, task discovery and UI | 0 |
+| 3 | Polymorphic references for single and collection relations: allowed targets, validation, incoming queries, schema evolution and object-deletion checks, and UI | 2 |
+| 4 | One-hop rollups over the completed relation model, the bounded rollup query and its indexes, explicit template-default review and context integration | 1, 3 |
 | 5 | Unified timeline through REST, MCP, SDK and web, including assertion-history semantics and pagination | 4 |
+
+Phase 2 does not depend on the event replacement, so phases 1 and 2 can be
+built in parallel. Whichever lands second extends the other: if phase 2 lands
+first, phase 1 shares its target validation and hydration with `event_links`
+(5.4). If phase 1 lands first, phase 2 applies attachment through event
+relation fields (6.3) to collection fields too.
 
 Phase 1 is intentionally a complete replacement. Do not merge a write-only
 conversion that drops storage still used by readers. It may be developed as
@@ -440,10 +565,20 @@ Each database test file uses its own fresh database. Never mock Postgres.
 
 - **Protection:** reject deletion/reshaping and caller-controlled protection;
   allow renames without breaking context, event roles, relations or views.
+  `task.status` accepts new options but refuses removing or revaluing `done`.
 - **Events:** custom types and fields work end to end; event creation cannot
   bypass logging; identities remain reserved after deletion; retries compare
-  the initial payload even after field edits; no internal notes leak through
-  ordinary event retrieval. Source references reject entities and other tenants.
+  the initial assertions even after field edits, and after fields are added
+  or deleted. Source references reject entities and other tenants. An event's
+  own relation field attaches it to the target, and reassigning the field
+  moves it.
+- **Internal notes:** every route (query, views, search, record read by ID,
+  `upsert_record`, record deletion, describe, counts, context, timeline)
+  treats the internal-note type as absent, and user-logged notes stay visible.
+- **Object deletion:** deleting a single-target relation's only target
+  deprecates the field; deleting one of a multi-target field's types is
+  rejected and names the field; event links to hidden records drop out of
+  reads.
 - **Concurrency:** competing logs land once; concurrent link additions each
   land once; retraction racing a citing write cannot leave live orphaned
   claims. Retain existing merge/link locking and erasure race coverage.
@@ -451,17 +586,22 @@ Each database test file uses its own fresh database. Never mock Postgres.
   roll back the whole write; single-target limits survive concurrent writes;
   pending collections do not change edges. Source retraction recomputes them.
   Polymorphic values validate against all allowed types. Inverses and incoming
-  reads agree with owning fields. Merge and hard-erasure recomputation cannot
-  recreate duplicates or forgotten targets.
+  reads agree with owning fields, and `isInverse` fields of many-to-many
+  relations refuse writes. `onDelete: cascade` is rejected on collection
+  fields. The database index rejects a second edge on a single-target field
+  even when application checks are bypassed. Merge and hard-erasure
+  recomputation cannot recreate duplicates or forgotten targets.
 - **Rollups:** test single, collection and polymorphic fields, disabled fields,
-  direction, one-hop limits, relation changes, direct precedence, multiple-path
-  deduplication, source deletion, counts and context budgets.
+  toggling `rollUpEvents` on and off, direction, one-hop limits, relation
+  changes, `via` precedence across all four kinds, multiple-path
+  deduplication, source deletion, counts, context budgets and the query plan
+  on a large fan-out.
 - **Timeline:** test equal timestamps across kinds, cursor/filter binding,
   backdated observations, historical collection assertions, never-winning
   superseded claims, superseded facts and internal-note exclusion.
-- **Privacy and isolation:** port interaction privacy tests; cover event
-  payloads, collection history, RLS and cross-workspace references on every
-  new path. MIT packages must not import server code.
+- **Privacy and isolation:** port interaction privacy tests; cover initial
+  event assertions and tombstones, collection history, RLS and cross-workspace
+  references on every new path. MIT packages must not import server code.
 - **Agent scenarios:** define person organizations as a native collection,
   define a company-or-person customer, log an event with custom fields, cite
   it, retrieve rolled-up context and inspect the unified timeline. Scenarios

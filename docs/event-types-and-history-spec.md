@@ -1,6 +1,9 @@
 # Event types and record history: spec
 
-Status: **proposed**, not implemented. Written November 4, 2026.
+Status: **superseded** by the
+[merged schema, events and history spec](schema-events-and-history-spec.md),
+which changes several decisions here (rollup defaults, premises, phases and
+internal notes). Kept as the decision record. Written November 4, 2026.
 
 This spec turns the open questions from the
 [schema and memory design discussion](schema-and-memory-design-discussion.md)
