@@ -8,9 +8,14 @@ variable "name" {
   type        = string
   default     = "retainer"
 
+  # The RDS instance identifier is the strictest use: a letter first, no
+  # dash at the end and no two dashes in a row.
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{1,30}$", var.name))
-    error_message = "Use 2-31 lowercase letters, digits or dashes, starting with a letter."
+    condition = (
+      length(var.name) >= 2 && length(var.name) <= 31 &&
+      can(regex("^[a-z]([a-z0-9]|-[a-z0-9])*$", var.name))
+    )
+    error_message = "Use 2-31 lowercase letters, digits and single dashes, starting with a letter and not ending with a dash."
   }
 }
 
