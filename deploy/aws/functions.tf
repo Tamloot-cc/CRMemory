@@ -4,8 +4,10 @@
 #   ops          migrations and the operator CLI, invoked by deploy.sh and ops.sh
 #
 # Terraform creates them with the package at package_path and then ignores
-# their code: deploy.sh ships new versions, so the order of stopping the API,
-# migrating and starting it again lives in one place.
+# their code and their reserved concurrency: deploy.sh ships new versions and
+# stops and starts the functions, so the order of stopping the API,
+# migrating and starting it again lives in one place, and an apply never
+# restarts functions a failed deploy left stopped.
 
 resource "random_id" "suppression_key" {
   byte_length = 32 # 64 hex characters; RETAINER_SUPPRESSION_KEY needs 32+
@@ -113,13 +115,14 @@ resource "aws_lambda_function" "this" {
 
   # deploy.sh stops the API by setting its concurrency to 0 and restores it
   # from this tag, so a deploy that failed halfway cannot leave the wrong
-  # value behind as the "previous" one.
+  # value behind as the "previous" one. A changed concurrency setting takes
+  # effect at the next deploy.
   tags = {
     "retainer:reserved-concurrency" = tostring(each.value.concurrency)
   }
 
   lifecycle {
-    ignore_changes = [filename, source_code_hash]
+    ignore_changes = [filename, source_code_hash, reserved_concurrent_executions]
   }
 
   depends_on = [aws_iam_role_policy_attachment.functions_vpc]

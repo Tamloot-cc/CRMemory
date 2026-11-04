@@ -163,7 +163,10 @@ subscribe an address; AWS emails a confirmation link first.
 **Backups.** RDS keeps automated backups for `db_backup_retention_days`
 (14 by default) and can restore to any second in that window, as a new
 instance. Practise a restore before you need one. Deleting the instance
-takes a final snapshot.
+takes a final snapshot, named with a suffix of its own. To replace the
+instance by hand, replace the suffix with it, so the new instance's final
+snapshot gets a new name:
+`terraform apply -replace=aws_db_instance.this -replace=random_id.final_snapshot`.
 
 **Secrets.** Terraform generates the database password and
 `RETAINER_SUPPRESSION_KEY` and keeps them in its state, so treat the state
@@ -175,7 +178,10 @@ key lets them back in.
 connections (2), and at most `api_reserved_concurrency` instances (10) run
 at once. Keep their product, plus a few for the consolidator and ops
 functions, under the instance's limit: about 80 on a `db.t4g.micro`. The
-`database-connections` alarm warns at 60.
+`database-connections` alarm warns at 60. `deploy.sh` owns the functions'
+concurrency (it stops and starts them), so a new `api_reserved_concurrency`
+takes effect at the next deploy, and `terraform apply` never restarts
+functions that a failed deploy left stopped.
 
 **Rate limiting.** Retainer has none of its own; API Gateway throttles at
 `api_throttle_rate` requests per second (25) with bursts of

@@ -10,8 +10,15 @@ resource "random_password" "database" {
 
 # Suffix for the final snapshot: RDS keeps it after the instance is deleted,
 # so a deployment recreated under the same name needs a new name for its own.
+# It changes with a new state or a new identifier. Terraform cannot tie it to
+# the instance itself (that would be a cycle), so when you replace the
+# instance by hand, replace it too:
+#   terraform apply -replace=aws_db_instance.this -replace=random_id.final_snapshot
 resource "random_id" "final_snapshot" {
   byte_length = 4
+  keepers = {
+    identifier = var.name
+  }
 }
 
 resource "aws_db_subnet_group" "this" {
