@@ -1,5 +1,7 @@
 import type {
+  CoreRole,
   FieldType,
+  ObjectClass,
   OnDeleteBehavior,
   RelationCardinality,
   SchemaOwner,
@@ -39,6 +41,8 @@ export type FieldState = {
   isSearchable: boolean;
   /** Set by the engine for fields server code depends on (protection.ts). */
   isProtected: boolean;
+  /** An event type's core field; set by the engine, never by a client. */
+  coreRole: CoreRole | null;
   owner: SchemaOwner;
   status: SchemaStatus;
 };
@@ -55,6 +59,8 @@ export type ObjectState = {
   labelFieldId: string | null;
   /** Set by the engine for objects server code depends on (protection.ts). */
   isProtected: boolean;
+  /** `entity` or `event`; fixed when the object is created. */
+  class: ObjectClass;
   owner: SchemaOwner;
   status: SchemaStatus;
   /** Every field, deprecated ones included, so keys are never reused. */

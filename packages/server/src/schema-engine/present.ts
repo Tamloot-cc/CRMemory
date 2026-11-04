@@ -3,6 +3,7 @@ import {
   BASE_OBJECT_IDS,
   type BaseFieldName,
   type BaseObjectName,
+  EVENT_COLUMNS,
   type FieldSettings,
   type ObjectView,
 } from '@retainer/shared';
@@ -43,6 +44,8 @@ export function presentSchema(schema: CompiledSchema): ObjectView[] {
     labelField: object.labelField?.name ?? null,
     owner: object.state.owner,
     isProtected: object.state.isProtected,
+    class: object.state.class,
+    ...(object.state.class === 'event' ? { eventColumns: [...EVENT_COLUMNS] } : {}),
     ...(BASE_OBJECT_NAMES.has(object.state.universalId)
       ? { baseObject: BASE_OBJECT_NAMES.get(object.state.universalId) }
       : {}),
@@ -65,6 +68,7 @@ export function presentSchema(schema: CompiledSchema): ObjectView[] {
       ...(BASE_FIELD_NAMES.has(field.universalId)
         ? { baseField: BASE_FIELD_NAMES.get(field.universalId) }
         : {}),
+      ...(field.coreRole ? { coreRole: field.coreRole } : {}),
     })),
   }));
 }

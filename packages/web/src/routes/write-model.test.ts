@@ -31,6 +31,7 @@ const field = (name: string, type: FieldView['type'], extra: Partial<FieldView> 
 
 const person: ObjectView = {
   isProtected: false,
+  class: 'entity',
   nameSingular: 'person',
   namePlural: 'people',
   labelSingular: 'Person',

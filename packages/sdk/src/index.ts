@@ -3,26 +3,27 @@ import type {
   AggregateInput,
   AggregateResult,
   AssertionView,
+  AttachedEvent,
   BulkDeleteImpact,
   ContextInput,
   ContextPack,
   CreateViewInput,
   DecisionResult,
   DeleteImpact,
+  DeleteRecordResult,
+  EventAttachment,
   ForgetResult,
-  InteractionQueryInput,
-  InteractionQueryResult,
-  LogInteractionResult,
+  LogEventInput,
+  LogEventResult,
   MergeInput,
   MergeResult,
   MergeSuggestionDecision,
   Page,
   PresentedFact,
-  PresentedInteraction,
   PresentedRecord,
   QueryInput,
   RecordPage,
-  RetractInteractionResult,
+  RetractEventResult,
   ReviewCollection,
   ReviewQueue,
   SavedView,
@@ -71,18 +72,8 @@ export type UpsertInput = PatchInput & {
   match?: Record<string, unknown>;
   ifMissing?: 'fail' | 'create';
 };
-export type LogInteractionInput = {
-  kind: 'meeting' | 'call' | 'email' | 'message' | 'note';
-  channel: string;
-  occurredAt: string;
-  externalId?: string;
-  title?: string;
-  summary?: string;
-  /** Who took part. */
-  participants?: Participant[];
-  /** IDs of the records it concerns, e.g. the company and project of a meeting. */
-  about?: string[];
-};
+export type { LogEventInput };
+
 type Participant = { handle?: string; recordId?: string; role?: string };
 const isFailedChange = (body: unknown) =>
   typeof body === 'object' && body !== null && (body as { status?: unknown }).status === 'failed';
@@ -223,10 +214,9 @@ export class RetainerClient {
     );
   }
   deleteRecord(id: string) {
-    return this.request<{ id: string; deleted: true; deletedRecordIds: string[] }>(
-      `/v1/records/${encodeURIComponent(id)}`,
-      { method: 'DELETE' },
-    );
+    return this.request<DeleteRecordResult>(`/v1/records/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
   }
   /** The object's saved views the caller can see, in their saved order. */
   views(object: string, signal?: AbortSignal) {
@@ -299,10 +289,14 @@ export class RetainerClient {
       signal,
     );
   }
-  recordInteractions(id: string, options: PageOptions = {}) {
+  /**
+   * Events attached directly to a record, newest first, each with how it is
+   * attached (`via`). `link` narrows to participant, about or field.
+   */
+  recordEvents(id: string, options: PageOptions & { link?: EventAttachment } = {}) {
     const { signal, ...params } = options;
-    return this.get<Page<PresentedInteraction>>(
-      `/v1/records/${encodeURIComponent(id)}/interactions`,
+    return this.get<Page<AttachedEvent>>(
+      `/v1/records/${encodeURIComponent(id)}/events`,
       params,
       signal,
     );
@@ -320,7 +314,7 @@ export class RetainerClient {
     input: { text: string; source?: string; quote?: string },
     idempotencyKey?: string,
   ) {
-    return this.post<{ fact: PresentedFact; noteInteraction: string | null }>(
+    return this.post<{ fact: PresentedFact }>(
       `/v1/records/${encodeURIComponent(id)}/facts`,
       input,
       undefined,
@@ -332,39 +326,38 @@ export class RetainerClient {
       method: 'DELETE',
     });
   }
-  interaction(id: string, signal?: AbortSignal) {
-    return this.get<PresentedInteraction>(`/v1/interactions/${encodeURIComponent(id)}`, {}, signal);
+  /** One live event: the record with its built-in columns and links. */
+  event(id: string, signal?: AbortSignal) {
+    return this.get<PresentedRecord>(`/v1/events/${encodeURIComponent(id)}`, {}, signal);
   }
-  logInteraction(input: LogInteractionInput) {
-    return this.post<LogInteractionResult>('/v1/interactions', input);
+  /** Logs an event; the only way events are created. Idempotent by channel and externalId. */
+  logEvent(input: LogEventInput) {
+    return this.post<LogEventResult>('/v1/events', input);
   }
-  /** Lists and counts interactions by kind, channel, time and linked record. */
-  queryInteractions(input: InteractionQueryInput = {}, signal?: AbortSignal) {
-    return this.post<InteractionQueryResult>('/v1/interactions/query', input, signal);
-  }
-  /** Adds participants and `about` records to a logged interaction; idempotent. */
-  addInteractionLinks(id: string, input: { participants?: Participant[]; about?: string[] }) {
-    return this.post<PresentedInteraction & { added: AddedLinks }>(
-      `/v1/interactions/${encodeURIComponent(id)}/participants`,
+  /** Adds participants and `about` records to a logged event; idempotent. */
+  addEventLinks(id: string, input: { participants?: Participant[]; about?: string[] }) {
+    return this.post<PresentedRecord & { added: AddedLinks }>(
+      `/v1/events/${encodeURIComponent(id)}/links`,
       input,
     );
   }
   /** Removes one participant (a person's key only). */
   removeParticipant(id: string, participantId: string) {
-    return this.request<PresentedInteraction>(
-      `/v1/interactions/${encodeURIComponent(id)}/participants/${encodeURIComponent(participantId)}`,
+    return this.request<PresentedRecord>(
+      `/v1/events/${encodeURIComponent(id)}/participants/${encodeURIComponent(participantId)}`,
       { method: 'DELETE' },
     );
   }
-  /** Removes a record from an interaction's `about` list (a person's key only). */
+  /** Removes a record from an event's `about` list (a person's key only). */
   removeAbout(id: string, recordId: string) {
-    return this.request<PresentedInteraction>(
-      `/v1/interactions/${encodeURIComponent(id)}/about/${encodeURIComponent(recordId)}`,
+    return this.request<PresentedRecord>(
+      `/v1/events/${encodeURIComponent(id)}/about/${encodeURIComponent(recordId)}`,
       { method: 'DELETE' },
     );
   }
-  retractInteraction(id: string) {
-    return this.request<RetractInteractionResult>(`/v1/interactions/${encodeURIComponent(id)}`, {
+  /** Deletes an event and retracts the claims that cite it. */
+  deleteEvent(id: string) {
+    return this.request<RetractEventResult>(`/v1/events/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
   }
@@ -377,7 +370,7 @@ export class RetainerClient {
       assertions: AssertionView[];
       facts: PresentedFact[];
       nextCursors: { assertions: string | null; facts: string | null };
-    }>(`/v1/interactions/${encodeURIComponent(id)}/claims`, params, signal);
+    }>(`/v1/events/${encodeURIComponent(id)}/claims`, params, signal);
   }
   schemaChanges(options: PageOptions & { status?: string } = {}) {
     const { signal, ...params } = options;

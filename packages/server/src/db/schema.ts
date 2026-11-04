@@ -1,7 +1,9 @@
 import type {
   Actor,
+  CoreRole,
   FieldSettings,
   FieldType,
+  ObjectClass,
   SchemaChangeStatus,
   SchemaOwner,
   SchemaStatus,
@@ -18,6 +20,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -135,6 +138,11 @@ export const objectTypes = pgTable(
     labelFieldId: uuid('label_field_id'),
     /** Server code depends on the object; set by the schema engine only (1.1). */
     isProtected: boolean('is_protected').notNull().default(false),
+    /**
+     * `entity` (a thing tracked) or `event` (something that happened, with a
+     * time, a source identity and links). Fixed when the object is created.
+     */
+    class: text('class').$type<ObjectClass>().notNull().default('entity'),
     createdBy: jsonb('created_by').$type<Actor>().notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -148,6 +156,7 @@ export const objectTypes = pgTable(
     uniqueIndex('object_types_plural_uq')
       .on(t.workspaceId, t.namePlural)
       .where(sql`${t.status} = 'active'`),
+    check('object_types_class', sql`${t.class} in ('entity', 'event')`),
   ],
 );
 
@@ -174,6 +183,8 @@ export const fields = pgTable(
     isSearchable: boolean('is_searchable').notNull().default(false),
     /** Server code depends on the field; set by the schema engine only (1.1). */
     isProtected: boolean('is_protected').notNull().default(false),
+    /** An event type's core field (`title` or `summary`); set by the schema engine only. */
+    coreRole: text('core_role').$type<CoreRole>(),
     owner: text('owner').$type<SchemaOwner>().notNull(),
     status: text('status').$type<SchemaStatus>().notNull(),
     createdBy: jsonb('created_by').$type<Actor>().notNull(),
@@ -190,6 +201,10 @@ export const fields = pgTable(
     uniqueIndex('fields_universal_uq').on(t.workspaceId, t.universalId),
     uniqueIndex('fields_key_uq').on(t.objectTypeId, t.key),
     uniqueIndex('fields_name_uq').on(t.objectTypeId, t.name).where(sql`${t.status} = 'active'`),
+    uniqueIndex('fields_core_role_uq')
+      .on(t.objectTypeId, t.coreRole)
+      .where(sql`${t.coreRole} is not null and ${t.status} = 'active'`),
+    check('fields_core_role', sql`${t.coreRole} is null or ${t.coreRole} in ('title', 'summary')`),
   ],
 );
 
@@ -344,41 +359,39 @@ export const recordIdentifiers = pgTable(
 // Memory
 // ---------------------------------------------------------------------------
 
-export const INTERACTION_KINDS = ['meeting', 'call', 'email', 'message', 'note'] as const;
-export type InteractionKind = (typeof INTERACTION_KINDS)[number];
-
 /**
- * A log of what happened, written by the agent (1.3, 4.1). Retainer stores
- * the agent's own summary, never transcripts or message bodies.
+ * The built-in columns of an event record (1.3): when it happened and the
+ * source identity it was logged under. One row per event record, written in
+ * the transaction that creates the record and never changed afterwards,
+ * except that erasure clears a raw identity (2.1). A deferred trigger
+ * (0015_events_security.sql) makes every event-class record have exactly
+ * one, and only event-class records any.
  */
-export const interactions = pgTable(
-  'interactions',
+export const eventRecords = pgTable(
+  'event_records',
   {
-    id: id(),
     workspaceId: workspaceId(),
-    kind: text('kind').$type<InteractionKind>().notNull(),
-    /** Where it came from, e.g. "gmail", "zoom", "whatsapp", "api". */
-    channel: text('channel').notNull(),
+    recordId: uuid('record_id').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    /** Where it came from, e.g. "gmail", "zoom", "whatsapp", "api". Null once erased. */
+    channel: text('channel'),
     /** The source system's ID. Makes logging the same item twice a no-op. */
     externalId: text('external_id'),
-    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
-    title: text('title'),
-    /** The agent's short summary of the interaction. */
-    summary: text('summary'),
-    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
-    /** Server-computed from title (weighted higher) and summary (5.1). */
-    search: tsvector('search'),
-    createdBy: jsonb('created_by').$type<Actor>().notNull(),
     createdAt: createdAt(),
-    deletedAt: deletedAt(),
   },
   (t) => [
-    unique('interactions_workspace_id_uq').on(t.workspaceId, t.id),
-    uniqueIndex('interactions_external_uq')
+    primaryKey({ name: 'event_records_pk', columns: [t.recordId] }),
+    unique('event_records_workspace_record_uq').on(t.workspaceId, t.recordId),
+    tenantFk(
+      'event_records_record_fk',
+      [t.workspaceId, t.recordId],
+      [records.workspaceId, records.id],
+    ),
+    // Deleted events keep their row, so their identity stays reserved (6.1).
+    uniqueIndex('event_records_external_uq')
       .on(t.workspaceId, t.channel, t.externalId)
       .where(sql`${t.externalId} is not null`),
-    index('interactions_workspace_time_idx').on(t.workspaceId, t.occurredAt),
-    index('interactions_search_gin').using('gin', t.workspaceId, t.search),
+    index('event_records_workspace_time_idx').on(t.workspaceId, t.occurredAt, t.recordId),
   ],
 );
 
@@ -397,61 +410,75 @@ export const UNMATCHED_REASONS = [
 export type UnmatchedReason = (typeof UNMATCHED_REASONS)[number];
 
 /**
- * How a row links its record to the interaction (1.3). `participant`: who
- * took part. `about`: a record the interaction concerns, such as the
- * company or project of a meeting; it carries only `record_id`.
+ * How a row links its record to the event (1.3). `participant`: who took
+ * part. `about`: a record the event concerns, such as the company or
+ * project of a meeting; it carries only `record_id`.
  */
-export const PARTICIPANT_LINKS = ['participant', 'about'] as const;
-export type ParticipantLink = (typeof PARTICIPANT_LINKS)[number];
+export const EVENT_LINKS = ['participant', 'about'] as const;
+export type EventLink = (typeof EVENT_LINKS)[number];
 
-export const interactionParticipants = pgTable(
-  'interaction_participants',
+export const eventLinks = pgTable(
+  'event_links',
   {
     id: id(),
     workspaceId: workspaceId(),
-    interactionId: uuid('interaction_id').notNull(),
-    /** The participant's place in the logged list, so reads keep the agent's order. */
+    eventId: uuid('event_id').notNull(),
+    /** The link's place in the logged list, so reads keep the agent's order. */
     position: integer('position').notNull(),
     /** Normalized email address or E.164 phone number. */
     handle: text('handle'),
-    displayName: text('display_name'),
     /** The agent's own word for the part they played, e.g. "customer" or "from". */
     role: text('role'),
-    /** Set once the participant is matched to a record. FK in 0001_security. */
+    /** Set once the participant is matched to a record. FK in 0015_events_security. */
     recordId: uuid('record_id'),
     /** Set when `record_id` is null: why the participant stayed unresolved. */
     unmatchedReason: text('unmatched_reason').$type<UnmatchedReason>(),
-    link: text('link').$type<ParticipantLink>().notNull().default('participant'),
+    link: text('link').$type<EventLink>().notNull(),
   },
   (t) => [
-    tenantFk(
-      'interaction_participants_interaction_fk',
-      [t.workspaceId, t.interactionId],
-      [interactions.workspaceId, interactions.id],
-    ),
-    index('interaction_participants_interaction_idx').on(t.interactionId),
-    index('interaction_participants_record_idx').on(t.recordId),
-    index('interaction_participants_deleted_record_idx')
+    tenantFk('event_links_event_fk', [t.workspaceId, t.eventId], [records.workspaceId, records.id]),
+    index('event_links_event_idx').on(t.eventId, t.position),
+    index('event_links_record_idx').on(t.workspaceId, t.recordId, t.link),
+    index('event_links_deleted_record_idx')
       .on(t.workspaceId)
       .where(sql`${t.unmatchedReason} = 'deleted_record'`),
     check(
-      'interaction_participants_unmatched_reason',
+      'event_links_unmatched_reason',
       sql`${t.unmatchedReason} in ('no_match', 'phone_only', 'deleted_record', 'ambiguous', 'suppressed')`,
     ),
-    check('interaction_participants_link', sql`${t.link} in ('participant', 'about')`),
+    check('event_links_link', sql`${t.link} in ('participant', 'about')`),
     // An about row is only a record link. Its record_id is not required here:
     // the record FK sets it null when a workspace is deleted, and forget
     // deletes about rows before it deletes the record.
     check(
-      'interaction_participants_about_shape',
+      'event_links_about_shape',
       sql`${t.link} = 'participant' or (${t.handle} is null and ${t.role} is null and ${t.unmatchedReason} is null)`,
     ),
   ],
 );
 
 /**
- * `retracted`: the source interaction was retracted, so the assertion no
- * longer counts and can never win again (rules 2.1, 2.4).
+ * Event identities erased by `forget` (6.4): a keyed HMAC of the workspace,
+ * channel and external ID, so logging the same source again is refused
+ * without keeping the raw identity. `key_id` names the suppression key that
+ * made the HMAC, so a key rotation keeps matching and a missing key fails
+ * closed instead of silently clearing the suppression.
+ */
+export const eventIdentityTombstones = pgTable(
+  'event_identity_tombstones',
+  {
+    id: id(),
+    workspaceId: workspaceId(),
+    keyId: text('key_id').notNull(),
+    hmac: text('hmac').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('event_identity_tombstones_uq').on(t.workspaceId, t.keyId, t.hmac)],
+);
+
+/**
+ * `retracted`: the source event was deleted, so the assertion no longer
+ * counts and can never win again (rules 2.1, 2.4).
  */
 export const ASSERTION_STATUSES = [
   'active',
@@ -478,14 +505,16 @@ export const fieldAssertions = pgTable(
     fieldId: uuid('field_id').notNull(),
     value: jsonb('value').$type<unknown>(),
     actor: jsonb('actor').$type<Actor>().notNull(),
-    /** FK in 0001_security (sets only this column to null). */
-    sourceInteractionId: uuid('source_interaction_id'),
+    /** The event record cited as the source. FK in 0015_events_security (sets only this column to null). */
+    sourceRecordId: uuid('source_record_id'),
+    /** Written by `log_event` as the event's own initial values (6.2). */
+    isInitial: boolean('is_initial').notNull().default(false),
     /** 0..1. People and integrations write 1. */
     confidence: real('confidence').notNull().default(1),
     status: text('status').$type<AssertionStatus>().notNull(),
     reviewReason: text('review_reason').$type<ReviewReason>(),
     /**
-     * When the claim was true at the source: the interaction's `occurred_at`,
+     * When the claim was true at the source: the cited event's `occurred_at`,
      * or server time for direct writes. Decides ties within a precedence.
      */
     observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
@@ -508,8 +537,9 @@ export const fieldAssertions = pgTable(
     // Relation claims by target, for merges and forget (4.2, 2.1).
     index('field_assertions_field_idx').on(t.workspaceId, t.fieldId),
     index('field_assertions_source_idx')
-      .on(t.sourceInteractionId)
-      .where(sql`${t.sourceInteractionId} is not null`),
+      .on(t.sourceRecordId)
+      .where(sql`${t.sourceRecordId} is not null`),
+    index('field_assertions_initial_idx').on(t.recordId, t.fieldId).where(sql`${t.isInitial}`),
     index('field_assertions_review_idx')
       .on(t.workspaceId, t.createdAt)
       .where(sql`${t.status} = 'pending_review'`),
@@ -549,15 +579,15 @@ export const facts = pgTable(
   ],
 );
 
-/** What a fact rests on: an interaction (optionally a quote) or other facts. */
+/** What a fact rests on: an event record (optionally a quote) or other facts. */
 export const factSources = pgTable(
   'fact_sources',
   {
     id: id(),
     workspaceId: workspaceId(),
     factId: uuid('fact_id').notNull(),
-    /** FK in 0001_security (sets only this column to null). */
-    interactionId: uuid('interaction_id'),
+    /** The event record cited. FK in 0015_events_security (sets only this column to null). */
+    sourceRecordId: uuid('source_record_id'),
     premiseFactId: uuid('premise_fact_id'),
     quote: text('quote'),
   },
@@ -569,7 +599,7 @@ export const factSources = pgTable(
       [facts.workspaceId, facts.id],
     ),
     index('fact_sources_fact_idx').on(t.factId),
-    index('fact_sources_interaction_idx').on(t.interactionId),
+    index('fact_sources_source_idx').on(t.sourceRecordId),
   ],
 );
 

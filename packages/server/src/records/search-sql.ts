@@ -21,7 +21,7 @@ export function textVector(tx: Tx, text: SearchText): Fragment {
 }
 
 /**
- * The tsvector stored in `records.search` and `interactions.search`: the
+ * The tsvector stored in `records.search` (events included) and `facts.search`: the
  * label (or title) weighted A, other searchable text weighted B.
  */
 export function searchVector(tx: Tx, label: SearchText | null, body: SearchText): Fragment {

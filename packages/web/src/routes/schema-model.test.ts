@@ -26,6 +26,7 @@ const field = (over: Partial<FieldView> & Pick<FieldView, 'name' | 'type'>): Fie
 });
 const object = (over: Partial<ObjectView> & Pick<ObjectView, 'nameSingular'>): ObjectView => ({
   isProtected: false,
+  class: 'entity',
   namePlural: `${over.nameSingular}s`,
   labelSingular: over.nameSingular,
   labelPlural: `${over.nameSingular}s`,

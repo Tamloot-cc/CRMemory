@@ -48,12 +48,12 @@ machine-readable output.
 **Give every agent and every person their own key.** The key decides which
 workspace a call acts on and who its writes are attributed to.
 
-| Scope          | Allows                                                                     |
-| -------------- | -------------------------------------------------------------------------- |
-| `read`         | Reading the schema, records, facts, interactions, search and context packs |
-| `write`        | Creating and updating records, logging interactions, `remember`, review    |
-| `schema:write` | Applying templates and requesting schema changes                           |
-| `admin`        | Everything above, plus deciding proposed schema changes and `forget`       |
+| Scope          | Allows                                                               |
+| -------------- | -------------------------------------------------------------------- |
+| `read`         | Reading the schema, records, events, facts, search and context packs |
+| `write`        | Creating and updating records, logging events, `remember`, review    |
+| `schema:write` | Applying templates and requesting schema changes                     |
+| `admin`        | Everything above, plus deciding proposed schema changes and `forget` |
 
 The actor type matters as much as the scope:
 
@@ -69,17 +69,18 @@ The actor type matters as much as the scope:
 Set these on the `retainer` service in `docker/compose.yml`, or in `.env`
 when running from source.
 
-| Variable                                | Default          | Purpose                                                                                                                                                                                     |
-| --------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                          | —                | Postgres connection string. Required.                                                                                                                                                       |
-| `RETAINER_ROLE`                         | `all`            | `api` (REST, MCP, web app), `worker` (scheduled consolidator) or `all`. Split them to run the API and the workers in separate containers.                                                   |
-| `PORT`                                  | `8787`           | HTTP port.                                                                                                                                                                                  |
-| `LOG_LEVEL`                             | `info`           | `debug`, `info`, `warn` or `error`.                                                                                                                                                         |
-| `RETAINER_PUBLIC_ORIGIN`                | —                | The browser-facing origin when TLS ends at a reverse proxy, e.g. `https://retainer.example`. Used for CSRF checks and the session cookie. Forwarded headers are never trusted.              |
-| `RETAINER_SUPPRESSION_KEY`              | —                | Needed for `forget`. At least 32 characters (`openssl rand -hex 32`). Keep it stable: erased emails and phones are stored only as an HMAC under this key, so changing it lets them back in. |
-| `RETAINER_CONSOLIDATE_INTERVAL_MINUTES` | `60`             | How often the consolidator dedupes facts and suggests merges in each workspace.                                                                                                             |
-| `RETAINER_WEB_DIR`                      | set in the image | Directory of the built web app, served at `/app`. Leave unset to serve no web app.                                                                                                          |
-| `RETAINER_DB_POOL_MAX`                  | `10`             | Database connections the API process opens. Lower it when many processes share one database.                                                                                                |
+| Variable                                | Default          | Purpose                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                          | —                | Postgres connection string. Required.                                                                                                                                                                                                                                                                                                                       |
+| `RETAINER_ROLE`                         | `all`            | `api` (REST, MCP, web app), `worker` (scheduled consolidator) or `all`. Split them to run the API and the workers in separate containers.                                                                                                                                                                                                                   |
+| `PORT`                                  | `8787`           | HTTP port.                                                                                                                                                                                                                                                                                                                                                  |
+| `LOG_LEVEL`                             | `info`           | `debug`, `info`, `warn` or `error`.                                                                                                                                                                                                                                                                                                                         |
+| `RETAINER_PUBLIC_ORIGIN`                | —                | The browser-facing origin when TLS ends at a reverse proxy, e.g. `https://retainer.example`. Used for CSRF checks and the session cookie. Forwarded headers are never trusted.                                                                                                                                                                              |
+| `RETAINER_SUPPRESSION_KEY`              | —                | Needed for `forget`. At least 32 characters (`openssl rand -hex 32`). Keep it stable: erased emails, phones and event identities are stored only as an HMAC under this key. To rotate it, move the old key to `RETAINER_SUPPRESSION_PREVIOUS_KEYS`; dropping an old key lets its erased handles back in and blocks logging events until it is listed again. |
+| `RETAINER_SUPPRESSION_PREVIOUS_KEYS`    | —                | Earlier suppression keys, comma-separated, still checked after a rotation so erased handles and events stay suppressed.                                                                                                                                                                                                                                     |
+| `RETAINER_CONSOLIDATE_INTERVAL_MINUTES` | `60`             | How often the consolidator dedupes facts and suggests merges in each workspace.                                                                                                                                                                                                                                                                             |
+| `RETAINER_WEB_DIR`                      | set in the image | Directory of the built web app, served at `/app`. Leave unset to serve no web app.                                                                                                                                                                                                                                                                          |
+| `RETAINER_DB_POOL_MAX`                  | `10`             | Database connections the API process opens. Lower it when many processes share one database.                                                                                                                                                                                                                                                                |
 
 ## The web app
 
@@ -118,10 +119,11 @@ git pull && docker compose -f docker/compose.yml up --build -d
 ## Privacy requests
 
 `POST /v1/records/:id/forget` hard-deletes a person: the record with its
-facts and assertions, and the interactions they took part in, along with the
-claims and facts that rested only on those interactions. Their emails and
-phones are kept only as keyed hashes, so agents cannot recreate the person
-from old email. It needs a `user` key with the `admin` scope and
+facts and assertions, and the events they took part in, along with the
+claims and facts that rested only on those events. Their emails and phones
+are kept only as keyed hashes, so agents cannot recreate the person from old
+email, and so are the source IDs of erased events, so logging the same
+source again is refused. It needs a `user` key with the `admin` scope and
 `RETAINER_SUPPRESSION_KEY` set. The response gives counts only, plus other
 rows that may still mention the person for someone to review; Retainer does
 not edit free text on its own.

@@ -379,10 +379,10 @@ export function RecordLink({
     </Link>
   );
 }
-export function InteractionLink({ id, children }: { id: string; children: ReactNode }) {
+export function EventLink({ id, children }: { id: string; children: ReactNode }) {
   return (
     <Link
-      to="/i/$id"
+      to="/e/$id"
       params={{ id }}
       className="text-sm text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
     >

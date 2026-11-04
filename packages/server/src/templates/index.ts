@@ -6,7 +6,12 @@ import { sales } from './sales.js';
 import { services } from './services.js';
 import type { Template, TemplateName } from './types.js';
 
-export { BASE_OBJECT_IDS, BASE_OPERATIONS } from './base.js';
+export {
+  BASE_EVENT_OPERATIONS,
+  BASE_OBJECT_IDS,
+  BASE_OPERATIONS,
+  INTERNAL_OPERATIONS,
+} from './base.js';
 export { TEMPLATE_NAMES, type Template, type TemplateName } from './types.js';
 
 export const TEMPLATES: Record<TemplateName, Template> = {

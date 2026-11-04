@@ -1,0 +1,298 @@
+import type { EventDetails, ObjectView, UnmatchedReason, Via } from '@retainer/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { X } from 'lucide-react';
+import { useState } from 'react';
+import { api, useWorkspace } from '../api/client.js';
+import {
+  Badge,
+  Button,
+  Form,
+  FormField,
+  Input,
+  Muted,
+  Notice,
+  Property,
+  PropertyList,
+  Row,
+  Stack,
+} from '../ui/index.js';
+import { CandidateRecord } from './record-actions.js';
+import { objectLabel, recordTitle, useDebounced } from './state.js';
+
+const REASONS: Record<UnmatchedReason, string> = {
+  no_match: 'No matching record',
+  phone_only: 'Phone only',
+  deleted_record: 'Deleted record',
+  ambiguous: 'Several possible records',
+  suppressed: 'Blocked after erasure',
+};
+
+/**
+ * How an event is attached to the record whose history lists it (7.1):
+ * a participant, `about` it, through one of the event's relation fields, or
+ * rolled up from a related record.
+ */
+export function ViaLabel({
+  via,
+  eventObject,
+  recordObject,
+}: {
+  via: Via;
+  /** The event type, to name a relation field the event points through. */
+  eventObject?: ObjectView;
+  /** The listing record's object, to name the field a rollup follows. */
+  recordObject?: ObjectView;
+}) {
+  const label = (object: ObjectView | undefined, name: string) =>
+    object?.fields.find((f) => f.name === name)?.label ?? name;
+  switch (via.kind) {
+    case 'participant':
+      return <Badge>Participant</Badge>;
+    case 'about':
+      return <Badge>About</Badge>;
+    case 'field':
+      return <Badge>Via field {label(eventObject, via.field)}</Badge>;
+    case 'rollup':
+      return (
+        <Row>
+          <Badge>Via {label(recordObject, via.field)}</Badge>
+          <CandidateRecord id={via.record} />
+        </Row>
+      );
+  }
+}
+
+/**
+ * An event's built-in columns, participants and `about` records. With
+ * `editable`, links can be added and removed (a person's key only).
+ */
+export function EventDetailsView({
+  id,
+  event,
+  editable,
+}: {
+  id: string;
+  event: EventDetails;
+  editable: boolean;
+}) {
+  const { session } = useWorkspace(),
+    client = useQueryClient();
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  /** Runs one link change and refreshes; true when it succeeded. */
+  async function change(run: () => Promise<unknown>) {
+    setBusy(true);
+    setError('');
+    try {
+      await run();
+      await client.invalidateQueries({ queryKey: [session.workspace.id] });
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+  const { matched, unmatched } = event.participants;
+  const remove = (label: string, run: () => Promise<unknown>) =>
+    editable ? (
+      <Button
+        variant="ghost"
+        size="iconSmall"
+        disabled={busy}
+        aria-label={`Remove ${label}`}
+        title="Remove"
+        onClick={() => void change(run)}
+      >
+        <X size={13} />
+      </Button>
+    ) : null;
+  return (
+    <Stack>
+      {error ? <Notice error>{error}</Notice> : null}
+      <PropertyList>
+        <Property label="Occurred">{new Date(event.occurredAt).toLocaleString()}</Property>
+        <Property label="Channel">{event.channel ?? <Muted>Erased for privacy</Muted>}</Property>
+        <Property label="External ID">
+          {event.externalId ?? <Muted>{event.channel ? 'None' : 'Erased for privacy'}</Muted>}
+        </Property>
+        <Property label="Participants">
+          <Stack>
+            {matched.map((p) => (
+              <Row key={p.id}>
+                <CandidateRecord id={p.recordId} />
+                {p.handle ? <Muted>{p.handle}</Muted> : null}
+                {p.role ? <Badge>{p.role}</Badge> : null}
+                {remove(p.handle || 'participant', () => api.removeParticipant(id, p.id))}
+              </Row>
+            ))}
+            {unmatched.map((p) => (
+              <Row key={p.id}>
+                <span>{p.handle || 'Unknown participant'}</span>
+                <Badge tone="pending">{REASONS[p.reason] ?? p.reason}</Badge>
+                {p.role ? <Badge>{p.role}</Badge> : null}
+                {p.candidates?.map((candidate) => (
+                  <CandidateRecord key={candidate} id={candidate} />
+                ))}
+                {remove(p.handle || 'participant', () => api.removeParticipant(id, p.id))}
+              </Row>
+            ))}
+            {!matched.length && !unmatched.length ? <Muted>No participants</Muted> : null}
+            {editable ? (
+              <AddParticipant
+                busy={busy}
+                onAdd={(handle, role) =>
+                  change(() =>
+                    api.addEventLinks(id, {
+                      participants: [{ handle, ...(role ? { role } : {}) }],
+                    }),
+                  )
+                }
+              />
+            ) : null}
+          </Stack>
+        </Property>
+        <Property label="About">
+          <Stack>
+            {event.about.map((record) => (
+              <Row key={record}>
+                <CandidateRecord id={record} />
+                {remove('about record', () => api.removeAbout(id, record))}
+              </Row>
+            ))}
+            {!event.about.length ? <Muted>Not about any record</Muted> : null}
+            {editable ? (
+              <AddAbout
+                busy={busy}
+                exclude={event.about}
+                onAdd={(record) => change(() => api.addEventLinks(id, { about: [record] }))}
+              />
+            ) : null}
+          </Stack>
+        </Property>
+      </PropertyList>
+    </Stack>
+  );
+}
+
+function AddParticipant({
+  busy,
+  onAdd,
+}: {
+  busy: boolean;
+  onAdd: (handle: string, role: string) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false),
+    [handle, setHandle] = useState(''),
+    [role, setRole] = useState('');
+  if (!open)
+    return (
+      <Row>
+        <Button size="small" variant="ghost" onClick={() => setOpen(true)}>
+          Add participant…
+        </Button>
+      </Row>
+    );
+  return (
+    <Form
+      autoFocus
+      onSubmit={() => {
+        if (!handle.trim()) return;
+        void onAdd(handle.trim(), role.trim()).then((added) => {
+          if (!added) return;
+          setHandle('');
+          setRole('');
+          setOpen(false);
+        });
+      }}
+    >
+      <FormField label="Email or phone">
+        <Input
+          aria-label="Participant email or phone"
+          value={handle}
+          onChange={(e) => setHandle(e.target.value)}
+        />
+      </FormField>
+      <FormField label="Role" hint="Optional">
+        <Input
+          aria-label="Participant role"
+          value={role}
+          onChange={(e) => setRole(e.target.value)}
+        />
+      </FormField>
+      <Row>
+        <Button type="submit" variant="primary" size="small" disabled={busy || !handle.trim()}>
+          Add participant
+        </Button>
+        <Button size="small" variant="ghost" disabled={busy} onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </Row>
+    </Form>
+  );
+}
+
+/** Finds a record by keyword (`POST /v1/search`) to mark the event as about it. */
+function AddAbout({
+  busy,
+  exclude,
+  onAdd,
+}: {
+  busy: boolean;
+  exclude: string[];
+  onAdd: (record: string) => Promise<boolean>;
+}) {
+  const { session, schema } = useWorkspace();
+  const [open, setOpen] = useState(false),
+    [text, setText] = useState('');
+  const query = useDebounced(text.trim());
+  const results = useQuery({
+    queryKey: [session.workspace.id, 'search', query],
+    enabled: open && !!query,
+    queryFn: ({ signal }) => api.search({ query, limit: 8 }, signal),
+  });
+  if (!open)
+    return (
+      <Row>
+        <Button size="small" variant="ghost" onClick={() => setOpen(true)}>
+          Add record…
+        </Button>
+      </Row>
+    );
+  const hits = (query ? (results.data?.records ?? []) : []).filter((h) => !exclude.includes(h.id));
+  return (
+    <Stack>
+      <Input
+        autoFocus
+        aria-label="Find a record"
+        placeholder="Find a record…"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      {hits.map((hit) => (
+        <Button
+          key={hit.id}
+          size="small"
+          disabled={busy}
+          onClick={() =>
+            void onAdd(hit.id).then((added) => {
+              if (!added) return;
+              setText('');
+              setOpen(false);
+            })
+          }
+        >
+          {recordTitle(hit)}
+          <Muted>{objectLabel(schema, hit.object)}</Muted>
+        </Button>
+      ))}
+      {query && results.data && !hits.length ? <Muted>No records match.</Muted> : null}
+      <Row>
+        <Button size="small" variant="ghost" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </Row>
+    </Stack>
+  );
+}

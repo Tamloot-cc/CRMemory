@@ -24,7 +24,7 @@ no dashboards, email sync or agent chat.
 | Hosting       | Static files served by the Retainer server at `/app`, same origin as the API, so the image stays one process and there is no CORS |
 | Auth          | A person signs in with their own `user`-actor API key; the server turns it into an httpOnly cookie (4)                            |
 | Twenty        | A behaviour reference only. No Twenty code is copied or translated (2)                                                            |
-| First screens | Retainer's own: the review inbox, then records with provenance, facts and interactions                                            |
+| First screens | Retainer's own: the review inbox, then records with provenance, facts and events                                                  |
 
 ### Why a single-page app and not Next.js
 
@@ -135,14 +135,14 @@ The server enforces scopes. `admin` implies `read`, `write` and
 restricts every mutation to a `user` actor. This UI restriction does not change
 which actors the REST and MCP APIs allow to edit or retract data.
 
-| Action                                                                       | Needs                             |
-| ---------------------------------------------------------------------------- | --------------------------------- |
-| Browse records, facts, interactions                                          | `read`                            |
-| Edit fields, retract facts and interactions, accept or reject pending values | `write` and a `user` actor        |
-| Create, delete and merge records; dismiss merge suggestions                  | `write` and a `user` actor        |
-| Approve or reject schema changes                                             | `admin` and a `user` actor        |
-| Apply a template                                                             | `schema:write` and a `user` actor |
-| Erase a record for privacy (`forget`)                                        | `admin` and a `user` actor        |
+| Action                                                                 | Needs                             |
+| ---------------------------------------------------------------------- | --------------------------------- |
+| Browse records, facts, events                                          | `read`                            |
+| Edit fields, retract facts and events, accept or reject pending values | `write` and a `user` actor        |
+| Create, delete and merge records; dismiss merge suggestions            | `write` and a `user` actor        |
+| Approve or reject schema changes                                       | `admin` and a `user` actor        |
+| Apply a template                                                       | `schema:write` and a `user` actor |
+| Erase a record for privacy (`forget`)                                  | `admin` and a `user` actor        |
 
 A key with a non-`user` actor can sign in read-only, with a banner saying
 why actions are missing.
@@ -176,7 +176,7 @@ Tabs:
 1. **Pending values.** One row per pending assertion: record label and
    object, field label, **current value → proposed value** rendered with the
    field type's display (6), who proposed it (actor badge, 7), the reason in
-   plain words, confidence, `observedAt`, and the source interaction's title
+   plain words, confidence, `observedAt`, and the source event's type, title
    and date with a link to it (5.6).
 
    | `reason`          | Shown as                                                           |
@@ -210,9 +210,8 @@ Tabs:
    engine's reason and links the records in the way (`recordIds`), such as
    those still holding an option being removed.
 
-3. **Unresolved participants.** Handles from logged interactions that match
-   only a deleted record (1.2). Read-only in v1, with links to the
-   interaction.
+3. **Unresolved participants.** Handles from logged events that match only
+   a deleted record (1.2). Read-only in v1, with links to the event.
 
 4. **Suggested merges.** One card per pending pair from the consolidator:
    the reason, the object and both records' labels (`records` on each
@@ -347,14 +346,14 @@ set for one object, shown as a table, a board or a calendar. Source:
 
 ### 5.4 Record — `/app/r/:id`
 
-Source: `GET /v1/records/:id`, its provenance (9.1), facts and interactions.
+Source: `GET /v1/records/:id`, its provenance (9.1), facts and events.
 An ID that was merged loads the surviving record and says so.
 
 Three areas:
 
 - **Fields.** Every field with its type's display. Each value carries its
   provenance (7): who wrote it, when it was observed, and the source
-  interaction. A field with a pending assertion shows a marker that links to
+  event. A field with a pending assertion shows a marker that links to
   that row in the review inbox. Clicking a field's value (or its Edit
   button) edits it in place with the type's input, here and in the list's
   side sheet; Enter or Save writes and Escape cancels (inside the sheet,
@@ -371,10 +370,11 @@ Three areas:
   a link to the filtered object list.
 - **Memory tabs.**
   - _Facts_: `GET /v1/records/:id/facts`. Content, `validFrom`, writer, and
-    each source with its quote. Retract (`DELETE /v1/facts/:id`) asks for
-    confirmation.
-  - _Interactions_: newest first (9.1). Kind badge, title, date, summary,
-    and participants, matched ones linked.
+    each source with its quote; a fact resting on an internal note says so,
+    without a link. Retract (`DELETE /v1/facts/:id`) asks for confirmation.
+  - _Events_: `GET /v1/records/:id/events`, newest first (9.1). Type badge,
+    title, date, how the event is attached (participant, about, or through
+    one of its fields), summary, and participants, matched ones linked.
   - _Tasks_: open tasks linked to the record, from the standard `task`
     object.
 
@@ -405,25 +405,28 @@ dismissed.
   dialog lists what is erased and that emails and phones are blocked from
   coming back, and enables its button only once the person types the
   record's label (or "erase" when it has none). The report gives the
-  server's counts and links the review candidates' records and interactions
+  server's counts and links the review candidates' records and events
   (labels fetched for the first ten of each), and counts candidate facts.
 
 ### 5.5 Search — `⌘K`
 
 `POST /v1/search` as the person types (after a 200 ms pause): records grouped
-by object, then facts, then interactions, each list ranked by the server. A
+by object, then events, then facts, each list ranked by the server. A
 record hit found only by the fuzzy label fallback is marked "similar name".
 A fact opens its record on the Facts tab. Below the results, objects whose
 name matches jump to their list.
 
-### 5.6 Interaction — `/app/i/:id`
+### 5.6 Event — `/app/e/:id`
 
-Source: `GET /v1/interactions/:id`. Kind, channel, time, title, summary,
-participants (matched and unmatched with the reason), the records it is
-about (by label, each a link), and everything that
-cites it: field assertions and facts (9.1). Retract
-(`DELETE /v1/interactions/:id`) shows the server's counts afterwards:
-retracted assertions, recomputed records and hidden facts.
+Source: `GET /v1/events/:id`. Type, channel, time, title, summary, the
+type's other fields, participants (matched and unmatched with the reason),
+the records it is about (by label, each a link), and everything that cites
+it: field assertions and facts (9.1). A channel or external ID erased for
+privacy says so. Participants and `about` records can be added and removed
+(a person only). Delete (`DELETE /v1/events/:id`) shows the server's counts
+afterwards: retracted assertions, recomputed records and hidden facts. An
+event opened as a record (`/app/r/:id`) shows the same details and links
+here. Event types have no "New" button: only agents log events.
 
 ### 5.7 Schema — `/app/schema`
 
@@ -440,7 +443,9 @@ changes are waiting:
   `workspace`, `agent`). Clicking a field opens it in a side sheet
   (`?field=`): definition, select options, the relation's target,
   cardinality, other side (linked) and delete behaviour, and each flag in
-  words. Under the objects, a "Built-in" list holds interactions and facts
+  words. Event types are listed apart, with an "Event" badge and their
+  built-in columns (`occurredAt`, `channel`, `externalId`); their protected
+  title and summary fields are marked. Under the objects, a "Built-in" list holds facts
   (`builtIns` from `GET /v1/schema`): each shows its description, its fields
   with a line on each, and the tools that write and read it, with nothing to
   edit.
@@ -548,13 +553,13 @@ Column preferences use workspace and object identifiers in their storage keys.
 
 After a mutation completes, invalidate the affected queries:
 
-| Mutation                                                   | Refresh                                                                                                                     |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Record edit                                                | Record, object lists, field provenance/history, review pages and totals                                                     |
-| Assertion accept or reject, including partial bulk results | Review pages/totals and affected records, lists, provenance/history and interaction claims                                  |
-| Schema approval or template application                    | Schema, schema changes, review totals, and record/list queries built from the old schema                                    |
-| Fact retraction                                            | Record facts and the cited interactions' claims                                                                             |
-| Interaction retraction                                     | Interaction and claims, affected records and their lists, provenance/history, facts, interaction lists, review pages/totals |
+| Mutation                                                   | Refresh                                                                                                         |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Record edit                                                | Record, object lists, field provenance/history, review pages and totals                                         |
+| Assertion accept or reject, including partial bulk results | Review pages/totals and affected records, lists, provenance/history and event claims                            |
+| Schema approval or template application                    | Schema, schema changes, review totals, and record/list queries built from the old schema                        |
+| Fact retraction                                            | Record facts and the cited events' claims                                                                       |
+| Event deletion                                             | Event and claims, affected records and their lists, provenance/history, facts, event lists, review pages/totals |
 
 If the response does not identify all affected queries, invalidate the broader
 workspace query group. On `412`, refetch the record before offering an explicit
@@ -573,7 +578,7 @@ way.
   `id`) next to it.
 - **Sourced value.** A value written by anyone other than the viewer has a
   dotted underline. Hovering or focusing it shows: who wrote it, when it was
-  observed and the source interaction's title and date (field assertions
+  observed and the source event's title and date (field assertions
   carry no quote). This follows Comp AI's `SourcedValue` and `Provenance`
   components, which may be copied (2).
 - **Pending marker.** A field with a pending assertion shows a small badge
@@ -619,12 +624,12 @@ this:
 | Cookie in `authenticate`, CSRF header check               | 4.2                                                                                                                             | all       |
 | Static files at `/app`                                    | Serves `packages/web/dist` when `RETAINER_WEB_DIR` is set; the Docker image sets it. Unknown `/app/*` paths return `index.html` | all       |
 | `GET /v1/records/:id/assertions`                          | Every assertion for the record, optionally by `field`, with status, actor, `observedAt`, source and reviewer                    | 5.4, 7    |
-| `GET /v1/records/:id/interactions`                        | Interactions the record took part in, newest first, cursor-paginated                                                            | 5.4       |
-| `GET /v1/interactions/:id/claims`                         | Assertions and facts that cite the interaction                                                                                  | 5.6       |
+| `GET /v1/records/:id/events`                              | Events attached to the record, newest first, with `via`, cursor-paginated                                                       | 5.4       |
+| `GET /v1/events/:id/claims`                               | Assertions and facts that cite the event                                                                                        | 5.6       |
 | Per-field provenance on `GET /v1/records/:id`             | With `?include=provenance`, each field's winning assertion: actor, `observedAt`, source, and whether a pending assertion exists | 5.4, 7    |
 | Review and schema-change pagination                       | Add the contracts below to the existing list routes                                                                             | 5.2, 5.7  |
 | `GET /v1/assertions/:id`                                  | Fetch an assertion directly for review deep links, including its current status                                                 | 5.2, 5.4  |
-| Review enrichment                                         | Source interaction summary and current conflicting record reference, as below                                                   | 5.2       |
+| Review enrichment                                         | Source event summary and current conflicting record reference, as below                                                         | 5.2       |
 | Relation references on record reads and queries           | Optional resolved labels alongside existing relation ID values, as below                                                        | 5.3, 5.4  |
 | `POST /v1/objects/:object/aggregate`                      | Total and per-column calculations over the records a filter matches                                                             | 5.3       |
 | `POST /v1/records/delete-impact`                          | What deleting several records together would cascade to, overlaps counted once                                                  | 5.3       |
@@ -659,8 +664,8 @@ The v1 read contracts are:
   in batches through the shared record-reference presentation path under RLS;
   the UI must not fetch each relation separately. Omit unavailable targets
   and render an unavailable-reference state rather than inventing a label.
-- **Other growing collections.** Assertion history, record interactions,
-  interaction claims and record facts provide cursor pagination and
+- **Other growing collections.** Assertion history, record events, event
+  claims and record facts provide cursor pagination and
   `nextCursor`; their screens expose a Next page control rather than silently stopping
   at the current server limits.
 
@@ -704,11 +709,11 @@ when switching the server to the shared helpers.
 
 Same rules as `ARCHITECTURE.md` section 12: a real database, never a mock.
 
-| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | How                                                                                                                              |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns, paging and footer totals; saved views over the URL, board columns and calendar days; schema page descriptions                                                                                                                                                                                                                                                                                                                                                                      | Vitest                                                                                                                           |
-| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Vitest and Testing Library                                                                                                       |
-| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; list selection with bulk delete and merge, column totals and editing in the grid; saving a board view with column totals, moving a card and a calendar record from the keyboard, and saving or resetting a view's unsaved filter; ⌘K search across objects, facts and interactions; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; retracting an interaction; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
+| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | How                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns, paging and footer totals; saved views over the URL, board columns and calendar days; schema page descriptions                                                                                                                                                                                                                                                                                                                                                        | Vitest                                                                                                                           |
+| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Vitest and Testing Library                                                                                                       |
+| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; list selection with bulk delete and merge, column totals and editing in the grid; saving a board view with column totals, moving a card and a calendar record from the keyboard, and saving or resetting a view's unsaved filter; ⌘K search across objects, events and facts; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; deleting an event; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
 
 Add coverage for inboxes larger than one page (including decisions between
 page loads), accurate totals and off-page review links; acceptance that leaves
@@ -729,10 +734,10 @@ End-to-end tests run in CI after layers 1–4.
    pagination and enrichment, and the provenance and history routes.
 2. **Shell and review inbox.** Sign-in, layout, schema cache, every field
    type's `Display`, provenance components, and the review inbox (5.2).
-3. **Records.** Object lists, record page read-only, facts, interactions,
-   interaction page, schema page.
+3. **Records.** Object lists, record page read-only, facts, events, event
+   page, schema page.
 4. **Editing.** Every field type's `Input`, inline editing, retracting facts
-   and interactions.
+   and events.
 5. **After server steps 4 and 5.** Search, record creation and deletion,
    merges and suggested merges, `forget`.
 

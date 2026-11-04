@@ -9,8 +9,8 @@ import {
   Badge,
   Button,
   Empty,
+  EventLink,
   Input,
-  InteractionLink,
   Muted,
   Notice,
   Page,
@@ -402,10 +402,10 @@ export function ReviewPage() {
                       </RecordLink>
                     ) : null}
                     {a.source ? (
-                      <InteractionLink id={a.source.id}>
-                        {a.source.title || 'Untitled interaction'} ·{' '}
+                      <EventLink id={a.source.id}>
+                        {a.source.title || 'Untitled event'} ·{' '}
                         {new Date(a.source.occurredAt).toLocaleDateString()}
-                      </InteractionLink>
+                      </EventLink>
                     ) : null}
                     {canWrite ? (
                       <Row>
@@ -469,13 +469,13 @@ export function ReviewPage() {
       {tab === 'unresolvedParticipants' ? (
         <Stack>
           {review.data?.unresolvedParticipants.map((p) => (
-            <Panel key={`${p.interactionId}:${p.position}`}>
+            <Panel key={`${p.eventId}:${p.position}`}>
               <Row>
                 <Badge tone="pending">Deleted record</Badge>
                 <span>{p.handle}</span>
-                <InteractionLink id={p.interactionId}>
-                  {p.title || 'Untitled interaction'} · {new Date(p.occurredAt).toLocaleString()}
-                </InteractionLink>
+                <EventLink id={p.eventId}>
+                  {p.title || 'Untitled event'} · {new Date(p.occurredAt).toLocaleString()}
+                </EventLink>
               </Row>
             </Panel>
           ))}

@@ -3,12 +3,19 @@ import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
 import { Badge, Button, Dialog, Input, Muted, Notice, Stack, Truncate } from '../ui/index.js';
-import { QueryError, recordTitle, sortObjects, useDebounced } from './state.js';
+import {
+  eventTitle,
+  objectLabel,
+  QueryError,
+  recordTitle,
+  sortObjects,
+  useDebounced,
+} from './state.js';
 import { groupRecordHits } from './write-model.js';
 
 /**
  * ⌘K: keyword search across the workspace (`POST /v1/search`), grouped as
- * records by object, then facts, then interactions; and a jump to any object.
+ * records by object, then facts, then events; and a jump to any object.
  */
 export function CommandPalette({
   open,
@@ -36,13 +43,13 @@ export function CommandPalette({
     o.labelPlural.toLowerCase().includes(typed.toLowerCase()),
   );
   const data = query ? results.data : undefined;
-  const found = data ? data.records.length + data.facts.length + data.interactions.length : 0;
+  const found = data ? data.records.length + data.facts.length + data.events.length : 0;
   return (
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
       title="Find anything"
-      description="Search records, facts and interactions by keyword, or jump to an object."
+      description="Search records, facts and events by keyword, or jump to an object."
     >
       <Input
         aria-label="Search the workspace"
@@ -93,17 +100,17 @@ export function CommandPalette({
           </Stack>
         </section>
       ) : null}
-      {data?.interactions.length ? (
-        <section aria-label="Interactions">
+      {data?.events.length ? (
+        <section aria-label="Events">
           <Stack>
-            <Muted>Interactions</Muted>
-            {data.interactions.map((hit) => (
+            <Muted>Events</Muted>
+            {data.events.map((hit) => (
               <Button
                 key={hit.id}
-                onClick={() => void go({ to: '/i/$id', params: { id: hit.id } })}
+                onClick={() => void go({ to: '/e/$id', params: { id: hit.id } })}
               >
-                {hit.title || 'Untitled interaction'}
-                <Badge>{hit.kind}</Badge>
+                {eventTitle(hit)}
+                <Badge>{objectLabel(schema, hit.type)}</Badge>
                 <Muted>{new Date(hit.occurredAt).toLocaleDateString()}</Muted>
               </Button>
             ))}

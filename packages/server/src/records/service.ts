@@ -3,6 +3,7 @@ import type {
   AggregateResult,
   BulkDeleteImpact,
   DeleteImpact,
+  DeleteRecordResult,
   ForgetResult,
   MergeResult,
   MergeSuggestionDecision,
@@ -13,7 +14,7 @@ import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
 import { inWorkspace, lockForWrite, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';
-import { lockSource } from '../memory/interactions.js';
+import { lockSource, retractEventClaims } from '../memory/events.js';
 import { forgetRecord } from '../privacy/forget.js';
 import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
@@ -22,13 +23,7 @@ import { identifiersFor, lookupValue } from './derive.js';
 import { dismissMergeSuggestion, type MergeInput, MergeRaceError, mergeRecords } from './merge.js';
 import { type QueryInput, queryRecords } from './query.js';
 import { getRecord, type PresentedRecord } from './read.js';
-import {
-  acceptAssertion,
-  type DecisionResult,
-  listReview,
-  type ReviewQueue,
-  rejectAssertion,
-} from './review.js';
+import { acceptAssertion, type DecisionResult, rejectAssertion } from './review.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 import {
   cascadeSet,
@@ -36,6 +31,7 @@ import {
   insertRecord,
   lockRecord,
   MAX_MERGE_HOPS,
+  markDeleted,
   objectOf,
   resolveRecordId,
   softDeleteRecord,
@@ -115,7 +111,11 @@ export async function withRead<T>(
   );
 }
 
-/** An object by singular or plural API name. */
+/**
+ * An object by singular or plural API name. The hidden internal-note type
+ * (6.4) is not in `objectsByName`, so every route that names an object
+ * resolves it as not found.
+ */
 export function requireObject(schema: CompiledSchema, name: string): CompiledObject {
   const object =
     schema.objectsByName.get(name) ??
@@ -126,26 +126,39 @@ export function requireObject(schema: CompiledSchema, name: string): CompiledObj
   return object;
 }
 
+/** Only logging creates events (6.2): record writes may edit one, never create one. */
+function refuseEventCreation(object: CompiledObject): void {
+  if (!object.isEvent) return;
+  throw new AppError(
+    422,
+    'use_log_event',
+    `${object.name} is an event type: create its records with log_event (POST /v1/events), ` +
+      'which records when it happened, its source and who took part. upsert_record can edit ' +
+      'an event that exists',
+    { object: object.name },
+  );
+}
+
 export const valuesSchema = z.record(z.string(), z.unknown());
 
-/** The interaction a write cites (rule 2.1); its `occurred_at` becomes `observed_at`. */
+/** The event a write cites (rule 2.1); its `occurred_at` becomes `observed_at`. */
 export const sourceSchema = z.uuid();
 
 /**
- * Write options for a cited source (rules 2.1, 2.2): the interaction must be
- * live in this workspace, and its `occurred_at` is the claim's
- * `observed_at`. It is locked before any record, the order retraction uses.
+ * Write options for a cited source (rules 2.1, 2.2): the event must be live
+ * in this workspace, and its `occurred_at` is the claim's `observed_at`. It
+ * is locked before any record, the order deletion uses.
  */
-async function citeSource(tx: Tx, workspaceId: string, source?: string): Promise<WriteOptions> {
+async function citeSource(tx: Tx, context: WriteContext, source?: string): Promise<WriteOptions> {
   if (source === undefined) return {};
-  const cited = await lockSource(tx, workspaceId, source);
-  return { sourceInteractionId: cited.id, observedAt: cited.occurredAt };
+  const cited = await lockSource(tx, context, source);
+  return { sourceRecordId: cited.id, observedAt: cited.occurredAt };
 }
 
 export type CreateOptions = {
   /** Retrying with the same key returns the first result (6.2). */
   idempotencyKey?: string;
-  /** The interaction the values come from. */
+  /** The event the values come from. */
   source?: string;
 };
 
@@ -159,6 +172,7 @@ export async function createRecord(
   const { idempotencyKey, source } = options;
   return withWrite(sql, caller, async (tx, context) => {
     const object = requireObject(context.schema, objectName);
+    refuseEventCreation(object);
     let claimId: string | undefined;
     if (idempotencyKey !== undefined) {
       const claim = await claimIdempotencyKey(
@@ -171,7 +185,7 @@ export async function createRecord(
       if (claim.kind === 'replay') return claim.result as WriteResponse;
       claimId = claim.id;
     }
-    const cited = await citeSource(tx, caller.workspaceId, source);
+    const cited = await citeSource(tx, context, source);
     const writes = prepareValues(object, values, 'create');
     const record = await insertRecord(tx, context, object);
     const fields = await writeFields(tx, context, object, record, writes, cited);
@@ -278,7 +292,7 @@ export async function upsertRecord(
     try {
       return await withWrite(sql, caller, async (tx, context) => {
         const object = requireObject(context.schema, objectName);
-        const cited = await citeSource(tx, caller.workspaceId, input.source);
+        const cited = await citeSource(tx, context, input.source);
         let targetId: string | null = null;
         let match: ReturnType<typeof matchField> | undefined;
 
@@ -323,6 +337,7 @@ export async function upsertRecord(
           throw new AppError(404, 'not_found', `no ${what}; pass ifMissing: "create" to create it`);
         }
 
+        refuseEventCreation(object);
         const values = match
           ? valuesWithMatch(match.field, match.value, match.lookup, input.values)
           : input.values;
@@ -359,7 +374,7 @@ export async function patchRecord(
   input: z.infer<typeof patchInputSchema>,
 ): Promise<WriteResponse> {
   return withWrite(sql, caller, async (tx, context) => {
-    const cited = await citeSource(tx, caller.workspaceId, input.source);
+    const cited = await citeSource(tx, context, input.source);
     const record = await lockRecord(tx, caller.workspaceId, id);
     const object = objectOf(context.schema, record);
     const writes = prepareValues(object, input.values, 'update');
@@ -451,23 +466,70 @@ export async function aggregate(
   input: AggregateInput,
 ): Promise<AggregateResult> {
   return withRead(sql, caller, (tx, schema) =>
-    aggregateRecords(tx, caller.workspaceId, requireObject(schema, objectName), input),
+    aggregateRecords(tx, caller.workspaceId, schema, requireObject(schema, objectName), input),
   );
 }
 
+/**
+ * Soft-deletes a record and what cascades from it (2.1). Every event among
+ * them goes through the deletion lifecycle (6.4): what cites it is
+ * retracted and recomputed, and the response counts how far that reached.
+ */
 export async function deleteRecord(
   sql: Sql,
   caller: Caller,
   id: string,
-): Promise<{ id: string; deleted: true; deletedRecordIds: string[] }> {
+): Promise<DeleteRecordResult> {
   return withWrite(sql, caller, async (tx, context) => {
     const deletedRecordIds = await softDeleteRecord(tx, context, id);
+    const events = await eventsAmong(tx, context.schema, deletedRecordIds);
+    // Deleting an event retracts what cites it, and says how much (6.4).
+    const retraction = events.length > 0 ? await retractEventClaims(tx, context, events) : {};
     return {
       id: await resolveRecordId(tx, caller.workspaceId, id),
       deleted: true,
       deletedRecordIds,
+      ...retraction,
     };
   });
+}
+
+/** The event records among `ids`. */
+export async function eventsAmong(
+  tx: Tx,
+  schema: CompiledSchema,
+  ids: readonly string[],
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await tx<{ id: string; object_type_id: string }[]>`
+    select id, object_type_id from records where id = any(${[...ids]}::uuid[])`;
+  return rows
+    .filter((r) => schema.objectsById.get(r.object_type_id)?.isEvent)
+    .map((r) => r.id)
+    .sort();
+}
+
+/**
+ * Deleting an event type (6.4): every live record of it is deleted through
+ * the same lifecycle as deleting one event, in the schema change's own
+ * transaction, so no claim keeps citing an event of a deleted type.
+ */
+export async function deleteEventsOfType(
+  tx: Tx,
+  context: WriteContext,
+  objectTypeId: string,
+): Promise<void> {
+  const rows = await tx<{ id: string }[]>`
+    select id from records
+    where workspace_id = ${context.workspaceId} and object_type_id = ${objectTypeId}
+      and deleted_at is null
+    order by id for update`;
+  const deleted = await markDeleted(
+    tx,
+    context,
+    rows.map((r) => r.id),
+  );
+  await retractEventClaims(tx, context, deleted);
 }
 
 export async function readRecord(sql: Sql, caller: Caller, id: string): Promise<PresentedRecord> {
@@ -478,10 +540,6 @@ export async function findRecords(sql: Sql, caller: Caller, objectName: string, 
   return withRead(sql, caller, (tx, schema) =>
     queryRecords(tx, caller.workspaceId, schema, requireObject(schema, objectName), input),
   );
-}
-
-export async function reviewQueue(sql: Sql, caller: Caller, limit: number): Promise<ReviewQueue> {
-  return withRead(sql, caller, (tx, schema) => listReview(tx, caller.workspaceId, schema, limit));
 }
 
 export async function decideAssertion(

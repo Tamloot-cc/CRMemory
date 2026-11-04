@@ -19,13 +19,15 @@ export type WriteContext = {
 };
 
 export type WriteOptions = {
-  /** The interaction the values come from; kept as provenance. */
-  sourceInteractionId?: string | null;
+  /** The event record the values come from; kept as provenance. */
+  sourceRecordId?: string | null;
   /**
-   * When the claim was true at the source: the cited interaction's
-   * `occurred_at`. Without it, the server's clock at write time (rule 2.2).
+   * When the claim was true at the source: the cited event's `occurred_at`.
+   * Without it, the server's clock at write time (rule 2.2).
    */
   observedAt?: Date | null;
+  /** `log_event` writing an event's own initial values (6.2). */
+  isInitial?: boolean;
   /** 0..1; direct writes are 1. */
   confidence?: number;
   /** Rejects the write if the record changed since (rule 2.5). */
@@ -137,11 +139,17 @@ export async function lockRecord(tx: Tx, workspaceId: string, id: string): Promi
   return row;
 }
 
+/**
+ * The object of a record a caller writes. The hidden internal-note type
+ * (6.4) resolves as not found: its records change only through `remember`
+ * and the fact and privacy lifecycle.
+ */
 export function objectOf(
   schema: CompiledSchema,
-  record: { object_type_id: string },
+  record: { id?: string; object_type_id: string },
 ): CompiledObject {
   const object = schema.objectsById.get(record.object_type_id);
+  if (object?.hidden) throw notFound('record', record.id ? { id: record.id } : undefined);
   if (object?.state.status !== 'active') {
     throw new AppError(409, 'object_deleted', 'the object of this record was deleted');
   }
@@ -320,10 +328,10 @@ export async function writeFields(
 
     const [inserted] = await tx<AssertionRow[]>`
       insert into field_assertions (workspace_id, record_id, field_id, value, actor,
-        source_interaction_id, confidence, status, review_reason, observed_at, created_at)
+        source_record_id, is_initial, confidence, status, review_reason, observed_at, created_at)
       values (${context.workspaceId}, ${record.id}, ${field.id as string},
         ${value === null ? null : tx.json(jsonValue(value))}, ${tx.json(context.actor)},
-        ${options.sourceInteractionId ?? null}, ${confidence},
+        ${options.sourceRecordId ?? null}, ${options.isInitial ?? false}, ${confidence},
         ${reason ? 'pending_review' : 'active'}, ${reason}, ${observedAt}, clock_timestamp())
       returning id, field_id, value, actor, status, observed_at, created_at`;
     const assertion = inserted as AssertionRow;
@@ -658,7 +666,8 @@ export async function cascadeSet(
  * soft-delete their source records too; `set_null` relations simply stop
  * resolving, since reads skip deleted targets. All affected records are
  * locked in sorted ID order (rule 2.5). Uniqueness claims stay, so writes
- * cannot silently recreate the record.
+ * cannot silently recreate the record. Returns the IDs deleted; the events
+ * among them are retracted by the caller (`deleteRecords`).
  */
 export async function softDeleteRecord(
   tx: Tx,
@@ -669,15 +678,29 @@ export async function softDeleteRecord(
   // Collect first, then lock everything in sorted order.
   const sorted = [...(await cascadeSet(tx, context.schema, [rootId]))].sort();
   const locked = await lockRecordsForUpdate(tx, context.workspaceId, sorted);
-  if (locked.find((r) => r.id === rootId)?.deleted_at) {
+  const root = locked.find((r) => r.id === rootId);
+  if (root) objectOf(context.schema, root);
+  if (root?.deleted_at) {
     throw new AppError(409, 'record_deleted', `record ${rootId} is already deleted`, {
       recordId: rootId,
     });
   }
-  await tx`
+  return markDeleted(tx, context, sorted);
+}
+
+/** Sets `deleted_at` on locked records, returning those it deleted now. */
+export async function markDeleted(
+  tx: Tx,
+  context: WriteContext,
+  ids: readonly string[],
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const deleted = await tx<{ id: string }[]>`
     update records set deleted_at = clock_timestamp(), updated_at = clock_timestamp(),
       updated_by = ${tx.json(context.actor)}
-    where id = any(${sorted}::uuid[]) and deleted_at is null`;
+    where id = any(${[...ids]}::uuid[]) and deleted_at is null
+    returning id`;
+  const sorted = deleted.map((r) => r.id).sort();
   await closeSuggestionsFor(tx, context, sorted);
   return sorted;
 }

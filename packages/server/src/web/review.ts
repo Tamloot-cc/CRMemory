@@ -2,6 +2,8 @@ import type { Actor, PresentedFact, ReviewQueue, UnresolvedParticipant } from '@
 import type { Fragment } from 'postgres';
 import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
+import { liveFactSource } from '../memory/events.js';
+import { factSources } from '../memory/facts.js';
 import { references } from '../records/references.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 import { assertions } from './reads.js';
@@ -14,7 +16,7 @@ export async function reviewPage(
   cursors: Record<string, string>,
 ): Promise<ReviewQueue> {
   const pendingWhere = tx`a.status = 'pending_review' and r.deleted_at is null and a.field_id in (select id from fields where status = 'active')`;
-  const unresolvedWhere = tx`p.unmatched_reason = 'deleted_record' and p.record_id is null and i.deleted_at is null`;
+  const unresolvedWhere = tx`p.unmatched_reason = 'deleted_record' and p.record_id is null and ev.deleted_at is null and ev.object_type_id = any(${schema.eventTypeIds}::uuid[])`;
   const [pending, suggestions, unresolved, totals] = await Promise.all([
     assertions(tx, schema, pendingWhere, limit, cursors.pendingAssertionsCursor),
     tx<
@@ -31,18 +33,19 @@ export async function reviewPage(
       {
         id: string;
         stamp: string;
-        interaction_id: string;
+        event_id: string;
         position: number;
         handle: string | null;
         role: string | null;
         occurred_at: Date;
-        title: string | null;
+        object_type_id: string;
+        data: Record<string, unknown>;
       }[]
-    >`select p.id, i.occurred_at::text as stamp, p.interaction_id, p.position, p.handle, p.role, i.occurred_at, i.title from interaction_participants p join interactions i on i.id = p.interaction_id where ${unresolvedWhere} and ${after(tx, tx`i.occurred_at`, tx`p.id`, cursors.unresolvedParticipantsCursor)} order by i.occurred_at, p.id limit ${limit + 1}`,
+    >`select p.id, e.occurred_at::text as stamp, p.event_id, p.position, p.handle, p.role, e.occurred_at, ev.object_type_id, ev.data from event_links p join records ev on ev.id = p.event_id join event_records e on e.record_id = ev.id where ${unresolvedWhere} and ${after(tx, tx`e.occurred_at`, tx`p.id`, cursors.unresolvedParticipantsCursor)} order by e.occurred_at, p.id limit ${limit + 1}`,
     tx<{ pending: number; merges: number; unresolved: number }[]>`select
       (select count(*)::int from field_assertions a join records r on r.id = a.record_id where ${pendingWhere}) as pending,
       (select count(*)::int from merge_suggestions where status = 'pending') as merges,
-      (select count(*)::int from interaction_participants p join interactions i on i.id = p.interaction_id where ${unresolvedWhere}) as unresolved`,
+      (select count(*)::int from event_links p join records ev on ev.id = p.event_id where ${unresolvedWhere}) as unresolved`,
   ]);
   const m = page(suggestions, limit),
     u = page(unresolved, limit);
@@ -73,12 +76,12 @@ export async function reviewPage(
     })),
     unresolvedParticipants: u.items.map(
       (r): UnresolvedParticipant => ({
-        interactionId: r.interaction_id,
+        eventId: r.event_id,
         position: r.position,
         handle: r.handle,
         role: r.role,
         occurredAt: r.occurred_at.toISOString(),
-        title: r.title,
+        title: titleOf(schema, r.object_type_id, r.data),
         deletedRecordIds: deleted.filter((d) => d.value === r.handle).map((d) => d.record_id),
       }),
     ),
@@ -94,8 +97,14 @@ export async function reviewPage(
     },
   };
 }
+function titleOf(schema: CompiledSchema, type: string, data: Record<string, unknown>) {
+  const key = schema.objectsById.get(type)?.core?.title.key;
+  const value = key === undefined ? undefined : data[key];
+  return typeof value === 'string' ? value : null;
+}
 export async function factsPage(
   tx: Tx,
+  schema: CompiledSchema,
   where: Fragment,
   limit: number,
   cursor?: string,
@@ -115,15 +124,11 @@ export async function factsPage(
       superseded_by: string | null;
     }[]
   >`select f.*, f.valid_from::text as stamp from facts f where ${where}
-    ${history ? tx`` : tx`and f.deleted_at is null and f.superseded_by is null and f.valid_to is null and exists(select 1 from fact_sources s join interactions i on i.id = s.interaction_id and i.deleted_at is null where s.fact_id = f.id)`}
+    ${history ? tx`` : tx`and f.deleted_at is null and f.superseded_by is null and f.valid_to is null and exists(${liveFactSource(tx, tx`f.id`)})`}
     and ${after(tx, tx`f.valid_from`, tx`f.id`, cursor, true)} order by f.valid_from desc, f.id desc limit ${limit + 1}`;
   const result = page(rows, limit);
   const ids = result.items.map((r) => r.id);
-  const sources = ids.length
-    ? await tx<
-        { fact_id: string; interaction_id: string; quote: string | null }[]
-      >`select s.fact_id,s.interaction_id,s.quote from fact_sources s join interactions i on i.id = s.interaction_id and i.deleted_at is null where s.fact_id = any(${ids}::uuid[]) order by i.occurred_at,s.id`
-    : [];
+  const sources = await factSources(tx, schema, ids);
   return {
     facts: result.items.map((r) => ({
       id: r.id,
@@ -144,9 +149,7 @@ export async function factsPage(
       validFrom: r.valid_from.toISOString(),
       validTo: r.valid_to?.toISOString() ?? null,
       writtenBy: r.actor,
-      sources: sources
-        .filter((s) => s.fact_id === r.id)
-        .map((s) => ({ interaction: s.interaction_id, quote: s.quote })),
+      sources: sources.get(r.id) ?? [],
     })),
     nextCursor: result.nextCursor,
   };

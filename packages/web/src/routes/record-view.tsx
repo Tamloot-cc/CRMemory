@@ -15,7 +15,7 @@ import {
   Button,
   Dialog,
   Empty,
-  InteractionLink,
+  EventLink,
   Muted,
   Notice,
   ObjectLink,
@@ -31,8 +31,9 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
-import { RecordActions } from './record-actions.js';
-import { QueryError } from './state.js';
+import { EventDetailsView, ViaLabel } from './event-details.js';
+import { CandidateRecord, RecordActions } from './record-actions.js';
+import { eventTitle, objectByName, objectLabel, QueryError } from './state.js';
 import { isWritable } from './write-model.js';
 
 export function AssertionCard({ assertion }: { assertion: AssertionView }) {
@@ -82,7 +83,7 @@ type MemoryNav = {
 };
 const TABS = [
   { value: 'facts', label: 'Facts' },
-  { value: 'interactions', label: 'Interactions' },
+  { value: 'events', label: 'Events' },
   { value: 'tasks', label: 'Open tasks' },
 ];
 const memoryTab = (raw: string | undefined) =>
@@ -160,10 +161,10 @@ export function RecordView({
     queryFn: ({ signal }) => api.facts(rid, { cursor, signal }),
     enabled: tab === 'facts',
   });
-  const interactions = useQuery({
-    queryKey: [session.workspace.id, 'recordInteractions', rid, cursor],
-    queryFn: ({ signal }) => api.recordInteractions(rid, { cursor, signal }),
-    enabled: tab === 'interactions',
+  const events = useQuery({
+    queryKey: [session.workspace.id, 'recordEvents', rid, cursor],
+    queryFn: ({ signal }) => api.recordEvents(rid, { cursor, signal }),
+    enabled: tab === 'events',
   });
   const hist = useQuery({
     queryKey: [session.workspace.id, 'assertions', rid, history?.name, historyCursor],
@@ -229,6 +230,14 @@ export function RecordView({
         <Notice>This record was merged. You’re viewing the surviving record.</Notice>
       ) : null}
       {message ? <Notice>{message}</Notice> : null}
+      {r.event ? (
+        <Section title="Event">
+          <EventDetailsView id={r.id} event={r.event} editable={canWrite} />
+          <Row>
+            <EventLink id={r.id}>Open event and the claims citing it</EventLink>
+          </Row>
+        </Section>
+      ) : null}
       <Section title="Fields">
         <PropertyList>
           {own.map((f) => (
@@ -291,12 +300,16 @@ export function RecordView({
                     <ActorBadge actor={f.writtenBy} />
                     <Muted>Valid from {new Date(f.validFrom).toLocaleString()}</Muted>
                   </Row>
-                  {f.sources.map((s) => (
-                    <Stack key={s.interaction}>
-                      <InteractionLink id={s.interaction}>Source interaction</InteractionLink>
-                      {s.quote ? <blockquote>{s.quote}</blockquote> : null}
-                    </Stack>
-                  ))}
+                  {f.sources.map((s) =>
+                    s.internal ? (
+                      <Muted key="internal">Internal note</Muted>
+                    ) : (
+                      <Stack key={s.event}>
+                        <EventLink id={s.event}>Source event</EventLink>
+                        {s.quote ? <blockquote>{s.quote}</blockquote> : null}
+                      </Stack>
+                    ),
+                  )}
                   {canWrite ? <Button onClick={() => setRetract(f.id)}>Retract fact</Button> : null}
                 </Stack>
               </Panel>
@@ -309,27 +322,30 @@ export function RecordView({
             ) : null}
           </Stack>
         ) : null}
-        {tab === 'interactions' ? (
+        {tab === 'events' ? (
           <Stack>
-            {interactions.error ? <QueryError error={interactions.error} /> : null}
-            {interactions.isPending ? <Notice>Loading interactions…</Notice> : null}
-            {interactions.data?.items.map((i) => (
-              <Panel key={i.id}>
+            {events.error ? <QueryError error={events.error} /> : null}
+            {events.isPending ? <Notice>Loading events…</Notice> : null}
+            {events.data?.items.map((e) => (
+              <Panel key={e.id}>
                 <Stack>
                   <Row>
-                    <Badge>{i.kind}</Badge>
-                    <InteractionLink id={i.id}>{i.title || 'Untitled interaction'}</InteractionLink>
-                    <Muted>{new Date(i.occurredAt).toLocaleString()}</Muted>
+                    <Badge>{objectLabel(schema, e.object)}</Badge>
+                    <EventLink id={e.id}>{eventTitle(e.event)}</EventLink>
+                    <Muted>{new Date(e.event.occurredAt).toLocaleString()}</Muted>
+                    <ViaLabel
+                      via={e.via}
+                      eventObject={objectByName(schema, e.object)}
+                      recordObject={object}
+                    />
                   </Row>
-                  {i.summary ? <p>{i.summary}</p> : null}
+                  {e.event.summary ? <p>{e.event.summary}</p> : null}
                   <Row>
-                    {i.participants.matched.map((p) => (
-                      <RecordLink key={`${p.recordId}:${p.role}:${p.handle}`} id={p.recordId ?? ''}>
-                        {p.handle || 'Participant'}
-                      </RecordLink>
+                    {e.event.participants.matched.map((p) => (
+                      <CandidateRecord key={p.id} id={p.recordId} />
                     ))}
-                    {i.participants.unmatched.map((p) => (
-                      <Badge key={`${p.handle}:${p.role}:${p.reason}`}>
+                    {e.event.participants.unmatched.map((p) => (
+                      <Badge key={p.id}>
                         {p.handle || 'Unknown'} · {p.reason}
                       </Badge>
                     ))}
@@ -337,14 +353,10 @@ export function RecordView({
                 </Stack>
               </Panel>
             ))}
-            {interactions.data && !interactions.data.items.length ? (
-              <Empty title="No interactions yet" />
-            ) : null}
-            {interactions.data?.nextCursor ? (
-              <Button
-                onClick={() => nav.set({ cursor: interactions.data?.nextCursor ?? undefined })}
-              >
-                Next page of interactions
+            {events.data && !events.data.items.length ? <Empty title="No events yet" /> : null}
+            {events.data?.nextCursor ? (
+              <Button onClick={() => nav.set({ cursor: events.data?.nextCursor ?? undefined })}>
+                Next page of events
               </Button>
             ) : null}
           </Stack>

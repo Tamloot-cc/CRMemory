@@ -164,8 +164,8 @@ const routeTree = rootRoute.addChildren([
   }),
   createRoute({
     getParentRoute: () => rootRoute,
-    path: '/i/$id',
-    component: lazyRouteComponent(() => import('./routes/interaction.js'), 'InteractionPage'),
+    path: '/e/$id',
+    component: lazyRouteComponent(() => import('./routes/event.js'), 'EventPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,

@@ -43,13 +43,14 @@ const dana = await retainer.upsertRecord('person', {
   values: { name: 'Dana Levi', emails: 'dana@acme.com' },
 });
 
-const call = await retainer.logInteraction({
-  kind: 'call',
+const call = await retainer.logEvent({
+  type: 'call', // an event type from retainer.schema(): meeting, call, email, ...
   channel: 'zoom',
   externalId: 'zoom-8812-3390',
   occurredAt: '2026-10-29T14:00:00+02:00',
   title: 'Acme renewal call',
   summary: 'Dana wants to move the renewal to Q1.',
+  fields: {}, // the event type's other fields, by name
   participants: [{ handle: 'dana@acme.com', role: 'customer' }],
   about: [acme.id], // the records it concerns: a company, project, deal or tasks
 });
@@ -74,10 +75,10 @@ await retainer.remember(dana.id, {
 
 ```ts
 const hits = await retainer.search({ query: '"renewal" Acme', limit: 10 });
-// { records: [...], facts: [...], interactions: [...] }, each ranked on its own
+// { records: [...], events: [...], facts: [...] }, each ranked on its own
 
 const pack = await retainer.context(dana.id, { tokenBudget: 1500 });
-// pack.record.fields, pack.openTasks, pack.facts, pack.recentInteractions, pack.omitted
+// pack.record.fields, pack.openTasks, pack.facts, pack.recentEvents, pack.omitted
 
 const page = await retainer.queryRecords('company', {
   filter: { updatedAt: { gte: '2026-10-01T00:00:00Z' } },
@@ -86,11 +87,17 @@ const page = await retainer.queryRecords('company', {
 });
 // page.records, page.nextCursor
 
-const calls = await retainer.queryInteractions({
-  filter: { record: acme.id, occurredAt: { gte: '2026-10-01T00:00:00Z' } },
-  countBy: 'kind',
+// Events are records of event types: query a type, linked to a record.
+const calls = await retainer.queryRecords('call', {
+  linked: { record: acme.id },
+  filter: { occurredAt: { gte: '2026-10-01T00:00:00Z' } },
+  sort: [{ field: 'occurredAt', direction: 'desc' }],
 });
-// calls.items, calls.total, calls.counts ({ call: 4, meeting: 2 }), calls.nextCursor
+// calls.records (each with .event: occurredAt, title, summary, participants, about)
+
+// Every event attached to a record, across types, with how it is attached.
+const history = await retainer.recordEvents(acme.id, { limit: 20 });
+// history.items[0].via: { kind: 'participant' } | { kind: 'about' } | { kind: 'field', field }
 ```
 
 A filter maps field names to a value (equality) or to operators, and nests

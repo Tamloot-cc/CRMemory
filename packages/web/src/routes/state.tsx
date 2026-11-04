@@ -1,4 +1,4 @@
-import type { ObjectView } from '@retainer/shared';
+import type { ObjectView, SchemaDescription } from '@retainer/shared';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import { Button, Notice, Row } from '../ui/index.js';
@@ -23,6 +23,14 @@ export type ViewSearch = {
 };
 /** How a record is named on screen. */
 export const recordTitle = (r: { label: string | null }) => r.label || 'Untitled record';
+/** How an event is named on screen. */
+export const eventTitle = (e: { title: string | null }) => e.title || 'Untitled event';
+/** The object (or event type) by its singular API name. */
+export const objectByName = (schema: SchemaDescription, name: string): ObjectView | undefined =>
+  schema.objects.find((o) => o.nameSingular === name);
+/** An object's (or event type's) singular name for people, falling back to its API name. */
+export const objectLabel = (schema: SchemaDescription, name: string) =>
+  objectByName(schema, name)?.labelSingular ?? name;
 
 /** `value` once it has stopped changing for `ms`, so typing is not a request per key. */
 export function useDebounced<T>(value: T, ms = 200): T {

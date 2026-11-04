@@ -43,6 +43,14 @@ const configSchema = z.object({
     (value) => (value === '' ? undefined : value),
     z.string().min(32, 'use at least 32 characters').optional(),
   ),
+  /**
+   * Earlier suppression keys, comma-separated, still checked so a rotation
+   * keeps erased handles and event identities suppressed (6.4).
+   */
+  RETAINER_SUPPRESSION_PREVIOUS_KEYS: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().optional(),
+  ),
 });
 
 export type Config = z.infer<typeof configSchema>;

@@ -1,4 +1,4 @@
-import { type FieldType, MULTI_VALUE_TYPES } from '@retainer/shared';
+import { type FieldType, INTERNAL_NOTE_TYPE_ID, MULTI_VALUE_TYPES } from '@retainer/shared';
 import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
 
 const NAME_PATTERN = /^[a-z][a-zA-Z0-9]{0,62}$/;
@@ -7,15 +7,19 @@ const reserved = (names: string[], reason: string) => names.map((name) => [name,
 
 /**
  * Object names that would be confused with API resources, each with the
- * reason the validation error gives. Interactions and facts are built in,
+ * reason the validation error gives. Events and facts are built in,
  * so their reason says what to use instead: an agent told only "reserved"
  * renames its object and builds a twin of the built-in feature.
  */
 export const RESERVED_OBJECT_NAMES: ReadonlyMap<string, string> = new Map([
   ...reserved(
-    ['interaction', 'interactions'],
-    'meetings, calls, emails and messages are built in: log them as interactions ' +
-      '(log_interaction, or POST /v1/interactions) instead of creating an object',
+    ['interaction', 'interactions', 'event', 'events'],
+    'meetings, calls, emails and messages are event types (class "event"): log them with ' +
+      'log_event (or POST /v1/events), or create your own event type with class "event"',
+  ),
+  ...reserved(
+    ['internalNote', 'internalNotes'],
+    'it names the notes remember creates for facts with no source',
   ),
   ...reserved(
     ['fact', 'facts'],
@@ -59,6 +63,18 @@ export const RESERVED_FIELD_NAMES: ReadonlySet<string> = new Set([
   'createdBy',
   'updatedBy',
   'mergedIntoId',
+]);
+
+/** Field names an event type cannot use: its built-in columns and links (6.1, 6.2). */
+export const RESERVED_EVENT_FIELD_NAMES: ReadonlySet<string> = new Set([
+  'type',
+  'occurredAt',
+  'channel',
+  'externalId',
+  'participants',
+  'about',
+  'event',
+  'via',
 ]);
 
 /**
@@ -111,10 +127,11 @@ export function validateSchema(state: SchemaState): SchemaIssue[] {
 
   for (const object of active) {
     const path = object.nameSingular;
+    const internal = object.universalId === INTERNAL_NOTE_TYPE_ID;
     for (const name of [object.nameSingular, object.namePlural]) {
       if (!NAME_PATTERN.test(name)) {
         issue(path, `"${name}" must be camelCase: a lowercase letter, then letters and digits`);
-      } else if (RESERVED_OBJECT_NAMES.has(name)) {
+      } else if (RESERVED_OBJECT_NAMES.has(name) && !internal) {
         issue(path, `"${name}" is reserved: ${RESERVED_OBJECT_NAMES.get(name)}`);
       }
     }
@@ -132,6 +149,7 @@ export function validateSchema(state: SchemaState): SchemaIssue[] {
       validateField(object, field, byUniversalId, issue);
     }
 
+    if (object.class === 'event') validateEventCore(object, issue);
     const labelField = object.fields.find((f) => f.universalId === object.labelFieldId);
     if (labelField?.status !== 'active') {
       issue(path, 'labelField must be an active field of the object');
@@ -144,6 +162,27 @@ export function validateSchema(state: SchemaState): SchemaIssue[] {
   }
 
   return issues;
+}
+
+/**
+ * An event type has exactly one active title and one active summary field,
+ * protected text fields, and its title is its label field (6.1). Entities
+ * have no core fields.
+ */
+function validateEventCore(
+  object: ObjectState,
+  issue: (path: string, message: string) => void,
+): void {
+  for (const role of ['title', 'summary'] as const) {
+    const core = object.fields.filter((f) => f.status === 'active' && f.coreRole === role);
+    if (core.length !== 1 || core[0]?.type !== 'text' || !core[0]?.isProtected) {
+      issue(object.nameSingular, `an event type needs exactly one protected ${role} field`);
+    }
+  }
+  const title = object.fields.find((f) => f.status === 'active' && f.coreRole === 'title');
+  if (title && object.labelFieldId !== title.universalId) {
+    issue(object.nameSingular, "an event type's labelField is always its title");
+  }
 }
 
 function validateField(
@@ -159,6 +198,11 @@ function validateField(
     issue(path, `"${field.name}" must be camelCase: a lowercase letter, then letters and digits`);
   } else if (RESERVED_FIELD_NAMES.has(field.name)) {
     issue(path, `"${field.name}" is reserved for a built-in record property`);
+  } else if (object.class === 'event' && RESERVED_EVENT_FIELD_NAMES.has(field.name)) {
+    issue(path, `"${field.name}" is reserved for a built-in event property`);
+  }
+  if (field.coreRole && object.class !== 'event') {
+    issue(path, 'only an event type has core fields');
   }
 
   if (field.type === 'select' || field.type === 'multi_select') {

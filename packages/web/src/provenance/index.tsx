@@ -1,17 +1,9 @@
 import type { Actor, AssertionView, FieldView, Provenance } from '@retainer/shared';
 import { Bot, Cog, Plug, UserRound } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
-import {
-  Badge,
-  InteractionLink,
-  Muted,
-  ReviewLink,
-  Row,
-  Sourced,
-  Stack,
-  Tooltip,
-} from '../ui/index.js';
+import { Badge, EventLink, Muted, ReviewLink, Row, Sourced, Stack, Tooltip } from '../ui/index.js';
 export function ActorBadge({ actor }: { actor: Actor }) {
   const Icon = { agent: Bot, user: UserRound, integration: Plug, system: Cog }[actor.type];
   return (
@@ -23,18 +15,27 @@ export function ActorBadge({ actor }: { actor: Actor }) {
   );
 }
 export function AssertionSource({ assertion }: { assertion: AssertionView }) {
+  const { schema } = useWorkspace();
+  const eventTypeName = (type: string) =>
+    schema.objects.find((o) => o.nameSingular === type)?.labelSingular ?? type;
   return (
     <Stack>
       <ActorBadge actor={assertion.actor} />
       <Muted>Observed {new Date(assertion.observedAt).toLocaleString()}</Muted>
       {assertion.source ? (
-        <InteractionLink id={assertion.source.id}>
-          {assertion.source.title || 'Untitled interaction'} ·{' '}
-          {new Date(assertion.source.occurredAt).toLocaleDateString()}
-        </InteractionLink>
+        <Row>
+          <Badge>{eventTypeName(assertion.source.type)}</Badge>
+          <EventLink id={assertion.source.id}>
+            {assertion.source.title || 'Untitled event'} ·{' '}
+            {new Date(assertion.source.occurredAt).toLocaleDateString()}
+          </EventLink>
+        </Row>
       ) : (
-        <Muted>No live source interaction</Muted>
+        <Muted>
+          {assertion.sourceRecordId ? 'Source event no longer available' : 'No source event'}
+        </Muted>
       )}
+      {assertion.isInitial ? <Muted>Recorded when the event was logged</Muted> : null}
       {assertion.reviewedBy ? (
         <Row>
           <Muted>Reviewed by</Muted>

@@ -119,7 +119,7 @@ export function MergeDialog({
         if (!open && !busy) onClose();
       }}
       title="Merge duplicate records"
-      description="Everything the merged record holds moves to the record you keep: values, facts, interactions, history and links. Its old ID opens the kept record. A merge cannot be undone."
+      description="Everything the merged record holds moves to the record you keep: values, facts, events, history and links. Its old ID opens the kept record. A merge cannot be undone."
     >
       <Stack>
         {error ? <Notice error>{error}</Notice> : null}

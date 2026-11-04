@@ -1,14 +1,15 @@
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
-import { factsOf, logInteractionFor, remember, retractFactFor } from '../../src/memory/service.js';
+import { factsOf, logEventFor, remember, retractFactFor } from '../../src/memory/service.js';
 import {
   type Caller,
   createRecord,
   dismissSuggestion,
   mergeRecord,
-  reviewQueue,
+  withRead,
 } from '../../src/records/service.js';
+import { reviewPage } from '../../src/web/review.js';
 import { consolidateWorkspace } from '../../src/worker/consolidate.js';
 import { startWorker } from '../../src/worker/index.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
@@ -25,6 +26,9 @@ const caller = (workspaceId: string, actor: Actor = AGENT): Caller => ({
   scopes: ['read', 'write', 'schema:write', 'admin'],
 });
 
+const reviewQueue = (sql: Sql, caller: Caller, limit: number) =>
+  withRead(sql, caller, (tx, schema) => reviewPage(tx, caller.workspaceId, schema, limit, {}));
+
 beforeAll(() => {
   app = db.connect({ role: RUNTIME_ROLE, max: 30 });
 });
@@ -34,11 +38,13 @@ const newWorkspace = async () =>
   (await createWorkspace(db.owner, { name: `Consolidate ${++n}`, template: 'sales' })).id;
 const email = () => `consolidate${++n}@acme.test`;
 
-async function call(ws: string, occurredAt = '2026-10-01T10:00:00Z') {
-  return logInteractionFor(app, caller(ws), {
-    kind: 'call',
+async function call(ws: string, occurredAt = '2026-10-01T10:00:00Z', title?: string) {
+  return logEventFor(app, caller(ws), {
+    type: 'call',
     channel: 'zoom',
     occurredAt,
+    ...(title !== undefined ? { title } : {}),
+    fields: {},
     participants: [],
     about: [],
   });
@@ -76,8 +82,8 @@ describe('fact dedupe (4.2)', () => {
     expect(facts[0]?.id).toBe(original.fact.id);
     expect(facts[0]?.sources).toEqual(
       expect.arrayContaining([
-        { interaction: first.id, quote: null },
-        { interaction: second.id, quote: 'March renewal' },
+        { event: first.id, quote: null },
+        { event: second.id, quote: 'March renewal' },
       ]),
     );
     const [kept] = await db.owner<{ superseded_by: string; deleted_at: Date | null }[]>`
@@ -254,6 +260,28 @@ describe('merge suggestions (4.2)', () => {
 
     const queue = await reviewQueue(app, caller(ws, USER), 100);
     expect(queue.mergeSuggestions).toHaveLength(3);
+  });
+
+  it('never suggests two events, however alike (6.2)', async () => {
+    const ws = await newWorkspace();
+    // Same type, same title, same time: still two things that happened.
+    await call(ws, '2026-10-01T10:00:00Z', 'Weekly pipeline review');
+    await call(ws, '2026-10-01T10:00:00Z', 'Weekly pipeline review');
+    await call(ws, '2026-10-08T10:00:00Z', 'Weekly pipeline revue');
+    // Entities with the same labels in the same run are still suggested.
+    const a = await createRecord(app, caller(ws), 'company', { name: 'Weekly Pipeline Co' });
+    const b = await createRecord(app, caller(ws), 'company', { name: 'Weekly Pipeline Co.' });
+
+    const stats = await consolidateWorkspace(app, ws);
+    expect(stats?.mergeSuggestions).toBe(1);
+    expect(await suggestions(ws)).toEqual([
+      {
+        a: pair(a.id, b.id)[0],
+        b: pair(a.id, b.id)[1],
+        reason: 'similar names',
+        status: 'pending',
+      },
+    ]);
   });
 
   it('does not suggest a dismissed pair again, and compares only changed records later', async () => {

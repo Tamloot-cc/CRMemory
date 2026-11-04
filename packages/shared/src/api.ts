@@ -3,8 +3,11 @@ import type { FieldType, MoneyValue } from './field-types.js';
 import type {
   BaseFieldName,
   BaseObjectName,
+  CoreRole,
+  EventColumn,
   FieldDefinition,
   FieldSettings,
+  ObjectClass,
   ObjectDefinition,
   SchemaChangeStatus,
   SchemaOwner,
@@ -31,6 +34,8 @@ export type FieldView = Omit<FieldDefinition, 'description' | 'settings'> & {
   protectedOptions?: string[];
   /** Which base field this is, so clients find it after a rename. */
   baseField?: BaseFieldName;
+  /** An event type's core field: `title` (its label) or `summary`. */
+  coreRole?: CoreRole;
   isNullable: boolean;
   isUnique: boolean;
   isFilterable: boolean;
@@ -46,6 +51,10 @@ export type ObjectView = {
   owner: SchemaOwner;
   /** Server behavior depends on the object: it cannot be deleted (1.1). */
   isProtected: boolean;
+  /** `entity` or `event`. Events are created only by logging them (log_event). */
+  class: ObjectClass;
+  /** Event types only: built-in columns beside the fields, filterable and sortable. */
+  eventColumns?: EventColumn[];
   /** Which base object this is, so clients find it after a rename. */
   baseObject?: BaseObjectName;
   fields: FieldView[];
@@ -58,14 +67,14 @@ export type SchemaDescription = {
   };
   objects: ObjectView[];
   /**
-   * What Retainer stores besides records (1.3): interactions and facts. Fixed
-   * by Retainer and written only through their own tools, never upsert_record.
+   * What Retainer stores besides records (1.3): facts. Fixed by Retainer and
+   * written only through their own tools, never upsert_record.
    */
   builtIns: BuiltInView[];
 };
 /** A built-in part of every workspace's memory, as describe_schema lists it. */
 export type BuiltInView = {
-  name: 'interaction' | 'fact';
+  name: 'fact';
   labelSingular: string;
   labelPlural: string;
   description: string;
@@ -76,7 +85,14 @@ export type BuiltInView = {
   readWith: string[];
 };
 export type RecordReference = { id: string; object: string; label: string | null };
-export type SourceReference = { id: string; title: string | null; occurredAt: string };
+/** The event a claim cites. */
+export type SourceReference = {
+  id: string;
+  /** The event type's API name. */
+  type: string;
+  title: string | null;
+  occurredAt: string;
+};
 export type AssertionView = {
   id: string;
   recordId: string;
@@ -89,7 +105,10 @@ export type AssertionView = {
   reason: 'outranked' | 'low_confidence' | 'unique_conflict' | null;
   actor: Actor;
   confidence: number;
-  sourceInteractionId: string | null;
+  /** The event record the claim cites, if any. */
+  sourceRecordId: string | null;
+  /** One of the values `log_event` wrote when the event was logged (6.2). */
+  isInitial: boolean;
   observedAt: string;
   createdAt: string;
   source: SourceReference | null;
@@ -114,6 +133,8 @@ export type PresentedRecord = {
   updatedBy: Actor;
   provenance?: Record<string, Provenance>;
   relationReferences?: Record<string, RecordReference>;
+  /** Event records only: their built-in columns and links. */
+  event?: EventDetails;
 };
 export type WriteResponse = {
   id: string;
@@ -121,8 +142,16 @@ export type WriteResponse = {
   fields: Record<string, 'applied' | 'pending_review' | 'superseded'>;
   record: PresentedRecord;
 };
+/** How an event is attached to a record (7.1). */
+export const EVENT_ATTACHMENTS = ['participant', 'about', 'field'] as const;
+export type EventAttachment = (typeof EVENT_ATTACHMENTS)[number];
 export type QueryInput = {
   search?: string;
+  /**
+   * Event types only: events directly attached to this record, as a
+   * participant, `about` it, or through one of the event's relation fields.
+   */
+  linked?: { record: string; link?: EventAttachment };
   filter?: Record<string, unknown>;
   sort?: { field: string; direction: 'asc' | 'desc' }[];
   limit?: number;
@@ -141,7 +170,7 @@ export type DecisionResult = {
   record: PresentedRecord;
 };
 export type UnresolvedParticipant = {
-  interactionId: string;
+  eventId: string;
   position: number;
   handle: string | null;
   role: string | null;
@@ -193,7 +222,7 @@ export type ForgetResult = {
   forgotten: true;
   counts: {
     records: number;
-    interactions: number;
+    events: number;
     facts: number;
     assertions: number;
     inboundRelations: number;
@@ -205,7 +234,7 @@ export type ForgetResult = {
    * Live rows that may still mention the person, found by name and handle
    * search before deletion. Not a guarantee: a person reviews them.
    */
-  reviewCandidates: { records: string[]; facts: string[]; interactions: string[] };
+  reviewCandidates: { records: string[]; facts: string[]; events: string[] };
 };
 export type ReviewCollection = 'pendingAssertions' | 'unresolvedParticipants' | 'mergeSuggestions';
 export type ReviewQueue = {
@@ -225,9 +254,15 @@ export type PresentedFact = {
   validFrom: string;
   validTo: string | null;
   writtenBy: Actor;
-  sources: { interaction: string; quote: string | null }[];
+  sources: FactSource[];
 };
-export type InteractionKind = 'meeting' | 'call' | 'email' | 'message' | 'note';
+/**
+ * What a fact rests on: an event, with the quote the agent chose, or the
+ * internal note `remember` created when it was given no source (6.4).
+ */
+export type FactSource =
+  | { event: string; internal?: never; quote: string | null }
+  | { event: null; internal: true; quote: null };
 export type UnmatchedReason =
   | 'no_match'
   | 'phone_only'
@@ -235,7 +270,7 @@ export type UnmatchedReason =
   | 'ambiguous'
   | 'suppressed';
 export type MatchedParticipant = {
-  /** The participant link's ID, for `DELETE /v1/interactions/:id/participants/:participantId`. */
+  /** The participant link's ID, for `DELETE /v1/events/:id/participants/:participantId`. */
   id: string;
   handle: string | null;
   role: string | null;
@@ -250,62 +285,84 @@ export type UnmatchedParticipant = {
 };
 export type Participant = MatchedParticipant | UnmatchedParticipant;
 export type Participants = { matched: MatchedParticipant[]; unmatched: UnmatchedParticipant[] };
-export type PresentedInteraction = {
-  id: string;
-  kind: InteractionKind;
-  channel: string;
-  externalId: string | null;
+/** An event record's built-in columns and links (1.3), beside its fields. */
+export type EventDetails = {
   occurredAt: string;
+  /** Null once a privacy request erased the event's raw identity (2.1). */
+  channel: string | null;
+  externalId: string | null;
+  /** The core title and summary, whatever the fields are named. */
   title: string | null;
   summary: string | null;
   /** Who took part. */
   participants: Participants;
-  /** Records the interaction concerns, e.g. a meeting's company or project (1.3). */
+  /** Records the event concerns, e.g. a meeting's company or project (1.3). */
   about: string[];
-  createdBy: Actor;
-  createdAt: string;
 };
-/** `POST /v1/interactions/query` input (5): filters on the interaction log. */
-export type InteractionQueryInput = {
-  filter?: {
-    kind?: InteractionKind | InteractionKind[];
-    channel?: string | string[];
-    externalId?: string;
-    occurredAt?: { gt?: string; gte?: string; lt?: string; lte?: string };
-    /** Interactions linked to this record, as a participant or `about` it. */
-    record?: string;
-    /** With `record`: only that kind of link. */
-    link?: 'participant' | 'about';
-  };
-  order?: 'newest' | 'oldest';
-  /** Also count every matching interaction by kind or channel. */
-  countBy?: 'kind' | 'channel';
-  limit?: number;
-  cursor?: string;
-};
-export type InteractionQueryResult = {
-  items: PresentedInteraction[];
-  nextCursor: string | null;
-  /** All matching interactions, not only this page. */
-  total: number;
-  counts?: Record<string, number>;
-};
-/** What a write added to an interaction's participants and `about` records. */
-export type AddedLinks = { participants: Participants; about: string[] };
-/** `POST /v1/interactions` result (6.2); `added` is set when it was logged before. */
-export type LogInteractionResult = {
+/**
+ * How an event is attached to the record whose history lists it (7.1). An
+ * event attached in several ways appears once, with this precedence.
+ */
+export type Via =
+  | { kind: 'participant' }
+  | { kind: 'about' }
+  /** The event's own relation field points at the record (6.3). */
+  | { kind: 'field'; field: string }
+  /** Rolled up from `record`, which the event is attached to, through `field` (7.2). */
+  | { kind: 'rollup'; field: string; record: string };
+/** An event in a record's history, as context packs list it. */
+export type EventItem = {
   id: string;
+  /** The event type's API name. */
+  type: string;
+  occurredAt: string;
+  title: string | null;
+  summary: string | null;
+  via: Via;
+};
+/** An event in `GET /v1/records/:id/events`: the full event and how it is attached. */
+export type AttachedEvent = PresentedRecord & { event: EventDetails; via: Via };
+/** `POST /v1/events` input (6.2). */
+export type LogEventInput = {
+  /** The event type's API name, e.g. "meeting". */
+  type: string;
+  channel: string;
+  externalId?: string;
+  occurredAt: string;
+  title?: string;
+  summary?: string;
+  /** The event type's other fields, by name; not title or summary. */
+  fields?: Record<string, unknown>;
+  participants?: { handle?: string; recordId?: string; role?: string }[];
+  about?: string[];
+};
+/** What a write added to an event's participants and `about` records. */
+export type AddedLinks = { participants: Participants; about: string[] };
+/** `POST /v1/events` result (6.2); `added` is set when it was logged before. */
+export type LogEventResult = {
+  id: string;
+  type: string;
   created: boolean;
   participants: Participants;
   about: string[];
   added?: AddedLinks;
 };
-export type RetractInteractionResult = {
+/** How far deleting events reached (6.4). */
+export type EventRetraction = {
+  /** Field assertions that cited the events and no longer count. */
+  retractedAssertions: number;
+  /** Records whose field values were recomputed (rule 2.4). */
+  recomputedRecordIds: string[];
+  /** Facts hidden because a deleted event was their last live source. */
+  hiddenFactIds: string[];
+};
+/** `DELETE /v1/events/:id`. */
+export type RetractEventResult = EventRetraction & { id: string; deleted: true };
+/** `DELETE /v1/records/:id`: the records deleted and, for events, what they retracted. */
+export type DeleteRecordResult = Partial<EventRetraction> & {
   id: string;
   deleted: true;
-  retractedAssertions: number;
-  recomputedRecordIds: string[];
-  hiddenFactIds: string[];
+  deletedRecordIds: string[];
 };
 export type SchemaChange = {
   id: string;
@@ -377,9 +434,10 @@ export type RecordHit = {
   match: 'text' | 'similar_label';
 };
 export type FactHit = { id: string; record: string; content: string; validFrom: string };
-export type InteractionHit = {
+export type EventHit = {
   id: string;
-  kind: string;
+  /** The event type's API name. */
+  type: string;
   occurredAt: string;
   title: string | null;
   summary: string | null;
@@ -390,7 +448,7 @@ export type InteractionHit = {
 export type SearchResult = {
   records: RecordHit[];
   facts: FactHit[];
-  interactions: InteractionHit[];
+  events: EventHit[];
 };
 /** `GET /v1/records/:id/context` input (6.2). */
 export type ContextInput = { tokenBudget?: number };
@@ -407,17 +465,10 @@ export type ContextFact = {
   content: string;
   validFrom: string;
   writtenBy: Actor;
-  /** Live interactions the fact rests on. */
+  /** Live events the fact rests on. */
   sources: string[];
-};
-export type ContextInteraction = {
-  id: string;
-  kind: string;
-  occurredAt: string;
-  title: string | null;
-  summary: string | null;
-  /** How the record is linked: it took part, or the interaction is about it. */
-  via: 'participant' | 'about';
+  /** Set when the fact rests on a note `remember` created, which has no readable ID. */
+  internal?: true;
 };
 export type ContextPack = {
   record: {
@@ -428,9 +479,10 @@ export type ContextPack = {
   };
   openTasks: OpenTask[];
   facts: ContextFact[];
-  recentInteractions: ContextInteraction[];
+  /** Events attached to the record, newest first, each with how (`via`). */
+  recentEvents: EventItem[];
   /** Items of each section left out to fit the budget. */
-  omitted: { openTasks: number; facts: number; recentInteractions: number };
+  omitted: { openTasks: number; facts: number; recentEvents: number };
   tokenEstimate: number;
 };
 /** `POST /v1/records/:id/merge` input (4.2). */

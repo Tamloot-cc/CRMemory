@@ -14,21 +14,29 @@ import { z } from 'zod';
  */
 const DESIGN_RULES = `### Use what Retainer already has
 
-- Meetings, calls, emails and messages are interactions: log them with
-  log_interaction. Never create an object for them, nor a join object for
-  who attended; participants are part of the interaction. The company,
-  project, deal or tasks a meeting concerns go in its about list, so it
-  shows on those records too; never list them as participants. A scheduled
-  piece of business with its own status and outcome, such as an appointment
-  or a viewing, can be an object.
-- describe_schema lists interactions and facts under builtIns. They are
-  part of every workspace; don't add fields or objects to copy them.
-- To find or count interactions by kind, channel, date or linked record,
-  use query_interactions; there is no need for a field like "meeting count".
+- Meetings, calls, emails, messages and notes are events: describe_schema
+  lists their types as objects of class "event", and log_event logs them.
+  Never create an entity object for them, nor a join object for who
+  attended; participants are part of the event. The company, project, deal
+  or tasks a meeting concerns go in its about list, so it shows on those
+  records too; never list them as participants.
+- Something else that happens at a point in time and that you would log
+  from a source (a payment, a shipment, a site visit) can be a new event
+  type: create_object with class "event". It gets a title and summary of
+  its own; add only the fields that type needs, such as an amount. A
+  relation field on an event type (a payment's invoice) also attaches the
+  event to that record's history; prefer about for "what this concerns".
+  A scheduled piece of business with its own status and outcome, such as
+  an appointment or a viewing, can still be an entity object.
+- describe_schema lists facts under builtIns. They are part of every
+  workspace; don't add fields or objects to copy them.
+- To find events by type, channel, date or linked record, use
+  query_records on the event type with linked; there is no need for a field
+  like "meeting count".
 - One-off knowledge ("prefers WhatsApp after 6pm") is a fact: store it with
   remember. A field is for something you would filter, sort or fill in for
   every record.
-- Commitments are task records. Recency comes from interactions, so do not
+- Commitments are task records. Recency comes from events, so do not
   add a field like "last contacted" that someone has to keep up by hand.
 
 ### Start lean
@@ -74,7 +82,7 @@ const DISCOVER_SCHEMA = `# Discover the schema from the user's data
 
 Goal: look at how your user actually works, propose a Retainer schema that
 fits it, and apply it once they agree. You only change the schema here; do
-not write records, interactions or facts.
+not write records, events or facts.
 
 Retainer cannot read the user's email, calendar or files. You explore them
 with your own tools; Retainer stores the schema you settle on.
@@ -204,7 +212,7 @@ the same rules.
 1. Call describe_schema, and list_templates: a template may already define
    what you need, and applying it beats building a twin.
 2. Check that the change is needed: could an option, an existing field, a
-   fact or an interaction hold it?
+   fact or an event hold it?
 3. Make the smallest change that works, with a reason that names the
    evidence ("budget came up in 9 of the 12 deals logged this month").
 
@@ -220,7 +228,7 @@ When your user asks whether the schema still fits:
 - Look for custom objects that rebuild what Retainer has: an object for
   meetings, calls or emails; a join object for who attended; a field that
   tracks the last contact by hand. Moving them means logging the records
-  as interactions first, so propose it as a plan, not a single change.
+  as events first, so propose it as a plan, not a single change.
 - Look for twins of template objects and for type fields that tags could
   replace.
 Propose additions as usual. Renames and removals wait for a person with
@@ -249,7 +257,7 @@ export const GUIDES = {
   schema_design: {
     title: 'Design and grow the schema',
     description:
-      'Rules for changing a schema in use: start lean, use interactions, facts and tasks ' +
+      'Rules for changing a schema in use: start lean, use events, facts and tasks ' +
       'instead of new objects, and grow fields from evidence. Also how to review one.',
     text: SCHEMA_DESIGN,
     promptIntro: "Review this Retainer workspace's schema with me.",

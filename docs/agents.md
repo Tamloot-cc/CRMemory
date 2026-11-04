@@ -79,21 +79,20 @@ Check RETAINER_API_KEY.` `retainer-mcp --help` prints its usage and
 Tools are generic, not one per object, so a workspace's custom objects never
 change the tool list.
 
-| Tool                    | What it does                                                                                    | Scope          |
-| ----------------------- | ----------------------------------------------------------------------------------------------- | -------------- |
-| `describe_schema`       | The workspace's objects and fields, and the built-in interactions and facts                     | `read`         |
-| `list_templates`        | Templates and what each would add                                                               | `read`         |
-| `apply_template`        | Apply a template to the workspace                                                               | `schema:write` |
-| `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                               | `read`         |
-| `query_records`         | Filter, sort and page the records of one object                                                 | `read`         |
-| `query_interactions`    | List and count interactions by kind, channel, time or a record they are linked to               | `read`         |
-| `get_record`            | One record by ID; merged IDs resolve to the surviving record                                    | `read`         |
-| `search`                | Keyword search across records, facts and interactions                                           | `read`         |
-| `get_context`           | A context pack for one record, fitted to a token budget                                         | `read`         |
-| `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                | `write`        |
-| `log_interaction`       | Log a meeting, call, email, message or note, with who took part and the records it is about     | `write`        |
-| `remember`              | Store a plain-language fact about a record, citing an interaction                               | `write`        |
-| `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve | `schema:write` |
+| Tool                    | What it does                                                                                      | Scope          |
+| ----------------------- | ------------------------------------------------------------------------------------------------- | -------------- |
+| `describe_schema`       | The workspace's objects (entities and event types) and fields, and the built-in facts             | `read`         |
+| `list_templates`        | Templates and what each would add                                                                 | `read`         |
+| `apply_template`        | Apply a template to the workspace                                                                 | `schema:write` |
+| `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                                 | `read`         |
+| `query_records`         | Filter, sort and page the records of one object; for an event type, the events linked to a record | `read`         |
+| `get_record`            | One record by ID; merged IDs resolve to the surviving record                                      | `read`         |
+| `search`                | Keyword search across records, events and facts                                                   | `read`         |
+| `get_context`           | A context pack for one record, fitted to a token budget                                           | `read`         |
+| `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                  | `write`        |
+| `log_event`             | Log a meeting, call, email, message, note or other event, with who took part and what it is about | `write`        |
+| `remember`              | Store a plain-language fact about a record, citing an event                                       | `write`        |
+| `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve   | `schema:write` |
 
 Validation errors name the field and the allowed values, so an agent can
 correct its call and retry.
@@ -128,16 +127,17 @@ use; a person can start that review as the MCP prompt `schema_design`.
 Retainer does not read conversations; the agent does. After a meeting, call or
 email thread, a well-behaved agent:
 
-1. **Logs the interaction** with `log_interaction`: kind, channel, time (with
-   a UTC offset), title, its own short summary, the source's external ID, the
+1. **Logs the event** with `log_event`: its type (`describe_schema` lists the
+   event types), channel, time (with a UTC offset), title, its own short
+   summary, the type's other fields, the source's external ID, the
    participants as emails, phones or record IDs, and in `about` the IDs of
    the records it concerns. The response lists which participants matched a
    record and which did not.
-2. **Updates records** with `upsert_record`, passing the interaction's ID as
-   `source`. Cited values carry the interaction's date, so an old email can
-   never overwrite a newer value.
-3. **Stores facts** with `remember`, citing the same interaction and,
-   optionally, a short quote.
+2. **Updates records** with `upsert_record`, passing the event's ID as
+   `source`. Cited values carry the event's date, so an old email can never
+   overwrite a newer value.
+3. **Stores facts** with `remember`, citing the same event and, optionally,
+   a short quote.
 4. **Creates tasks** someone committed to, as `task` records.
 
 Things worth knowing:
@@ -156,28 +156,34 @@ Things worth knowing:
   company and the pilot project in `about`:
 
   ```json
-  { "kind": "meeting", "channel": "calendar", "externalId": "evt-4410",
+  { "type": "meeting", "channel": "calendar", "externalId": "evt-4410",
     "occurredAt": "2026-10-29T14:00:00+02:00", "title": "Acme pilot review",
     "participants": [{ "handle": "dana@acme.com", "role": "customer" }],
     "about": ["<acme company id>", "<pilot project id>"] }
   ```
 
-  The meeting then shows in the `get_context`, `search` and
-  `query_interactions` results of every record it is linked to. Don't list a
-  company or project as a participant.
+  The meeting then shows in `get_context` and in `query_records` with
+  `linked` for every record it is linked to. Don't list a company or project
+  as a participant.
 - **Retries are safe.** Logging the same `(channel, externalId)` again with the
-  same kind, time, title and summary returns the existing interaction with
+  same type, time, title, summary and fields returns the existing event with
   `created: false`. Participants and `about` records it did not have yet are
   added and listed in `added`, so an agent that left the company out can log
   the same source again with it. Nothing is removed that way; a different
-  title, summary, kind or time is a conflict. Writes are independent short
+  payload is a conflict (`event_conflict`), and `event_retracted` means the
+  source was deleted or erased: don't log it again. Writes are independent short
   transactions, so an agent that stops halfway leaves consistent data and can
   resume.
-- **Interactions over time.** `query_interactions` lists and counts
-  interactions by kind, channel, an `occurredAt` range and a linked record,
-  e.g. calls with a company this quarter, counted with `countBy: "kind"`.
+- **Events over time.** `query_records` on an event type lists its events by
+  `occurredAt`, `channel` or a field, and with `linked: { record }` only
+  those attached to one record, e.g. calls with a company this quarter.
+- **Your own event types.** Something else that happens and is logged from
+  a source, such as a payment or a site visit, can be an event type:
+  `propose_schema_change` with `create_object` and `class: "event"`. It gets
+  a title and summary of its own; add only the fields it needs.
 - **Reading back.** `get_context` gives the current values (with who wrote
-  each), open tasks, current facts and recent interactions, within
+  each), open tasks, current facts and recent events (each saying how it is
+  attached, `via`), within
   `tokenBudget` tokens (default 2000, at most 16000). `omitted` counts what
   did not fit.
 - **Schema.** Additive changes (new objects, fields, options) apply at once.

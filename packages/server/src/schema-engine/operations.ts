@@ -1,4 +1,4 @@
-import { FIELD_TYPES } from '@retainer/shared';
+import { FIELD_TYPES, OBJECT_CLASSES } from '@retainer/shared';
 import { z } from 'zod';
 
 /**
@@ -40,14 +40,19 @@ export const fieldDefinitionSchema = z.strictObject({
 
 export const objectDefinitionSchema = z.strictObject({
   universalId: z.uuid().optional(),
+  /** `entity` (default) or `event`. An event type gets core title and summary fields. */
+  class: z.enum(OBJECT_CLASSES).optional(),
   nameSingular: z.string().min(1),
   namePlural: z.string().min(1),
   labelSingular: z.string().min(1).max(200),
   labelPlural: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
-  /** Name of the field shown when a record is referenced. */
-  labelField: z.string().min(1),
-  fields: z.array(fieldDefinitionSchema).min(1),
+  /**
+   * Name of the field shown when a record is referenced. Required for an
+   * entity; an event type's label is always its core title field.
+   */
+  labelField: z.string().min(1).optional(),
+  fields: z.array(fieldDefinitionSchema).default([]),
 });
 
 const objectRef = z.string().min(1);

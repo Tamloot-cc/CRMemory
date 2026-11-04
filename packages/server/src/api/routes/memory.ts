@@ -1,61 +1,56 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { addLinksInputSchema, logEventInputSchema } from '../../memory/events.js';
 import { rememberInputSchema } from '../../memory/facts.js';
-import { addLinksInputSchema, logInteractionInputSchema } from '../../memory/interactions.js';
-import { interactionQuerySchema } from '../../memory/query-interactions.js';
 import {
-  addInteractionLinksFor,
-  logInteractionFor,
-  queryInteractionsFor,
-  readInteraction,
+  addEventLinksFor,
+  logEventFor,
+  readEvent,
   remember,
-  removeLinkFor,
+  removeEventLinkFor,
+  retractEventFor,
   retractFactFor,
-  retractInteractionFor,
 } from '../../memory/service.js';
 import type { AppEnv } from '../http.js';
 import { idParam, readBody } from '../request.js';
 
-/** The interaction log and facts (6.1), on the same services as the MCP tools. */
+/** Events and facts (6.2, 6.4), on the same services as the MCP tools. */
 export function memoryRoutes(app: Hono<AppEnv>, sql: Sql) {
-  app.post('/interactions', requireScope('write'), async (c) => {
-    const input = await readBody(c, logInteractionInputSchema);
-    const result = await logInteractionFor(sql, c.get('caller'), input);
+  app.post('/events', requireScope('write'), async (c) => {
+    const input = await readBody(c, logEventInputSchema);
+    const result = await logEventFor(sql, c.get('caller'), input);
     return c.json(result, result.created ? 201 : 200);
   });
 
-  app.post('/interactions/query', requireScope('read'), async (c) => {
-    const input = await readBody(c, interactionQuerySchema);
-    return c.json(await queryInteractionsFor(sql, c.get('caller'), input));
-  });
-
-  app.get('/interactions/:id', requireScope('read'), async (c) =>
-    c.json(await readInteraction(sql, c.get('caller'), idParam(c))),
+  app.get('/events/:id', requireScope('read'), async (c) =>
+    c.json(await readEvent(sql, c.get('caller'), idParam(c))),
   );
 
-  app.post('/interactions/:id/participants', requireScope('write'), async (c) => {
+  app.post('/events/:id/links', requireScope('write'), async (c) => {
     const id = idParam(c);
     const input = await readBody(c, addLinksInputSchema);
-    return c.json(await addInteractionLinksFor(sql, c.get('caller'), id, input));
+    return c.json(await addEventLinksFor(sql, c.get('caller'), id, input));
   });
 
-  app.delete('/interactions/:id/participants/:participantId', requireScope('write'), async (c) =>
+  app.delete('/events/:id/participants/:participantId', requireScope('write'), async (c) =>
     c.json(
-      await removeLinkFor(sql, c.get('caller'), idParam(c), {
+      await removeEventLinkFor(sql, c.get('caller'), idParam(c), {
         participant: idParam(c, 'participantId'),
       }),
     ),
   );
 
-  app.delete('/interactions/:id/about/:recordId', requireScope('write'), async (c) =>
+  app.delete('/events/:id/about/:recordId', requireScope('write'), async (c) =>
     c.json(
-      await removeLinkFor(sql, c.get('caller'), idParam(c), { about: idParam(c, 'recordId') }),
+      await removeEventLinkFor(sql, c.get('caller'), idParam(c), {
+        about: idParam(c, 'recordId'),
+      }),
     ),
   );
 
-  app.delete('/interactions/:id', requireScope('write'), async (c) =>
-    c.json(await retractInteractionFor(sql, c.get('caller'), idParam(c))),
+  app.delete('/events/:id', requireScope('write'), async (c) =>
+    c.json(await retractEventFor(sql, c.get('caller'), idParam(c))),
   );
 
   app.post('/records/:id/facts', requireScope('write'), async (c) => {

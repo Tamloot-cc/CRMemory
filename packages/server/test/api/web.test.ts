@@ -2,7 +2,7 @@ import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { revokeApiKey } from '../../src/auth/keys.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
-import { interactionPage } from '../../src/memory/interactions.js';
+import { attachedEventPage } from '../../src/memory/events.js';
 import { withRead } from '../../src/records/service.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.js';
@@ -142,11 +142,11 @@ describe('web read contracts', () => {
       })
     ).body.record;
     const record = (await create({ name: 'Dana', company: company.id })).body.record;
-    const interaction = (
-      await t.request('/v1/interactions', {
+    const event = (
+      await t.request('/v1/events', {
         key: keys.agent,
         body: {
-          kind: 'meeting',
+          type: 'meeting',
           channel: 'zoom',
           occurredAt: '2026-10-20T10:00:00Z',
           title: 'Review meeting',
@@ -158,14 +158,20 @@ describe('web read contracts', () => {
     await t.request(`/v1/records/${record.id}`, {
       method: 'PATCH',
       key: keys.agent,
-      body: { values: { jobTitle: 'CTO' }, source: interaction.id },
+      body: { values: { jobTitle: 'CTO' }, source: event.id },
     });
     const read = await t.request(`/v1/records/${record.id}?include=provenance,relationReferences`, {
       key: keys.user,
     });
-    expect(read.body.provenance.jobTitle.assertion.source).toMatchObject({
-      id: interaction.id,
-      title: 'Review meeting',
+    expect(read.body.provenance.jobTitle.assertion).toMatchObject({
+      sourceRecordId: event.id,
+      isInitial: false,
+      source: {
+        id: event.id,
+        type: 'meeting',
+        title: 'Review meeting',
+        occurredAt: '2026-10-20T10:00:00.000Z',
+      },
     });
     expect(read.body.relationReferences[company.id].label).toBe('Acme');
     const list = await t.request('/v1/objects/person/query', {
@@ -177,20 +183,27 @@ describe('web read contracts', () => {
       key: keys.user,
     });
     expect(history.body.items).toHaveLength(1);
+    const events = (await t.request(`/v1/records/${record.id}/events`, { key: keys.user })).body;
+    expect(events.items).toHaveLength(1);
+    expect(events.items[0]).toMatchObject({
+      id: event.id,
+      object: 'meeting',
+      via: { kind: 'participant' },
+      event: { title: 'Review meeting', summary: 'A meeting' },
+    });
+    // The claims an event supports: values on other records that cite it.
+    const claims = (await t.request(`/v1/events/${event.id}/claims`, { key: keys.user })).body;
     expect(
-      (await t.request(`/v1/records/${record.id}/interactions`, { key: keys.user })).body.items[0]
-        .id,
-    ).toBe(interaction.id);
-    expect(
-      (await t.request(`/v1/interactions/${interaction.id}/claims`, { key: keys.user })).body
-        .assertions[0].recordId,
-    ).toBe(record.id);
+      claims.assertions
+        .filter((a: { isInitial: boolean }) => !a.isInitial)
+        .map((a: { recordId: string; field: string }) => [a.recordId, a.field]),
+    ).toEqual([[record.id, 'jobTitle']]);
     for (const path of [
       `/v1/records/${record.id}?include=provenance`,
       `/v1/records/${record.id}/assertions`,
       `/v1/records/${record.id}/facts`,
-      `/v1/records/${record.id}/interactions`,
-      `/v1/interactions/${interaction.id}/claims`,
+      `/v1/records/${record.id}/events`,
+      `/v1/events/${event.id}/claims`,
     ])
       expect((await t.request(path, { key: keys.other })).status).toBe(404);
   });
@@ -349,13 +362,13 @@ it('uses a configured external origin behind TLS proxies without trusting forwar
   ).toBe(200);
 });
 
-it('keeps historical facts in interaction claims while record memory only lists current facts', async () => {
+it('keeps historical facts in event claims while record memory only lists current facts', async () => {
   const record = (await create({ name: 'Dana' })).body.record;
   const source = (
-    await t.request('/v1/interactions', {
+    await t.request('/v1/events', {
       key: keys.agent,
       body: {
-        kind: 'meeting',
+        type: 'meeting',
         channel: 'test',
         occurredAt: '2026-10-20T10:00:00Z',
         title: 'Source',
@@ -378,7 +391,7 @@ it('keeps historical facts in interaction claims while record memory only lists 
   await db.owner`update facts set superseded_by = ${ids[3] as string} where id = ${ids[2] as string}`;
   const current = (await t.request(`/v1/records/${record.id}/facts`, { key: keys.user })).body;
   expect(current.facts.map((f: any) => f.content)).toEqual(['Current']);
-  const claims = (await t.request(`/v1/interactions/${source.id}/claims`, { key: keys.user })).body;
+  const claims = (await t.request(`/v1/events/${source.id}/claims`, { key: keys.user })).body;
   expect(Object.fromEntries(claims.facts.map((f: any) => [f.content, f.status]))).toEqual({
     Retracted: 'retracted',
     Ended: 'ended',
@@ -388,28 +401,25 @@ it('keeps historical facts in interaction claims while record memory only lists 
   expect(claims.facts.find((f: any) => f.content === 'Retracted').sources[0].quote).toBe(
     'Quote: Retracted',
   );
-  const first = (
-    await t.request(`/v1/interactions/${source.id}/claims?limit=1`, { key: keys.user })
-  ).body;
+  const first = (await t.request(`/v1/events/${source.id}/claims?limit=1`, { key: keys.user }))
+    .body;
   const second = (
     await t.request(
-      `/v1/interactions/${source.id}/claims?limit=1&factsCursor=${first.nextCursors.facts}`,
+      `/v1/events/${source.id}/claims?limit=1&factsCursor=${first.nextCursors.facts}`,
       { key: keys.user },
     )
   ).body;
   expect(second.facts[0].id).not.toBe(first.facts[0].id);
-  expect(
-    (await t.request(`/v1/interactions/${source.id}/claims`, { key: keys.other })).status,
-  ).toBe(404);
+  expect((await t.request(`/v1/events/${source.id}/claims`, { key: keys.other })).status).toBe(404);
 });
 
-it('hydrates interaction pages in a bounded number of real database queries', async () => {
+it('hydrates event pages in a bounded number of real database queries', async () => {
   const record = (await create({ name: 'Dana' })).body.record;
   for (let i = 0; i < 20; i++)
-    await t.request('/v1/interactions', {
+    await t.request('/v1/events', {
       key: keys.agent,
       body: {
-        kind: 'meeting',
+        type: 'meeting',
         channel: 'test',
         occurredAt: `2026-10-${String(i + 1).padStart(2, '0')}T10:00:00Z`,
         title: `Meeting ${i}`,
@@ -430,13 +440,8 @@ it('hydrates interaction pages in a bounded number of real database queries', as
   });
   const caller = { workspaceId: me.workspace.id, actor: me.actor, scopes: ['read'] as const };
   const read = (limit: number) =>
-    withRead(sql, caller, (tx) =>
-      interactionPage(
-        tx,
-        caller.workspaceId,
-        tx`exists(select 1 from interaction_participants p where p.interaction_id = i.id and p.record_id = ${record.id})`,
-        limit,
-      ),
+    withRead(sql, caller, (tx, schema) =>
+      attachedEventPage(tx, schema, caller.workspaceId, record.id, limit),
     );
   try {
     await read(1);
@@ -446,14 +451,148 @@ it('hydrates interaction pages in a bounded number of real database queries', as
     statements = 0;
     const all = await read(20);
     expect(statements).toBe(one);
-    expect(statements).toBeLessThan(10);
+    // The transaction, the page, then one read each for event columns, links,
+    // live link targets and relation references in both directions.
+    expect(statements).toBeLessThanOrEqual(10);
     expect(all.items).toHaveLength(20);
-    expect(all.items[0]?.title).toBe('Meeting 19');
-    expect(all.items[0]?.participants).toMatchObject({
+    expect(all.items[0]?.event.title).toBe('Meeting 19');
+    expect(all.items[0]?.via).toEqual({ kind: 'participant' });
+    expect(all.items[0]?.event.participants).toMatchObject({
       matched: [{ recordId: record.id, role: 'subject' }],
       unmatched: [{ handle: 'missing@example.test', reason: 'no_match' }],
     });
   } finally {
     await sql.end();
   }
+});
+
+describe('GET /v1/records/:id/events', () => {
+  const logEvent = async (body: Record<string, unknown>) => {
+    const res = await t.request('/v1/events', {
+      key: keys.agent,
+      body: { type: 'call', channel: 'test', ...body },
+    });
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  };
+  const page = async (id: string, query = '', key = keys.user) =>
+    t.request(`/v1/records/${id}/events${query}`, { key });
+
+  it('lists attached events newest first, once each, with how they are attached', async () => {
+    const change = await t.request('/v1/schema/changes', {
+      key: keys.user,
+      body: {
+        operations: [
+          {
+            op: 'create_field',
+            object: 'call',
+            field: {
+              name: 'account',
+              label: 'Account',
+              type: 'relation',
+              settings: { targetObject: 'company', inverseField: 'accountCalls' },
+            },
+          },
+        ],
+      },
+    });
+    expect(change.body.status).toBe('applied');
+    const company = (
+      await t.request('/v1/objects/company/records', {
+        key: keys.user,
+        body: { values: { name: 'Acme' } },
+      })
+    ).body.record.id as string;
+    const dana = (await create({ name: 'Dana', emails: 'dana@acme.test' })).body.record
+      .id as string;
+
+    const participant = await logEvent({
+      occurredAt: '2026-10-04T10:00:00Z',
+      participants: [{ handle: 'dana@acme.test' }],
+      about: [dana, company],
+      fields: { account: company },
+    });
+    const about = await logEvent({ occurredAt: '2026-10-03T10:00:00Z', about: [dana] });
+    const field = await logEvent({
+      occurredAt: '2026-10-02T10:00:00Z',
+      fields: { account: company },
+    });
+    const deleted = await logEvent({ occurredAt: '2026-10-01T10:00:00Z', about: [dana] });
+    await t.request(`/v1/events/${deleted}`, { key: keys.agent, method: 'DELETE' });
+    // The note behind an uncited fact is never listed.
+    await t.request(`/v1/records/${dana}/facts`, { key: keys.agent, body: { text: 'Uncited' } });
+    await t.request(`/v1/records/${company}/facts`, { key: keys.agent, body: { text: 'Uncited' } });
+
+    const via = async (id: string, query = '') =>
+      ((await page(id, query)).body.items as { id: string; via: unknown }[]).map((e) => [
+        e.id,
+        e.via,
+      ]);
+    expect(await via(dana)).toEqual([
+      [participant, { kind: 'participant' }],
+      [about, { kind: 'about' }],
+    ]);
+    expect(await via(company)).toEqual([
+      [participant, { kind: 'about' }],
+      [field, { kind: 'field', field: 'account' }],
+    ]);
+    // A record is linked once: as a participant, its about link was dropped.
+    expect(await via(dana, '?link=about')).toEqual([[about, { kind: 'about' }]]);
+    expect(await via(dana, '?link=participant')).toEqual([[participant, { kind: 'participant' }]]);
+    expect(await via(company, '?link=field')).toEqual([
+      [participant, { kind: 'field', field: 'account' }],
+      [field, { kind: 'field', field: 'account' }],
+    ]);
+
+    const full = (await page(company, '?limit=1')).body;
+    expect(full.items[0]).toMatchObject({
+      id: participant,
+      object: 'call',
+      fields: { account: company },
+      event: {
+        occurredAt: '2026-10-04T10:00:00.000Z',
+        channel: 'test',
+        externalId: null,
+        participants: { matched: [{ recordId: dana }], unmatched: [] },
+        about: [company],
+      },
+    });
+    const next = (await page(company, `?limit=1&cursor=${full.nextCursor}`)).body;
+    expect(next.items.map((e: { id: string }) => e.id)).toEqual([field]);
+    expect(next.nextCursor).toBeNull();
+
+    expect((await page(dana, '?link=rollup')).status).toBe(400);
+    expect((await page(dana, '?cursor=invalid')).status).toBe(400);
+    expect((await page(dana, '', keys.other)).status).toBe(404);
+    expect((await page(dana, '', keys.reader)).status).toBe(200);
+  });
+
+  it("lists an event's initial values beside the claims on other records", async () => {
+    const dana = (await create({ name: 'Dana' })).body.record.id as string;
+    const event = await logEvent({
+      type: 'meeting',
+      occurredAt: '2026-10-04T10:00:00Z',
+      title: 'Kickoff',
+    });
+    await t.request(`/v1/records/${dana}`, {
+      method: 'PATCH',
+      key: keys.agent,
+      body: { values: { jobTitle: 'CTO' }, source: event },
+    });
+    const claims = (await t.request(`/v1/events/${event}/claims`, { key: keys.user })).body;
+    expect(
+      claims.assertions
+        .map((a: { recordId: string; field: string; isInitial: boolean }) => [
+          a.recordId === event ? 'event' : 'dana',
+          a.field,
+          a.isInitial,
+        ])
+        .sort(),
+    ).toEqual([
+      ['dana', 'jobTitle', false],
+      ['event', 'title', true],
+    ]);
+    // An entity has no claims to list.
+    expect((await t.request(`/v1/events/${dana}/claims`, { key: keys.user })).status).toBe(404);
+  });
 });

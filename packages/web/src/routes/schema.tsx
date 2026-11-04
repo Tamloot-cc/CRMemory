@@ -1,5 +1,7 @@
 import {
   type BuiltInView,
+  type CoreRole,
+  type EventColumn,
   type FieldView,
   type ObjectView,
   SCHEMA_CHANGE_STATUSES,
@@ -21,7 +23,7 @@ import {
   Lightbulb,
   Lock,
   type LucideIcon,
-  MessagesSquare,
+  ShieldCheck,
   TriangleAlert,
 } from 'lucide-react';
 import { Suspense, useCallback, useMemo, useState } from 'react';
@@ -191,8 +193,22 @@ export function SchemaPage() {
 }
 
 const BUILT_IN_ICONS: Record<BuiltInView['name'], LucideIcon> = {
-  interaction: MessagesSquare,
   fact: Lightbulb,
+};
+
+/** The built-in columns every event record has beside its fields. */
+const EVENT_COLUMN_INFO: Record<EventColumn, { label: string; description: string }> = {
+  occurredAt: { label: 'Occurred at', description: 'When it happened' },
+  channel: { label: 'Channel', description: 'Where it was logged from, e.g. gmail or zoom' },
+  externalId: {
+    label: 'External ID',
+    description: 'Its ID in that channel; logging it again adds to the same event',
+  },
+};
+
+const CORE_ROLE_TEXT: Record<CoreRole, string> = {
+  title: 'Core field: the event’s title, which names it. It can be renamed but not deleted.',
+  summary: 'Core field: the event’s summary. It can be renamed but not deleted.',
 };
 
 function ObjectsTab() {
@@ -206,6 +222,18 @@ function ObjectsTab() {
   const builtIn = named ?? (object ? undefined : builtIns[0]);
   const field = object?.fields.find((f) => f.name === search.field);
   const select = (object: string, field?: string) => void setSearch({ object, field });
+  const entities = objects.filter((o) => o.class !== 'event'),
+    eventTypes = objects.filter((o) => o.class === 'event');
+  const navItem = (o: ObjectView) => (
+    <NavItem
+      key={o.nameSingular}
+      icon={objectIcon(o.nameSingular)}
+      label={o.labelPlural}
+      meta={o.fields.length}
+      active={o.nameSingular === object?.nameSingular}
+      onSelect={() => select(o.nameSingular)}
+    />
+  );
   return (
     <>
       {!schema.workspace.templates.length ? <TemplatePicker /> : null}
@@ -223,19 +251,9 @@ function ObjectsTab() {
         <SplitView
           nav={
             <>
-              {objects.length ? (
-                <NavList label="Objects">
-                  {objects.map((o) => (
-                    <NavItem
-                      key={o.nameSingular}
-                      icon={objectIcon(o.nameSingular)}
-                      label={o.labelPlural}
-                      meta={o.fields.length}
-                      active={o.nameSingular === object?.nameSingular}
-                      onSelect={() => select(o.nameSingular)}
-                    />
-                  ))}
-                </NavList>
+              {entities.length ? <NavList label="Objects">{entities.map(navItem)}</NavList> : null}
+              {eventTypes.length ? (
+                <NavList label="Event types">{eventTypes.map(navItem)}</NavList>
               ) : null}
               {builtIns.length ? (
                 <NavList label="Built-in">
@@ -342,8 +360,8 @@ function DiagramTab() {
 }
 
 /**
- * Interactions or facts: part of every workspace and fixed by Retainer, so
- * there is nothing to change here; agents write them through their own tools.
+ * Facts: part of every workspace and fixed by Retainer, so there is nothing
+ * to change here; agents write them through their own tools.
  */
 function BuiltInDetail({ builtIn }: { builtIn: BuiltInView }) {
   return (
@@ -417,6 +435,7 @@ function ObjectDetail({
           <>
             <Code>{object.nameSingular}</Code>
             <Code>{object.namePlural}</Code>
+            {object.class === 'event' ? <Badge>Event</Badge> : null}
             <OwnerBadge owner={object.owner} />
             {label ? <span>Records named by {label.label}</span> : null}
           </>
@@ -476,6 +495,20 @@ function ObjectDetail({
                         <Lock size={13} aria-label="Read only" />
                       </Tooltip>
                     ) : null}
+                    {f.coreRole || f.isProtected ? (
+                      <Tooltip
+                        content={
+                          f.coreRole
+                            ? CORE_ROLE_TEXT[f.coreRole]
+                            : 'Protected: Retainer depends on it. It can be renamed but not deleted.'
+                        }
+                      >
+                        <ShieldCheck
+                          size={13}
+                          aria-label={f.coreRole ? 'Core field' : 'Protected'}
+                        />
+                      </Tooltip>
+                    ) : null}
                   </Row>
                   <Code>{f.name}</Code>
                 </Td>
@@ -501,6 +534,25 @@ function ObjectDetail({
           description={query ? `Nothing in ${object.labelPlural} matches “${query}”.` : undefined}
         />
       )}
+      {object.class === 'event' ? (
+        <Section title="Event columns">
+          <Muted>
+            Every {object.labelSingular.toLowerCase()} has these besides its fields. Events are
+            created only by logging them (<Code>log_event</Code>), with their participants and the
+            records they are about.
+          </Muted>
+          <PropertyList>
+            {(object.eventColumns ?? []).map((c) => (
+              <Property key={c} label={EVENT_COLUMN_INFO[c].label}>
+                <Row>
+                  <Code>{c}</Code>
+                  <Muted>{EVENT_COLUMN_INFO[c].description}</Muted>
+                </Row>
+              </Property>
+            ))}
+          </PropertyList>
+        </Section>
+      ) : null}
     </>
   );
 }
@@ -556,6 +608,13 @@ function FieldSheet({
           {field.name === object.labelField ? (
             <Property label="Label field">
               Names {object.labelPlural.toLowerCase()} wherever they are referenced
+            </Property>
+          ) : null}
+          {field.coreRole ? (
+            <Property label="Core field">{CORE_ROLE_TEXT[field.coreRole]}</Property>
+          ) : field.isProtected ? (
+            <Property label="Protected">
+              Retainer depends on it. It can be renamed but not deleted.
             </Property>
           ) : null}
           {s.maxValues ? <Property label="Most values">{s.maxValues}</Property> : null}

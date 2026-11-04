@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
+import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
+import { logEventFor } from '../../src/memory/service.js';
+import { type Caller, createRecord } from '../../src/records/service.js';
+import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
 
 const db = useTestDatabase();
@@ -13,8 +17,9 @@ const TENANT_TABLES = [
   'records',
   'record_links',
   'record_identifiers',
-  'interactions',
-  'interaction_participants',
+  'event_records',
+  'event_links',
+  'event_identity_tombstones',
   'field_assertions',
   'facts',
   'fact_sources',
@@ -117,18 +122,124 @@ describe('row-level security', () => {
   });
 });
 
+let workspaces = 0;
+/** A workspace with a schema, one event and one entity record, for the event tables. */
+async function workspaceWithEvent() {
+  const id = (
+    await createWorkspace(db.owner, { name: `Events ${++workspaces}`, template: 'sales' })
+  ).id;
+  const caller: Caller = {
+    workspaceId: id,
+    actor: { type: 'agent', id: 'inbox' } satisfies Actor,
+    scopes: ['read', 'write'],
+  };
+  const event = await logEventFor(app, caller, {
+    type: 'note',
+    channel: 'api',
+    externalId: 'security-1',
+    occurredAt: '2026-10-01T10:00:00Z',
+    summary: 'hello',
+    fields: {},
+    participants: [],
+    about: [],
+  });
+  const person = await createRecord(app, caller, 'person', { emails: 'dana@acme.com' });
+  return { id, eventId: event.id, personId: person.id };
+}
+
 describe('tenant foreign keys', () => {
   it('rejects a reference to a row in another workspace', async () => {
-    const [interaction] = await db.owner<{ id: string }[]>`
-      insert into interactions (workspace_id, kind, channel, occurred_at, summary, created_by)
-      values (${workspaceB}, 'note', 'api', now(), 'hello',
-        ${db.owner.json({ type: 'system', id: 'test' })})
-      returning id`;
+    const other = await workspaceWithEvent();
     await expect(
       db.owner`
-        insert into interaction_participants (workspace_id, interaction_id, position, handle)
-        values (${workspaceA}, ${interaction?.id ?? ''}, 0, 'dana@acme.com')`,
+        insert into event_links (workspace_id, event_id, position, handle, link)
+        values (${workspaceA}, ${other.eventId}, 0, 'dana@acme.com', 'participant')`,
     ).rejects.toMatchObject({ code: '23503' });
+    await expect(
+      db.owner`
+        insert into event_links (workspace_id, event_id, position, record_id, link)
+        values (${workspaceA}, ${other.eventId}, 0, ${other.personId}, 'about')`,
+    ).rejects.toMatchObject({ code: '23503' });
+  });
+});
+
+describe('event records (0015)', () => {
+  it('shows the runtime role only its own event rows and tombstones', async () => {
+    const one = await workspaceWithEvent();
+    const two = await workspaceWithEvent();
+    await db.owner`
+      insert into event_identity_tombstones (workspace_id, key_id, hmac)
+      values (${one.id}, 'k', 'one-1'), (${two.id}, 'k', 'two-1')`;
+    const seen = await inWorkspace(app, one.id, async (tx) => ({
+      events: await tx<{ record_id: string }[]>`select record_id from event_records`,
+      tombstones: await tx<{ hmac: string }[]>`select hmac from event_identity_tombstones`,
+    }));
+    expect(seen.events.map((r) => r.record_id)).toEqual([one.eventId]);
+    expect(seen.tombstones.map((r) => r.hmac)).toEqual(['one-1']);
+    await expect(
+      inWorkspace(
+        app,
+        one.id,
+        (tx) => tx`
+          insert into event_identity_tombstones (workspace_id, key_id, hmac)
+          values (${two.id}, 'k', 'x')`,
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+  });
+
+  it('never lets the runtime role change or remove a tombstone', async () => {
+    const ws = await workspaceWithEvent();
+    await inWorkspace(
+      app,
+      ws.id,
+      (tx) => tx`
+        insert into event_identity_tombstones (workspace_id, key_id, hmac)
+        values (${ws.id}, 'k', 'kept')`,
+    );
+    for (const statement of [
+      `update event_identity_tombstones set hmac = 'changed'`,
+      'delete from event_identity_tombstones',
+    ]) {
+      await expect(inWorkspace(app, ws.id, (tx) => tx.unsafe(statement))).rejects.toMatchObject({
+        code: '42501',
+      });
+    }
+  });
+
+  it('gives event columns only to event records, and keeps them immutable', async () => {
+    const ws = await workspaceWithEvent();
+    await expect(
+      db.owner`
+        insert into event_records (workspace_id, record_id, occurred_at, channel)
+        values (${ws.id}, ${ws.personId}, now(), 'api')`,
+    ).rejects.toMatchObject({ code: '23514' });
+    for (const change of [
+      db.owner`update event_records set occurred_at = now() where record_id = ${ws.eventId}`,
+      db.owner`update event_records set channel = 'other' where record_id = ${ws.eventId}`,
+      db.owner`update event_records set external_id = 'other' where record_id = ${ws.eventId}`,
+    ]) {
+      await expect(change).rejects.toMatchObject({ code: '23514' });
+    }
+    // Erasure may clear the raw identity (2.1), and nothing can set it again.
+    await db.owner`
+      update event_records set channel = null, external_id = null where record_id = ${ws.eventId}`;
+    await expect(
+      db.owner`update event_records set channel = 'api' where record_id = ${ws.eventId}`,
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('refuses an event record without its event columns at commit', async () => {
+    const ws = await workspaceWithEvent();
+    const [note] = await db.owner<{ id: string }[]>`
+      select r.object_type_id as id from records r where r.id = ${ws.eventId}`;
+    await expect(
+      db.owner.begin(
+        (tx) => tx`
+          insert into records (workspace_id, object_type_id, created_by, updated_by)
+          values (${ws.id}, ${note?.id ?? ''}, ${tx.json({ type: 'system', id: 'test' })},
+            ${tx.json({ type: 'system', id: 'test' })})`,
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
   });
 });
 

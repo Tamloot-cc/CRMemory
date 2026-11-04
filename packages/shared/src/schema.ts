@@ -39,6 +39,45 @@ export type BaseFieldName = keyof typeof BASE_FIELD_IDS;
 /** The `task.status` option that marks a task closed; protected (1.1). */
 export const TASK_DONE_OPTION = 'done';
 
+/**
+ * `entity`: a thing the workspace tracks (a person, a deal). `event`:
+ * something that happened, with a time, a source identity, and the records
+ * it took part in or concerns (1.3). Fixed when the object is created.
+ */
+export const OBJECT_CLASSES = ['entity', 'event'] as const;
+export type ObjectClass = (typeof OBJECT_CLASSES)[number];
+
+/**
+ * The core fields every event type has, created and protected by the
+ * schema engine. Server code finds them by role, never by name. The title
+ * is the event type's label field.
+ */
+export const CORE_ROLES = ['title', 'summary'] as const;
+export type CoreRole = (typeof CORE_ROLES)[number];
+
+/** Event types the base template adds to every workspace; none is protected. */
+export const BASE_EVENT_TYPE_IDS = {
+  meeting: 'f3d0b7a2-58c1-4a8e-9d2f-6b1e0c7a4d31',
+  call: '2b9e4f61-07d3-4c5a-8e1b-93f2a6d8c045',
+  email: '8c1a6e37-d4b2-4f09-a5e8-1d7c3b9f2e64',
+  message: '5e7f2c94-a1b8-4d36-9c0e-4f8a2d6b1e73',
+  note: 'a4c8e1f6-3b72-4e95-8d1a-7c2f5b9e0d48',
+} as const;
+
+/**
+ * The hidden, protected event type of the notes `remember` creates for
+ * facts that cite no source (6.4). Describe, queries, views, search and
+ * record routes treat it as absent; the fact represents the note.
+ */
+export const INTERNAL_NOTE_TYPE_ID = '6d2e9a41-c7f3-4b80-9e15-0a3c8d7f2b56';
+
+/**
+ * Built-in columns of every event record, beside its fields. Filterable and
+ * sortable in queries and views; written only by `log_event`.
+ */
+export const EVENT_COLUMNS = ['occurredAt', 'channel', 'externalId'] as const;
+export type EventColumn = (typeof EVENT_COLUMNS)[number];
+
 export type SelectOption = {
   value: string;
   label: string;
@@ -86,6 +125,8 @@ export type FieldDefinition = {
 /** An object type as defined in code or requested by a client. */
 export type ObjectDefinition = {
   universalId?: string;
+  /** `entity` (the default) or `event`; fixed once created. */
+  class?: ObjectClass;
   /** API name, camelCase singular, e.g. "person". */
   nameSingular: string;
   /** API name, camelCase plural, e.g. "people". */
@@ -93,7 +134,14 @@ export type ObjectDefinition = {
   labelSingular: string;
   labelPlural: string;
   description?: string;
-  /** The field shown when a record is referenced, e.g. "name". */
-  labelField: string;
+  /**
+   * The field shown when a record is referenced, e.g. "name". Required for an
+   * entity; an event type's label is always its core `title` field.
+   */
+  labelField?: string;
+  /**
+   * The object's own fields. An event type gets its core `title` and
+   * `summary` fields from the schema engine; list only the others.
+   */
   fields: FieldDefinition[];
 };

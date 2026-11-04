@@ -3,11 +3,12 @@ import type { ApiKeyScope, AppliedTemplate } from '../db/schema.js';
 import { lockSchemaExclusive, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { runSchemaChange, type SchemaChangeResult, SYSTEM_ACTOR } from '../schema-engine/engine.js';
-import { BASE_OPERATIONS } from './base.js';
+import { BASE_EVENT_OPERATIONS, BASE_OPERATIONS, INTERNAL_OPERATIONS } from './base.js';
 import { getTemplate, TEMPLATE_NAMES } from './index.js';
 
 /**
- * Creates the base objects in a new workspace. Code-defined schema goes
+ * Creates the base objects, the base event types and the hidden internal-note
+ * type in a new workspace. Code-defined schema goes
  * through the same engine on its trusted path (person.emails is unique,
  * which would otherwise need approval).
  */
@@ -16,7 +17,7 @@ export async function seedBaseObjects(tx: Tx, workspaceId: string): Promise<void
     workspaceId,
     actor: SYSTEM_ACTOR,
     scopes: [],
-    operations: BASE_OPERATIONS,
+    operations: [...BASE_OPERATIONS, ...BASE_EVENT_OPERATIONS, ...INTERNAL_OPERATIONS],
     reason: 'Base objects',
     owner: 'system',
     trusted: true,

@@ -159,13 +159,14 @@ test('shows why a schema approval failed, with the records in the way', async ({
   await expect(page.getByRole('link', { name: 'Twin One' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Twin Two' })).toBeVisible();
 });
-test('lists interactions and facts as built-ins, and shows what an interaction is about', async ({
+test('lists facts as a built-in and event types beside objects, and shows what an event is about', async ({
   page,
   retainer: r,
 }) => {
-  const acme = await r.request('/objects/company/records', { values: { name: 'Acme Pilot Co' } });
-  const meeting = await r.request('/interactions', {
-    kind: 'meeting',
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme Pilot Co' } }))
+    .record;
+  const meeting = await r.request('/events', {
+    type: 'meeting',
     channel: 'calendar',
     occurredAt: '2026-10-29T12:00:00Z',
     title: 'Pilot review',
@@ -175,12 +176,18 @@ test('lists interactions and facts as built-ins, and shows what an interaction i
   await page.goto(`${r.url}/app/schema`);
   await page
     .getByRole('navigation', { name: 'Built-in' })
-    .getByRole('button', { name: /^Interactions/ })
+    .getByRole('button', { name: /^Facts/ })
     .click();
-  await expect(page.getByRole('heading', { name: 'Interactions', exact: true })).toBeVisible();
-  await expect(page).toHaveURL(/object=interaction/);
-  await expect(page.getByText('log_interaction', { exact: true })).toBeVisible();
-  await page.goto(`${r.url}/app/i/${meeting.id}`);
+  await expect(page.getByRole('heading', { name: 'Facts', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/object=fact/);
+  await page
+    .getByRole('navigation', { name: 'Event types' })
+    .getByRole('button', { name: /^Meetings/ })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Meetings', exact: true })).toBeVisible();
+  await expect(page.getByText('occurredAt', { exact: true })).toBeVisible();
+  await page.goto(`${r.url}/app/e/${meeting.id}`);
+  await expect(page.getByRole('heading', { name: 'Pilot review' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Acme Pilot Co' })).toBeVisible();
 });
 test('draws the objects and relations and opens them from the diagram', async ({
@@ -207,11 +214,11 @@ test('draws the objects and relations and opens them from the diagram', async ({
   await diagram.locator('.react-flow__node[data-id="company"]').getByRole('button').first().click();
   await expect(page.getByRole('heading', { name: 'Companies', exact: true })).toBeVisible();
 });
-test('retracts an interaction and refreshes the affected memory', async ({ page, retainer: r }) => {
+test('deletes an event and refreshes the affected memory', async ({ page, retainer: r }) => {
   const record = (await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }))
     .record;
-  const interaction = await r.request('/interactions', {
-    kind: 'meeting',
+  const event = await r.request('/events', {
+    type: 'meeting',
     channel: 'zoom',
     occurredAt: '2026-10-20T10:00:00Z',
     title: 'Renewal call',
@@ -220,22 +227,21 @@ test('retracts an interaction and refreshes the affected memory', async ({ page,
   });
   await r.request(
     `/records/${record.id}`,
-    { values: { jobTitle: 'CTO' }, source: interaction.id },
+    { values: { jobTitle: 'CTO' }, source: event.id },
     r.keys.agent,
     'PATCH',
   );
   await r.request(`/records/${record.id}/facts`, {
     text: 'Needs a renewal quote',
-    source: interaction.id,
+    source: event.id,
     quote: 'Please send a quote',
   });
   await signIn(page, r.url, r.keys.user);
-  await page.goto(`${r.url}/app/i/${interaction.id}`);
-  await page.getByRole('button', { name: 'Retract interaction', exact: true }).click();
-  await page
-    .getByRole('dialog')
-    .getByRole('button', { name: 'Retract interaction', exact: true })
-    .click();
+  await page.goto(`${r.url}/app/r/${record.id}?tab=events`);
+  await expect(page.getByText('Participant', { exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Renewal call' }).click();
+  await page.getByRole('button', { name: 'Delete event', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete event', exact: true }).click();
   await expect(
     page.getByText(/1 assertions retracted, 1 records recomputed, 1 facts hidden/),
   ).toBeVisible();
@@ -982,14 +988,14 @@ test('erases a person for a privacy request after typed confirmation', async ({
       values: { name: 'Avi Erased', emails: 'avi@erased.test' },
     })
   ).record;
-  const interaction = await r.request('/interactions', {
-    kind: 'meeting',
+  const event = await r.request('/events', {
+    type: 'meeting',
     channel: 'zoom',
     occurredAt: '2026-10-20T10:00:00Z',
     title: 'Intro call',
     participants: [{ recordId: person.id }],
   });
-  await r.request(`/records/${person.id}/facts`, { text: 'Prefers email', source: interaction.id });
+  await r.request(`/records/${person.id}/facts`, { text: 'Prefers email', source: event.id });
   await signIn(page, r.url, r.keys.user);
   await page.goto(`${r.url}/app/r/${person.id}`);
   await page.getByRole('button', { name: 'Record actions' }).click();
@@ -1002,7 +1008,7 @@ test('erases a person for a privacy request after typed confirmation', async ({
   await confirm.getByLabel('Confirmation').fill('Avi Erased');
   await erase.click();
   await expect(
-    page.getByText(/Erased Avi Erased: 1 record, 1 interaction, 1 fact and \d+ values\./),
+    page.getByText(/Erased Avi Erased: 1 record, 1 event, 1 fact and \d+ values\./),
   ).toBeVisible();
   await expect(page.getByRole('heading', { name: 'People', exact: true })).toBeVisible();
   await expect(r.request(`/records/${person.id}`)).rejects.toThrow(/not_found/);
@@ -1021,15 +1027,15 @@ test('offers erasing only to admin user keys', async ({ page, retainer: r }) => 
   await expect(page.getByRole('menuitem', { name: 'Erase for privacy…' })).not.toBeVisible();
 });
 
-test('finds records, facts and interactions across objects with the command palette', async ({
+test('finds records, facts and events across objects with the command palette', async ({
   page,
   retainer: r,
 }) => {
   const dana = (await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }))
     .record;
   await r.request('/objects/company/records', { values: { name: 'Levi Logistics' } });
-  const interaction = await r.request('/interactions', {
-    kind: 'call',
+  const event = await r.request('/events', {
+    type: 'call',
     channel: 'phone',
     occurredAt: '2026-10-20T10:00:00Z',
     title: 'Quarterly pricing review',
@@ -1037,7 +1043,7 @@ test('finds records, facts and interactions across objects with the command pale
   });
   await r.request(`/records/${dana.id}/facts`, {
     text: 'Wants quarterly invoices',
-    source: interaction.id,
+    source: event.id,
   });
   await signIn(page, r.url, r.keys.user);
   await page.keyboard.press('ControlOrMeta+k');
@@ -1054,7 +1060,7 @@ test('finds records, facts and interactions across objects with the command pale
   await palette.getByLabel('Search the workspace').fill('quarterly');
   await expect(
     palette
-      .getByRole('region', { name: 'Interactions' })
+      .getByRole('region', { name: 'Events' })
       .getByRole('button', { name: /Quarterly pricing review/ }),
   ).toBeVisible();
   await palette

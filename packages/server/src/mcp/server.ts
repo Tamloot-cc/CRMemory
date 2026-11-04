@@ -6,14 +6,10 @@ import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
 import { log } from '../log.js';
+import { MAX_PARTICIPANTS, participantInputSchema } from '../memory/event-links.js';
+import { logEventInputSchema } from '../memory/events.js';
 import { rememberInputSchema } from '../memory/facts.js';
-import {
-  logInteractionInputSchema,
-  MAX_PARTICIPANTS,
-  participantInputSchema,
-} from '../memory/interactions.js';
-import { interactionQuerySchema } from '../memory/query-interactions.js';
-import { logInteractionFor, queryInteractionsFor, remember } from '../memory/service.js';
+import { logEventFor, remember } from '../memory/service.js';
 import { queryInputSchema } from '../records/query.js';
 import {
   type Caller,
@@ -54,30 +50,33 @@ your user's data, proposing a schema and applying it once they agree. If you
 cannot do that now, pick a template with list_templates and apply_template,
 or ask your user.
 
-Find records with search (keywords across records, facts and interactions)
-or query_records (exact filters on one object); list or count interactions by
-kind, channel, date or linked record with query_interactions. Before working on
-a person or company, read get_context: their current values, open tasks, facts
-and recent interactions in one call. Write records with upsert_record. Write the values you learned; Retainer keeps every claim's
-history and decides which value wins. A value a person set outranks yours, so
-your write may come back as pending_review: tell your user it is waiting for
-approval rather than saying it is done.
+Find records with search (keywords across records, events and facts) or
+query_records (exact filters on one object). Events (meetings, calls, emails,
+messages, notes and any event types the workspace adds) are records too: list
+or filter them with query_records on their type, and pass linked to get the
+events attached to one record. Before working on a person or company, read
+get_context: their current values, open tasks, facts and recent events in one
+call. Write records with upsert_record. Write the values you learned; Retainer
+keeps every claim's history and decides which value wins. A value a person set
+outranks yours, so your write may come back as pending_review: tell your user
+it is waiting for approval rather than saying it is done.
 
 After a meeting, call, email thread or chat, write what you learned in order:
-1. log_interaction: kind, channel, when it happened, a title, your own short
-   summary, the source's external ID, the participants' emails or phones (or
-   record IDs), and in about the IDs of the company, project or other records
-   it concerns. Keep the id it returns. Unmatched participants come back
-   with a reason; create the people worth keeping with upsert_record, or leave
-   them. Retainer never creates records on its own.
-2. upsert_record with source set to that interaction id, so the values carry
-   its date and an older email cannot overwrite a newer claim.
+1. log_event: its type (describe_schema lists the event types), channel, when
+   it happened, a title, your own short summary, the source's external ID, the
+   participants' emails or phones (or record IDs), and in about the IDs of the
+   company, project or other records it concerns. Keep the id it returns.
+   Unmatched participants come back with a reason; create the people worth
+   keeping with upsert_record, or leave them. Retainer never creates records
+   on its own.
+2. upsert_record with source set to that event id, so the values carry its
+   date and an older email cannot overwrite a newer claim.
 3. remember, citing the same source (with a short quote if useful), for
    plain-language facts that do not fit a field.
 4. upsert_record for tasks someone committed to, as task records.
 Each call is its own write, so you can stop and resume; logging the same
-externalId again returns the same interaction, adding any participants and
-about records it did not have yet.
+externalId again returns the same event, adding any participants and about
+records it did not have yet.
 
 When a field you need does not exist, use propose_schema_change. Adding is
 applied at once; removing or renaming waits for a person to approve. Read
@@ -139,38 +138,10 @@ const queryRecordsInput = z.strictObject({
   ...queryInputSchema.shape,
   filter: queryInputSchema.shape.filter.describe(
     'Field name to a value (equality) or to operators: eq, neq, in, gt, gte, lt, lte, ' +
-      'e.g. { "status": "todo", "dueDate": { "lte": "2026-11-30" } }. Only filterable fields.',
+      'e.g. { "status": "todo", "dueDate": { "lte": "2026-11-30" } }. Only filterable fields. ' +
+      'Event types also filter and sort by occurredAt, channel and externalId.',
   ),
   cursor: queryInputSchema.shape.cursor.describe('nextCursor from the previous page.'),
-});
-
-const filterShape = interactionQuerySchema.shape.filter.unwrap().shape;
-const queryInteractionsInput = z.strictObject({
-  filter: z
-    .strictObject({
-      kind: filterShape.kind.describe('meeting, call, email, message or note, or a list.'),
-      channel: filterShape.channel.describe('A channel such as "gmail", or a list.'),
-      externalId: filterShape.externalId.describe("The source's own ID."),
-      occurredAt: filterShape.occurredAt.describe(
-        'A time range with gt, gte, lt and lte, ISO 8601 with a UTC offset, e.g. ' +
-          '{ "gte": "2026-10-01T00:00:00Z", "lt": "2026-11-01T00:00:00Z" }.',
-      ),
-      record: filterShape.record.describe(
-        'Only interactions linked to this record, as a participant or about it.',
-      ),
-      link: filterShape.link.describe(
-        'With record: "participant" (it took part) or "about" (it is what they discussed).',
-      ),
-    })
-    .default({}),
-  order: interactionQuerySchema.shape.order.describe('"newest" (default) or "oldest" first.'),
-  countBy: interactionQuerySchema.shape.countBy.describe(
-    'Also count every matching interaction by "kind" or "channel".',
-  ),
-  limit: interactionQuerySchema.shape.limit.describe(
-    'Interactions per page, 50 by default (at most 200). 0 returns only total and counts.',
-  ),
-  cursor: interactionQuerySchema.shape.cursor.describe('nextCursor from the previous page.'),
 });
 
 const upsertRecordInput = z.strictObject({
@@ -195,9 +166,9 @@ const upsertRecordInput = z.strictObject({
     'Reject the write if the record changed since this updatedAt.',
   ),
   source: upsertInputSchema.shape.source.describe(
-    'The interaction id (from log_interaction) these values come from. Values then carry ' +
-      "the interaction's date, so an older email cannot overwrite a newer claim. Omit only " +
-      'for values that come from no conversation.',
+    'The event id (from log_event) these values come from. Values then carry the ' +
+      "event's date, so an older email cannot overwrite a newer claim. Omit only for " +
+      'values that come from no conversation.',
   ),
   idempotencyKey: z
     .string()
@@ -210,24 +181,31 @@ const upsertRecordInput = z.strictObject({
     ),
 });
 
-const logInteractionInput = z.strictObject({
-  ...logInteractionInputSchema.shape,
-  kind: logInteractionInputSchema.shape.kind.describe('meeting, call, email, message or note.'),
-  channel: logInteractionInputSchema.shape.channel.describe(
+const logEventInput = z.strictObject({
+  ...logEventInputSchema.shape,
+  type: logEventInputSchema.shape.type.describe(
+    'The event type\'s API name, e.g. "meeting", "call", "email", "message" or "note", or ' +
+      'one the workspace added. describe_schema lists them as objects of class "event".',
+  ),
+  channel: logEventInputSchema.shape.channel.describe(
     'Where it happened, e.g. "gmail", "zoom", "whatsapp". Use a distinct channel per source ' +
       'account when their external IDs could overlap.',
   ),
-  externalId: logInteractionInputSchema.shape.externalId.describe(
+  externalId: logEventInputSchema.shape.externalId.describe(
     "The source's own ID (message, thread, meeting or call ID). Logging it again with the " +
-      'same input returns the same interaction; without it, retries log duplicates.',
+      'same input returns the same event; without it, retries log duplicates.',
   ),
-  occurredAt: logInteractionInputSchema.shape.occurredAt.describe(
+  occurredAt: logEventInputSchema.shape.occurredAt.describe(
     'When it happened, ISO 8601 with a UTC offset, e.g. "2026-10-29T14:00:00+02:00".',
   ),
-  title: logInteractionInputSchema.shape.title.describe('A short title.'),
-  summary: logInteractionInputSchema.shape.summary.describe(
+  title: logEventInputSchema.shape.title.describe('A short title.'),
+  summary: logEventInputSchema.shape.summary.describe(
     'Your own short summary. Not a transcript or message body: store only what the ' +
       'workspace should keep.',
+  ),
+  fields: logEventInputSchema.shape.fields.describe(
+    'The event type\'s other fields by name, e.g. { "deal": "<record id>" } for a call ' +
+      'type with a deal relation. Title and summary go at the top level, not here.',
   ),
   participants: z
     .array(
@@ -246,12 +224,12 @@ const logInteractionInput = z.strictObject({
     .default([])
     .describe(
       'Who took part (people only); each needs a handle, a recordId, or both. Records the ' +
-        'interaction concerns, such as a company or project, go in about.',
+        'event concerns, such as a company or project, go in about.',
     ),
-  about: logInteractionInputSchema.shape.about.describe(
-    'IDs of records the interaction is about, of any object: the company, project, deal or ' +
-      "tasks it concerns. It then shows in those records' get_context and search hits. " +
-      'Unknown or deleted IDs fail the call.',
+  about: logEventInputSchema.shape.about.describe(
+    'IDs of records the event is about, of any object: the company, project, deal or ' +
+      "tasks it concerns. It then shows in those records' get_context and query_records " +
+      'with linked. Unknown or deleted IDs fail the call.',
   ),
 });
 
@@ -262,8 +240,8 @@ const rememberInput = z.strictObject({
     'One plain-language fact, e.g. "Legal review at Acme usually takes two weeks."',
   ),
   source: rememberInputSchema.shape.source.describe(
-    'The interaction id (from log_interaction) the fact comes from; the fact is valid from ' +
-      "that interaction's date. Without it, a note interaction is created for the fact.",
+    'The event id (from log_event) the fact comes from; the fact is valid from that ' +
+      "event's date. Without it, the fact rests on an internal note Retainer keeps for it.",
   ),
   quote: rememberInputSchema.shape.quote.describe(
     'Optional short quote from the source that supports the fact. Needs source.',
@@ -291,7 +269,7 @@ const getContextInput = z.strictObject({
     .describe('The record ID. An ID merged into another record returns the survivor.'),
   tokenBudget: contextInputSchema.shape.tokenBudget.describe(
     "Approximate size of the pack in tokens, 2000 by default (at most 16000). The record's " +
-      'values are always included; tasks, facts and interactions fill the rest.',
+      'values are always included; tasks, facts and events fill the rest.',
   ),
 });
 
@@ -321,8 +299,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       description:
         'Returns the workspace (id, name, applied templates, initialized, schemaVersion) and ' +
         'every object with its fields: type, options, and whether it is unique, filterable or ' +
-        'required. builtIns lists interactions and facts, which every workspace has and which ' +
-        'are written with log_interaction and remember, never upsert_record. Call it first, ' +
+        'required. Objects of class "event" are event types (meeting, call, email, ...): ' +
+        'log them with log_event, never create them with upsert_record. builtIns lists facts, ' +
+        'written with remember. Call it first, ' +
         'and again after a schema change. If initialized is false, ' +
         'the schema has not been set up yet: follow get_guide("discover_schema"), or see ' +
         'list_templates.',
@@ -408,27 +387,14 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'Lists records of one object, filtered and sorted by its fields, 50 per page by ' +
         'default (at most 200). Use it to find the record to update when you know a name, ' +
         'phone or company rather than a unique email. Text filters match exactly; pass ' +
-        'nextCursor back as cursor for the next page.',
+        'nextCursor back as cursor for the next page.\n\n' +
+        'For an event type, linked: { record } lists the events attached to that record: ' +
+        "as a participant, about it, or through one of the event's own relation fields " +
+        '(narrow with link). Sort by occurredAt, e.g. the last calls with a company.',
       inputSchema: queryRecordsInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     ({ object, ...input }) => run(caller, 'read', () => findRecords(sql, caller, object, input)),
-  );
-
-  server.registerTool(
-    'query_interactions',
-    {
-      title: 'Query interactions',
-      description:
-        'Lists logged meetings, calls, emails, messages and notes by exact filters: kind, ' +
-        'channel, externalId, a time range on occurredAt, and a record they are linked to ' +
-        '(as a participant or about it). Newest first by default. total counts every match, ' +
-        'and countBy adds counts by kind or channel, e.g. calls with a company this quarter. ' +
-        'For words in titles and summaries, use search.',
-      inputSchema: queryInteractionsInput,
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    (input) => run(caller, 'read', () => queryInteractionsFor(sql, caller, input)),
   );
 
   server.registerTool(
@@ -449,7 +415,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
     {
       title: 'Search',
       description:
-        'Keyword search across records, current facts and interactions, grouped by type and ' +
+        'Keyword search across records, events and current facts, grouped by type and ' +
         'ranked within each. Every hit carries the record IDs it belongs to. Use it to find a ' +
         'record by name or by anything said about it. When no record matches word for word, ' +
         'records with a similar label come back with match "similar_label" (a misspelled ' +
@@ -468,7 +434,8 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       description:
         'Returns what Retainer knows about one record, fitted to a token budget: its current ' +
         'field values (each with who wrote it and when it was observed), then open tasks ' +
-        '(earliest due first), current facts and recent interactions (newest first). Field ' +
+        '(earliest due first), current facts and recent events (newest first), each event ' +
+        'saying how it is attached (via). Field ' +
         'values are what the CRM holds; facts are plain-language claims with their sources. ' +
         'omitted counts what did not fit; read more with search or a larger tokenBudget.',
       inputSchema: getContextInput,
@@ -486,8 +453,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         '(e.g. emails). With neither, a new record is created. If id or match finds nothing ' +
         'the call fails, unless ifMissing is "create"; so "update Dana\'s address" can never ' +
         'create a second Dana by mistake.\n\n' +
-        'Values learned from a conversation should cite it: log it with log_interaction ' +
-        'first and pass its id as source.\n\n' +
+        'Values learned from a conversation should cite it: log it with log_event first ' +
+        'and pass its id as source. Events are created only with log_event; an existing ' +
+        "event's fields can be corrected here.\n\n" +
         'The response reports each field: "applied" (it is now the value), "pending_review" ' +
         '(a person set a different value; yours waits for their approval, so say so) or ' +
         '"superseded" (kept in history; a newer or higher-precedence value stands). ' +
@@ -516,15 +484,16 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
   );
 
   server.registerTool(
-    'log_interaction',
+    'log_event',
     {
-      title: 'Log an interaction',
+      title: 'Log an event',
       description:
-        'Logs a meeting, call, email, message or note: when it happened, a title, your own ' +
-        'short summary, who took part (participants) and the records it concerns (about: ' +
-        'e.g. the company and project of a meeting with Dana about the Acme pilot). Do this ' +
-        'first after a conversation, then pass the returned id as source to upsert_record ' +
-        'and remember.\n\n' +
+        'Logs something that happened, as a record of an event type (meeting, call, email, ' +
+        'message, note, or one the workspace added): when it happened, a title, your own ' +
+        'short summary, its other fields, who took part (participants) and the records it ' +
+        'concerns (about: e.g. the company and project of a meeting with Dana about the Acme ' +
+        'pilot). Do this first after a conversation, then pass the returned id as source to ' +
+        'upsert_record and remember.\n\n' +
         'Participants are matched by email to existing records. The response lists matched ' +
         'participants with their recordId, and unmatched ones with a reason: "no_match" (no ' +
         'record has this email; create the person with upsert_record if worth keeping), ' +
@@ -533,14 +502,16 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         '"ambiguous" (several records claim it; candidates lists them) or "suppressed" (the ' +
         'person asked to be forgotten; the handle is not stored, and do not create a record ' +
         'for it). Retainer never creates records for you.\n\n' +
-        'Logging the same channel and externalId again returns the same interaction with ' +
+        'Logging the same channel and externalId again returns the same event with ' +
         'created: false, after adding the participants and about records it did not have ' +
-        '(listed in added); nothing is removed. A different kind, occurredAt, title or ' +
-        'summary is a conflict: an edited source needs a new externalId.',
-      inputSchema: logInteractionInput,
+        '(listed in added); nothing is removed. A different type, occurredAt, title, summary ' +
+        'or field value is a conflict (event_conflict): an edited source needs a new ' +
+        'externalId. event_retracted means that source was deleted or erased: do not log it ' +
+        'again.',
+      inputSchema: logEventInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
-    (input) => run(caller, 'write', () => logInteractionFor(sql, caller, input)),
+    (input) => run(caller, 'write', () => logEventFor(sql, caller, input)),
   );
 
   server.registerTool(
@@ -549,11 +520,10 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       title: 'Remember a fact',
       description:
         'Stores one plain-language fact about a record that does not fit a field, e.g. ' +
-        '"Legal review at Acme usually takes two weeks." Cite the interaction it came from ' +
-        'as source (from log_interaction), with an optional short quote; the fact is then ' +
-        "valid from that interaction's date. Without source, a note interaction is created " +
-        'for it and returned as noteInteraction. One fact per call; field values belong in ' +
-        'upsert_record.',
+        '"Legal review at Acme usually takes two weeks." Cite the event it came from as ' +
+        'source (from log_event), with an optional short quote; the fact is then valid from ' +
+        "that event's date. Without source, Retainer keeps an internal note for it, shown " +
+        'as an internal source. One fact per call; field values belong in upsert_record.',
       inputSchema: rememberInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
@@ -574,8 +544,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'set it on text fields people will look records up by (the label field is always ' +
         'searchable). Give a short reason. Needs the schema:write scope.\n\n' +
         'Make the smallest change that works: an option before a field, a field before an ' +
-        'object. Meetings, calls, emails and messages are interactions (log_interaction) and ' +
-        'one-off knowledge is a fact (remember), never an object or field. If you have not ' +
+        'object. Meetings, calls, emails and messages are events (log_event): add a field ' +
+        'to an event type, or create one with class "event", rather than an entity object ' +
+        'for them. One-off knowledge is a fact (remember), never an object or field. If you have not ' +
         'yet, read get_guide("schema_design") before creating an object.',
       inputSchema: schemaChangeRequestSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },

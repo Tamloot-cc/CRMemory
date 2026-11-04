@@ -1,25 +1,27 @@
-import type { Actor } from '@retainer/shared';
+import { type Actor, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
-import type { LogInteractionInput } from '../../src/memory/interactions.js';
-import { interactionQuerySchema } from '../../src/memory/query-interactions.js';
+import { inWorkspace } from '../../src/db/tx.js';
+import type { LogEventInput } from '../../src/memory/events.js';
 import {
-  addInteractionLinksFor,
-  logInteractionFor,
-  queryInteractionsFor,
-  readInteraction,
+  addEventLinksFor,
+  logEventFor,
+  readEvent,
   remember,
-  removeLinkFor,
-  retractInteractionFor,
+  removeEventLinkFor,
+  retractEventFor,
 } from '../../src/memory/service.js';
+import { queryInputSchema } from '../../src/records/query.js';
 import {
   type Caller,
   createRecord,
   deleteRecord,
+  findRecords,
   forget,
   mergeRecord,
 } from '../../src/records/service.js';
 import { contextFor, searchFor } from '../../src/retrieval/service.js';
+import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
 
@@ -49,21 +51,37 @@ async function person(values: Record<string, unknown> = {}) {
   return { ...record, email: address };
 }
 const company = (name = `Company ${++n}`) => createRecord(app, as(AGENT), 'company', { name });
-const log = (input: Partial<LogInteractionInput> = {}) =>
-  logInteractionFor(app, as(AGENT), {
-    kind: 'meeting',
+const log = (input: Partial<LogEventInput> = {}) =>
+  logEventFor(app, as(AGENT), {
+    type: 'meeting',
     channel: 'calendar',
     occurredAt: '2026-10-29T14:00:00+02:00',
     title: 'Pilot review',
+    fields: {},
     participants: [],
     about: [],
     ...input,
   });
 const none = { participants: { matched: [], unmatched: [] }, about: [] };
 
+/** An event's links as reads present them. */
+const linksOf = async (id: string) => {
+  const { event } = await readEvent(app, as(AGENT), id);
+  if (!event) throw new Error(`${id} is not an event`);
+  return event;
+};
+
+/** The internal notes `remember` wrote about a record; callers never see their IDs. */
+const internalNotesAbout = (recordId: string) =>
+  db.owner<{ id: string }[]>`
+    select r.id from records r
+    join object_types o on o.id = r.object_type_id
+    join event_links l on l.event_id = r.id
+    where l.record_id = ${recordId} and o.universal_id = ${INTERNAL_NOTE_TYPE_ID}`;
+
 const count = async (query: Promise<{ count: number }[]>) => (await query)[0]?.count ?? 0;
 
-describe('logging an interaction again adds links (1.3)', () => {
+describe('logging an event again adds links (1.3)', () => {
   it('adds only the new participants and about records, and a retry adds nothing', async () => {
     const dana = await person();
     const acme = await company();
@@ -102,18 +120,18 @@ describe('logging an interaction again adds links (1.3)', () => {
     expect(stale.about).toEqual([acme.id]);
   });
 
-  it('still reports a different kind, time, title or summary as a conflict', async () => {
+  it('still reports a different type, time, title or summary as a conflict', async () => {
     const id = externalId();
     await log({ externalId: id, summary: 'First' });
     for (const change of [
-      { kind: 'call' as const },
+      { type: 'call' },
       { occurredAt: '2026-10-29T15:00:00+02:00' },
       { title: 'Another title' },
       { summary: 'Second' },
     ]) {
       await expect(log({ externalId: id, summary: 'First', ...change })).rejects.toMatchObject({
         status: 409,
-        code: 'interaction_conflict',
+        code: 'event_conflict',
       });
     }
     // The same instant written with another offset is the same time.
@@ -158,30 +176,30 @@ describe('logging an interaction again adds links (1.3)', () => {
     const handles = Array.from({ length: 8 }, () => email());
     await Promise.all(handles.map((handle) => log({ externalId: id, participants: [{ handle }] })));
     const rows = await db.owner<{ handle: string; position: number }[]>`
-      select handle, position from interaction_participants
-      where interaction_id = ${first.id} order by position`;
+      select handle, position from event_links
+      where event_id = ${first.id} order by position`;
     expect(rows.map((r) => r.handle).sort()).toEqual([...handles].sort());
     expect(rows.map((r) => r.position)).toEqual(handles.map((_, i) => i));
   });
 
-  it('refuses links on a retracted interaction', async () => {
+  it('refuses links on a deleted event', async () => {
     const id = externalId();
     const logged = await log({ externalId: id });
-    await retractInteractionFor(app, as(USER), logged.id);
+    await retractEventFor(app, as(USER), logged.id);
     await expect(log({ externalId: id, about: [(await company()).id] })).rejects.toMatchObject({
-      code: 'interaction_retracted',
+      code: 'event_retracted',
     });
     await expect(
-      addInteractionLinksFor(app, as(AGENT), logged.id, {
+      addEventLinksFor(app, as(AGENT), logged.id, {
         participants: [],
         about: [(await company()).id],
       }),
-    ).rejects.toMatchObject({ status: 404, code: 'interaction_deleted' });
+    ).rejects.toMatchObject({ status: 404, code: 'record_deleted' });
   });
 });
 
 describe('about records (1.3)', () => {
-  it('lists the interaction on each record it is about, never as an attendee', async () => {
+  it('lists the event on each record it is about, never as an attendee', async () => {
     const dana = await person({ name: 'Dana About' });
     const acme = await company('Acme About');
     const pilot = await createRecord(app, as(AGENT), 'deal', { name: 'Acme pilot' });
@@ -194,21 +212,21 @@ describe('about records (1.3)', () => {
     expect(logged.about).toEqual([acme.id, pilot.id]);
     expect(logged.participants.matched.map((p) => p.recordId)).toEqual([dana.id]);
 
-    const read = await readInteraction(app, as(AGENT), logged.id);
+    const read = await linksOf(logged.id);
     expect(read.about).toEqual([acme.id, pilot.id]);
     expect(read.participants.matched.map((p) => p.recordId)).toEqual([dana.id]);
 
     const acmeContext = await contextFor(app, as(AGENT), acme.id, { tokenBudget: 2000 });
-    expect(acmeContext.recentInteractions).toEqual([
-      expect.objectContaining({ id: logged.id, via: 'about' }),
+    expect(acmeContext.recentEvents).toEqual([
+      expect.objectContaining({ id: logged.id, type: 'meeting', via: { kind: 'about' } }),
     ]);
     const danaContext = await contextFor(app, as(AGENT), dana.id, { tokenBudget: 2000 });
-    expect(danaContext.recentInteractions).toEqual([
-      expect.objectContaining({ id: logged.id, via: 'participant' }),
+    expect(danaContext.recentEvents).toEqual([
+      expect.objectContaining({ id: logged.id, type: 'meeting', via: { kind: 'participant' } }),
     ]);
 
     const hits = await searchFor(app, as(AGENT), { query: 'kickoff', limit: 10 });
-    expect(hits.interactions.find((h) => h.id === logged.id)?.records).toEqual([
+    expect(hits.events.find((h) => h.id === logged.id)?.records).toEqual([
       dana.id,
       acme.id,
       pilot.id,
@@ -226,7 +244,7 @@ describe('about records (1.3)', () => {
     expect(logged.about).toEqual([acme.id]);
     expect(
       await count(db.owner`
-        select count(*)::int from interaction_participants where interaction_id = ${logged.id}`),
+        select count(*)::int from event_links where event_id = ${logged.id}`),
     ).toBe(2);
   });
 
@@ -250,6 +268,34 @@ describe('about records (1.3)', () => {
     expect((await log({ about: [b.id] })).about).toEqual([a.id]);
   });
 
+  it('may be about another event, but not about itself (6.2)', async () => {
+    const earlier = await log({ type: 'call', channel: 'zoom', title: 'Discovery call' });
+    const id = externalId();
+    const followUp = await log({ externalId: id, title: 'Follow-up', about: [earlier.id] });
+    expect(followUp.about).toEqual([earlier.id]);
+    const linked = await findRecords(
+      app,
+      as(AGENT),
+      'meeting',
+      queryInputSchema.parse({ linked: { record: earlier.id, link: 'about' } }),
+    );
+    expect(linked.records.map((r) => r.id)).toEqual([followUp.id]);
+
+    const itself = {
+      status: 422,
+      code: 'invalid_about',
+      details: {
+        errors: [{ index: 0, recordId: followUp.id, message: 'an event cannot be about itself' }],
+      },
+    };
+    await expect(
+      log({ externalId: id, title: 'Follow-up', about: [followUp.id] }),
+    ).rejects.toMatchObject(itself);
+    await expect(
+      addEventLinksFor(app, as(AGENT), followUp.id, { participants: [], about: [followUp.id] }),
+    ).rejects.toMatchObject(itself);
+  });
+
   it('replaces an about link when the record is added as a participant', async () => {
     const dana = await person();
     const id = externalId();
@@ -259,7 +305,7 @@ describe('about records (1.3)', () => {
     expect(again.participants.matched.map((p) => p.recordId)).toEqual([dana.id]);
     expect(
       await db.owner`
-        select link from interaction_participants where interaction_id = ${first.id}`,
+        select link from event_links where event_id = ${first.id}`,
     ).toEqual([{ link: 'participant' }]);
   });
 
@@ -279,7 +325,7 @@ describe('about records (1.3)', () => {
     });
     const merge = db.owner.begin(async (t) => {
       await t`select id from records where id = ${b.id} for update`;
-      await t`update interaction_participants set record_id = ${a.id} where record_id = ${b.id}`;
+      await t`update event_links set record_id = ${a.id} where record_id = ${b.id}`;
       await t`update records set merged_into_id = ${a.id}, deleted_at = now() where id = ${b.id}`;
       moved();
       await gate;
@@ -292,7 +338,7 @@ describe('about records (1.3)', () => {
     expect((await relog).about).toEqual([a.id]);
     expect(
       await db.owner`
-        select record_id from interaction_participants where interaction_id = ${logged.id}`,
+        select record_id from event_links where event_id = ${logged.id}`,
     ).toEqual([{ record_id: a.id }]);
   });
 
@@ -311,20 +357,20 @@ describe('about records (1.3)', () => {
     // A merge of B into A, held open after it has moved B's links and before it commits.
     const merge = db.owner.begin(async (t) => {
       await t`select id from records where id = ${b.id} for update`;
-      await t`update interaction_participants set record_id = ${a.id} where record_id = ${b.id}`;
+      await t`update event_links set record_id = ${a.id} where record_id = ${b.id}`;
       await t`update records set merged_into_id = ${a.id}, deleted_at = now() where id = ${b.id}`;
       locked();
       await gate;
     });
     await holding;
-    const removal = removeLinkFor(app, as(USER), logged.id, { about: b.id });
+    const removal = removeEventLinkFor(app, as(USER), logged.id, { about: b.id });
     await new Promise((resolve) => setTimeout(resolve, 200));
     release();
     await merge;
-    expect((await removal).about).toEqual([]);
+    expect((await removal).event?.about).toEqual([]);
     expect(
       await count(db.owner`
-        select count(*)::int from interaction_participants where interaction_id = ${logged.id}`),
+        select count(*)::int from event_links where event_id = ${logged.id}`),
     ).toBe(0);
   });
 
@@ -347,8 +393,8 @@ describe('about records (1.3)', () => {
       expect(relogged.status).toBe('fulfilled');
       // B's participant row moved to A, nothing points at B, and no link repeats.
       const rows = await db.owner<{ record_id: string; link: string }[]>`
-        select record_id, link from interaction_participants
-        where interaction_id = ${logged.id} order by position`;
+        select record_id, link from event_links
+        where event_id = ${logged.id} order by position`;
       expect(rows).toEqual([
         { record_id: a.id, link: 'participant' },
         { record_id: dana.id, link: 'participant' },
@@ -367,7 +413,7 @@ describe('about records (1.3)', () => {
       about: [b.id],
     });
     await mergeRecord(app, as(USER), a.id, { recordId: b.id });
-    expect((await readInteraction(app, as(AGENT), both.id)).about).toEqual([a.id]);
+    expect((await linksOf(both.id)).about).toEqual([a.id]);
 
     const c = await person();
     const withC = await log({
@@ -376,18 +422,26 @@ describe('about records (1.3)', () => {
       about: [dana.id],
     });
     await mergeRecord(app, as(USER), c.id, { recordId: dana.id });
-    const merged = await readInteraction(app, as(AGENT), withC.id);
+    const merged = await linksOf(withC.id);
     expect(merged.about).toEqual([]);
     expect(merged.participants.matched.map((p) => p.recordId)).toEqual([c.id]);
-    expect((await readInteraction(app, as(AGENT), attended.id)).about).toEqual([a.id]);
+    expect((await linksOf(attended.id)).about).toEqual([a.id]);
   });
 
   it('links a note from remember as about its record', async () => {
     const dana = await person();
-    const { noteInteraction } = await remember(app, as(AGENT), dana.id, { text: 'Likes tea' });
-    const note = await readInteraction(app, as(AGENT), noteInteraction as string);
-    expect(note.about).toEqual([dana.id]);
-    expect(note.participants).toEqual({ matched: [], unmatched: [] });
+    await remember(app, as(AGENT), dana.id, { text: 'Likes tea' });
+    const [note] = await internalNotesAbout(dana.id);
+    expect(
+      await db.owner`
+        select record_id, link, handle, role from event_links where event_id = ${note?.id as string}`,
+    ).toEqual([{ record_id: dana.id, link: 'about', handle: null, role: null }]);
+    // The note is not an event any caller can list.
+    const context = await contextFor(app, as(AGENT), dana.id, { tokenBudget: 2000 });
+    expect(context.recentEvents).toEqual([]);
+    expect(context.facts).toEqual([
+      expect.objectContaining({ content: 'Likes tea', internal: true }),
+    ]);
   });
 });
 
@@ -401,17 +455,17 @@ describe('forget and about records (2.1)', () => {
       about: [acme.id],
     });
     const result = await forget(app, as(USER), acme.id);
-    expect(result.counts.interactions).toBe(0);
-    const read = await readInteraction(app, as(AGENT), meeting.id);
+    expect(result.counts.events).toBe(0);
+    const read = await linksOf(meeting.id);
     expect(read.about).toEqual([]);
     expect(read.participants.matched.map((p) => p.recordId)).toEqual([dana.id]);
     expect(
       await count(db.owner`
-        select count(*)::int from interaction_participants where interaction_id = ${meeting.id}`),
+        select count(*)::int from event_links where event_id = ${meeting.id}`),
     ).toBe(1);
   });
 
-  it('deletes the interactions the person took part in and the notes about them', async () => {
+  it('deletes the events the person took part in and the notes about them', async () => {
     const dana = await person();
     const acme = await company();
     const meeting = await log({
@@ -419,13 +473,13 @@ describe('forget and about records (2.1)', () => {
       participants: [{ recordId: dana.id }],
       about: [acme.id],
     });
-    const { noteInteraction } = await remember(app, as(AGENT), dana.id, { text: 'Prefers calls' });
+    await remember(app, as(AGENT), dana.id, { text: 'Prefers calls' });
+    const [note] = await internalNotesAbout(dana.id);
     const result = await forget(app, as(USER), dana.id);
-    expect(result.counts.interactions).toBe(2);
+    expect(result.counts.events).toBe(2);
     expect(
       await count(db.owner`
-        select count(*)::int from interactions
-        where id in (${meeting.id}, ${noteInteraction as string})`),
+        select count(*)::int from records where id in (${meeting.id}, ${note?.id as string})`),
     ).toBe(0);
   });
 });
@@ -436,12 +490,20 @@ describe('adding and removing links by route (1.3)', () => {
     const dana = await person();
     const acme = await company();
     const input = { participants: [{ recordId: dana.id, role: 'attendee' }], about: [acme.id] };
-    const added = await addInteractionLinksFor(app, as(AGENT), logged.id, input);
-    expect(added.participants.matched.map((p) => p.recordId)).toEqual([dana.id]);
-    expect(added.about).toEqual([acme.id]);
+    const added = await addEventLinksFor(app, as(AGENT), logged.id, input);
+    expect(added.event?.participants.matched.map((p) => p.recordId)).toEqual([dana.id]);
+    expect(added.event?.about).toEqual([acme.id]);
     expect(added.added.about).toEqual([acme.id]);
-    const again = await addInteractionLinksFor(app, as(AGENT), logged.id, input);
+    const again = await addEventLinksFor(app, as(AGENT), logged.id, input);
     expect(again.added).toEqual(none);
+  });
+
+  it('adds links only to an event', async () => {
+    const dana = await person();
+    const acme = await company();
+    await expect(
+      addEventLinksFor(app, as(AGENT), acme.id, { participants: [], about: [dana.id] }),
+    ).rejects.toMatchObject({ status: 404 });
   });
 
   it('lets only a person remove a participant or an about record', async () => {
@@ -454,103 +516,155 @@ describe('adding and removing links by route (1.3)', () => {
     });
     const participantId = logged.participants.matched[0]?.id as string;
     await expect(
-      removeLinkFor(app, as(AGENT), logged.id, { participant: participantId }),
+      removeEventLinkFor(app, as(AGENT), logged.id, { participant: participantId }),
     ).rejects.toMatchObject({ status: 403 });
     await expect(
-      removeLinkFor(app, as(AGENT), logged.id, { about: acme.id }),
+      removeEventLinkFor(app, as(AGENT), logged.id, { about: acme.id }),
     ).rejects.toMatchObject({
       status: 403,
     });
 
-    const withoutDana = await removeLinkFor(app, as(USER), logged.id, {
+    const withoutDana = await removeEventLinkFor(app, as(USER), logged.id, {
       participant: participantId,
     });
-    expect(withoutDana.participants.matched).toEqual([]);
-    const withoutAcme = await removeLinkFor(app, as(USER), logged.id, { about: acme.id });
-    expect(withoutAcme.about).toEqual([]);
-    await expect(removeLinkFor(app, as(USER), logged.id, { about: acme.id })).rejects.toMatchObject(
-      {
-        status: 404,
-      },
-    );
+    expect(withoutDana.event?.participants.matched).toEqual([]);
+    const withoutAcme = await removeEventLinkFor(app, as(USER), logged.id, { about: acme.id });
+    expect(withoutAcme.event?.about).toEqual([]);
     await expect(
-      removeLinkFor(app, as(USER), logged.id, { participant: participantId }),
+      removeEventLinkFor(app, as(USER), logged.id, { about: acme.id }),
+    ).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(
+      removeEventLinkFor(app, as(USER), logged.id, { participant: participantId }),
     ).rejects.toMatchObject({ status: 404 });
   });
 });
 
-describe('querying interactions (5)', () => {
-  const query = (input: Record<string, unknown>) =>
-    queryInteractionsFor(app, as(AGENT), interactionQuerySchema.parse(input));
+describe('querying events (7.1)', () => {
+  const query = (type: string, input: Record<string, unknown>) =>
+    findRecords(app, as(AGENT), type, queryInputSchema.parse(input));
+  const ids = (page: { records: { id: string }[] }) => page.records.map((r) => r.id);
+  const newest = [{ field: 'occurredAt', direction: 'desc' }];
 
-  it('filters by kind, channel, time and linked record, newest or oldest first', async () => {
+  it('filters by type, channel, time and linked record, newest or oldest first', async () => {
     const channel = `query-${++n}`;
     const dana = await person();
     const acme = await company();
     const at = (day: number) => `2026-10-${String(day).padStart(2, '0')}T10:00:00Z`;
-    const call1 = await log({ channel, kind: 'call', occurredAt: at(2), about: [acme.id] });
+    const call1 = await log({ channel, type: 'call', occurredAt: at(2), about: [acme.id] });
     const meeting = await log({
       channel,
-      kind: 'meeting',
+      type: 'meeting',
       occurredAt: at(10),
       participants: [{ recordId: dana.id }],
       about: [acme.id],
     });
-    const call2 = await log({ channel, kind: 'call', occurredAt: at(20) });
-    const retracted = await log({ channel, kind: 'call', occurredAt: at(21) });
-    await retractInteractionFor(app, as(USER), retracted.id);
-    await remember(app, as(AGENT), acme.id, { text: 'A note, not an interaction' });
+    const call2 = await log({ channel, type: 'call', occurredAt: at(20) });
+    const retracted = await log({ channel, type: 'call', occurredAt: at(21) });
+    await retractEventFor(app, as(USER), retracted.id);
+    await remember(app, as(AGENT), acme.id, { text: 'A note, not an event' });
 
-    const all = await query({ filter: { channel } });
-    expect(all.items.map((i) => i.id)).toEqual([call2.id, meeting.id, call1.id]);
-    expect(all.total).toBe(3);
-
-    const calls = await query({ filter: { channel, kind: 'call' }, order: 'oldest' });
-    expect(calls.items.map((i) => i.id)).toEqual([call1.id, call2.id]);
-
-    const october = await query({
-      filter: { channel, occurredAt: { gte: at(5), lt: at(20) } },
+    const calls = await query('call', { filter: { channel }, sort: newest });
+    expect(ids(calls)).toEqual([call2.id, call1.id]);
+    expect(calls.records[0]?.event).toMatchObject({
+      channel,
+      occurredAt: new Date(at(20)).toISOString(),
     });
-    expect(october.items.map((i) => i.id)).toEqual([meeting.id]);
+    const oldest = await query('calls', {
+      filter: { channel },
+      sort: [{ field: 'occurredAt', direction: 'asc' }],
+    });
+    expect(ids(oldest)).toEqual([call1.id, call2.id]);
+    expect(ids(await query('meeting', { filter: { channel } }))).toEqual([meeting.id]);
 
-    const aboutAcme = await query({ filter: { record: acme.id } });
-    expect(aboutAcme.items.map((i) => i.id)).toEqual([meeting.id, call1.id]);
-    expect(aboutAcme.items[0]?.about).toEqual([acme.id]);
-    const withDana = await query({ filter: { record: dana.id, link: 'participant' } });
-    expect(withDana.items.map((i) => i.id)).toEqual([meeting.id]);
-    expect((await query({ filter: { record: dana.id, link: 'about' } })).total).toBe(0);
+    const october = await query('call', {
+      filter: { channel, occurredAt: { gte: at(1), lt: at(20) } },
+    });
+    expect(ids(october)).toEqual([call1.id]);
 
-    await expect(query({ filter: { link: 'about' } })).rejects.toMatchObject({
+    const aboutAcme = await query('call', { linked: { record: acme.id }, sort: newest });
+    expect(ids(aboutAcme)).toEqual([call1.id]);
+    expect(aboutAcme.records[0]?.event?.about).toEqual([acme.id]);
+    expect(ids(await query('meeting', { linked: { record: acme.id } }))).toEqual([meeting.id]);
+    // The note remember wrote about Acme is never listed.
+    expect(ids(await query('note', { linked: { record: acme.id } }))).toEqual([]);
+    await expect(query('internalNote', {})).rejects.toMatchObject({ status: 404 });
+
+    const withDana = await query('meeting', { linked: { record: dana.id, link: 'participant' } });
+    expect(ids(withDana)).toEqual([meeting.id]);
+    expect(ids(await query('meeting', { linked: { record: dana.id, link: 'about' } }))).toEqual([]);
+
+    // `linked` needs a record, and applies to event types only.
+    expect(queryInputSchema.safeParse({ linked: { link: 'about' } }).success).toBe(false);
+    await expect(query('person', { linked: { record: acme.id } })).rejects.toMatchObject({
       status: 422,
-      code: 'invalid_query',
+      code: 'invalid_filter',
     });
   });
 
-  it('pages with a cursor, and counts by kind or channel without items', async () => {
+  it('attaches an event through its own relation field, after participant and about (6.3)', async () => {
+    await inWorkspace(app, workspaceId, (tx) =>
+      runSchemaChange(tx, {
+        workspaceId,
+        actor: USER,
+        scopes: ['schema:write', 'admin'],
+        operations: [
+          {
+            op: 'create_field',
+            object: 'call',
+            field: {
+              name: 'deal',
+              label: 'Deal',
+              type: 'relation',
+              settings: { targetObject: 'deal', inverseField: 'calls' },
+            },
+          },
+        ],
+      }),
+    );
+    const pilot = await createRecord(app, as(AGENT), 'deal', { name: 'Field pilot' });
+    const byField = await log({ type: 'call', fields: { deal: pilot.id } });
+    const both = await log({ type: 'call', fields: { deal: pilot.id }, about: [pilot.id] });
+
+    const viaField = await query('call', { linked: { record: pilot.id, link: 'field' } });
+    expect(ids(viaField).sort()).toEqual([byField.id, both.id].sort());
+    const viaAbout = await query('call', { linked: { record: pilot.id, link: 'about' } });
+    expect(ids(viaAbout)).toEqual([both.id]);
+
+    const context = await contextFor(app, as(AGENT), pilot.id, { tokenBudget: 2000 });
+    expect(context.recentEvents.map((e) => [e.id, e.via]).sort()).toEqual(
+      [
+        [byField.id, { kind: 'field', field: 'deal' }],
+        [both.id, { kind: 'about' }],
+      ].sort(),
+    );
+  });
+
+  it('pages with a cursor', async () => {
     const channel = `query-${++n}`;
     for (let day = 1; day <= 5; day++) {
-      await log({
-        channel,
-        kind: day % 2 ? 'call' : 'email',
-        occurredAt: `2026-09-0${day}T10:00:00Z`,
-      });
+      await log({ channel, type: 'call', occurredAt: `2026-09-0${day}T10:00:00Z` });
     }
-    const first = await query({ filter: { channel }, limit: 2 });
-    expect(first.items).toHaveLength(2);
-    expect(first.total).toBe(5);
-    const second = await query({ filter: { channel }, limit: 2, cursor: first.nextCursor });
-    const third = await query({ filter: { channel }, limit: 2, cursor: second.nextCursor });
+    const first = await query('call', { filter: { channel }, sort: newest, limit: 2 });
+    expect(first.records).toHaveLength(2);
+    const second = await query('call', {
+      filter: { channel },
+      sort: newest,
+      limit: 2,
+      cursor: first.nextCursor,
+    });
+    const third = await query('call', {
+      filter: { channel },
+      sort: newest,
+      limit: 2,
+      cursor: second.nextCursor,
+    });
     expect(third.nextCursor).toBeNull();
-    const seen = [...first.items, ...second.items, ...third.items].map((i) => i.occurredAt);
+    const seen = [...first.records, ...second.records, ...third.records].map(
+      (r) => r.event?.occurredAt as string,
+    );
     expect(seen).toEqual([...seen].sort().reverse());
     expect(new Set(seen).size).toBe(5);
-
-    const counted = await query({ filter: { channel }, countBy: 'kind', limit: 0 });
-    expect(counted).toEqual({
-      items: [],
-      nextCursor: null,
-      total: 5,
-      counts: { call: 3, email: 2 },
-    });
   });
 });

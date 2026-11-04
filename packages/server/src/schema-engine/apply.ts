@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { FieldType, SchemaOwner } from '@retainer/shared';
+import {
+  type CoreRole,
+  type FieldType,
+  INTERNAL_NOTE_TYPE_ID,
+  type SchemaOwner,
+} from '@retainer/shared';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
 import {
   PROTECTED_FIELD_FLAGS,
@@ -21,6 +26,23 @@ export function deriveUuid(seed: string): string {
   const hex = bytes.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+
+/**
+ * The core fields the engine gives every event type (6.1). Their universal
+ * IDs derive from the type's, so code-defined event types get the same core
+ * field IDs in every workspace.
+ */
+export const CORE_FIELDS: Record<CoreRole, { name: string; label: string; description: string }> = {
+  title: { name: 'title', label: 'Title', description: 'A short title.' },
+  summary: {
+    name: 'summary',
+    label: 'Summary',
+    description: "The agent's own short summary of what happened.",
+  },
+};
+
+export const coreFieldUniversalId = (objectUniversalId: string, role: CoreRole) =>
+  deriveUuid(`${objectUniversalId}:core:${role}`);
 
 /** Types whose values make sense in structured filters by default. */
 const NOT_FILTERABLE_BY_DEFAULT: ReadonlySet<FieldType> = new Set(['json', 'address', 'full_name']);
@@ -48,13 +70,17 @@ export function applyOperations(
   const allUniversalIds = () =>
     new Set(state.objects.flatMap((o) => [o.universalId, ...o.fields.map((f) => f.universalId)]));
 
+  // The hidden internal-note type is never named by an operation (6.4).
+  const visible = (o: ObjectState) =>
+    o.status === 'active' && o.universalId !== INTERNAL_NOTE_TYPE_ID;
+
   function findObject(ref: string, path = ref): ObjectState | undefined {
     const object = state.objects.find(
-      (o) => o.status === 'active' && (o.universalId === ref || o.nameSingular === ref),
+      (o) => visible(o) && (o.universalId === ref || o.nameSingular === ref),
     );
     if (!object) {
       const known = state.objects
-        .filter((o) => o.status === 'active')
+        .filter(visible)
         .map((o) => o.nameSingular)
         .join(', ');
       issue(path, `unknown object "${ref}"; objects: ${known || 'none'}`);
@@ -109,6 +135,7 @@ export function applyOperations(
       isFilterable: definition.isFilterable ?? !NOT_FILTERABLE_BY_DEFAULT.has(definition.type),
       isSearchable: definition.isSearchable ?? false,
       isProtected: PROTECTED_FIELD_IDS.has(universalId),
+      coreRole: null,
       owner: context.owner,
       status: 'active',
     };
@@ -154,11 +181,36 @@ export function applyOperations(
         isFilterable: false,
         isSearchable: false,
         isProtected: false,
+        coreRole: null,
         owner: context.owner,
         status: 'active',
       };
       field.settings.inverseFieldId = inverse.universalId;
       target.fields.push(inverse);
+    }
+  }
+
+  /** The protected, searchable title and summary fields of a new event type (6.1). */
+  function addCoreFields(object: ObjectState): void {
+    for (const role of ['title', 'summary'] as const) {
+      const core = CORE_FIELDS[role];
+      object.fields.push({
+        universalId: coreFieldUniversalId(object.universalId, role),
+        key: nextKey(object, core.name),
+        name: core.name,
+        label: core.label,
+        description: core.description,
+        type: 'text',
+        settings: {},
+        isNullable: true,
+        isUnique: false,
+        isFilterable: true,
+        isSearchable: true,
+        isProtected: true,
+        coreRole: role,
+        owner: context.owner,
+        status: 'active',
+      });
     }
   }
 
@@ -182,6 +234,7 @@ export function applyOperations(
           issue(definition.nameSingular, `universal ID ${universalId} already exists`);
           break;
         }
+        const objectClass = definition.class ?? 'entity';
         const object: ObjectState = {
           universalId,
           nameSingular: definition.nameSingular,
@@ -191,17 +244,47 @@ export function applyOperations(
           description: definition.description ?? null,
           labelFieldId: null,
           isProtected: PROTECTED_OBJECT_IDS.has(universalId),
+          class: objectClass,
           owner: context.owner,
           status: 'active',
           fields: [],
         };
         state.objects.push(object);
+        if (objectClass === 'event') {
+          const taken = definition.fields.filter(
+            (f) => f.name === CORE_FIELDS.title.name || f.name === CORE_FIELDS.summary.name,
+          );
+          for (const field of taken) {
+            issue(
+              `${definition.nameSingular}.${field.name}`,
+              'every event type gets title and summary fields; list only its other fields',
+            );
+          }
+          if (taken.length > 0) break;
+          addCoreFields(object);
+          if (
+            definition.labelField !== undefined &&
+            definition.labelField !== CORE_FIELDS.title.name
+          ) {
+            issue(definition.nameSingular, "an event type's labelField is always its title");
+          }
+          for (const field of definition.fields) addField(object, field);
+          object.labelFieldId = coreFieldUniversalId(universalId, 'title');
+          break;
+        }
+        if (definition.fields.length === 0) {
+          issue(definition.nameSingular, 'an object needs at least one field');
+          break;
+        }
         for (const field of definition.fields) addField(object, field);
         const labelField = object.fields.find(
           (f) => f.name === definition.labelField && f.status === 'active',
         );
         if (labelField) object.labelFieldId = labelField.universalId;
-        else issue(definition.nameSingular, `labelField "${definition.labelField}" is not a field`);
+        else if (definition.labelField === undefined) {
+          issue(definition.nameSingular, 'an object needs a labelField');
+        } else
+          issue(definition.nameSingular, `labelField "${definition.labelField}" is not a field`);
         break;
       }
 
@@ -213,7 +296,9 @@ export function applyOperations(
         if (operation.description !== undefined) object.description = operation.description;
         if (operation.labelField !== undefined) {
           const field = findField(object, operation.labelField);
-          if (field) object.labelFieldId = field.universalId;
+          if (field && object.class === 'event' && field.coreRole !== 'title') {
+            issue(object.nameSingular, "an event type's labelField is always its title");
+          } else if (field) object.labelFieldId = field.universalId;
         }
         break;
       }

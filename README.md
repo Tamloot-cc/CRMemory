@@ -4,12 +4,12 @@ Open-source memory for AI agents that work with customer relationships.
 
 Retainer keeps a living record of every person, company and deal a business
 works with. Agents read conversations with their own models and write what
-matters: typed fields, plain-language facts and a log of interactions, each
+matters: typed fields, plain-language facts and a log of events, each
 linked to who wrote it and where it came from. Agents read it back through MCP
 or a REST API.
 
 The optional web app lets people review agent proposals, browse records with
-provenance, edit fields, and retract facts and interactions.
+provenance, edit fields, and retract facts and events.
 
 - **Schema as data**: objects and fields are stored as rows, so a workspace,
   or an agent working in it, can add fields and objects at runtime.
@@ -72,7 +72,7 @@ The setting also controls the cookie's public host and Secure handling.
 Non-user keys can browse read-only. People with a `write` key can create,
 delete and merge records and review suggested merges; erasing a person for a
 privacy request (`forget`) needs an `admin` key. ⌘K searches records, facts
-and interactions across the workspace.
+and events across the workspace.
 
 ## Connect an agent
 
@@ -96,8 +96,8 @@ claude mcp add retainer \
 ```
 
 Tools: `describe_schema`, `list_templates`, `apply_template`,
-`query_records`, `query_interactions`, `get_record`, `search`, `get_context`,
-`upsert_record`, `log_interaction`, `remember` and `propose_schema_change`. See
+`query_records`, `get_record`, `search`, `get_context`, `upsert_record`,
+`log_event`, `remember` and `propose_schema_change`. See
 [Connecting agents](docs/agents.md) for the workflow an agent should follow,
 and [the SDK guide](docs/sdk.md) to call the REST API from code.
 

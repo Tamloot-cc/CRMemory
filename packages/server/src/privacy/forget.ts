@@ -1,8 +1,8 @@
 import type { ForgetResult } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { requireUser } from '../errors.js';
+import { liveFactSource } from '../memory/events.js';
 import { type Handle, parseHandle } from '../memory/handles.js';
-import { isNote } from '../memory/interactions.js';
 import { inboundRelationFields } from '../records/merge.js';
 import { phraseQuery } from '../records/search-sql.js';
 import {
@@ -12,7 +12,13 @@ import {
   resolveRecordId,
   type WriteContext,
 } from '../records/write.js';
-import { requireSuppressionKey, suppress, suppressibleHandles } from './suppression.js';
+import type { CompiledSchema } from '../schema-engine/compiled.js';
+import {
+  requireSuppressionKey,
+  suppress,
+  suppressibleHandles,
+  tombstoneEventIdentity,
+} from './suppression.js';
 
 /** How many review candidates of each kind `forget` returns. */
 const CANDIDATE_LIMIT = 100;
@@ -21,26 +27,30 @@ const CANDIDATE_LIMIT = 100;
  * `forget` (2.1): the hard delete for privacy requests. The caller holds
  * the privacy lock exclusively, so no other write runs in the workspace
  * until this commits, and every later write checks the suppression list.
+ * Logging takes the same lock in shared mode, so an erasure and a logging
+ * of the same event identity never interleave (6.4).
  *
  * Everything is collected first, before cascades or `SET NULL` can erase
  * the dependencies:
  *
  * - the record and every record merged into it;
  * - its emails and phones, from current identifiers, every past email or
- *   phone claim, and the handles of interactions it was matched in;
- * - the interactions it took part in, by record or by handle, and the
- *   notes `remember` wrote about it (interactions only `about` it stay,
- *   without the link);
- * - candidates for human review: other live records, facts and
- *   interactions that mention its name or handles.
+ *   phone claim, and the handles of events it was matched in;
+ * - the events it took part in, by record or by handle, and the internal
+ *   notes `remember` wrote about it (events only `about` it stay, without
+ *   the link);
+ * - candidates for human review: other live records, facts and events that
+ *   mention its name or handles.
  *
  * Then, in this one transaction: claims on other records that cite those
- * interactions are deleted (facts only once no live source remains) and
- * inbound relation claims are deleted; the affected records are recomputed;
- * the interactions and the records are hard-deleted, with their assertions,
- * facts, links and identifiers; stored idempotent responses that mention
- * them are deleted; the handles are suppressed by keyed HMAC; and an audit
- * row records who and how many, never what.
+ * events are deleted (facts only once no live source remains) and inbound
+ * relation claims are deleted; the affected records are recomputed; the
+ * events and the records are hard-deleted, with their assertions, facts,
+ * links and identifiers; an erased event's identity, and that of a
+ * surviving event whose initial values were erased, is replaced by a keyed
+ * tombstone; stored idempotent responses that mention them are deleted; the
+ * handles are suppressed by keyed HMAC; and an audit row records who and
+ * how many, never what.
  */
 export async function forgetRecord(
   tx: Tx,
@@ -82,62 +92,74 @@ export async function forgetRecord(
     if (field) for (const handle of suppressibleHandles(field, claim.value)) addHandle(handle);
   }
   const matched = await tx<{ handle: string }[]>`
-    select distinct handle from interaction_participants
+    select distinct handle from event_links
     where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])
       and handle is not null`;
   for (const row of matched) addHandle(parseHandle(row.handle));
   const handleValues = [...handles.values()].map((h) => h.value);
 
-  // Interactions the record took part in, and the notes remember wrote about
-  // it. An interaction that is only `about` the record (a meeting about a
-  // company) is someone else's conversation: it stays, without the link.
-  const interactions = await tx<{ id: string }[]>`
-    select distinct p.interaction_id as id from interaction_participants p
-    join interactions i on i.id = p.interaction_id
-    where p.workspace_id = ${workspaceId}
-      and ((p.link = 'participant'
-          and (p.record_id = any(${recordIds}::uuid[]) or p.handle = any(${handleValues}::text[])))
-        or (p.link = 'about' and p.record_id = any(${recordIds}::uuid[])
-          and ${isNote(tx)}))
+  // Events the record took part in, and the internal notes remember wrote
+  // about it. An event that is only `about` the record (a meeting about a
+  // company) is someone else's: it stays, without the link. A forgotten
+  // record that is itself an event is erased as one.
+  const events = await tx<{ id: string }[]>`
+    select distinct l.event_id as id from event_links l
+    join records ev on ev.id = l.event_id
+    where l.workspace_id = ${workspaceId}
+      and ((l.link = 'participant'
+          and (l.record_id = any(${recordIds}::uuid[]) or l.handle = any(${handleValues}::text[])))
+        or (l.link = 'about' and l.record_id = any(${recordIds}::uuid[])
+          and ev.object_type_id = ${schema.internalNote?.id ?? null}::uuid))
+    union
+    select r.id from records r
+    where r.id = any(${recordIds}::uuid[])
+      and r.object_type_id = any(${schema.eventTypeIds}::uuid[])
     order by 1`;
-  const interactionIds = interactions.map((r) => r.id);
+  const eventIds = events.map((r) => r.id);
+  const erased = [...new Set([...recordIds, ...eventIds])];
 
   const reviewCandidates = await findMentions(
     tx,
     workspaceId,
-    recordIds,
-    interactionIds,
+    schema,
+    erased,
     chain.flatMap((r) => (r.label?.trim() ? [r.label.trim()] : [])),
     handleValues,
   );
 
-  // Claims on other records that cite those interactions or point at the record.
+  // Claims on other records that cite those events or point at the record.
   const object = schema.objectsById.get(chain[0]?.object_type_id ?? '');
   const relationFieldIds = object ? inboundRelationFields(schema, object) : [];
   const pointsAtRecord = tx`field_id = any(${relationFieldIds}::uuid[])
     and value = any(array(select to_jsonb(x::text) from unnest(${recordIds}::uuid[]) x))`;
-  const elsewhere = tx`workspace_id = ${workspaceId} and record_id <> all(${recordIds}::uuid[])`;
+  const elsewhere = tx`workspace_id = ${workspaceId} and record_id <> all(${erased}::uuid[])`;
   const affected = await tx<{ record_id: string }[]>`
     select distinct record_id from field_assertions
     where ${elsewhere}
-      and (source_interaction_id = any(${interactionIds}::uuid[]) or (${pointsAtRecord}))`;
+      and (source_record_id = any(${eventIds}::uuid[]) or (${pointsAtRecord}))`;
   const locked = await lockRecordsForUpdate(tx, workspaceId, [
-    ...new Set([...recordIds, ...affected.map((r) => r.record_id)]),
+    ...new Set([...erased, ...affected.map((r) => r.record_id)]),
   ]);
-  if (interactionIds.length > 0) {
-    await tx`select id from interactions where id = any(${interactionIds}::uuid[])
-      order by id for update`;
-  }
+
+  // Surviving events whose initial values are erased below lose their raw
+  // identity (6.4): the caller-chosen channel and external ID may identify.
+  const initialErased = await tx<{ record_id: string }[]>`
+    select distinct record_id from field_assertions
+    where ${elsewhere} and is_initial and (${pointsAtRecord})`;
+  const identities = await tx<{ record_id: string; channel: string; external_id: string }[]>`
+    select record_id, channel, external_id from event_records
+    where workspace_id = ${workspaceId} and external_id is not null and channel is not null
+      and record_id = any(${[...eventIds, ...initialErased.map((r) => r.record_id)]}::uuid[])`;
 
   const [counted] = await tx<{ assertions: number }[]>`
     select count(*)::int as assertions from field_assertions
-    where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])`;
+    where workspace_id = ${workspaceId} and record_id = any(${erased}::uuid[])`;
   const ownFacts = await tx<{ id: string }[]>`
-    select id from facts where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])`;
+    select id from facts where workspace_id = ${workspaceId} and record_id = any(${erased}::uuid[])`;
 
   const cited = await tx<RemovedClaim[]>`
     delete from field_assertions
-    where ${elsewhere} and source_interaction_id = any(${interactionIds}::uuid[])
+    where ${elsewhere} and source_record_id = any(${eventIds}::uuid[])
     returning record_id, field_id, status`;
   const inboundRelations = await tx<RemovedClaim[]>`
     delete from field_assertions where ${elsewhere} and ${pointsAtRecord}
@@ -145,7 +167,7 @@ export async function forgetRecord(
   const recomputed = await releaseAndRecompute(
     tx,
     context,
-    locked.filter((r) => !recordIds.includes(r.id)),
+    locked.filter((r) => !erased.includes(r.id)),
     [...cited, ...inboundRelations],
   );
 
@@ -153,29 +175,33 @@ export async function forgetRecord(
   // without a live source.
   const unsourced = await tx<{ fact_id: string }[]>`
     delete from fact_sources
-    where workspace_id = ${workspaceId} and interaction_id = any(${interactionIds}::uuid[])
+    where workspace_id = ${workspaceId} and source_record_id = any(${eventIds}::uuid[])
     returning fact_id`;
   const orphaned = await tx<{ id: string }[]>`
     delete from facts f
     where f.workspace_id = ${workspaceId}
       and f.id = any(${[...new Set(unsourced.map((s) => s.fact_id))]}::uuid[])
-      and f.record_id <> all(${recordIds}::uuid[])
-      and not exists (
-        select 1 from fact_sources s
-        join interactions i on i.id = s.interaction_id and i.deleted_at is null
-        where s.fact_id = f.id)
+      and f.record_id <> all(${erased}::uuid[])
+      and not exists (${liveFactSource(tx, tx`f.id`)})
     returning f.id`;
 
-  await tx`delete from interactions where id = any(${interactionIds}::uuid[])`;
+  await tombstoneEventIdentity(
+    tx,
+    workspaceId,
+    identities.map((i) => ({ channel: i.channel, externalId: i.external_id })),
+  );
   await tx`
-    delete from interaction_participants
-    where workspace_id = ${workspaceId} and link = 'about'
-      and record_id = any(${recordIds}::uuid[])`;
-  await tx`delete from records where id = any(${recordIds}::uuid[])`;
+    update event_records set channel = null, external_id = null
+    where workspace_id = ${workspaceId}
+      and record_id = any(${initialErased.map((r) => r.record_id)}::uuid[])`;
+  await tx`
+    delete from event_links
+    where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])`;
+  await tx`delete from records where id = any(${erased}::uuid[])`;
 
   // Stored responses mentioning any erased row are erased too.
   const orphanedIds = new Set(orphaned.map((f) => f.id));
-  const erasedIds = [...recordIds, ...interactionIds, ...orphanedIds, ...ownFacts.map((f) => f.id)];
+  const erasedIds = [...erased, ...orphanedIds, ...ownFacts.map((f) => f.id)];
   await tx`
     delete from idempotency_keys k
     where k.workspace_id = ${workspaceId} and k.result is not null
@@ -185,7 +211,7 @@ export async function forgetRecord(
   const suppressedHandles = await suppress(tx, workspaceId, [...handles.values()]);
   const counts: ForgetResult['counts'] = {
     records: recordIds.length,
-    interactions: interactionIds.length,
+    events: eventIds.filter((id) => !recordIds.includes(id)).length,
     facts: ownFacts.length + orphaned.length,
     assertions: (counted?.assertions ?? 0) + cited.length,
     inboundRelations: inboundRelations.length,
@@ -200,7 +226,7 @@ export async function forgetRecord(
     forgotten: true,
     counts,
     recomputedRecordIds: recomputed,
-    // Candidates already exclude the erased records and interactions; only
+    // Candidates already exclude the erased records and events; only
     // facts orphaned by the deletion can have gone since.
     reviewCandidates: {
       ...reviewCandidates,
@@ -217,8 +243,8 @@ export async function forgetRecord(
 async function findMentions(
   tx: Tx,
   workspaceId: string,
+  schema: CompiledSchema,
   recordIds: readonly string[],
-  interactionIds: readonly string[],
   names: readonly string[],
   handles: readonly string[],
 ): Promise<ForgetResult['reviewCandidates']> {
@@ -228,9 +254,12 @@ async function findMentions(
       ? tx`false`
       : tx`exists (select 1 from unnest(${names as string[]}::text[]) n
           where search @@ ${phraseQuery(tx, tx`n`)})`;
+  const entityIds = schema.visibleObjectIds.filter((id) => !schema.eventTypeIds.includes(id));
+  const eventTypeIds = schema.eventTypeIds.filter((id) => schema.visibleObjectIds.includes(id));
   const records = await tx<{ id: string }[]>`
     select id from records
     where workspace_id = ${workspaceId} and deleted_at is null
+      and object_type_id = any(${entityIds}::uuid[])
       and id <> all(${recordIds as string[]}::uuid[])
       and (${nameQuery}
         or id in (select record_id from record_identifiers
@@ -242,16 +271,16 @@ async function findMentions(
       and record_id <> all(${recordIds as string[]}::uuid[])
       and (${nameQuery} or content ilike any(${patterns}::text[]))
     order by id limit ${CANDIDATE_LIMIT}`;
-  const interactions = await tx<{ id: string }[]>`
-    select id from interactions
+  const events = await tx<{ id: string }[]>`
+    select id from records
     where workspace_id = ${workspaceId} and deleted_at is null
-      and id <> all(${interactionIds as string[]}::uuid[])
-      and (${nameQuery} or title ilike any(${patterns}::text[])
-        or summary ilike any(${patterns}::text[]))
+      and object_type_id = any(${eventTypeIds}::uuid[])
+      and id <> all(${recordIds as string[]}::uuid[])
+      and (${nameQuery} or data::text ilike any(${patterns}::text[]))
     order by id limit ${CANDIDATE_LIMIT}`;
   return {
     records: records.map((r) => r.id),
     facts: facts.map((r) => r.id),
-    interactions: interactions.map((r) => r.id),
+    events: events.map((r) => r.id),
   };
 }

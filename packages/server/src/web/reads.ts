@@ -1,4 +1,10 @@
-import type { Actor, AssertionView, Provenance, RecordReference } from '@retainer/shared';
+import type {
+  Actor,
+  AssertionView,
+  Provenance,
+  RecordReference,
+  SourceReference,
+} from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
@@ -37,8 +43,10 @@ type AssertionRow = {
   confidence: number;
   observed_at: Date;
   created_at: Date;
-  source_interaction_id: string | null;
-  title: string | null;
+  source_record_id: string | null;
+  is_initial: boolean;
+  source_type: string | null;
+  source_data: Record<string, unknown> | null;
   occurred_at: Date | null;
   reviewed_by: Actor | null;
   reviewed_at: Date | null;
@@ -55,10 +63,13 @@ export async function assertions(
 ) {
   const rows = await tx<
     AssertionRow[]
-  >`select a.*, a.created_at::text as stamp, r.object_type_id, r.label, r.data, i.title, i.occurred_at,
+  >`select a.*, a.created_at::text as stamp, r.object_type_id, r.label, r.data,
+    src.object_type_id as source_type, src.data as source_data, e.occurred_at,
     (select l.target_record_id from record_links l where l.source_record_id = r.id and l.field_id = a.field_id) as current_link
     from field_assertions a join records r on r.id = a.record_id
-    left join interactions i on i.id = a.source_interaction_id and i.deleted_at is null
+    left join records src on src.id = a.source_record_id and src.deleted_at is null
+      and src.object_type_id = any(${schema.visibleObjectIds}::uuid[])
+    left join event_records e on e.record_id = src.id
     where ${where} and ${after(tx, tx`a.created_at`, tx`a.id`, cursor, descending)}
     order by a.created_at ${tx.unsafe(descending ? 'desc' : 'asc')}, a.id ${tx.unsafe(descending ? 'desc' : 'asc')} limit ${limit + 1}`;
   const result = page(rows, limit);
@@ -113,15 +124,9 @@ export async function assertions(
         confidence: r.confidence,
         observedAt: r.observed_at.toISOString(),
         createdAt: r.created_at.toISOString(),
-        sourceInteractionId: r.source_interaction_id,
-        source:
-          r.occurred_at && r.source_interaction_id
-            ? {
-                id: r.source_interaction_id,
-                title: r.title,
-                occurredAt: r.occurred_at.toISOString(),
-              }
-            : null,
+        sourceRecordId: r.source_record_id,
+        isInitial: r.is_initial,
+        source: sourceOf(schema, r),
         conflictingRecord: holder ? (refs[holder.record_id] ?? null) : null,
         ...(field?.type === 'relation' ? { relationReferences: refs } : {}),
         reviewedBy: r.reviewed_by,
@@ -129,6 +134,19 @@ export async function assertions(
       };
     }),
     nextCursor: result.nextCursor,
+  };
+}
+/** The live, visible event an assertion cites, presented (6.4). */
+function sourceOf(schema: CompiledSchema, r: AssertionRow): SourceReference | null {
+  if (!r.occurred_at || !r.source_record_id || !r.source_type) return null;
+  const object = schema.objectsById.get(r.source_type);
+  const key = object?.core?.title.key;
+  const title = key === undefined ? undefined : r.source_data?.[key];
+  return {
+    id: r.source_record_id,
+    type: object?.name ?? 'unknown',
+    title: typeof title === 'string' ? title : null,
+    occurredAt: r.occurred_at.toISOString(),
   };
 }
 export async function assertionById(tx: Tx, schema: CompiledSchema, id: string) {

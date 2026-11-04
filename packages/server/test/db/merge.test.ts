@@ -2,7 +2,7 @@ import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
-import { factsOf, logInteractionFor, remember } from '../../src/memory/service.js';
+import { factsOf, logEventFor, remember } from '../../src/memory/service.js';
 import {
   type Caller,
   createRecord,
@@ -11,9 +11,10 @@ import {
   mergeRecord,
   patchRecord,
   readRecord,
-  reviewQueue,
+  withRead,
 } from '../../src/records/service.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
+import { reviewPage } from '../../src/web/review.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
 import { expectDataMatchesAssertions as expectDataCache } from '../helpers/records.js';
@@ -43,6 +44,18 @@ const company = (name: string) => createRecord(app, as(AGENT), 'company', { name
 const pair = (x: string, y: string) => [x, y].sort() as [string, string];
 
 const expectDataMatchesAssertions = (id: string) => expectDataCache(app, workspaceId, id);
+const reviewQueue = (sql: Sql, caller: Caller, limit: number) =>
+  withRead(sql, caller, (tx, schema) => reviewPage(tx, caller.workspaceId, schema, limit, {}));
+const logCall = (title: string, participants: { recordId: string }[] = []) =>
+  logEventFor(app, as(AGENT), {
+    type: 'call',
+    channel: 'zoom',
+    occurredAt: '2026-10-01T10:00:00Z',
+    title,
+    fields: {},
+    participants,
+    about: [],
+  });
 
 async function identifiersOf(recordId: string) {
   const rows = await db.owner<{ kind: string; value: string }[]>`
@@ -51,13 +64,14 @@ async function identifiersOf(recordId: string) {
 }
 
 describe('merging records (4.2)', () => {
-  it('moves claims, facts and participants to the survivor and soft-deletes the other', async () => {
+  it('moves claims, facts and event links to the survivor and soft-deletes the other', async () => {
     const a = await person({ name: 'Dana Cohen', jobTitle: 'VP Sales' });
     const b = await person({ name: 'Dana Cohen', phones: '+972 54 123 4567' });
-    const call = await logInteractionFor(app, as(AGENT), {
-      kind: 'call',
+    const call = await logEventFor(app, as(AGENT), {
+      type: 'call',
       channel: 'zoom',
       occurredAt: '2026-10-01T10:00:00Z',
+      fields: {},
       participants: [{ recordId: b.id }],
       about: [],
     });
@@ -88,9 +102,48 @@ describe('merging records (4.2)', () => {
       'Prefers email',
     ]);
     const participants = await db.owner<{ record_id: string }[]>`
-      select record_id from interaction_participants where interaction_id = ${call.id}`;
+      select record_id from event_links where event_id = ${call.id}`;
     expect(participants).toEqual([{ record_id: a.id }]);
     await expectDataMatchesAssertions(a.id);
+  });
+
+  it('moves about links to the survivor, once per event', async () => {
+    const a = await company('Umbrella');
+    const b = await company('Umbrella Corp');
+    const dana = await person();
+    const meeting = await logEventFor(app, as(AGENT), {
+      type: 'meeting',
+      channel: 'calendar',
+      occurredAt: '2026-10-02T10:00:00Z',
+      fields: {},
+      participants: [{ recordId: dana.id }],
+      about: [a.id, b.id],
+    });
+    await mergeRecord(app, as(USER), a.id, { recordId: b.id });
+    const links = await db.owner<{ record_id: string; link: string }[]>`
+      select record_id, link from event_links where event_id = ${meeting.id} order by position`;
+    expect(links).toEqual([
+      { record_id: dana.id, link: 'participant' },
+      { record_id: a.id, link: 'about' },
+    ]);
+  });
+
+  it('refuses to merge events: each is something that happened (6.2)', async () => {
+    const first = await logCall('Kickoff');
+    const second = await logCall('Kickoff');
+    await expect(
+      mergeRecord(app, as(USER), first.id, { recordId: second.id }),
+    ).rejects.toMatchObject({ status: 422, code: 'invalid_merge' });
+    const dana = await person();
+    await expect(mergeRecord(app, as(USER), dana.id, { recordId: first.id })).rejects.toMatchObject(
+      { status: 422 },
+    );
+    const rows = await db.owner<{ deleted_at: Date | null; merged_into_id: string | null }[]>`
+      select deleted_at, merged_into_id from records where id in (${first.id}, ${second.id})`;
+    expect(rows).toEqual([
+      { deleted_at: null, merged_into_id: null },
+      { deleted_at: null, merged_into_id: null },
+    ]);
   });
 
   it('combines emails and phones, keeping the survivor primary, and rebuilds identifiers', async () => {

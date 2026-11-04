@@ -2,7 +2,7 @@
 
 Retainer is open-source memory for AI agents that work with customer
 relationships. Agents read conversations with their own models and write what
-matters: typed fields, plain-language facts and a log of interactions, each
+matters: typed fields, plain-language facts and a log of events, each
 linked to who wrote it and where it came from. Retainer validates, stores,
 resolves conflicts and searches. It never calls a language model.
 
@@ -35,10 +35,11 @@ The design, the data model and the write rules are in
   _assertions_ from agents and people: people outrank agents, newer
   observations outrank older ones, and an agent that would overwrite a
   person's value leaves a pending assertion for review instead.
-- **Interactions** are meetings, calls, emails, messages and notes. Agents log
-  them first, then cite them as the `source` of what they write.
+- **Events** are records of event types: meetings, calls, emails, messages,
+  notes and any type the workspace adds. Agents log them first, then cite
+  them as the `source` of what they write.
 - **Facts** are plain-language statements about a record (`remember`), each
-  citing the interaction it came from.
+  citing the event it came from.
 - **Actors**: every write is attributed to the actor of the API key that made
   it (`user`, `agent`, `integration` or `system`), never to anything in the
   request body.

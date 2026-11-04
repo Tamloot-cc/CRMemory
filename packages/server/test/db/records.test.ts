@@ -10,14 +10,19 @@ import {
   deleteRecord,
   patchRecord,
   readRecord,
-  reviewQueue,
   upsertRecord,
+  withRead,
 } from '../../src/records/service.js';
 import { lockRecord, UniqueConflictError, writeFields } from '../../src/records/write.js';
 import { getSchema } from '../../src/schema-engine/compiled.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import type { SchemaOperation } from '../../src/schema-engine/operations.js';
+import { reviewPage } from '../../src/web/review.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
+
+const reviewQueue = (sql: Sql, caller: Caller, limit: number) =>
+  withRead(sql, caller, (tx, schema) => reviewPage(tx, caller.workspaceId, schema, limit, {}));
+
 import { useTestDatabase } from '../helpers/db.js';
 import { expectDataMatchesAssertions as expectDataCache } from '../helpers/records.js';
 

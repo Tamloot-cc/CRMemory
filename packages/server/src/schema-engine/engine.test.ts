@@ -1,6 +1,13 @@
+import { BASE_EVENT_TYPE_IDS, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
-import { BASE_OBJECT_IDS, BASE_OPERATIONS, TEMPLATES } from '../templates/index.js';
-import { applyOperations, deriveUuid } from './apply.js';
+import {
+  BASE_EVENT_OPERATIONS,
+  BASE_OBJECT_IDS,
+  BASE_OPERATIONS,
+  INTERNAL_OPERATIONS,
+  TEMPLATES,
+} from '../templates/index.js';
+import { applyOperations, coreFieldUniversalId, deriveUuid } from './apply.js';
 import { classifyOp, diffSchemas, isDestructive } from './diff.js';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
 import type { SchemaState } from './types.js';
@@ -305,6 +312,150 @@ describe('protection', () => {
   });
 });
 
+describe('event types', () => {
+  const seeded = applyValid(
+    base,
+    [...BASE_EVENT_OPERATIONS, ...INTERNAL_OPERATIONS] as SchemaOperation[],
+    'system',
+  );
+  const object = (state: SchemaState, name: string) =>
+    state.objects.find((o) => o.nameSingular === name);
+  const payment = {
+    op: 'create_object',
+    object: {
+      nameSingular: 'payment',
+      namePlural: 'payments',
+      labelSingular: 'Payment',
+      labelPlural: 'Payments',
+      class: 'event',
+      fields: [{ name: 'amount', type: 'money' }],
+    },
+  } as SchemaOperation;
+
+  it('seeds the base event types and the internal-note type with fixed universal IDs', () => {
+    const events = seeded.objects.filter((o) => o.class === 'event');
+    expect(Object.fromEntries(events.map((o) => [o.nameSingular, o.universalId]))).toEqual({
+      ...BASE_EVENT_TYPE_IDS,
+      internalNote: INTERNAL_NOTE_TYPE_ID,
+    });
+    // Base event types can be deleted when unused; the internal one cannot.
+    expect(events.filter((o) => o.isProtected).map((o) => o.nameSingular)).toEqual([
+      'internalNote',
+    ]);
+    expect(base.objects.every((o) => o.class === 'entity')).toBe(true);
+  });
+
+  it('gives a new event type protected title and summary fields, the title as its label', () => {
+    const state = applyValid(seeded, [payment]);
+    const created = object(state, 'payment');
+    const title = created?.fields.find((f) => f.coreRole === 'title');
+    const summary = created?.fields.find((f) => f.coreRole === 'summary');
+    expect(title).toMatchObject({
+      name: 'title',
+      type: 'text',
+      isProtected: true,
+      isSearchable: true,
+      universalId: coreFieldUniversalId(created?.universalId as string, 'title'),
+    });
+    expect(summary).toMatchObject({ name: 'summary', type: 'text', isProtected: true });
+    expect(created?.labelFieldId).toBe(title?.universalId);
+    expect(created?.fields.map((f) => f.name)).toEqual(['title', 'summary', 'amount']);
+  });
+
+  it('derives the same core field IDs for a code-defined type every time', () => {
+    const again = applyValid(base, BASE_EVENT_OPERATIONS as SchemaOperation[], 'system');
+    const ids = (state: SchemaState) => object(state, 'call')?.fields.map((f) => f.universalId);
+    expect(ids(again)).toEqual(ids(seeded));
+  });
+
+  it('refuses core fields in the definition and a label other than the title', () => {
+    const withTitle = {
+      ...payment,
+      object: {
+        ...(payment as { object: object }).object,
+        fields: [{ name: 'title', type: 'text' }],
+      },
+    } as SchemaOperation;
+    expect(
+      issuesOf(seeded, [withTitle])
+        .map((i) => i.message)
+        .join(' '),
+    ).toMatch(/title/);
+    const otherLabel = {
+      ...payment,
+      object: { ...(payment as { object: object }).object, labelField: 'amount' },
+    } as SchemaOperation;
+    expect(issuesOf(seeded, [otherLabel]).map((i) => i.message)).toContain(
+      "an event type's labelField is always its title",
+    );
+    expect(
+      issuesOf(seeded, [{ op: 'update_object', object: 'call', labelField: 'summary' }]).map(
+        (i) => i.message,
+      ),
+    ).toContain("an event type's labelField is always its title");
+  });
+
+  it('protects the core fields of every event type', () => {
+    expect(
+      issuesOf(seeded, [{ op: 'delete_field', object: 'meeting', field: 'summary' }])
+        .map((i) => i.message)
+        .join(' '),
+    ).toContain('protected');
+    // Renaming a core field is allowed; it keeps its role.
+    const renamed = applyValid(seeded, [
+      { op: 'rename_field', object: 'meeting', field: 'title', name: 'subject' },
+    ]);
+    expect(field(renamed, 'meeting', 'subject')?.coreRole).toBe('title');
+  });
+
+  it('still requires fields and a labelField on an entity', () => {
+    const widget = (fields: object[]) =>
+      ({
+        op: 'create_object',
+        object: {
+          nameSingular: 'widget',
+          namePlural: 'widgets',
+          labelSingular: 'Widget',
+          labelPlural: 'Widgets',
+          fields,
+        },
+      }) as SchemaOperation;
+    expect(
+      issuesOf(seeded, [widget([])])
+        .map((i) => i.message)
+        .join(' '),
+    ).toContain('at least one');
+    expect(
+      issuesOf(seeded, [widget([{ name: 'name', type: 'text' }])]).map((i) => i.message),
+    ).toContain('an object needs a labelField');
+  });
+
+  it('reserves the built-in event column names as event field names', () => {
+    for (const name of ['occurredAt', 'channel', 'externalId', 'participants', 'about', 'via']) {
+      const op = {
+        op: 'create_field',
+        object: 'call',
+        field: { name, type: 'text' },
+      } as SchemaOperation;
+      expect(issuesOf(seeded, [op]).length, name).toBeGreaterThan(0);
+    }
+  });
+
+  it('hides the internal-note type from name lookups', () => {
+    expect(
+      issuesOf(seeded, [
+        {
+          op: 'create_field',
+          object: 'internalNote',
+          field: { name: 'extra', type: 'text' },
+        } as SchemaOperation,
+      ])
+        .map((i) => i.message)
+        .join(' '),
+    ).toMatch(/internalNote/);
+  });
+});
+
 describe('validate', () => {
   const create = (overrides: Partial<FieldDefinitionInput>) =>
     issuesOf(base, [
@@ -340,7 +491,7 @@ describe('validate', () => {
   });
 
   it.each([
-    ['interaction', 'interactions', 'log_interaction'],
+    ['interaction', 'interactions', 'log_event'],
     ['fact', 'facts', 'remember'],
   ])('points an object named %s at the built-in feature', (singular, plural, tool) => {
     for (const message of createObject(singular, plural)) expect(message).toContain(tool);
