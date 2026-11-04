@@ -158,9 +158,3 @@ variable "github_repository" {
   type        = string
   default     = null
 }
-
-variable "create_github_oidc_provider" {
-  description = "Create the account's OIDC provider for GitHub Actions (token.actions.githubusercontent.com). Leave false when the account already has one: an account can hold only one per issuer."
-  type        = bool
-  default     = false
-}

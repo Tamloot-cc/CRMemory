@@ -13,5 +13,4 @@ region = "eu-central-1"
 
 # Lets this repository's "production" GitHub Environment ship code.
 # github_repository = "your-org/Retainer"
-# Only if the account has no OIDC provider for GitHub Actions yet:
-# create_github_oidc_provider = true
+# Needs the account's OIDC provider for GitHub Actions; see docs/aws.md.

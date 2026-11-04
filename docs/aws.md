@@ -143,9 +143,16 @@ only. To use it:
 1. Set `github_repository = "<owner>/<repo>"` in `terraform.tfvars` and
    apply. This creates a role that can update, stop, start and invoke this
    deployment's functions and nothing else. It trusts the account's OIDC
-   provider for GitHub Actions; if the account has none yet, also set
-   `create_github_oidc_provider = true` (an account holds only one, so leave
-   it false when another project already created it).
+   provider for GitHub Actions. An account holds one, shared by every
+   repository's roles, so this deployment uses it but never creates or
+   deletes it. If `aws iam list-open-id-connect-providers` shows none for
+   `token.actions.githubusercontent.com`, create it once:
+
+   ```sh
+   aws iam create-open-id-connect-provider \
+     --url https://token.actions.githubusercontent.com \
+     --client-id-list sts.amazonaws.com
+   ```
 2. In the repository's settings, create the `production` environment.
    Under deployment branches, allow only the default branch: the role trusts
    every job in that environment.

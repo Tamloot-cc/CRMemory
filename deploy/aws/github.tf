@@ -8,24 +8,17 @@
 # uses, so the two cannot disagree. Restrict that environment to the default
 # branch, so pull requests (including from forks) never can.
 
-# An account has at most one provider for GitHub's issuer, often created by
-# another project; look it up, or create it with create_github_oidc_provider.
+# The account's OIDC provider for GitHub Actions is a prerequisite, not part
+# of this deployment: an account holds one per issuer, shared by every
+# repository's roles, so destroying a deployment must never delete it.
+# docs/aws.md has the one command that creates it where it is missing.
 data "aws_iam_openid_connect_provider" "github" {
-  count = var.github_repository != null && !var.create_github_oidc_provider ? 1 : 0
+  count = var.github_repository != null ? 1 : 0
   url   = "https://token.actions.githubusercontent.com"
 }
 
-resource "aws_iam_openid_connect_provider" "github" {
-  count          = var.github_repository != null && var.create_github_oidc_provider ? 1 : 0
-  url            = "https://token.actions.githubusercontent.com"
-  client_id_list = ["sts.amazonaws.com"]
-}
-
 locals {
-  github_oidc_provider_arn = one(concat(
-    aws_iam_openid_connect_provider.github[*].arn,
-    data.aws_iam_openid_connect_provider.github[*].arn,
-  ))
+  github_oidc_provider_arn = one(data.aws_iam_openid_connect_provider.github[*].arn)
 }
 
 resource "aws_iam_role" "github_deploy" {
