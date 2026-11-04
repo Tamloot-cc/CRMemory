@@ -12,6 +12,7 @@ import {
   boolean,
   check,
   customType,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -597,6 +598,59 @@ export const mergeSuggestions = pgTable(
       .on(t.workspaceId, t.createdAt)
       .where(sql`${t.status} = 'pending'`),
     check('merge_suggestions_sorted_pair', sql`${t.recordAId} < ${t.recordBId}`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Views (1.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * A view's settings as stored: every field is named by `fields.key`
+ * (rule 1.4.1). The API translates to and from field names.
+ */
+export type StoredViewConfig = {
+  filter?: Record<string, unknown>;
+  sort?: { field: string; direction: 'asc' | 'desc' }[];
+  columns?: {
+    order: string[];
+    widths?: Record<string, number>;
+    aggregates?: Record<string, string>;
+  };
+  groupBy?: string;
+  hiddenGroups?: (string | null)[];
+  groupAggregate?: { field: string; op: string };
+  dateField?: string;
+};
+
+/** Saved ways of looking at one object's records: display settings, not data (1.4). */
+export const views = pgTable(
+  'views',
+  {
+    id: id(),
+    workspaceId: workspaceId(),
+    objectTypeId: uuid('object_type_id').notNull(),
+    name: text('name').notNull(),
+    kind: text('kind').$type<'table' | 'board' | 'calendar'>().notNull(),
+    visibility: text('visibility').$type<'workspace' | 'private'>().notNull(),
+    /** Order in the object's list of views; fractional, so one move is one update. */
+    position: doublePrecision('position').notNull().default(0),
+    config: jsonb('config').$type<StoredViewConfig>().notNull().default({}),
+    /** A private view belongs to this actor alone. */
+    createdBy: jsonb('created_by').$type<Actor>().notNull(),
+    updatedBy: jsonb('updated_by').$type<Actor>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    tenantFk(
+      'views_object_type_fk',
+      [t.workspaceId, t.objectTypeId],
+      [objectTypes.workspaceId, objectTypes.id],
+    ),
+    index('views_object_idx').on(t.workspaceId, t.objectTypeId, t.position),
+    check('views_kind', sql`${t.kind} in ('table', 'board', 'calendar')`),
+    check('views_visibility', sql`${t.visibility} in ('workspace', 'private')`),
   ],
 );
 

@@ -57,6 +57,20 @@
       "when": 1793737154296,
       "tag": "0007_note_about_links",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793740883579,
+      "tag": "0008_views",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793740886223,
+      "tag": "0009_views_security",
+      "breakpoints": true
     }
   ]
 }

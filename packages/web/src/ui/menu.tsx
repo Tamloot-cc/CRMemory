@@ -78,10 +78,20 @@ export function MenuChoices({
     </MenuPrimitive.RadioGroup>
   );
 }
-export function MenuChoice({ value, children }: { value: string; children: ReactNode }) {
+/** `end` is a quiet note or icon after the name, e.g. that only you can see it. */
+export function MenuChoice({
+  value,
+  end,
+  children,
+}: {
+  value: string;
+  end?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <MenuPrimitive.RadioItem value={value} className={ITEM}>
       <span className="min-w-0 flex-1 truncate">{children}</span>
+      {end ? <span className="flex shrink-0 items-center text-muted-foreground">{end}</span> : null}
       <MenuPrimitive.ItemIndicator>
         <Check size={14} className="text-primary" />
       </MenuPrimitive.ItemIndicator>

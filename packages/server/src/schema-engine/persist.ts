@@ -2,6 +2,9 @@ import type { Actor } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
 import { identifiersFor, searchTextOf } from '../records/derive.js';
 import { searchVector } from '../records/search-sql.js';
+import { repairViews } from '../views/service.js';
+import { compileSchema } from './compiled.js';
+import { loadSchemaState } from './load.js';
 import type { DiffOp, FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
 
 /** A change that validates but conflicts with existing records. */
@@ -234,7 +237,20 @@ export async function persistSchema(
 
   // Follow-up work on existing records.
   const refreshObjects = new Set<string>();
+  // Objects whose saved views may name something this change makes unusable.
+  const viewObjects = new Set<string>();
   for (const op of ops) {
+    // A deleted object is only deprecated, so its views don't cascade (1.4).
+    if (op.kind === 'deprecate_object') {
+      await tx`delete from views where object_type_id = ${objectIds.get(op.objectId) as string}`;
+    }
+    if (
+      op.kind === 'deprecate_field' ||
+      op.kind === 'remove_option' ||
+      (op.kind === 'update_field' && op.property === 'isFilterable' && op.to === false)
+    ) {
+      viewObjects.add(op.objectId);
+    }
     if (op.kind === 'update_field' && op.property === 'isUnique') {
       const fieldId = fieldIds.get(op.fieldId) as string;
       if (op.to === true) {
@@ -263,7 +279,18 @@ export async function persistSchema(
   const [workspace] = await tx<{ schema_version: number }[]>`
     update workspaces set schema_version = schema_version + 1, updated_at = now()
     where id = ${workspaceId} returning schema_version`;
-  return workspace?.schema_version as number;
+  const version = workspace?.schema_version as number;
+  if (viewObjects.size > 0) {
+    // Compiled here, not through the cache: this version isn't committed yet.
+    const schema = compileSchema(await loadSchemaState(tx, workspaceId), version);
+    await repairViews(
+      tx,
+      schema,
+      [...viewObjects].map((id) => objectIds.get(id) as string),
+      actor,
+    );
+  }
+  return version;
 }
 
 function findField(state: SchemaState, objectId: string, fieldId: string) {

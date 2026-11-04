@@ -17,6 +17,10 @@ export const actorSchema = z.object({
 
 export type Actor = z.infer<typeof actorSchema>;
 
+/** The same person, integration or agent. */
+export const sameActor = (a: Pick<Actor, 'type' | 'id'>, b: Pick<Actor, 'type' | 'id'>) =>
+  a.type === b.type && a.id === b.id;
+
 /** Higher number wins. Same precedence: the latest assertion wins. */
 export const ACTOR_PRECEDENCE: Record<ActorType, number> = {
   user: 4,

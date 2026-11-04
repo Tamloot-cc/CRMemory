@@ -48,7 +48,8 @@ export const queryInputSchema = z.strictObject({
 });
 export type QueryInput = z.infer<typeof queryInputSchema>;
 
-const BUILT_IN_COLUMNS: Record<string, 'created_at' | 'updated_at' | 'id'> = {
+/** Record columns that filters and sorts take by name, beside the fields. */
+export const BUILT_IN_COLUMNS: Record<string, 'created_at' | 'updated_at' | 'id'> = {
   id: 'id',
   createdAt: 'created_at',
   updatedAt: 'updated_at',
@@ -288,7 +289,7 @@ export function compileFilter(
   return and(tx, parts);
 }
 
-function compileSort(tx: Tx, object: CompiledObject, sort: QueryInput['sort']): Fragment {
+export function compileSort(tx: Tx, object: CompiledObject, sort: QueryInput['sort']): Fragment {
   const parts: Fragment[] = [];
   for (const { field: name, direction } of sort ?? []) {
     const dir = tx.unsafe(direction === 'desc' ? 'desc' : 'asc');

@@ -561,6 +561,23 @@ export function Td({
     </td>
   );
 }
+export {
+  Board,
+  BoardCard,
+  BoardColumn,
+  type CardField,
+  CardPreview,
+  ColumnMore,
+  ColumnNote,
+} from './board.js';
+export {
+  CalendarDay,
+  CalendarEntry,
+  CalendarHeader,
+  EntryPreview,
+  MonthGrid,
+  MoreEntries,
+} from './calendar.js';
 export type { Tone } from './core.js';
 export {
   DataGrid,
@@ -577,6 +594,7 @@ export {
   DiagramKey,
   type DiagramNode,
 } from './diagram-parts.js';
+export { DragArea } from './drag.js';
 /** React Flow and dagre are heavy, so the canvas loads on first render; wrap it in Suspense. */
 export const Diagram = lazy(() => import('./diagram.js').then((m) => ({ default: m.Diagram })));
 export {

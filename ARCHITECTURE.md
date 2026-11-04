@@ -233,6 +233,67 @@ records to a logged interaction by ID, with the same matching. Removing one
 `/about/:recordId`) is a person's decision, like other changes that hide
 data: an agent's key gets 403.
 
+### 1.4 Views
+
+A view is a saved way of looking at one object's records: a table, a board
+grouped by a select field, or a calendar on a date field. Views are display
+settings, not CRM data. They have no provenance, are not assertions and do
+not go through the schema engine; changing one never changes a record.
+
+| Table   | Holds                                                                                                                                         |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `views` | Object, name, `kind` (`table`, `board`, `calendar`), `visibility` (`workspace`, `private`), `position` in the object's list, `config`, actors |
+
+`config` is JSON validated on every write:
+
+| Key              | Holds                                                                           |
+| ---------------- | ------------------------------------------------------------------------------- |
+| `filter`         | A query filter (5), as `POST /v1/objects/:object/query` takes it                |
+| `sort`           | Up to three sort keys                                                           |
+| `columns`        | Visible fields in order, their widths and each column's footer calculation      |
+| `groupBy`        | Board: the `select` field whose options are the columns                         |
+| `hiddenGroups`   | Board: option values (or `null` for "no value") whose columns are hidden        |
+| `groupAggregate` | Board: one calculation shown in every column's header, e.g. the sum of `amount` |
+| `dateField`      | Calendar: the `date` or `date_time` field records are placed by                 |
+
+Rules:
+
+1. **Fields by key.** Stored config names fields by `fields.key`, like
+   `records.data`, so renaming a field never breaks a view. The API reads
+   and writes field names and translates both ways.
+2. **Repaired by the schema change.** Board columns are the group field's
+   options as they are when the view is read, so adding or relabelling an
+   option needs no change to any view. A schema change that removes a
+   field, stops a field being filterable, or removes an option rewrites the
+   object's views in the same transaction: the field leaves columns and
+   sort, a filter condition that no longer compiles goes, a removed option
+   leaves `in` lists (a condition naming nothing else goes), hidden columns
+   lose removed options, and a `groupBy` or `dateField` that no longer fits
+   is cleared. The view stays, so a board or calendar left without its field
+   asks for a new one. Every record has a board column, because the engine
+   refuses to remove an option records hold or make a field required while
+   records lack it. Reads apply the same repair as a safety net, listing
+   anything they drop in the view's `issues`.
+3. **Validated like queries.** `filter` and `sort` must compile against the
+   current schema, as a query would. `groupBy` must be a filterable `select`
+   field and `dateField` a filterable `date` or `date_time` field, because
+   each board column and calendar month is a filtered query.
+4. **Visibility.** A `workspace` view is visible to every key in the
+   workspace and editable by any key with `write`. A `private` view is
+   visible and editable only by the actor that created it; to anyone else it
+   does not exist (404). Only the creator can change a view's visibility.
+5. **Card order is not stored.** Cards in a board column and records on a
+   calendar day follow the view's `sort`. Manual ordering would need a
+   position that is not a fact about the record, so it is not a field value
+   and is not in v1.
+6. **Moving a card is a record write.** Dropping a card on another column
+   (or a calendar day) is a normal `PATCH /v1/records/:id` of the group (or
+   date) field by the person who moved it. It follows every write rule (2),
+   so it can come back `pending_review` or `superseded` rather than applied.
+
+Deleting a view removes its row; there is nothing to retract. Deleting an
+object deletes its views with it.
+
 ---
 
 ## 2. Write rules
@@ -747,41 +808,43 @@ composes `search`, `query_records` and `get_context` with its own model.
 
 ### 6.1 REST (`/v1`)
 
-| Route                                             | Purpose                                                                          |
-| ------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `GET /v1/me`                                      | Caller workspace, actor and scopes                                               |
-| `GET /v1/schema/changes` · `/:id`                 | Paginated change history or one change                                           |
-| `GET /v1/schema`                                  | Current schema                                                                   |
-| `POST /v1/schema/changes`                         | Request a schema change (applied or proposed)                                    |
-| `POST /v1/schema/changes/:id/approve` · `/reject` | Decide a proposed change                                                         |
-| `GET /v1/templates`                               | Templates and what each adds (3.1)                                               |
-| `POST /v1/templates/:name/apply`                  | Apply a template (needs `schema:write`)                                          |
-| `POST /v1/objects/:object/records`                | Create a record                                                                  |
-| `POST /v1/objects/:object/query`                  | Filter, sort and page records; optional object-scoped keyword lookup             |
-| `POST /v1/objects/:object/aggregate`              | Count and per-field totals (empty, unique, sum, average, min, max) over a filter |
-| `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)       |
-| `GET` · `PATCH` · `DELETE /v1/records/:id`        | One record                                                                       |
-| `GET /v1/records/:id/delete-impact`               | Records a delete would cascade to, at any depth, counted by object               |
-| `POST /v1/records/delete-impact`                  | The same for several records deleted together, overlaps counted once             |
-| `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                            |
-| `GET /v1/records/:id/interactions`                | Paginated interactions a record took part in or that are about it                |
-| `GET /v1/assertions/:id`                          | One assertion, including status and review details                               |
-| `GET /v1/interactions/:id/claims`                 | Paginated assertions and facts citing an interaction                             |
-| `GET /v1/records/:id/context`                     | Context pack                                                                     |
-| `POST /v1/records/:id/merge`                      | Merge another record into this one                                               |
-| `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                           |
-| `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                             |
-| `DELETE /v1/facts/:id`                            | Retract a fact (soft delete)                                                     |
-| `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records      |
-| `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                                  |
-| `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                       |
-| `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)             |
-| `POST /v1/interactions/query`                     | Filter, count and page interactions (5)                                          |
-| `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                                   |
-| `POST /v1/interactions/:id/participants`          | Add participants and `about` records (1.3)                                       |
-| `DELETE /v1/interactions/:id/participants/:pid`   | Remove a participant (a person only)                                             |
-| `DELETE /v1/interactions/:id/about/:recordId`     | Remove an `about` record (a person only)                                         |
-| `POST /v1/search`                                 | Keyword search (5.1)                                                             |
+| Route                                             | Purpose                                                                                                                                 |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/me`                                      | Caller workspace, actor and scopes                                                                                                      |
+| `GET /v1/schema/changes` · `/:id`                 | Paginated change history or one change                                                                                                  |
+| `GET /v1/schema`                                  | Current schema                                                                                                                          |
+| `POST /v1/schema/changes`                         | Request a schema change (applied or proposed)                                                                                           |
+| `POST /v1/schema/changes/:id/approve` · `/reject` | Decide a proposed change                                                                                                                |
+| `GET /v1/templates`                               | Templates and what each adds (3.1)                                                                                                      |
+| `POST /v1/templates/:name/apply`                  | Apply a template (needs `schema:write`)                                                                                                 |
+| `POST /v1/objects/:object/records`                | Create a record                                                                                                                         |
+| `POST /v1/objects/:object/query`                  | Filter, sort and page records; optional object-scoped keyword lookup                                                                    |
+| `POST /v1/objects/:object/aggregate`              | Count and per-field totals (empty, unique, sum, average, min, max) over a filter, optionally per option of a `select` field (`groupBy`) |
+| `GET` · `POST /v1/objects/:object/views`          | The object's saved views (1.4), or save a new one                                                                                       |
+| `GET` · `PATCH` · `DELETE /v1/views/:id`          | One saved view                                                                                                                          |
+| `POST /v1/objects/:object/upsert`                 | Update or create a record found by `id` or `match`, with `ifMissing` (6.2)                                                              |
+| `GET` · `PATCH` · `DELETE /v1/records/:id`        | One record                                                                                                                              |
+| `GET /v1/records/:id/delete-impact`               | Records a delete would cascade to, at any depth, counted by object                                                                      |
+| `POST /v1/records/delete-impact`                  | The same for several records deleted together, overlaps counted once                                                                    |
+| `GET /v1/records/:id/assertions`                  | Paginated per-field assertion history                                                                                                   |
+| `GET /v1/records/:id/interactions`                | Paginated interactions a record took part in or that are about it                                                                       |
+| `GET /v1/assertions/:id`                          | One assertion, including status and review details                                                                                      |
+| `GET /v1/interactions/:id/claims`                 | Paginated assertions and facts citing an interaction                                                                                    |
+| `GET /v1/records/:id/context`                     | Context pack                                                                                                                            |
+| `POST /v1/records/:id/merge`                      | Merge another record into this one                                                                                                      |
+| `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                                                                                  |
+| `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                                                                                    |
+| `DELETE /v1/facts/:id`                            | Retract a fact (soft delete)                                                                                                            |
+| `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records                                                             |
+| `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                                                                                         |
+| `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                                                                              |
+| `POST /v1/interactions`                           | Log an interaction; returns matched and unmatched participants (4.1)                                                                    |
+| `POST /v1/interactions/query`                     | Filter, count and page interactions (5)                                                                                                 |
+| `GET` · `DELETE /v1/interactions/:id`             | Read or retract an interaction                                                                                                          |
+| `POST /v1/interactions/:id/participants`          | Add participants and `about` records (1.3)                                                                                              |
+| `DELETE /v1/interactions/:id/participants/:pid`   | Remove a participant (a person only)                                                                                                    |
+| `DELETE /v1/interactions/:id/about/:recordId`     | Remove an `about` record (a person only)                                                                                                |
+| `POST /v1/search`                                 | Keyword search (5.1)                                                                                                                    |
 
 Web sign-in and sign-out use `POST` and `DELETE /auth/session`, outside
 `/v1`; see section 7 for cookie and CSRF rules. `GET /health`, also outside
