@@ -159,9 +159,3 @@ variable "create_github_oidc_provider" {
   type        = bool
   default     = false
 }
-
-variable "github_environment" {
-  description = "GitHub Environment the deploy workflow runs in. Only jobs in it can assume the role."
-  type        = string
-  default     = "production"
-}

@@ -2,6 +2,7 @@ import { type Config, loadConfig } from '../config.js';
 import { createSql, RUNTIME_ROLE, type Sql } from '../db/client.js';
 import { setLogLevel } from '../log.js';
 import { type ConsolidatePass, consolidateDue } from '../worker/index.js';
+import { withPassLock } from './deploy-lock.js';
 
 /**
  * The consolidator (4.2) as a scheduled AWS Lambda function: each run is one
@@ -9,6 +10,9 @@ import { type ConsolidatePass, consolidateDue } from '../worker/index.js';
  * worker makes on its timer. A schedule more frequent than
  * RETAINER_CONSOLIDATE_INTERVAL_MINUTES is fine: a workspace run within the
  * interval is not due, and one another run holds is skipped.
+ *
+ * Each pass holds the deploy lock shared, so a migration waits for it.
+ * `sql` must have `max: 1` (see deploy-lock.ts).
  */
 export function createConsolidateHandler(
   config: Config,
@@ -16,10 +20,12 @@ export function createConsolidateHandler(
 ) {
   setLogLevel(config.LOG_LEVEL);
   return async (): Promise<ConsolidatePass> => {
-    const pass = await consolidateDue({
-      sql,
-      intervalMinutes: config.RETAINER_CONSOLIDATE_INTERVAL_MINUTES,
-    });
+    const pass = await withPassLock(sql, () =>
+      consolidateDue({
+        sql,
+        intervalMinutes: config.RETAINER_CONSOLIDATE_INTERVAL_MINUTES,
+      }),
+    );
     // A failed workspace fails the run, so the function's error metric (and
     // any alarm on it) sees it; the others were still consolidated.
     if (pass.failed > 0) {

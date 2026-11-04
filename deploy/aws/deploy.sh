@@ -51,8 +51,9 @@ update "$name-ops"
 
 stop "$name-api"
 stop "$name-consolidate"
-# Let requests already running on the old version finish (the API function
-# times out after 29 seconds).
+# Stopping only blocks new invocations. Let API requests already running on
+# the old version finish (the function times out after 29 seconds); the
+# migration itself waits for a consolidator pass in flight (deploy-lock.ts).
 sleep 30
 
 echo "Migrating"

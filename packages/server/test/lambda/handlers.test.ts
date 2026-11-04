@@ -9,6 +9,7 @@ import { loadConfig } from '../../src/config.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
 import { createApiHandler } from '../../src/lambda/api.js';
 import { createConsolidateHandler } from '../../src/lambda/consolidate.js';
+import { DEPLOY_LOCK } from '../../src/lambda/deploy-lock.js';
 import { createOpsHandler } from '../../src/lambda/ops.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { databaseUrl, useTestDatabase } from '../helpers/db.js';
@@ -239,5 +240,49 @@ describe('ops function', () => {
       await admin.unsafe(`drop database if exists "${name}" with (force)`);
       await admin.end();
     }
+  });
+});
+
+describe('deploy lock: one version at a time', () => {
+  const settled = (promise: Promise<unknown>) =>
+    Promise.race([
+      promise.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+
+  it('makes a migration wait for a consolidator pass in flight', async () => {
+    // A pass on the old version, still running.
+    const pass = db.connect({ max: 1 });
+    await pass`select pg_advisory_lock_shared(${DEPLOY_LOCK})`;
+
+    const ops = createOpsHandler(config());
+    await expect(ops({ command: 'migrate', waitSeconds: 1 })).rejects.toThrow(
+      /consolidator pass was still running after 1 seconds; nothing was migrated/,
+    );
+
+    const migration = ops({ command: 'migrate', waitSeconds: 30 });
+    expect(await settled(migration)).toBe(false);
+    await pass`select pg_advisory_unlock_shared(${DEPLOY_LOCK})`;
+    await expect(migration).resolves.toEqual({ command: 'migrate', rebuiltSearchText: 0 });
+  });
+
+  it('makes a consolidator pass wait for a migration', async () => {
+    // A migration holding the lock.
+    const migration = db.connect({ max: 1 });
+    await migration`select pg_advisory_lock(${DEPLOY_LOCK})`;
+
+    const run = createConsolidateHandler(config(), db.connect({ role: RUNTIME_ROLE, max: 1 }))();
+    expect(await settled(run)).toBe(false);
+    await migration`select pg_advisory_unlock(${DEPLOY_LOCK})`;
+    await expect(run).resolves.toMatchObject({ failed: 0 });
+  });
+
+  it('rejects a wait of zero, which would wait forever', async () => {
+    await expect(
+      createOpsHandler(config())({ command: 'migrate', waitSeconds: 0 }),
+    ).rejects.toThrow(/Expected \{"command":"migrate"\}/);
   });
 });

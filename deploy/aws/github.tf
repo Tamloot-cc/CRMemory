@@ -3,9 +3,10 @@
 # Terraform, no IAM, no database. Infrastructure changes are applied by an
 # operator with terraform apply.
 #
-# Only jobs running in the GitHub Environment `github_environment` of
-# `github_repository` can assume it. Restrict that environment to the
-# default branch, so pull requests (including from forks) never can.
+# Only jobs running in the GitHub Environment `production` of
+# `github_repository` can assume it: the name .github/workflows/deploy-aws.yml
+# uses, so the two cannot disagree. Restrict that environment to the default
+# branch, so pull requests (including from forks) never can.
 
 # An account has at most one provider for GitHub's issuer, often created by
 # another project; look it up, or create it with create_github_oidc_provider.
@@ -40,7 +41,7 @@ resource "aws_iam_role" "github_deploy" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:${var.github_environment}"
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:production"
         }
       }
     }]

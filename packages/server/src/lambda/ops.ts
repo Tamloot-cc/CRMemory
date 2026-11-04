@@ -5,6 +5,7 @@ import { runMigrations } from '../db/migrate.js';
 import { setLogLevel } from '../log.js';
 import { runCli } from '../operator/commands.js';
 import { rebuildSearchText } from '../records/rebuild-search.js';
+import { withMigrationLock } from './deploy-lock.js';
 
 /**
  * Operator tasks as an AWS Lambda function that only the operator invokes
@@ -13,7 +14,9 @@ import { rebuildSearchText } from '../records/rebuild-search.js';
  *
  * - `{ "command": "migrate" }` applies pending migrations and rebuilds stale
  *   search text: what the container does on every start. The deploy runs it
- *   once, with the API stopped.
+ *   once, with the API and the consolidator stopped. It first waits, up to
+ *   `waitSeconds` (default 330, past the consolidator's 300-second timeout),
+ *   for consolidator passes still running on the old version (deploy-lock.ts).
  * - `{ "command": "cli", "args": ["key", "create", ...] }` runs the
  *   operator CLI (7.1).
  *
@@ -21,11 +24,15 @@ import { rebuildSearchText } from '../records/rebuild-search.js';
  * prints the only copy of a key.
  */
 const opsEvent = z.discriminatedUnion('command', [
-  z.object({ command: z.literal('migrate') }),
+  z.object({
+    command: z.literal('migrate'),
+    // At least 1: a lock_timeout of 0 would wait forever.
+    waitSeconds: z.number().int().min(1).max(840).default(330),
+  }),
   z.object({ command: z.literal('cli'), args: z.array(z.string()) }),
 ]);
 
-export type OpsEvent = z.infer<typeof opsEvent>;
+export type OpsEvent = z.input<typeof opsEvent>;
 export type OpsResult =
   | { command: 'migrate'; rebuiltSearchText: number }
   | { command: 'cli'; exitCode: number; stdout: string; stderr: string };
@@ -41,12 +48,15 @@ export function createOpsHandler(config: Config) {
       );
     }
     // Operator commands connect as the migration role, like the CLI.
-    // `max: 1`, because the search rebuild holds a session lock.
+    // `max: 1`, because the deploy lock and the search rebuild are session
+    // locks.
     if (parsed.data.command === 'migrate') {
-      await runMigrations(config.DATABASE_URL);
       const sql = createSql(config.DATABASE_URL, { max: 1 });
       try {
-        return { command: 'migrate', rebuiltSearchText: await rebuildSearchText(sql) };
+        return await withMigrationLock(sql, parsed.data.waitSeconds, async () => {
+          await runMigrations(config.DATABASE_URL);
+          return { command: 'migrate', rebuiltSearchText: await rebuildSearchText(sql) };
+        });
       } finally {
         await sql.end({ timeout: 5 });
       }

@@ -118,9 +118,11 @@ Cloudflare's orange cloud) would see every request.
 a time (see [Upgrading](self-hosting.md#upgrading)), it stops the API and
 the consolidator, migrates, updates them and starts them again. Requests in
 that window, usually under a minute, get `503`. If the migration fails, the
-functions stay stopped; fix the cause and run `deploy.sh` again. A
-consolidator pass that is already running when the deploy starts finishes
-on the old version.
+functions stay stopped; fix the cause and run `deploy.sh` again. Stopping a
+function only blocks new runs, so the migration first waits, up to 330
+seconds, for a consolidator pass already running on the old version to
+finish (a Postgres lock each pass holds); if one is still running, nothing
+is migrated and the deploy fails, to be run again.
 
 ```sh
 deploy/aws/build.sh && deploy/aws/deploy.sh
