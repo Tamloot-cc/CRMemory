@@ -24,10 +24,9 @@ else
 fi
 
 # The backend needs the bucket's own region, which differs from AWS_REGION
-# when the bucket was created for a deployment elsewhere.
-bucket_region="$(aws s3api get-bucket-location --bucket "$bucket" \
-  --query LocationConstraint --output text)"
-case "$bucket_region" in None | null | "") bucket_region=us-east-1 ;; esac
+# when the bucket was created for a deployment elsewhere. head-bucket gives
+# it as a region code (get-bucket-location has legacy values: null, "EU").
+bucket_region="$(aws s3api head-bucket --bucket "$bucket" --query BucketRegion --output text)"
 
 aws s3api put-public-access-block --bucket "$bucket" --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
