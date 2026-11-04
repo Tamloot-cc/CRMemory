@@ -7,9 +7,24 @@
 # `github_repository` can assume it. Restrict that environment to the
 # default branch, so pull requests (including from forks) never can.
 
+# An account has at most one provider for GitHub's issuer, often created by
+# another project; look it up, or create it with create_github_oidc_provider.
 data "aws_iam_openid_connect_provider" "github" {
-  count = var.github_repository != null ? 1 : 0
+  count = var.github_repository != null && !var.create_github_oidc_provider ? 1 : 0
   url   = "https://token.actions.githubusercontent.com"
+}
+
+resource "aws_iam_openid_connect_provider" "github" {
+  count          = var.github_repository != null && var.create_github_oidc_provider ? 1 : 0
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+}
+
+locals {
+  github_oidc_provider_arn = one(concat(
+    aws_iam_openid_connect_provider.github[*].arn,
+    data.aws_iam_openid_connect_provider.github[*].arn,
+  ))
 }
 
 resource "aws_iam_role" "github_deploy" {
@@ -20,7 +35,7 @@ resource "aws_iam_role" "github_deploy" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = data.aws_iam_openid_connect_provider.github[0].arn }
+      Principal = { Federated = local.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {

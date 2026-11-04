@@ -154,6 +154,12 @@ variable "github_repository" {
   default     = null
 }
 
+variable "create_github_oidc_provider" {
+  description = "Create the account's OIDC provider for GitHub Actions (token.actions.githubusercontent.com). Leave false when the account already has one: an account can hold only one per issuer."
+  type        = bool
+  default     = false
+}
+
 variable "github_environment" {
   description = "GitHub Environment the deploy workflow runs in. Only jobs in it can assume the role."
   type        = string

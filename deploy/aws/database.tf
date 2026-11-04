@@ -8,6 +8,12 @@ resource "random_password" "database" {
   special = false # used inside DATABASE_URL unencoded
 }
 
+# Suffix for the final snapshot: RDS keeps it after the instance is deleted,
+# so a deployment recreated under the same name needs a new name for its own.
+resource "random_id" "final_snapshot" {
+  byte_length = 4
+}
+
 resource "aws_db_subnet_group" "this" {
   name       = var.name
   subnet_ids = aws_subnet.private[*].id
@@ -40,7 +46,7 @@ resource "aws_db_instance" "this" {
   copy_tags_to_snapshot     = true
   deletion_protection       = var.db_deletion_protection
   skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.name}-final"
+  final_snapshot_identifier = "${var.name}-final-${random_id.final_snapshot.hex}"
 
   auto_minor_version_upgrade = true
   apply_immediately          = false

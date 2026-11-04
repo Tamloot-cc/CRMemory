@@ -136,7 +136,10 @@ only. To use it:
 
 1. Set `github_repository = "<owner>/<repo>"` in `terraform.tfvars` and
    apply. This creates a role that can update, stop, start and invoke this
-   deployment's functions and nothing else.
+   deployment's functions and nothing else. It trusts the account's OIDC
+   provider for GitHub Actions; if the account has none yet, also set
+   `create_github_oidc_provider = true` (an account holds only one, so leave
+   it false when another project already created it).
 2. In the repository's settings, create the `production` environment.
    Under deployment branches, allow only the default branch: the role trusts
    every job in that environment.
@@ -197,7 +200,9 @@ terraform apply -var db_deletion_protection=false
 terraform destroy
 ```
 
-`destroy` keeps a final snapshot of the database (`<name>-final`), and the
+`destroy` keeps a final snapshot of the database (`<name>-final-<suffix>`,
+a suffix of its own per database, so a recreated deployment can be
+destroyed again), and the
 state bucket; delete those yourself when you no longer need them. Removing
 the functions' network interfaces can take AWS up to half an hour, so the
 subnets and security groups may be the last to go.
