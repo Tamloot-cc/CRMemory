@@ -415,7 +415,8 @@ export function matchingRecords(
 
 /**
  * Events directly attached to a record (7.1): a merged record ID counts as
- * its survivor. Only event types take `linked`.
+ * its survivor. A record that is deleted or of a hidden object links
+ * nothing, as every read of it does. Only event types take `linked`.
  */
 function linkedTo(
   tx: Tx,
@@ -429,7 +430,9 @@ function linkedTo(
       field: 'linked',
     });
   }
-  const record = tx`(select coalesce(m.merged_into_id, m.id) from records m
+  const record = tx`(select s.id from records m
+    join records s on s.id = coalesce(m.merged_into_id, m.id) and s.deleted_at is null
+      and s.object_type_id = any(${schema.visibleObjectIds}::uuid[])
     where m.id = ${linked.record} and m.workspace_id = ${workspaceId})`;
   return tx`r.id in (select d.event_id from ${directAttachments(
     tx,

@@ -297,6 +297,16 @@ describe('the internal-note type (6.4)', () => {
     });
     expect(notes.records.map((r) => r.id)).toEqual([note.id]);
   });
+
+  it('lists no events linked to a deleted record', async () => {
+    const gone = await company('Deleted Links Inc');
+    await log({ externalId: externalId(), about: [gone.id] });
+    const linked = () =>
+      findRecords(app, as(AGENT), 'call', { linked: { record: gone.id }, limit: 50 });
+    expect((await linked()).records).toHaveLength(1);
+    await deleteRecord(app, as(USER), gone.id);
+    expect((await linked()).records).toEqual([]);
+  });
 });
 
 describe('calendar views (7.1)', () => {
