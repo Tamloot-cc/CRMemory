@@ -123,6 +123,32 @@ describe('storage invariants', () => {
     expect(read.event).toMatchObject({ channel: null, externalId: null });
   });
 
+  it('refuses a retry that waited on a delete of the same event', async () => {
+    const id = externalId();
+    const call = await log({ externalId: id });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    // A delete that holds the row while the retry starts, then commits.
+    const deleting = db.owner.begin(async (tx) => {
+      await tx`select id from records where id = ${call.id} for update`;
+      await tx`update records set deleted_at = clock_timestamp() where id = ${call.id}`;
+      locked();
+      await held;
+    });
+    await lockTaken;
+    const retry = log({ externalId: id });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    release();
+    await deleting;
+    await expect(retry).rejects.toMatchObject({ code: 'event_retracted' });
+  });
+
   it('keeps an identity reserved after the event is deleted', async () => {
     const id = externalId();
     const call = await log({ externalId: id });

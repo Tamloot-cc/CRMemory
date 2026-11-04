@@ -188,10 +188,12 @@ export async function logEvent(
       select e.record_id, r.object_type_id, r.deleted_at, e.occurred_at
       from event_records e join records r on r.id = e.record_id
       where e.workspace_id = ${workspaceId} and e.channel = ${input.channel}
-        and e.external_id = ${input.externalId}`;
+        and e.external_id = ${input.externalId}
+      for no key update of r`;
     if (existing) {
+      // Read under the lock: a delete that committed while this waited is
+      // seen here, so a retry never lands on a deleted event (6.2, 6.4).
       if (existing.deleted_at) throw retracted(existing.record_id);
-      await tx`select id from records where id = ${existing.record_id} for no key update`;
       await checkSameEvent(tx, context, existing, object, occurredAt, values);
       const stored = await loadLinks(tx, workspaceId, existing.record_id);
       const { rows, inserted } = await addLinks(
