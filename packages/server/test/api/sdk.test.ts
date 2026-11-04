@@ -122,6 +122,12 @@ describe('SDK against the server', () => {
     const history = await agent.recordEvents(person.id);
     expect(history.items.map((e) => [e.id, e.via])).toEqual([[logged.id, { kind: 'participant' }]]);
     expect((await agent.recordEvents(company.id, { link: 'participant' })).items).toEqual([]);
+    const timeline = await agent.timeline(person.id, { types: ['event'], limit: 5 });
+    expect(timeline.items).toMatchObject([
+      { kind: 'event', id: logged.id, via: { kind: 'participant' } },
+    ]);
+    const emails = await agent.timeline(person.id, { fields: ['emails'] });
+    expect(emails.items.every((i) => i.kind === 'field_change' && i.field === 'emails')).toBe(true);
 
     await agent.upsertRecord('person', {
       id: person.id,

@@ -123,6 +123,9 @@ function validateSearch(raw: Record<string, unknown>): ViewSearch {
     'object',
     'field',
     'status',
+    'kind',
+    'fields',
+    'eventTypes',
   ] as const)
     if (typeof raw[key] === 'string') result[key] = raw[key];
   return result;

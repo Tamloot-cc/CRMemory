@@ -646,3 +646,49 @@ describe('GET /v1/records/:id/context', () => {
     expect((await context(company, '?tokenBudget=16000')).status).toBe(200);
   });
 });
+
+describe('GET /v1/records/:id/timeline', () => {
+  const timeline = (record: string, query = '', key = keys.agent) =>
+    t.request(`/v1/records/${record}/timeline${query}`, { key });
+
+  it('pages events, values and facts with comma-separated filters', async () => {
+    const deal = await create('deal', { name: `Deal ${word()}`, stage: 'lead' });
+    const call = await logEvent({ about: [deal] });
+    await rememberFact(deal, `Fact ${word()}`, call);
+
+    const all = await timeline(deal);
+    expect(all.status).toBe(200);
+    expect(all.body.record).toBe(deal);
+    const kinds = all.body.items.map((i: { kind: string }) => i.kind);
+    expect(kinds).toEqual(expect.arrayContaining(['event', 'field_change', 'fact']));
+
+    const first = await timeline(deal, '?types=event,fact&limit=1');
+    expect(first.body.items).toHaveLength(1);
+    const second = await timeline(
+      deal,
+      `?types=event,fact&limit=1&cursor=${encodeURIComponent(first.body.nextCursor)}`,
+    );
+    expect(second.status).toBe(200);
+    expect(
+      [...first.body.items, ...second.body.items].map((i: { kind: string }) => i.kind).sort(),
+    ).toEqual(['event', 'fact']);
+
+    const stage = await timeline(deal, '?fields=stage');
+    expect(stage.body.items).toMatchObject([{ kind: 'field_change', field: 'stage' }]);
+  });
+
+  it('refuses bad filters and foreign cursors, and stays in its workspace', async () => {
+    const deal = await create('deal', { name: `Deal ${word()}` });
+    const other = await create('deal', { name: `Deal ${word()}` });
+    expect((await timeline(deal, '?types=emails')).status).toBe(400);
+    expect((await timeline(deal, '?limit=0')).status).toBe(400);
+    expect((await timeline(deal, '?from=yesterday')).status).toBe(400);
+    expect((await timeline(deal, '?fields=nope')).body.error.code).toBe('unknown_field');
+    const page = await timeline(deal, '?limit=1');
+    const cursor = encodeURIComponent(page.body.nextCursor);
+    const foreign = await timeline(other, `?limit=1&cursor=${cursor}`);
+    expect(foreign.status).toBe(400);
+    expect(foreign.body.error.code).toBe('invalid_cursor');
+    expect((await timeline(deal, '', otherKey)).status).toBe(404);
+  });
+});

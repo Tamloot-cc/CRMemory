@@ -25,6 +25,7 @@ const TOOLS = [
   'get_context',
   'get_guide',
   'get_record',
+  'get_timeline',
   'list_templates',
   'log_event',
   'propose_schema_change',
@@ -1030,6 +1031,16 @@ describe('finding and reading a record (5): search, then get_context', () => {
       { id: call.body.id, type: 'call', title: 'Budget planning', via: { kind: 'participant' } },
     ]);
     expect(pack.body.tokenEstimate).toBeLessThanOrEqual(500);
+
+    const history = await reader.call('get_timeline', { record: dana.id });
+    expect(history.isError).toBe(false);
+    expect(history.body.items.map((i: { kind: string }) => i.kind)).toEqual(
+      expect.arrayContaining(['event', 'field_change', 'fact']),
+    );
+    const titles = await reader.call('get_timeline', { record: dana.id, fields: ['jobTitle'] });
+    expect(titles.body.items).toMatchObject([
+      { kind: 'field_change', field: 'jobTitle', value: 'CFO', current: true },
+    ]);
   });
 
   it('names the problem in validation errors and stays in its workspace', async () => {

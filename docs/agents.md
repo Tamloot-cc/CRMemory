@@ -89,6 +89,7 @@ change the tool list.
 | `get_record`            | One record by ID; merged IDs resolve to the surviving record                                      | `read`         |
 | `search`                | Keyword search across records, events and facts                                                   | `read`         |
 | `get_context`           | A context pack for one record, fitted to a token budget                                           | `read`         |
+| `get_timeline`          | A record's history: events, values asserted for its fields and facts, newest first                | `read`         |
 | `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                  | `write`        |
 | `log_event`             | Log a meeting, call, email, message, note or other event, with who took part and what it is about | `write`        |
 | `remember`              | Store a plain-language fact about a record, citing an event                                       | `write`        |
@@ -199,6 +200,11 @@ Things worth knowing:
   included (each saying how it is attached, `via`), within
   `tokenBudget` tokens (default 2000, at most 16000). `omitted` counts what
   did not fit.
+- **History.** `get_timeline` lists how a record got here: its events, every
+  value asserted for its fields (`current` says whether it is the value now;
+  one that is not may never have been) and its facts, newest first. Narrow it
+  with `fields` (e.g. `["stage"]`), `eventTypes`, `types` and a `from`/`to`
+  range, and pass `nextCursor` back with the same filters for the next page.
 - **Schema.** Additive changes (new objects, fields, options) apply at once.
   Renames, removals and new required or unique constraints requested by an
   agent are stored as proposals for a person to approve in the web app.

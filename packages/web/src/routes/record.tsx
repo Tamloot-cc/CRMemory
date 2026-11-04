@@ -43,6 +43,9 @@ export function RecordPage() {
         nav={{
           tab: search.tab,
           cursor: search.cursor,
+          kind: search.kind,
+          fields: search.fields,
+          eventTypes: search.eventTypes,
           set: (change) => void setSearch(change),
         }}
       />

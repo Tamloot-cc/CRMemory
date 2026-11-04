@@ -38,6 +38,7 @@ import {
 } from '../ui/index.js';
 import { EventDetailsView, ViaLabel } from './event-details.js';
 import { CandidateRecord, RecordActions } from './record-actions.js';
+import { RecordTimeline, type TimelineSearch } from './record-timeline.js';
 import { eventTitle, objectByName, objectLabel, QueryError } from './state.js';
 import { isWritable } from './write-model.js';
 
@@ -107,15 +108,16 @@ export function polymorphicLinksTo(objects: ObjectView[], object: string) {
   );
 }
 
-/** Where the memory tabs keep their tab and page: the URL on the record page, local state in the sheet. */
-type MemoryNav = {
-  tab?: string;
-  cursor?: string;
-  set: (change: { tab?: string; cursor?: string }) => void;
-};
+/**
+ * Where the memory tabs keep their tab, page and timeline filters: the URL
+ * on the record page, local state in the sheet.
+ */
+type MemoryState = { tab?: string; cursor?: string } & TimelineSearch;
+type MemoryNav = MemoryState & { set: (change: MemoryState) => void };
 const TABS = [
   { value: 'facts', label: 'Facts' },
   { value: 'events', label: 'Events' },
+  { value: 'timeline', label: 'Timeline' },
   { value: 'tasks', label: 'Open tasks' },
 ];
 const memoryTab = (raw: string | undefined) =>
@@ -126,7 +128,7 @@ export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }
   const { schema } = useWorkspace();
   const record = useRecord(id);
   // Tab and page belong to one record; opening another row starts it fresh.
-  const [memory, setMemory] = useState<{ id: string; tab?: string; cursor?: string }>({ id });
+  const [memory, setMemory] = useState<{ id: string } & MemoryState>({ id });
   const nav = memory.id === id ? memory : { id };
   const r = record.data;
   const object = schema.objects.find((o) => o.nameSingular === r?.object);
@@ -335,7 +337,19 @@ export function RecordView({
         </Section>
       ) : null}
       <Stack>
-        <Tabs value={tab} onChange={(tab) => nav.set({ tab, cursor: undefined })} items={TABS} />
+        <Tabs
+          value={tab}
+          onChange={(tab) =>
+            nav.set({
+              tab,
+              cursor: undefined,
+              kind: undefined,
+              fields: undefined,
+              eventTypes: undefined,
+            })
+          }
+          items={TABS}
+        />
         {tab === 'facts' ? (
           <Stack>
             {facts.error ? <QueryError error={facts.error} /> : null}
@@ -408,6 +422,14 @@ export function RecordView({
               </Button>
             ) : null}
           </Stack>
+        ) : null}
+        {tab === 'timeline' ? (
+          <RecordTimeline
+            recordId={rid}
+            object={object}
+            search={{ kind: nav.kind, fields: nav.fields, eventTypes: nav.eventTypes }}
+            onSearchChange={(change) => nav.set(change)}
+          />
         ) : null}
         {tab === 'tasks' ? (
           <Stack>

@@ -320,6 +320,59 @@ export type EventItem = {
   summary: string | null;
   via: Via;
 };
+/** The kinds of item in a record's timeline (8), in their order at equal times. */
+export const TIMELINE_ITEM_KINDS = ['event', 'field_change', 'fact'] as const;
+export type TimelineItemKind = (typeof TIMELINE_ITEM_KINDS)[number];
+/**
+ * One item of `GET /v1/records/:id/timeline` (8), newest `at` first. An
+ * event is in the record's event history (7.1, 7.2). A field_change is a
+ * value asserted for one of the record's fields: `current` says whether it
+ * is the value the record holds now, and one that is not may never have
+ * been. It carries the asserted value (a set's whole membership), not a
+ * diff. A fact is current, superseded or ended; retracted ones are left out.
+ */
+export type TimelineItem =
+  | {
+      kind: 'event';
+      id: string;
+      /** When it happened. */
+      at: string;
+      /** The event type's API name. */
+      type: string;
+      title: string | null;
+      summary: string | null;
+      via: Via;
+    }
+  | {
+      kind: 'field_change';
+      /** The assertion's ID. */
+      id: string;
+      /** When the value was observed. */
+      at: string;
+      field: string;
+      value: unknown;
+      status: 'active' | 'superseded';
+      /** Whether this is the value the record holds now. */
+      current: boolean;
+      actor: Actor;
+      confidence: number;
+      /** The event it cites, if that is live and visible. */
+      source: SourceReference | null;
+      relationReferences?: Record<string, RecordReference>;
+    }
+  | {
+      kind: 'fact';
+      id: string;
+      /** When it became true (`validFrom`). */
+      at: string;
+      content: string;
+      factKind: 'stated' | 'inferred';
+      status: 'current' | 'superseded' | 'ended';
+      validTo: string | null;
+      writtenBy: Actor;
+      sources: FactSource[];
+    };
+export type TimelinePage = { record: string; items: TimelineItem[]; nextCursor: string | null };
 /** An event in `GET /v1/records/:id/events`: the full event and how it is attached. */
 export type AttachedEvent = PresentedRecord & { event: EventDetails; via: Via };
 /** `POST /v1/events` input (6.2). */

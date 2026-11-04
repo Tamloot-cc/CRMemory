@@ -533,6 +533,7 @@ export function directAttachments(
   workspaceId: string,
   record: string | Fragment,
   link?: EventAttachment,
+  eventTypeIds: string[] = schema.eventTypeIds,
 ): Fragment {
   const recordId = typeof record === 'string' ? tx`${record}::uuid` : record;
   const fieldIds = eventRelationFieldIds(schema);
@@ -565,7 +566,7 @@ export function directAttachments(
     select distinct on (a.event_id) a.event_id, a.rank, a.field_id
     from (${union}) a
     join records ev on ev.id = a.event_id and ev.deleted_at is null
-      and ev.object_type_id = any(${schema.eventTypeIds}::uuid[])
+      and ev.object_type_id = any(${eventTypeIds}::uuid[])
     order by a.event_id, a.rank, a.field_id)`;
 }
 
@@ -626,9 +627,10 @@ export type HistoryRow = {
  * and then source record ID among several. Never more than one hop: what a
  * source has only by rollup stays with it.
  *
- * With `limit`, the rows are at least the newest `limit` after `cursor`
- * (occurred_at, id descending), merged from each source's own newest
- * `limit`: an event's position among one source's events is never later
+ * `where` bounds the events by (occurred_at, id), for a keyset page or a
+ * time range, and `eventTypeIds` narrows them to some event types (visible
+ * ones only). With `limit`, the rows are at least the newest `limit` of
+ * those, merged from each source's own newest `limit`: an event's position among one source's events is never later
  * than its position overall, so they hold the page and every path to its
  * events, and the full fan-out is never gathered. The caller orders and
  * limits. Without `limit`, every event, for counts.
@@ -638,18 +640,26 @@ export function eventHistory(
   schema: CompiledSchema,
   workspaceId: string,
   recordId: string,
-  options: { link?: EventAttachment; limit?: number; cursor?: string } = {},
+  options: {
+    link?: EventAttachment;
+    limit?: number;
+    where?: (time: Fragment, id: Fragment) => Fragment;
+    eventTypeIds?: string[];
+  } = {},
 ): Fragment {
-  const { link, limit, cursor } = options;
+  const { link, limit, where } = options;
+  const types = options.eventTypeIds
+    ? options.eventTypeIds.filter((id) => schema.eventTypeIds.includes(id))
+    : schema.eventTypeIds;
   const newest = (events: Fragment) => tx`
     select d.event_id, e.occurred_at, d.rank, d.field_id
     from ${events} d
     join event_records e on e.record_id = d.event_id
-    where ${after(tx, tx`e.occurred_at`, tx`d.event_id`, cursor, true)}
+    where ${where ? where(tx`e.occurred_at`, tx`d.event_id`) : tx`true`}
     ${limit === undefined ? tx`` : tx`order by e.occurred_at desc, d.event_id desc limit ${limit}`}`;
   const branches = [
     tx`select t.*, null::uuid as via_record_id
-      from (${newest(directAttachments(tx, schema, workspaceId, recordId, link))}) t`,
+      from (${newest(directAttachments(tx, schema, workspaceId, recordId, link, types))}) t`,
   ];
   const fieldIds = link ? [] : rollUpFieldIds(schema);
   if (fieldIds.length > 0) {
@@ -659,7 +669,7 @@ export function eventHistory(
       from record_links s
       join records src on src.id = s.source_record_id and src.deleted_at is null
       cross join lateral (${newest(
-        directAttachments(tx, schema, workspaceId, tx`s.source_record_id`),
+        directAttachments(tx, schema, workspaceId, tx`s.source_record_id`, undefined, types),
       )}) t
       where s.target_record_id = ${recordId} and s.field_id = any(${fieldIds}::uuid[])
         and s.workspace_id = ${workspaceId} and s.source_record_id <> ${recordId}`);
@@ -716,7 +726,7 @@ export async function attachedEventPage(
 ): Promise<{ items: AttachedEvent[]; nextCursor: string | null }> {
   const history = eventHistory(tx, schema, workspaceId, recordId, {
     link,
-    cursor,
+    where: (time, id) => after(tx, time, id, cursor, true),
     limit: limit + 1,
   });
   const rows = await tx<

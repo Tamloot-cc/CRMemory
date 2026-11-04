@@ -96,6 +96,7 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 | `GET` · `POST /v1/records/:id/facts`              | `read` · `write` | List facts, or `remember` one                                        |
 | `DELETE /v1/facts/:id`                            | `write`          | Retract a fact                                                       |
 | `GET /v1/records/:id/context`                     | `read`           | Context pack; `?tokenBudget=` (default 2000, at most 16000)          |
+| `GET /v1/records/:id/timeline`                    | `read`           | Events, field values and facts, newest first; filters, cursor        |
 | `POST /v1/records/:id/merge`                      | `write`, user    | Merge `recordId` into this record                                    |
 | `POST /v1/records/:id/forget`                     | `admin`, user    | Erase a person for a privacy request; not reversible                 |
 | `POST /v1/events`                                 | `write`          | Log an event; returns matched and unmatched participants             |

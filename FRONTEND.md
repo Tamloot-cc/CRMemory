@@ -373,8 +373,16 @@ Three areas:
     each source with its quote; a fact resting on an internal note says so,
     without a link. Retract (`DELETE /v1/facts/:id`) asks for confirmation.
   - _Events_: `GET /v1/records/:id/events`, newest first (9.1). Type badge,
-    title, date, how the event is attached (participant, about, or through
-    one of its fields), summary, and participants, matched ones linked.
+    title, date, how the event is attached (participant, about, through one
+    of its fields, or rolled up from a record pointing at this one, linked),
+    summary, and participants, matched ones linked.
+  - _Timeline_: `GET /v1/records/:id/timeline`, grouped by day, newest
+    first, with "Load more" on the cursor. Events as in the Events tab;
+    values asserted for a field read "<Field> set to <value>" with who set
+    it and the cited event, and one that is not the current value says so,
+    never as a change from an earlier value; facts with a superseded or
+    ended badge. Filters: item type, fields and event types, kept in the URL
+    (`kind`, `fields`, `eventTypes`); a stale cursor offers to start again.
   - _Tasks_: open tasks linked to the record, from the standard `task`
     object.
 
@@ -625,6 +633,7 @@ this:
 | Static files at `/app`                                    | Serves `packages/web/dist` when `RETAINER_WEB_DIR` is set; the Docker image sets it. Unknown `/app/*` paths return `index.html` | all       |
 | `GET /v1/records/:id/assertions`                          | Every assertion for the record, optionally by `field`, with status, actor, `observedAt`, source and reviewer                    | 5.4, 7    |
 | `GET /v1/records/:id/events`                              | Events attached to the record, newest first, with `via`, cursor-paginated                                                       | 5.4       |
+| `GET /v1/records/:id/timeline`                            | Events, asserted field values and facts, newest first, filtered and cursor-paginated                                            | 5.4       |
 | `GET /v1/events/:id/claims`                               | Assertions and facts that cite the event                                                                                        | 5.6       |
 | Per-field provenance on `GET /v1/records/:id`             | With `?include=provenance`, each field's winning assertion: actor, `observedAt`, source, and whether a pending assertion exists | 5.4, 7    |
 | Review and schema-change pagination                       | Add the contracts below to the existing list routes                                                                             | 5.2, 5.7  |

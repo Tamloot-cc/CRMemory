@@ -654,6 +654,7 @@ describe('internal notes', () => {
       ['GET', `/v1/records/${note}/facts`],
       ['GET', `/v1/records/${note}/events`],
       ['GET', `/v1/records/${note}/context`],
+      ['GET', `/v1/records/${note}/timeline`],
       ['GET', `/v1/records/${note}/delete-impact`],
       ['GET', `/v1/events/${note}`],
       ['GET', `/v1/events/${note}/claims`],

@@ -35,6 +35,8 @@ import type {
   SearchResult,
   Session,
   TemplateView,
+  TimelineItemKind,
+  TimelinePage,
   UpdateViewInput,
   WriteResponse,
 } from '@retainer/shared';
@@ -298,6 +300,34 @@ export class RetainerClient {
     return this.get<Page<AttachedEvent>>(
       `/v1/records/${encodeURIComponent(id)}/events`,
       params,
+      signal,
+    );
+  }
+  /**
+   * A record's timeline (8): events (direct and rolled up, with `via`),
+   * values asserted for its fields and its facts, newest first. Filters for
+   * one kind (`fields`, `eventTypes`) leave the others out unless `types`
+   * names them.
+   */
+  timeline(
+    id: string,
+    options: PageOptions & {
+      types?: TimelineItemKind[];
+      fields?: string[];
+      eventTypes?: string[];
+      from?: string;
+      to?: string;
+    } = {},
+  ) {
+    const { signal, types, fields, eventTypes, ...params } = options;
+    return this.get<TimelinePage>(
+      `/v1/records/${encodeURIComponent(id)}/timeline`,
+      {
+        ...params,
+        types: types?.join(','),
+        fields: fields?.join(','),
+        eventTypes: eventTypes?.join(','),
+      },
       signal,
     );
   }

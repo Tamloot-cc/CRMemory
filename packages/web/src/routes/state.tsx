@@ -20,6 +20,12 @@ export type ViewSearch = {
   field?: string;
   /** Schema page: the change-history status filter. */
   status?: string;
+  /** Record timeline: the one item kind shown; absent for all. */
+  kind?: string;
+  /** Record timeline: field API names to show changes of, comma-separated. */
+  fields?: string;
+  /** Record timeline: event type API names to show, comma-separated. */
+  eventTypes?: string;
 };
 /** How a record is named on screen. */
 export const recordTitle = (r: { label: string | null }) => r.label || 'Untitled record';

@@ -80,6 +80,11 @@ const hits = await retainer.search({ query: '"renewal" Acme', limit: 10 });
 const pack = await retainer.context(dana.id, { tokenBudget: 1500 });
 // pack.record.fields, pack.openTasks, pack.facts, pack.recentEvents, pack.omitted
 
+// How it got there: events, values asserted for its fields and facts, newest first.
+const stageHistory = await retainer.timeline(deal.id, { fields: ['stage'], limit: 20 });
+// stageHistory.items[0]: { kind: 'field_change', field, value, status, current, actor, source, at }
+// next page: retainer.timeline(deal.id, { fields: ['stage'], cursor: stageHistory.nextCursor })
+
 const page = await retainer.queryRecords('company', {
   filter: { updatedAt: { gte: '2026-10-01T00:00:00Z' } },
   sort: [{ field: 'updatedAt', direction: 'desc' }],

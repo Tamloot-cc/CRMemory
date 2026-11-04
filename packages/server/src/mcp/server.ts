@@ -22,7 +22,8 @@ import {
 } from '../records/service.js';
 import { contextInputSchema } from '../retrieval/context.js';
 import { searchInputSchema } from '../retrieval/search.js';
-import { contextFor, searchFor } from '../retrieval/service.js';
+import { contextFor, searchFor, timelineFor } from '../retrieval/service.js';
+import { timelineInputSchema } from '../retrieval/timeline.js';
 import {
   describeSchema,
   requestSchemaChange,
@@ -56,7 +57,7 @@ messages, notes and any event types the workspace adds) are records too: list
 or filter them with query_records on their type, and pass linked to get the
 events attached to one record. Before working on a person or company, read
 get_context: their current values, open tasks, facts and recent events in one
-call. Write records with upsert_record. Write the values you learned; Retainer
+call; get_timeline shows how they got there. Write records with upsert_record. Write the values you learned; Retainer
 keeps every claim's history and decides which value wins. A value a person set
 outranks yours, so your write may come back as pending_review: tell your user
 it is waiting for approval rather than saying it is done.
@@ -278,6 +279,28 @@ const getContextInput = z.strictObject({
   ),
 });
 
+const getTimelineInput = z.strictObject({
+  record: z
+    .uuid()
+    .describe('The record ID. An ID merged into another record returns the survivor.'),
+  types: timelineInputSchema.shape.types.describe(
+    'Kinds of item: "event", "field_change", "fact". All by default; fields or eventTypes ' +
+      'alone narrow it to their kind.',
+  ),
+  fields: timelineInputSchema.shape.fields.describe(
+    'Only values asserted for these fields (API names), e.g. ["stage"].',
+  ),
+  eventTypes: timelineInputSchema.shape.eventTypes.describe(
+    'Only events of these types (API names), e.g. ["call", "meeting"].',
+  ),
+  from: timelineInputSchema.shape.from.describe('Items at or after this ISO 8601 time.'),
+  to: timelineInputSchema.shape.to.describe('Items before this ISO 8601 time.'),
+  limit: timelineInputSchema.shape.limit.describe('Items per page, 50 by default (at most 200).'),
+  cursor: timelineInputSchema.shape.cursor.describe(
+    'nextCursor from the previous page, with the same record and filters.',
+  ),
+});
+
 const applyTemplateInput = z.strictObject({
   name: z.string().min(1).describe('Template name from list_templates, e.g. "sales" or "blank".'),
 });
@@ -448,6 +471,24 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     ({ record, ...input }) => run(caller, 'read', () => contextFor(sql, caller, record, input)),
+  );
+
+  server.registerTool(
+    'get_timeline',
+    {
+      title: 'Get the timeline of a record',
+      description:
+        "A record's history, newest first: events (attached to it or rolled up from records " +
+        'pointing at it, each with via), field_change items (each value asserted for one of ' +
+        'its fields, by whom and citing which event; current says whether it is the value ' +
+        'the record holds now, and one that is not may never have been) and facts (current, ' +
+        'superseded or ended). Filter by types, fields, eventTypes and a from/to time ' +
+        'range; page with cursor. Use get_context for what is true now, and this for how ' +
+        'it got there.',
+      inputSchema: getTimelineInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ record, ...input }) => run(caller, 'read', () => timelineFor(sql, caller, record, input)),
   );
 
   server.registerTool(

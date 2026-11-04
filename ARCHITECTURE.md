@@ -935,6 +935,7 @@ deterministic and testable.
 | `get_record`                       | One record with its fields and links; an event also with its built-in columns, participants and `about`            |
 | `search`                           | Keyword search (Postgres full-text) across records, events and facts                                               |
 | `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent events, fitted to the budget                    |
+| `get_timeline(record, filters)`    | The record's history, newest first: events, asserted field values and facts (6.2)                                  |
 
 `builtIns` lists facts, apart from `objects`, so a person reading the
 schema sees that the workspace keeps them and no client mistakes them for
@@ -1077,6 +1078,7 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `GET /v1/assertions/:id`                          | One assertion, including status and review details                                                                                      |
 | `GET /v1/events/:id/claims`                       | Paginated assertions and facts citing an event                                                                                          |
 | `GET /v1/records/:id/context`                     | Context pack                                                                                                                            |
+| `GET /v1/records/:id/timeline`                    | The record's timeline (6.2): `types`, `fields`, `eventTypes` (comma-separated), `from`, `to`, `limit`, `cursor`                         |
 | `POST /v1/records/:id/merge`                      | Merge another record into this one                                                                                                      |
 | `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                                                                                  |
 | `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                                                                                    |
@@ -1110,7 +1112,7 @@ Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
 
 `describe_schema`, `list_templates`, `apply_template`, `get_guide`,
-`query_records`, `get_record`, `search`, `get_context`, `upsert_record`,
+`query_records`, `get_record`, `search`, `get_context`, `get_timeline`, `upsert_record`,
 `log_event`, `remember`, `propose_schema_change`. Events are listed with
 `query_records` on their type, so no tool is needed per event type.
 
@@ -1309,6 +1311,45 @@ A context pack is assembled by fixed rules (5):
   once the record's values fit, the pack's JSON is never longer than
   `tokenBudget × 4` characters. `tokenEstimate` is that length in tokens. No
   fixed row limit applies; the budget alone decides what is left out.
+
+#### Timeline
+
+`get_timeline` and `GET /v1/records/:id/timeline` show how a record got to
+where it is. They return `{ record, items, nextCursor }`, assembled from the
+source tables at read time:
+
+| Item           | What is included                                                                     | `at`                     |
+| -------------- | ------------------------------------------------------------------------------------ | ------------------------ |
+| `event`        | The record's event history: direct and rolled-up events, each once with `via` (1.3)  | The event's `occurredAt` |
+| `field_change` | Each `active` or `superseded` assertion for one of its active fields                 | `observedAt`             |
+| `fact`         | Its facts, current, superseded or ended; never retracted or resting on no live event | `validFrom`              |
+
+A `field_change` is a value someone asserted, not proof the record ever
+held it: `superseded` only means another assertion won later, or won
+already. It carries the assertion ID, `status`, `current` (whether it is the
+value the record holds now), the actor, confidence and the event it cites,
+and the asserted value, never a diff. For a set that is the whole asserted
+membership. A client wanting "added" or "removed" compares against the
+winning value at that time, which the API does not claim to know. Pending
+and rejected assertions stay in review and the assertion routes. Internal
+notes never appear as events; a fact resting on one says `internal: true`.
+
+Items are ordered by `at` descending, then kind (`event`, `field_change`,
+`fact`), then ID descending. Each kind is read by keyset from its own table,
+at most a page of each, and Postgres merges them, so equal times page
+exactly; the event branch is the deduplicated rollup query (1.3), so an
+event counts once before the limit. The opaque cursor holds the whole sort
+key and a digest of the record and filters, and is refused (`invalid_cursor`)
+for another record or other filters. Filters: `types`, `fields` (field
+names, matched by field identity, so a rename keeps a cursor valid),
+`eventTypes`, and `from` (inclusive) to `to` (exclusive). `fields` or
+`eventTypes` alone narrows the page to its kind; with `types`, each filter
+applies to its own kind and the others come back too.
+
+Pages reflect current visibility and relations, not a snapshot: a backdated
+event or a changed relation can change later pages. Exact intervals during
+which a value was the winner, and an audit stream of retractions, are not
+part of it.
 
 ---
 
