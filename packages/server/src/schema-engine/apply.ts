@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { FieldType, SchemaOwner } from '@retainer/shared';
-import { BASE_OBJECT_IDS } from '../templates/base.js';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
+import {
+  PROTECTED_FIELD_FLAGS,
+  PROTECTED_FIELD_IDS,
+  PROTECTED_OBJECT_IDS,
+  PROTECTED_OPTIONS,
+} from './protection.js';
 import type { FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
 
 /**
@@ -103,6 +108,7 @@ export function applyOperations(
       isUnique: definition.isUnique ?? false,
       isFilterable: definition.isFilterable ?? !NOT_FILTERABLE_BY_DEFAULT.has(definition.type),
       isSearchable: definition.isSearchable ?? false,
+      isProtected: PROTECTED_FIELD_IDS.has(universalId),
       owner: context.owner,
       status: 'active',
     };
@@ -147,6 +153,7 @@ export function applyOperations(
         isUnique: false,
         isFilterable: false,
         isSearchable: false,
+        isProtected: false,
         owner: context.owner,
         status: 'active',
       };
@@ -183,6 +190,7 @@ export function applyOperations(
           labelPlural: definition.labelPlural,
           description: definition.description ?? null,
           labelFieldId: null,
+          isProtected: PROTECTED_OBJECT_IDS.has(universalId),
           owner: context.owner,
           status: 'active',
           fields: [],
@@ -221,8 +229,11 @@ export function applyOperations(
       case 'delete_object': {
         const object = findObject(operation.object);
         if (!object) break;
-        if ((Object.values(BASE_OBJECT_IDS) as string[]).includes(object.universalId)) {
-          issue(object.nameSingular, 'base objects (person, company, task) cannot be deleted');
+        if (object.isProtected) {
+          issue(
+            object.nameSingular,
+            'is protected: Retainer depends on it, so it cannot be deleted (it can be renamed)',
+          );
           break;
         }
         object.status = 'deprecated';
@@ -257,9 +268,20 @@ export function applyOperations(
           break;
         }
         const isInverse = field.settings.relationCardinality === 'one_to_many';
-        const flags = ['isNullable', 'isUnique', 'isFilterable', 'isSearchable'] as const;
+        const flags = PROTECTED_FIELD_FLAGS;
         if (isInverse && flags.some((flag) => operation[flag] !== undefined)) {
           issue(path, 'an inverse relation field only takes label and description changes');
+          break;
+        }
+        const reshaped = flags.filter(
+          (flag) => operation[flag] !== undefined && operation[flag] !== field[flag],
+        );
+        if (field.isProtected && reshaped.length > 0) {
+          issue(
+            path,
+            `is protected: Retainer depends on it, so ${reshaped.join(', ')} cannot change ` +
+              '(it can be renamed, relabeled and described)',
+          );
           break;
         }
         if (operation.label !== undefined) field.label = operation.label;
@@ -285,6 +307,10 @@ export function applyOperations(
         const path = `${object.nameSingular}.${field.name}`;
         if (field.settings.relationCardinality === 'one_to_many') {
           issue(path, 'an inverse relation field is removed by deleting its many_to_one side');
+          break;
+        }
+        if (field.isProtected) {
+          issue(path, 'is protected: Retainer depends on it, so it cannot be deleted');
           break;
         }
         if (object.labelFieldId === field.universalId) {
@@ -323,6 +349,13 @@ export function applyOperations(
           }
           if (operation.op === 'update_option') {
             options[index] = { value: operation.value, label: operation.label };
+          } else if (PROTECTED_OPTIONS.get(field.universalId)?.includes(operation.value)) {
+            issue(
+              path,
+              `option "${operation.value}" is protected: Retainer depends on it, so it cannot ` +
+                'be removed (its label can change)',
+            );
+            break;
           } else {
             options.splice(index, 1);
           }

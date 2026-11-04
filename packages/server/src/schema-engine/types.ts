@@ -37,6 +37,8 @@ export type FieldState = {
   isUnique: boolean;
   isFilterable: boolean;
   isSearchable: boolean;
+  /** Set by the engine for fields server code depends on (protection.ts). */
+  isProtected: boolean;
   owner: SchemaOwner;
   status: SchemaStatus;
 };
@@ -51,6 +53,8 @@ export type ObjectState = {
   description: string | null;
   /** Universal ID of the label field. */
   labelFieldId: string | null;
+  /** Set by the engine for objects server code depends on (protection.ts). */
+  isProtected: boolean;
   owner: SchemaOwner;
   status: SchemaStatus;
   /** Every field, deprecated ones included, so keys are never reused. */

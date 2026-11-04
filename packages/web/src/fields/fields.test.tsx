@@ -102,6 +102,7 @@ const f = (type: FieldView['type']): FieldView => ({
   isSearchable: false,
   readOnly: false,
   owner: 'system',
+  isProtected: false,
 });
 describe('field registry and numeric precision', () => {
   it('covers every field type', () => {

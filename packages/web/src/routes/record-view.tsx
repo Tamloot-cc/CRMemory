@@ -1,6 +1,6 @@
 import { RetainerApiError } from '@retainer/sdk';
 import type { AssertionView, FieldView, PresentedRecord } from '@retainer/shared';
-import { validateFieldValue } from '@retainer/shared';
+import { TASK_DONE_OPTION, validateFieldValue } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { History, Maximize2, Pencil } from 'lucide-react';
@@ -171,7 +171,10 @@ export function RecordView({
       api.assertions(rid, { field: history?.name, cursor: historyCursor, signal }),
     enabled: !!history,
   });
-  const task = schema.objects.find((o) => o.nameSingular === 'task');
+  // Found by role, not name: a workspace may rename the task object and its fields.
+  const task = schema.objects.find((o) => o.baseObject === 'task');
+  const taskStatus = task?.fields.find((f) => f.baseField === 'taskStatus');
+  const taskDue = task?.fields.find((f) => f.baseField === 'taskDueDate');
   const links =
     task?.fields.filter(
       (f) =>
@@ -181,22 +184,25 @@ export function RecordView({
         f.settings.relationCardinality === 'many_to_one',
     ) ?? [];
   const taskFilter = {
-    and: [{ status: { neq: 'done' } }, { or: links.map((f) => ({ [f.name]: { eq: rid } })) }],
+    and: [
+      ...(taskStatus ? [{ [taskStatus.name]: { neq: TASK_DONE_OPTION } }] : []),
+      { or: links.map((f) => ({ [f.name]: { eq: rid } })) },
+    ],
   };
   const tasks = useQuery({
     queryKey: [session.workspace.id, 'tasks', rid, cursor],
     queryFn: ({ signal }) =>
       api.queryRecords(
-        'task',
+        task?.nameSingular ?? 'task',
         {
           filter: taskFilter,
           limit: 50,
           cursor,
-          sort: [{ field: 'dueDate', direction: 'asc' }],
+          sort: taskDue ? [{ field: taskDue.name, direction: 'asc' }] : [],
         },
         signal,
       ),
-    enabled: tab === 'tasks' && links.length > 0,
+    enabled: tab === 'tasks' && !!task && links.length > 0,
   });
   const object = schema.objects.find((o) => o.nameSingular === r.object),
     canWrite = canMutate(session);

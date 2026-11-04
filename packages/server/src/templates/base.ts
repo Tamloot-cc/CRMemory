@@ -1,3 +1,4 @@
+import { BASE_FIELD_IDS, BASE_OBJECT_IDS } from '@retainer/shared';
 import type { SchemaOperation } from '../schema-engine/operations.js';
 
 /**
@@ -5,17 +6,7 @@ import type { SchemaOperation } from '../schema-engine/operations.js';
  * Universal IDs are fixed forever: upgrades and templates find these
  * objects and fields by them in every workspace.
  */
-export const BASE_OBJECT_IDS = {
-  company: '1f24f94d-6bc5-4955-b6ab-ac946e2b140a',
-  person: '7e87d873-8c93-4786-9a0b-95447310c8d3',
-  task: 'd0690d5f-d7f4-47ce-8007-0a81a276a70b',
-} as const;
-
-/** Base fields that server code reads directly, such as open tasks in context packs (6.2). */
-export const BASE_FIELD_IDS = {
-  taskStatus: '107158ae-ba0f-482e-afe1-5e45bd6ccfd6',
-  taskDueDate: '368276ea-604d-4dcd-b6ad-796431a84a06',
-} as const;
+export { BASE_FIELD_IDS, BASE_OBJECT_IDS };
 
 export const BASE_OPERATIONS: SchemaOperation[] = [
   {

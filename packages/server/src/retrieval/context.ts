@@ -6,13 +6,13 @@ import type {
   ContextPack,
   OpenTask,
 } from '@retainer/shared';
+import { BASE_FIELD_IDS, BASE_OBJECT_IDS, TASK_DONE_OPTION } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { isNote } from '../memory/interactions.js';
 import { getRecord } from '../records/read.js';
 import { references } from '../records/references.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { BASE_FIELD_IDS, BASE_OBJECT_IDS } from '../templates/base.js';
 import { CHARS_PER_TOKEN, estimateTokens, fitSections, jsonLength } from './budget.js';
 
 /**
@@ -156,7 +156,9 @@ async function openTasks(
   const dueDate = field(BASE_FIELD_IDS.taskDueDate);
   const statusValue = status ? tx`t.data -> ${status.key}` : tx`null::jsonb`;
   const dueValue = dueDate ? tx`t.data -> ${dueDate.key}` : tx`null::jsonb`;
-  const notDone = status ? tx`and (t.data ->> ${status.key}) is distinct from 'done'` : tx``;
+  const notDone = status
+    ? tx`and (t.data ->> ${status.key}) is distinct from ${TASK_DONE_OPTION}`
+    : tx``;
   const dueOrder = dueDate ? tx`(t.data ->> ${dueDate.key}) asc nulls last,` : tx``;
 
   const rows = await tx<{ id: string; status: unknown; due_date: unknown; total: string }[]>`

@@ -133,6 +133,8 @@ export const objectTypes = pgTable(
     description: text('description'),
     /** The field shown when a record is referenced (usually its name). */
     labelFieldId: uuid('label_field_id'),
+    /** Server code depends on the object; set by the schema engine only (1.1). */
+    isProtected: boolean('is_protected').notNull().default(false),
     createdBy: jsonb('created_by').$type<Actor>().notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -170,6 +172,8 @@ export const fields = pgTable(
     isUnique: boolean('is_unique').notNull().default(false),
     isFilterable: boolean('is_filterable').notNull().default(false),
     isSearchable: boolean('is_searchable').notNull().default(false),
+    /** Server code depends on the field; set by the schema engine only (1.1). */
+    isProtected: boolean('is_protected').notNull().default(false),
     owner: text('owner').$type<SchemaOwner>().notNull(),
     status: text('status').$type<SchemaStatus>().notNull(),
     createdBy: jsonb('created_by').$type<Actor>().notNull(),

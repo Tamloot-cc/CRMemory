@@ -12,6 +12,7 @@ import {
 import { sortObjects } from './state.js';
 
 const field = (over: Partial<FieldView> & Pick<FieldView, 'name' | 'type'>): FieldView => ({
+  isProtected: false,
   label: over.name,
   description: null,
   settings: {},
@@ -24,6 +25,7 @@ const field = (over: Partial<FieldView> & Pick<FieldView, 'name' | 'type'>): Fie
   ...over,
 });
 const object = (over: Partial<ObjectView> & Pick<ObjectView, 'nameSingular'>): ObjectView => ({
+  isProtected: false,
   namePlural: `${over.nameSingular}s`,
   labelSingular: over.nameSingular,
   labelPlural: `${over.nameSingular}s`,

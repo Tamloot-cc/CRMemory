@@ -50,6 +50,34 @@ Every schema row carries:
   never touches the data. Keys are never reused, even after a field is
   deleted.
 
+- `is_protected`: set by the schema engine, never by a client, on objects and
+  fields that server code depends on (below).
+
+#### Protection
+
+Server code finds the schema elements it depends on by universal ID, never
+by API name, and the engine protects each of them. Today these are the base
+objects `person`, `company` and `task`, and the fields `task.status` and
+`task.dueDate` (open tasks in context packs, 6.2). The list lives in
+`schema-engine/protection.ts`; any new server dependency on a schema
+element protects it in the same change.
+
+- A protected object cannot be deleted. Its API names and labels can change.
+- A protected field cannot be deleted or reshaped: renames, labels and
+  descriptions are allowed; changes to type, `is_nullable`, `is_unique`,
+  `is_filterable` and `is_searchable` are rejected.
+- Only the select option values server code reads are protected:
+  `task.status` keeps its `done` option, whose label can change. Other
+  options can be added, relabeled and removed, so a workspace can add
+  statuses such as `blocked`.
+- Protection does not freeze record values.
+
+`describe_schema` shows `isProtected` on objects and fields and
+`protectedOptions` on fields, and marks base elements with `baseObject`
+(`person`, `company`, `task`) or `baseField` (`taskStatus`,
+`taskDueDate`), so a client finds them after a rename without reading
+universal IDs.
+
 Workspaces carry a `schema_version` that increments on every applied change.
 API and MCP schemas are cached per `(workspace, schema_version)`.
 
@@ -495,9 +523,9 @@ claims are populated atomically when uniqueness is enabled.
 
 In v1, deleting schema metadata means deprecating it and hiding it from new
 writes, not cascading away assertions. Deleting an object also deprecates
-relations that point at it; base objects and an object's label field cannot
-be deleted. Removing an option needs approval and fails while live records
-use it. A relation's target, cardinality and `onDelete` are fixed once
+relations that point at it; protected objects and fields (1.1) and an
+object's label field cannot be deleted. Removing an option needs approval
+and fails while live records use it. A relation's target, cardinality and `onDelete` are fixed once
 created; there is no operation to change them.
 
 Standard objects ship as code (definitions with fixed `universal_id`s) and

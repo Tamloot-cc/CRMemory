@@ -184,7 +184,7 @@ describe('apply', () => {
 
   it('protects base objects and label fields', () => {
     expect(issuesOf(base, [{ op: 'delete_object', object: 'person' }])[0]?.message).toContain(
-      'base objects',
+      'is protected',
     );
     expect(
       issuesOf(base, [{ op: 'delete_field', object: 'person', field: 'name' }])[0]?.message,
@@ -207,6 +207,100 @@ describe('apply', () => {
       'deprecate_field',
       'deprecate_field',
       'deprecate_object',
+    ]);
+  });
+});
+
+describe('protection', () => {
+  const object = (state: SchemaState, name: string) =>
+    state.objects.find((o) => o.nameSingular === name);
+
+  it('protects the base objects and the task fields server code reads', () => {
+    expect(base.objects.filter((o) => o.isProtected).map((o) => o.nameSingular)).toEqual([
+      'company',
+      'person',
+      'task',
+    ]);
+    const protectedFields = base.objects.flatMap((o) =>
+      o.fields.filter((f) => f.isProtected).map((f) => `${o.nameSingular}.${f.name}`),
+    );
+    expect(protectedFields).toEqual(['task.status', 'task.dueDate']);
+  });
+
+  it('never protects what a template or a client creates', () => {
+    const all = Object.values(TEMPLATES).flatMap((t) => t.operations);
+    const desired = applyValid(base, all, 'system');
+    const added = desired.objects.filter(
+      (o) => !base.objects.some((b) => b.universalId === o.universalId),
+    );
+    expect(added.every((o) => !o.isProtected && o.fields.every((f) => !f.isProtected))).toBe(true);
+    expect(desired.objects.filter((o) => o.isProtected)).toHaveLength(3);
+    expect(added.length).toBeGreaterThan(0);
+  });
+
+  it('refuses to delete protected objects and fields', () => {
+    for (const name of ['person', 'company', 'task']) {
+      expect(issuesOf(base, [{ op: 'delete_object', object: name }])[0]?.message).toContain(
+        'is protected',
+      );
+    }
+    for (const name of ['status', 'dueDate']) {
+      expect(
+        issuesOf(base, [{ op: 'delete_field', object: 'task', field: name }])[0]?.message,
+      ).toContain('is protected');
+    }
+  });
+
+  it('allows renames, labels and descriptions of protected objects and fields', () => {
+    const desired = applyValid(base, [
+      { op: 'rename_object', object: 'task', nameSingular: 'todo', namePlural: 'todos' },
+      { op: 'update_object', object: 'todo', labelSingular: 'To-do', labelPlural: 'To-dos' },
+      { op: 'rename_field', object: 'todo', field: 'status', name: 'state' },
+      { op: 'update_field', object: 'todo', field: 'state', label: 'State', description: 'x' },
+      { op: 'rename_field', object: 'todo', field: 'dueDate', name: 'deadline' },
+    ]);
+    const todo = object(desired, 'todo');
+    expect(todo?.isProtected).toBe(true);
+    expect(field(desired, 'todo', 'state')).toMatchObject({ isProtected: true, label: 'State' });
+    expect(field(desired, 'todo', 'deadline')?.isProtected).toBe(true);
+  });
+
+  it('refuses to reshape a protected field', () => {
+    for (const change of [
+      { isNullable: false },
+      { isUnique: true },
+      { isFilterable: false },
+      { isSearchable: true },
+    ]) {
+      const [issue] = issuesOf(base, [
+        { op: 'update_field', object: 'task', field: 'status', ...change },
+      ]);
+      expect(issue?.message).toContain('is protected');
+    }
+    // Setting a flag to the value it already has changes nothing.
+    applyValid(base, [{ op: 'update_field', object: 'task', field: 'status', isFilterable: true }]);
+  });
+
+  it('keeps the done option but lets other task statuses change', () => {
+    const [issue] = issuesOf(base, [
+      { op: 'remove_option', object: 'task', field: 'status', value: 'done' },
+    ]);
+    expect(issue?.message).toContain('option "done" is protected');
+
+    const desired = applyValid(base, [
+      {
+        op: 'add_option',
+        object: 'task',
+        field: 'status',
+        option: { value: 'blocked', label: 'Blocked' },
+      },
+      { op: 'update_option', object: 'task', field: 'status', value: 'done', label: 'Finished' },
+      { op: 'remove_option', object: 'task', field: 'status', value: 'in_progress' },
+    ]);
+    expect(field(desired, 'task', 'status')?.settings.options).toEqual([
+      { value: 'todo', label: 'To do' },
+      { value: 'done', label: 'Finished' },
+      { value: 'blocked', label: 'Blocked' },
     ]);
   });
 });
@@ -343,7 +437,7 @@ describe('diff and classify', () => {
       [{ op: 'rename_field', object: 'person', field: 'jobTitle', name: 'role' }],
       [{ op: 'rename_object', object: 'task', nameSingular: 'todo', namePlural: 'todos' }],
       [{ op: 'delete_field', object: 'person', field: 'jobTitle' }],
-      [{ op: 'remove_option', object: 'task', field: 'status', value: 'done' }],
+      [{ op: 'remove_option', object: 'task', field: 'status', value: 'in_progress' }],
       [{ op: 'update_field', object: 'person', field: 'jobTitle', isNullable: false }],
       [
         {

@@ -1,6 +1,8 @@
 import type { Actor } from './actor.js';
 import type { FieldType, MoneyValue } from './field-types.js';
 import type {
+  BaseFieldName,
+  BaseObjectName,
   FieldDefinition,
   FieldSettings,
   ObjectDefinition,
@@ -19,6 +21,16 @@ export type FieldView = Omit<FieldDefinition, 'description' | 'settings'> & {
   settings: FieldSettings;
   readOnly: boolean;
   owner: SchemaOwner;
+  /**
+   * Server behavior depends on the field: it cannot be deleted or reshaped,
+   * only renamed, relabeled and described (1.1). Set by Retainer, never by
+   * a client.
+   */
+  isProtected: boolean;
+  /** Select option values server code reads; they cannot be removed. */
+  protectedOptions?: string[];
+  /** Which base field this is, so clients find it after a rename. */
+  baseField?: BaseFieldName;
   isNullable: boolean;
   isUnique: boolean;
   isFilterable: boolean;
@@ -32,6 +44,10 @@ export type ObjectView = {
   description: string | null;
   labelField: string | null;
   owner: SchemaOwner;
+  /** Server behavior depends on the object: it cannot be deleted (1.1). */
+  isProtected: boolean;
+  /** Which base object this is, so clients find it after a rename. */
+  baseObject?: BaseObjectName;
   fields: FieldView[];
 };
 export type SchemaDescription = {

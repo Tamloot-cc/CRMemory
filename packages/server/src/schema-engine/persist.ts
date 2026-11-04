@@ -170,11 +170,12 @@ export async function persistSchema(
     if (currentObjects.has(object.universalId)) continue;
     const [row] = await tx<{ id: string }[]>`
       insert into object_types (workspace_id, universal_id, owner, status, name_singular,
-        name_plural, label_singular, label_plural, description, created_by, created_at, updated_at)
+        name_plural, label_singular, label_plural, description, is_protected, created_by,
+        created_at, updated_at)
       values (${workspaceId}, ${object.universalId}, ${object.owner}, ${object.status},
         ${object.nameSingular}, ${object.namePlural}, ${object.labelSingular},
-        ${object.labelPlural}, ${object.description}, ${createdBy}, clock_timestamp(),
-        clock_timestamp())
+        ${object.labelPlural}, ${object.description}, ${object.isProtected}, ${createdBy},
+        clock_timestamp(), clock_timestamp())
       returning id`;
     objectIds.set(object.universalId, row?.id as string);
   }
@@ -188,12 +189,12 @@ export async function persistSchema(
       const [row] = await tx<{ id: string }[]>`
         insert into fields (workspace_id, object_type_id, universal_id, key, name, label,
           description, type, settings, is_nullable, is_unique, is_filterable, is_searchable,
-          owner, status, created_by, created_at, updated_at)
+          is_protected, owner, status, created_by, created_at, updated_at)
         values (${workspaceId}, ${objectIds.get(object.universalId) as string},
           ${field.universalId}, ${field.key}, ${field.name}, ${field.label}, ${field.description},
           ${field.type}, ${tx.json(field.settings)}, ${field.isNullable}, ${field.isUnique},
-          ${field.isFilterable}, ${field.isSearchable}, ${field.owner}, ${field.status},
-          ${createdBy}, clock_timestamp(), clock_timestamp())
+          ${field.isFilterable}, ${field.isSearchable}, ${field.isProtected}, ${field.owner},
+          ${field.status}, ${createdBy}, clock_timestamp(), clock_timestamp())
         returning id`;
       fieldIds.set(field.universalId, row?.id as string);
     }

@@ -30,6 +30,7 @@ const field = (name: string, type: FieldView['type'], extra: Partial<FieldView> 
   }) as FieldView;
 
 const person: ObjectView = {
+  isProtected: false,
   nameSingular: 'person',
   namePlural: 'people',
   labelSingular: 'Person',

@@ -24,6 +24,7 @@ const stage: FieldView = {
   isSearchable: false,
   readOnly: false,
   owner: 'workspace',
+  isProtected: false,
 };
 const record = {
   id: 'r1',
