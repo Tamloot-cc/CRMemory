@@ -4,6 +4,8 @@
     "includes": [
       "**",
       "!**/.claude",
+      "!deploy/aws/.build",
+      "!deploy/aws/.terraform",
       "!**/dist",
       "!**/drizzle/meta",
       "!**/node_modules",

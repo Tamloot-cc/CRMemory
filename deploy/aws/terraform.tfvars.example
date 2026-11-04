@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Every other setting has
+# a default; see variables.tf.
+
+region = "eu-central-1"
+
+# Leave out to use the API Gateway URL. With a domain, apply once, create
+# the records in the dns_records output, then set
+# domain_certificate_validated = true and apply again.
+# domain_name                  = "retainer.example.com"
+# domain_certificate_validated = false
+
+# alarm_email = "ops@example.com"
+
+# Lets this repository's "production" GitHub Environment ship code.
+# github_repository = "your-org/Retainer"

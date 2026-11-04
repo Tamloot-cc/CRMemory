@@ -1,7 +1,8 @@
 # Self-hosting
 
 Retainer is one Docker image and Postgres 17. The image runs the REST API, the
-MCP endpoint, the background workers and, optionally, the web app.
+MCP endpoint, the background workers and, optionally, the web app. To run it
+on AWS Lambda and RDS instead, see [Deploying to AWS](aws.md).
 
 ## Start it
 
@@ -78,6 +79,7 @@ when running from source.
 | `RETAINER_SUPPRESSION_KEY`              | —                | Needed for `forget`. At least 32 characters (`openssl rand -hex 32`). Keep it stable: erased emails and phones are stored only as an HMAC under this key, so changing it lets them back in. |
 | `RETAINER_CONSOLIDATE_INTERVAL_MINUTES` | `60`             | How often the consolidator dedupes facts and suggests merges in each workspace.                                                                                                             |
 | `RETAINER_WEB_DIR`                      | set in the image | Directory of the built web app, served at `/app`. Leave unset to serve no web app.                                                                                                          |
+| `RETAINER_DB_POOL_MAX`                  | `10`             | Database connections the API process opens. Lower it when many processes share one database.                                                                                                |
 
 ## The web app
 

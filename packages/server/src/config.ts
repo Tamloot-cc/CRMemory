@@ -30,6 +30,12 @@ const configSchema = z.object({
   /** How often the consolidator runs per workspace (4.2). */
   RETAINER_CONSOLIDATE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
   /**
+   * Database connections each API process opens. The container serves many
+   * requests at once; a Lambda instance serves one, so the AWS deployment
+   * sets this low to keep the total under the database's limit.
+   */
+  RETAINER_DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+  /**
    * Secret for the keyed HMAC of suppressed handles (2.1). Needed by
    * `forget`; read from the environment where it is used.
    */

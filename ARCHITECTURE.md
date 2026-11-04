@@ -566,6 +566,14 @@ Postgres is the only dependency, with the standard `pg_trgm`, `btree_gin`
 and `unaccent` extensions for search (5.1); the job queue runs on Postgres
 too. Retainer calls no language model and needs no model API key.
 
+The same code also runs as AWS Lambda functions (`deploy/aws`,
+[docs/aws.md](docs/aws.md)): `api` serves the Hono app behind API Gateway,
+`consolidate` makes one consolidator pass per scheduled run, and `ops` runs
+migrations and the operator CLI. What the container does on start
+(migrations, the first-boot key, the search rebuild) the deploy does once
+through `ops`, with the API stopped, so a cold start never migrates and no
+key is printed to the logs.
+
 ### 4.1 How memory gets written
 
 The agent reads the conversation with its own model and decides what is
@@ -1199,15 +1207,16 @@ enforcement. Until then, new code keeps that path open:
 
 ## 8. Repository layout
 
-| Path              | License  | Contents                                            |
-| ----------------- | -------- | --------------------------------------------------- |
-| `packages/shared` | MIT      | Field types, composite shapes, actor, schema types  |
-| `packages/server` | AGPL-3.0 | API, MCP endpoint, workers, schema engine, database |
-| `packages/sdk`    | MIT      | TypeScript client                                   |
-| `packages/web`    | MIT      | Optional static React app for people                |
-| `packages/mcp`    | MIT      | stdio bridge to the hosted MCP endpoint             |
-| `docker/`         | AGPL-3.0 | Dockerfile and Compose file                         |
-| `docs/`           | AGPL-3.0 | Guides: self-hosting, agents, SDK, REST, releasing  |
+| Path              | License  | Contents                                                |
+| ----------------- | -------- | ------------------------------------------------------- |
+| `packages/shared` | MIT      | Field types, composite shapes, actor, schema types      |
+| `packages/server` | AGPL-3.0 | API, MCP endpoint, workers, schema engine, database     |
+| `packages/sdk`    | MIT      | TypeScript client                                       |
+| `packages/web`    | MIT      | Optional static React app for people                    |
+| `packages/mcp`    | MIT      | stdio bridge to the hosted MCP endpoint                 |
+| `docker/`         | AGPL-3.0 | Dockerfile and Compose file                             |
+| `deploy/aws/`     | AGPL-3.0 | Terraform and scripts for Lambda, API Gateway, RDS      |
+| `docs/`           | AGPL-3.0 | Guides: self-hosting, AWS, agents, SDK, REST, releasing |
 
 ## 9. Stack
 

@@ -29,32 +29,56 @@ export type Worker = {
   stop: () => Promise<void>;
 };
 
+export type ConsolidateDueOptions = Pick<WorkerOptions, 'sql' | 'intervalMinutes' | 'log'> & {
+  /** Checked before each workspace; returning true ends the pass early. */
+  stopped?: () => boolean;
+};
+
+/** What one pass did: workspaces consolidated, and those that failed. */
+export type ConsolidatePass = { consolidated: number; failed: number };
+
+/**
+ * One pass over every due workspace. The long-running worker calls it on a
+ * timer; a scheduled function (the AWS deployment) calls it once per run.
+ * A workspace another pass holds, or one already run within the interval,
+ * is skipped.
+ */
+export async function consolidateDue(options: ConsolidateDueOptions): Promise<ConsolidatePass> {
+  const { sql } = options;
+  const log = options.log ?? serverLog;
+  const interval = `${options.intervalMinutes} minutes`;
+  const pass: ConsolidatePass = { consolidated: 0, failed: 0 };
+  const due = await sql<{ id: string }[]>`
+    select id from retainer_workspaces_due(${interval}::interval) as id`;
+  for (const { id } of due) {
+    if (options.stopped?.()) break;
+    try {
+      const stats = await consolidateWorkspace(sql, id, { minInterval: interval });
+      if (stats) pass.consolidated++;
+      if (stats && (stats.supersededFacts > 0 || stats.mergeSuggestions > 0)) {
+        log.info(
+          `Consolidated workspace ${id}: ${stats.supersededFacts} duplicate facts superseded, ` +
+            `${stats.mergeSuggestions} merges suggested.`,
+        );
+      }
+    } catch (error) {
+      pass.failed++;
+      log.error(`Consolidating workspace ${id} failed: ${(error as Error).message}`);
+    }
+  }
+  return pass;
+}
+
 export async function startWorker(options: WorkerOptions): Promise<Worker> {
   const { sql, intervalMinutes } = options;
   const log = options.log ?? serverLog;
   const tickMs = options.tickMs ?? Math.min(60_000, intervalMinutes * 60_000);
-  const interval = `${intervalMinutes} minutes`;
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<void> = Promise.resolve();
   let stopped = false;
 
   async function runTick(): Promise<void> {
-    const due = await sql<{ id: string }[]>`
-      select id from retainer_workspaces_due(${interval}::interval) as id`;
-    for (const { id } of due) {
-      if (stopped) return;
-      try {
-        const stats = await consolidateWorkspace(sql, id, { minInterval: interval });
-        if (stats && (stats.supersededFacts > 0 || stats.mergeSuggestions > 0)) {
-          log.info(
-            `Consolidated workspace ${id}: ${stats.supersededFacts} duplicate facts superseded, ` +
-              `${stats.mergeSuggestions} merges suggested.`,
-          );
-        }
-      } catch (error) {
-        log.error(`Consolidating workspace ${id} failed: ${(error as Error).message}`);
-      }
-    }
+    await consolidateDue({ sql, intervalMinutes, log, stopped: () => stopped });
   }
 
   const tick = () => {

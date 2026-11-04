@@ -1,0 +1,243 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { LambdaContext, LambdaEvent } from 'hono/aws-lambda';
+import postgres from 'postgres';
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
+import { createApiKey } from '../../src/auth/keys.js';
+import { loadConfig } from '../../src/config.js';
+import { RUNTIME_ROLE } from '../../src/db/client.js';
+import { createApiHandler } from '../../src/lambda/api.js';
+import { createConsolidateHandler } from '../../src/lambda/consolidate.js';
+import { createOpsHandler } from '../../src/lambda/ops.js';
+import { createWorkspace } from '../../src/workspaces/workspaces.js';
+import { databaseUrl, useTestDatabase } from '../helpers/db.js';
+
+const db = useTestDatabase();
+const config = () => loadConfig({ DATABASE_URL: db.url, LOG_LEVEL: 'error' });
+
+/** An API Gateway HTTP API (payload 2.0) event, as the $default route sends it. */
+function httpEvent(
+  method: string,
+  path: string,
+  options: { headers?: Record<string, string>; body?: string } = {},
+): LambdaEvent {
+  return {
+    version: '2.0',
+    routeKey: '$default',
+    rawPath: path,
+    rawQueryString: '',
+    headers: { host: 'abc123.execute-api.eu-central-1.amazonaws.com', ...options.headers },
+    requestContext: {
+      accountId: '123456789012',
+      apiId: 'abc123',
+      domainName: 'abc123.execute-api.eu-central-1.amazonaws.com',
+      domainPrefix: 'abc123',
+      http: {
+        method,
+        path,
+        protocol: 'HTTP/1.1',
+        sourceIp: '192.0.2.1',
+        userAgent: 'vitest',
+      },
+      requestId: 'request-id',
+      routeKey: '$default',
+      stage: '$default',
+      time: '04/Nov/2026:10:00:00 +0000',
+      timeEpoch: 1_793_786_400_000,
+    },
+    isBase64Encoded: false,
+    ...(options.body === undefined ? {} : { body: options.body }),
+  } as unknown as LambdaEvent;
+}
+
+const context = {} as LambdaContext;
+
+/** API Gateway decodes base64 bodies before the client sees them. */
+const bodyOf = (res: { body: string; isBase64Encoded: boolean }) =>
+  res.isBase64Encoded ? Buffer.from(res.body, 'base64').toString() : res.body;
+
+describe('API function', () => {
+  let webDir: string;
+  let handler: ReturnType<typeof createApiHandler>;
+  let key: string;
+
+  beforeAll(async () => {
+    webDir = await mkdtemp(join(tmpdir(), 'retainer-web-'));
+    await writeFile(join(webDir, 'index.html'), '<!doctype html><title>Retainer</title>');
+    handler = createApiHandler(
+      { ...config(), RETAINER_WEB_DIR: webDir },
+      db.connect({ role: RUNTIME_ROLE, max: 2 }),
+    );
+    const workspace = await createWorkspace(db.owner, { name: 'Lambda', template: 'sales' });
+    key = (
+      await createApiKey(db.owner, {
+        workspace: workspace.id,
+        name: 'Lambda agent',
+        actor: { type: 'agent', id: 'lambda' },
+        scopes: ['read', 'write'],
+      })
+    ).key;
+  });
+
+  afterAll(async () => {
+    await rm(webDir, { recursive: true, force: true });
+  });
+
+  it('serves the health check', async () => {
+    const res = await handler(httpEvent('GET', '/health'), context);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(bodyOf(res))).toMatchObject({ status: 'ok', database: 'ok' });
+  });
+
+  it('authenticates REST calls with the API key', async () => {
+    const denied = await handler(httpEvent('GET', '/v1/me'), context);
+    expect(denied.statusCode).toBe(401);
+
+    const res = await handler(
+      httpEvent('GET', '/v1/me', { headers: { authorization: `Bearer ${key}` } }),
+      context,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(bodyOf(res))).toMatchObject({ actor: { type: 'agent', id: 'lambda' } });
+  });
+
+  it('answers MCP requests statelessly', async () => {
+    const res = await handler(
+      httpEvent('POST', '/mcp', {
+        headers: {
+          authorization: `Bearer ${key}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'vitest', version: '0' },
+          },
+        }),
+      }),
+      context,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(bodyOf(res)).toContain('"serverInfo"');
+  });
+
+  it('serves the web app, falling back to index.html for client routes', async () => {
+    const res = await handler(httpEvent('GET', '/app/records/person'), context);
+    expect(res.statusCode).toBe(200);
+    expect(bodyOf(res)).toContain('<title>Retainer</title>');
+  });
+});
+
+describe('consolidate function', () => {
+  it('consolidates each due workspace once, even when runs overlap', async () => {
+    const workspace = await createWorkspace(db.owner, { name: 'Due', template: 'sales' });
+    const run = (n: number) =>
+      Promise.all(
+        Array.from({ length: n }, () =>
+          createConsolidateHandler(config(), db.connect({ role: RUNTIME_ROLE, max: 1 }))(),
+        ),
+      );
+
+    const passes = await run(3);
+    expect(passes.every((pass) => pass.failed === 0)).toBe(true);
+    const [runs] = await db.owner<{ count: number }[]>`
+      select count(*)::int as count from consolidator_runs where workspace_id = ${workspace.id}`;
+    expect(runs?.count).toBe(1);
+
+    // Within the interval the workspace is not due again.
+    const [again] = await run(1);
+    expect(again).toEqual({ consolidated: 0, failed: 0 });
+  });
+});
+
+describe('ops function', () => {
+  it('rejects an event it does not know', async () => {
+    await expect(createOpsHandler(config())({ command: 'drop' })).rejects.toThrow(
+      /Expected \{"command":"migrate"\}/,
+    );
+  });
+
+  it('runs the operator CLI and returns the key without logging it', async () => {
+    const logged = [
+      vi.spyOn(console, 'log'),
+      vi.spyOn(console, 'info'),
+      vi.spyOn(console, 'error'),
+      vi.spyOn(console, 'warn'),
+    ];
+    const ops = createOpsHandler(config());
+    try {
+      const created = await ops({
+        command: 'cli',
+        args: ['workspace', 'create', '--name', 'Ops Clinic', '--template', 'clinic'],
+      });
+      expect(created).toMatchObject({ command: 'cli', exitCode: 0 });
+
+      const key = await ops({
+        command: 'cli',
+        args: [
+          'key',
+          'create',
+          '--workspace',
+          'ops-clinic',
+          '--name',
+          'Front desk',
+          '--actor',
+          'agent:front-desk',
+          '--scopes',
+          'read,write',
+          '--json',
+        ],
+      });
+      if (key.command !== 'cli') throw new Error('expected a cli result');
+      expect(key.exitCode).toBe(0);
+      const secret = JSON.parse(key.stdout).key as string;
+      expect(secret).toMatch(/^rtn_/);
+      for (const spy of logged) {
+        expect(JSON.stringify(spy.mock.calls)).not.toContain(secret);
+      }
+
+      const unknown = await ops({ command: 'cli', args: ['workspace', 'drop'] });
+      expect(unknown).toMatchObject({ exitCode: 2, stderr: expect.stringContaining('Unknown') });
+    } finally {
+      for (const spy of logged) spy.mockRestore();
+    }
+  });
+
+  it('migrates an empty database, and a second run changes nothing', async () => {
+    const adminUrl = inject('adminDatabaseUrl');
+    const name = `retainer_test_empty_${Math.random().toString(16).slice(2, 10)}`;
+    const admin = postgres(adminUrl, { max: 1, onnotice: false });
+    await admin.unsafe(`create database "${name}"`);
+    try {
+      const url = databaseUrl(adminUrl, name);
+      const ops = createOpsHandler(loadConfig({ DATABASE_URL: url, LOG_LEVEL: 'error' }));
+      expect(await ops({ command: 'migrate' })).toEqual({
+        command: 'migrate',
+        rebuiltSearchText: 0,
+      });
+      expect(await ops({ command: 'migrate' })).toEqual({
+        command: 'migrate',
+        rebuiltSearchText: 0,
+      });
+
+      const check = postgres(url, { max: 1, onnotice: false });
+      try {
+        const [tables] = await check<{ count: number }[]>`
+          select count(*)::int as count from information_schema.tables
+          where table_schema = 'public' and table_name in ('workspaces', 'records', 'api_keys')`;
+        expect(tables?.count).toBe(3);
+      } finally {
+        await check.end();
+      }
+    } finally {
+      await admin.unsafe(`drop database if exists "${name}" with (force)`);
+      await admin.end();
+    }
+  });
+});
