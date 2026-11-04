@@ -1,6 +1,6 @@
 # Upgrading existing workspaces to new built-in definitions
 
-Date: November 5, 2026. Status: **decided; not implemented**.
+Date: November 5, 2026. Status: **implemented**.
 
 ## 1. Problem
 

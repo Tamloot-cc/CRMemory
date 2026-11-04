@@ -234,3 +234,10 @@ export const BASE_OPERATIONS: SchemaOperation[] = [
     },
   },
 ];
+
+/** Everything a new workspace is seeded with, and what upgrades bring older ones to (3). */
+export const SEED_OPERATIONS: SchemaOperation[] = [
+  ...BASE_OPERATIONS,
+  ...BASE_EVENT_OPERATIONS,
+  ...INTERNAL_OPERATIONS,
+];

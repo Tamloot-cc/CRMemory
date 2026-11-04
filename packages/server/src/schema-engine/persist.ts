@@ -214,13 +214,15 @@ export async function persistSchema(
       before.labelPlural !== object.labelPlural ||
       before.description !== object.description ||
       before.labelFieldId !== object.labelFieldId ||
+      before.isProtected !== object.isProtected ||
       before.status !== object.status
     ) {
       await tx`
         update object_types set name_singular = ${object.nameSingular},
           name_plural = ${object.namePlural}, label_singular = ${object.labelSingular},
           label_plural = ${object.labelPlural}, description = ${object.description},
-          label_field_id = ${labelFieldId}, status = ${object.status}, updated_at = now()
+          label_field_id = ${labelFieldId}, is_protected = ${object.isProtected},
+          status = ${object.status}, updated_at = now()
         where id = ${objectId}`;
     }
     const beforeFields = new Map(before?.fields.map((f) => [f.universalId, f]));
@@ -232,7 +234,7 @@ export async function persistSchema(
           description = ${field.description}, settings = ${tx.json(field.settings)},
           is_nullable = ${field.isNullable}, is_unique = ${field.isUnique},
           is_filterable = ${field.isFilterable}, is_searchable = ${field.isSearchable},
-          status = ${field.status}, updated_at = now()
+          is_protected = ${field.isProtected}, status = ${field.status}, updated_at = now()
         where id = ${fieldIds.get(field.universalId) as string}`;
     }
   }
@@ -326,6 +328,7 @@ function fieldChanged(a: FieldState, b: FieldState): boolean {
     a.isUnique !== b.isUnique ||
     a.isFilterable !== b.isFilterable ||
     a.isSearchable !== b.isSearchable ||
+    a.isProtected !== b.isProtected ||
     a.status !== b.status ||
     JSON.stringify(a.settings) !== JSON.stringify(b.settings)
   );

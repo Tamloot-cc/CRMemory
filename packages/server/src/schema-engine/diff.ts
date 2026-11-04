@@ -158,6 +158,28 @@ export function diffSchemas(current: SchemaState, desired: SchemaState): DiffOp[
     }
   }
 
+  // Protection only changes on the engine's trusted path, for any status.
+  for (const object of desired.objects) {
+    const before = currentObjects.get(object.universalId);
+    if (!before) continue;
+    const objectId = object.universalId;
+    if (object.isProtected && !before.isProtected) {
+      ops.push({ kind: 'protect_object', objectId, object: object.nameSingular });
+    }
+    const currentFields = new Map(before.fields.map((f) => [f.universalId, f]));
+    for (const field of object.fields) {
+      if (field.isProtected && currentFields.get(field.universalId)?.isProtected === false) {
+        ops.push({
+          kind: 'protect_field',
+          objectId,
+          object: object.nameSingular,
+          fieldId: field.universalId,
+          field: field.name,
+        });
+      }
+    }
+  }
+
   return ops;
 }
 
@@ -172,6 +194,9 @@ export function classifyOp(op: DiffOp): Classification {
     case 'update_object':
     case 'add_option':
     case 'update_option':
+    // Protection restricts later changes and touches no data.
+    case 'protect_object':
+    case 'protect_field':
       return 'additive';
     case 'create_field':
       return op.field.isUnique || !op.field.isNullable ? 'destructive' : 'additive';

@@ -7,6 +7,7 @@ import { diffSchemas, isDestructive } from './diff.js';
 import { loadSchemaState } from './load.js';
 import type { SchemaOperation } from './operations.js';
 import { checkExistingRecords, persistSchema, SchemaCheckError } from './persist.js';
+import { applyProtection } from './protection.js';
 import { type DiffOp, type SchemaIssue, type SchemaState, SchemaValidationError } from './types.js';
 import { validateSchema } from './validate.js';
 
@@ -50,9 +51,19 @@ export function canApproveDestructive(actor: Actor, scopes: readonly ApiKeyScope
   return actor.type === 'user' && scopes.includes('admin');
 }
 
-/** Steps 2–5: apply in memory, validate, diff. Throws SchemaValidationError. */
-function plan(current: SchemaState, operations: SchemaOperation[], owner: SchemaOwner) {
+/**
+ * Steps 2–5: apply in memory, validate, diff. Throws SchemaValidationError.
+ * On the trusted path, the engine also protects the elements server code
+ * depends on, which older workspaces may not have protected yet.
+ */
+function plan(
+  current: SchemaState,
+  operations: SchemaOperation[],
+  owner: SchemaOwner,
+  trusted = false,
+) {
   const { state: desired, issues } = applyOperations(current, operations, { owner });
+  if (trusted) applyProtection(desired);
   // Reference issues first; validation of a half-applied state can repeat them.
   const all = [...issues, ...validateSchema(desired)];
   if (all.length > 0) throw new SchemaValidationError(dedupe(all));
@@ -81,7 +92,12 @@ export async function runSchemaChange(
   const { workspaceId, actor } = request;
   await lockSchemaExclusive(tx, workspaceId);
   const current = await loadSchemaState(tx, workspaceId);
-  const { desired, ops } = plan(current, request.operations, request.owner ?? ownerFor(actor));
+  const { desired, ops } = plan(
+    current,
+    request.operations,
+    request.owner ?? ownerFor(actor),
+    request.trusted,
+  );
 
   if (ops.length === 0) {
     return {

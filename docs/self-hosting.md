@@ -99,7 +99,12 @@ over HTTPS; Secure cookies require it. Revoking the key ends access at once.
 ## Upgrading
 
 Pull the new release, rebuild and restart. Migrations run on start and are
-forward-only, so back up the database before upgrading.
+forward-only, so back up the database before upgrading. After them, the
+server adds the base objects, event types and template fields the release
+defines to workspaces created before it, and logs each workspace it upgraded.
+It never re-creates what a workspace deleted. If a workspace's own object
+already uses a new built-in name, the log says so; rename that object and
+restart to add the built-in one.
 
 Run one version at a time: stop every Retainer container of the old version
 before the new one starts. A migration can change what the server writes,

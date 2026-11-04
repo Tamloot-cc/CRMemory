@@ -4,6 +4,7 @@ import {
   INTERNAL_NOTE_TYPE_ID,
   TASK_DONE_OPTION,
 } from '@retainer/shared';
+import type { SchemaState } from './types.js';
 
 /**
  * Schema elements server code depends on (ARCHITECTURE.md 1.1). Protection
@@ -38,3 +39,18 @@ export const PROTECTED_FIELD_FLAGS = [
   'isFilterable',
   'isSearchable',
 ] as const;
+
+/**
+ * Protects every element of `state` that the lists above name, in place.
+ * Only the engine's trusted path calls it, so a workspace created before an
+ * element was protected gets the protection on upgrade (3). Protection is
+ * never cleared.
+ */
+export function applyProtection(state: SchemaState): void {
+  for (const object of state.objects) {
+    if (PROTECTED_OBJECT_IDS.has(object.universalId)) object.isProtected = true;
+    for (const field of object.fields) {
+      if (PROTECTED_FIELD_IDS.has(field.universalId)) field.isProtected = true;
+    }
+  }
+}

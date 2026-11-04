@@ -1,0 +1,254 @@
+import { BASE_EVENT_TYPE_IDS, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
+import { describe, expect, it } from 'vitest';
+import { SEED_OPERATIONS } from '../templates/base.js';
+import { BASE_OBJECT_IDS, BASE_OPERATIONS, TEMPLATES } from '../templates/index.js';
+import { definitionsFor } from '../workspaces/upgrade.js';
+import { applyOperations } from './apply.js';
+import { classifyOp, diffSchemas } from './diff.js';
+import type { SchemaOperation } from './operations.js';
+import { applyProtection } from './protection.js';
+import type { SchemaState } from './types.js';
+import { planUpgrade } from './upgrade.js';
+import { validateSchema } from './validate.js';
+
+const EMPTY: SchemaState = { objects: [] };
+
+function applyValid(
+  state: SchemaState,
+  operations: SchemaOperation[],
+  owner: 'agent' | 'system' = 'system',
+) {
+  const { state: desired, issues } = applyOperations(state, operations, { owner });
+  expect([...issues, ...validateSchema(desired)]).toEqual([]);
+  return desired;
+}
+
+/** A workspace as created before event types existed: base entity objects only. */
+const legacy = applyValid(EMPTY, BASE_OPERATIONS);
+const seeded = applyValid(EMPTY, SEED_OPERATIONS);
+const clinic = TEMPLATES.clinic.operations;
+const realEstate = TEMPLATES.real_estate.operations;
+
+const created = (operations: SchemaOperation[]) =>
+  operations.map((o) =>
+    o.op === 'create_object'
+      ? o.object.nameSingular
+      : o.op === 'create_field'
+        ? `${o.object}.${o.field.name}`
+        : o.op,
+  );
+const upgrade = (state: SchemaState, definitions: SchemaOperation[]) => {
+  const plan = planUpgrade(state, definitions);
+  return { ...plan, upgraded: applyValid(state, plan.operations) };
+};
+const objectOf = (state: SchemaState, universalId: string) =>
+  state.objects.find((o) => o.universalId === universalId);
+const named = (state: SchemaState, name: string) =>
+  state.objects.find((o) => o.nameSingular === name && o.status === 'active');
+
+describe('planUpgrade', () => {
+  it('adds the event types and the internal-note type a pre-events workspace lacks', () => {
+    const { operations, conflicts, upgraded } = upgrade(legacy, SEED_OPERATIONS);
+    expect(conflicts).toEqual([]);
+    expect(created(operations)).toEqual([
+      'meeting',
+      'call',
+      'email',
+      'message',
+      'note',
+      'internalNote',
+    ]);
+    expect(upgraded.objects.filter((o) => o.class === 'event').map((o) => o.universalId)).toEqual([
+      ...Object.values(BASE_EVENT_TYPE_IDS),
+      INTERNAL_NOTE_TYPE_ID,
+    ]);
+    // Core fields get the IDs a new workspace gets.
+    const ids = (state: SchemaState) =>
+      objectOf(state, BASE_EVENT_TYPE_IDS.call)?.fields.map((f) => f.universalId);
+    expect(ids(upgraded)).toEqual(ids(seeded));
+  });
+
+  it('plans nothing for a workspace that is up to date', () => {
+    expect(planUpgrade(seeded, SEED_OPERATIONS)).toEqual({ operations: [], conflicts: [] });
+    const withTemplate = applyValid(seeded, realEstate);
+    expect(planUpgrade(withTemplate, [...SEED_OPERATIONS, ...realEstate])).toEqual({
+      operations: [],
+      conflicts: [],
+    });
+  });
+
+  it('matches a renamed base object by universal ID and resolves relations to it', () => {
+    const renamed = applyValid(
+      legacy,
+      [{ op: 'rename_object', object: 'person', nameSingular: 'contact', namePlural: 'contacts' }],
+      'system',
+    );
+    const { operations, conflicts, upgraded } = upgrade(renamed, [...SEED_OPERATIONS, ...clinic]);
+    expect(conflicts).toEqual([]);
+    expect(created(operations)).not.toContain('person');
+    // The clinic's appointment points at the renamed object; its person fields land on it.
+    const contact = objectOf(upgraded, BASE_OBJECT_IDS.person);
+    expect(contact?.nameSingular).toBe('contact');
+    const appointment = named(upgraded, 'appointment');
+    const relation = appointment?.fields.find((f) => f.type === 'relation');
+    expect(relation?.settings.targetObjectId).toBe(BASE_OBJECT_IDS.person);
+    expect(contact?.fields.map((f) => f.name)).toEqual(
+      expect.arrayContaining(['dateOfBirth', 'appointments']),
+    );
+  });
+
+  it('does not re-create a base event type or template object the workspace deleted', () => {
+    const withTemplate = applyValid(seeded, clinic);
+    const deleted = applyValid(
+      withTemplate,
+      [
+        { op: 'delete_object', object: 'call' },
+        { op: 'delete_object', object: 'appointment' },
+      ],
+      'system',
+    );
+    expect(planUpgrade(deleted, [...SEED_OPERATIONS, ...clinic])).toEqual({
+      operations: [],
+      conflicts: [],
+    });
+  });
+
+  it("reports a name the workspace's own object uses and still adds the rest", () => {
+    const custom = applyValid(
+      legacy,
+      [
+        {
+          op: 'create_object',
+          object: {
+            nameSingular: 'meeting',
+            namePlural: 'meetings',
+            labelSingular: 'Meeting',
+            labelPlural: 'Meetings',
+            labelField: 'name',
+            fields: [{ name: 'name', label: 'Name', type: 'text' }],
+          },
+        },
+      ],
+      'agent',
+    );
+    const { operations, conflicts } = upgrade(custom, SEED_OPERATIONS);
+    expect(conflicts).toEqual([
+      { element: 'meeting', message: expect.stringContaining('already used') },
+    ]);
+    expect(created(operations)).toEqual(['call', 'email', 'message', 'note', 'internalNote']);
+  });
+
+  it('adds a missing template field to an existing object, but not to a deleted one', () => {
+    const appointment = clinic.find(
+      (o): o is Extract<SchemaOperation, { op: 'create_object' }> => o.op === 'create_object',
+    );
+    if (!appointment) throw new Error('clinic has no object');
+    // The clinic as an older release defined it: one field fewer.
+    const first = appointment.object.fields.find((f) => f.name !== appointment.object.labelField);
+    const rest = appointment.object.fields.filter((f) => f !== first);
+    const older = clinic.map((o) =>
+      o === appointment ? { ...appointment, object: { ...appointment.object, fields: rest } } : o,
+    );
+    const withOlder = applyValid(seeded, older);
+    const { operations, conflicts } = upgrade(withOlder, [...SEED_OPERATIONS, ...clinic]);
+    expect(conflicts).toEqual([]);
+    expect(operations).toEqual([
+      expect.objectContaining({
+        op: 'create_field',
+        object: appointment.object.universalId,
+        field: expect.objectContaining({ universalId: first?.universalId }),
+      }),
+    ]);
+
+    const deleted = applyValid(
+      withOlder,
+      [{ op: 'delete_object', object: 'appointment' }],
+      'system',
+    );
+    expect(planUpgrade(deleted, [...SEED_OPERATIONS, ...clinic]).operations).toEqual([]);
+  });
+
+  it('reports a template field whose relation target the workspace deleted', () => {
+    const viewing = realEstate.find(
+      (o): o is Extract<SchemaOperation, { op: 'create_object' }> =>
+        o.op === 'create_object' && o.object.nameSingular === 'viewing',
+    );
+    if (!viewing) throw new Error('real_estate has no viewing');
+    // An older viewing without its property, in a workspace that deleted properties.
+    const older = realEstate.map((o) =>
+      o === viewing
+        ? {
+            ...viewing,
+            object: {
+              ...viewing.object,
+              fields: viewing.object.fields.filter((f) => f.name !== 'property'),
+            },
+          }
+        : o,
+    );
+    const withOlder = applyValid(seeded, older);
+    const noProperties = applyValid(
+      withOlder,
+      [{ op: 'delete_object', object: 'property' }],
+      'system',
+    );
+    const { operations, conflicts } = planUpgrade(noProperties, [
+      ...SEED_OPERATIONS,
+      ...realEstate,
+    ]);
+    expect(operations).toEqual([]);
+    expect(conflicts).toEqual([
+      { element: 'viewing.property', message: expect.stringContaining('property') },
+    ]);
+  });
+});
+
+describe('protection on upgrade', () => {
+  it('diffs protection for unprotected base elements as additive', () => {
+    const unprotected = structuredClone(seeded);
+    for (const object of unprotected.objects) {
+      object.isProtected = false;
+      for (const field of object.fields) field.isProtected = false;
+    }
+    const desired = structuredClone(unprotected);
+    applyProtection(desired);
+    const ops = diffSchemas(unprotected, desired);
+    expect(
+      ops.map((op) =>
+        op.kind === 'protect_field'
+          ? [op.kind, `${op.object}.${op.field}`]
+          : op.kind === 'protect_object'
+            ? [op.kind, op.object]
+            : [op.kind],
+      ),
+    ).toEqual([
+      ['protect_object', 'company'],
+      ['protect_object', 'person'],
+      ['protect_object', 'task'],
+      ['protect_field', 'task.status'],
+      ['protect_field', 'task.dueDate'],
+      ['protect_object', 'internalNote'],
+    ]);
+    expect(ops.every((op) => classifyOp(op) === 'additive')).toBe(true);
+    // Core fields are protected when created; the lists do not name them.
+    expect(desired.objects.flatMap((o) => o.fields).filter((f) => f.isProtected)).toHaveLength(2);
+    expect(diffSchemas(seeded, seeded)).toEqual([]);
+  });
+});
+
+describe('definitionsFor', () => {
+  it('includes the seed and the applied templates, and digests them', () => {
+    const none = definitionsFor([]);
+    expect(none.operations).toEqual(SEED_OPERATIONS);
+    const applied = (name: string) => ({ name, version: 1, appliedAt: '2026-01-01T00:00:00Z' });
+    const withClinic = definitionsFor([applied('clinic')]);
+    expect(withClinic.operations).toEqual([...SEED_OPERATIONS, ...clinic]);
+    expect(withClinic.digest).not.toBe(none.digest);
+    // Same templates in any order, repeated or with other versions: same digest.
+    expect(definitionsFor([applied('sales'), applied('clinic'), applied('sales')]).digest).toBe(
+      definitionsFor([{ ...applied('clinic'), version: 7 }, applied('sales')]).digest,
+    );
+    // An unknown template name is ignored.
+    expect(definitionsFor([applied('dentist')]).digest).toBe(none.digest);
+  });
+});

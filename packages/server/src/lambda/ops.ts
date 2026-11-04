@@ -5,6 +5,7 @@ import { runMigrations } from '../db/migrate.js';
 import { setLogLevel } from '../log.js';
 import { runCli } from '../operator/commands.js';
 import { rebuildSearchText } from '../records/rebuild-search.js';
+import { type UpgradeReport, upgradeWorkspaces } from '../workspaces/upgrade.js';
 import { withMigrationLock } from './deploy-lock.js';
 
 /**
@@ -12,8 +13,9 @@ import { withMigrationLock } from './deploy-lock.js';
  * (docs/aws.md). It is the deployment's replacement for running the CLI in
  * the container, since the database is not reachable from outside the VPC.
  *
- * - `{ "command": "migrate" }` applies pending migrations and rebuilds stale
- *   search text: what the container does on every start. The deploy runs it
+ * - `{ "command": "migrate" }` applies pending migrations, rebuilds stale
+ *   search text and upgrades workspaces to the built-in definitions: what
+ *   the container does on every start. The deploy runs it
  *   once, with the API and the consolidator stopped. It first waits, up to
  *   `waitSeconds` (default 330, past the consolidator's 300-second timeout),
  *   for consolidator passes still running on the old version (deploy-lock.ts).
@@ -34,7 +36,7 @@ const opsEvent = z.discriminatedUnion('command', [
 
 export type OpsEvent = z.input<typeof opsEvent>;
 export type OpsResult =
-  | { command: 'migrate'; rebuiltSearchText: number }
+  | { command: 'migrate'; rebuiltSearchText: number; workspaceUpgrade: UpgradeReport }
   | { command: 'cli'; exitCode: number; stdout: string; stderr: string };
 
 export function createOpsHandler(config: Config) {
@@ -49,13 +51,15 @@ export function createOpsHandler(config: Config) {
     }
     // Operator commands connect as the migration role, like the CLI.
     // `max: 1`, because the deploy lock and the search rebuild are session
-    // locks.
+    // locks; the workspace upgrade runs on the same connection.
     if (parsed.data.command === 'migrate') {
       const sql = createSql(config.DATABASE_URL, { max: 1, keepConnections: true });
       try {
         return await withMigrationLock(sql, parsed.data.waitSeconds, async () => {
           await runMigrations(config.DATABASE_URL);
-          return { command: 'migrate', rebuiltSearchText: await rebuildSearchText(sql) };
+          const rebuiltSearchText = await rebuildSearchText(sql);
+          const workspaceUpgrade = await upgradeWorkspaces(sql);
+          return { command: 'migrate', rebuiltSearchText, workspaceUpgrade };
         });
       } finally {
         await sql.end({ timeout: 5 });

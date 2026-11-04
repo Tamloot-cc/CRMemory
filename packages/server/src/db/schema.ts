@@ -85,6 +85,12 @@ export const workspaces = pgTable('workspaces', {
   templates: jsonb('templates').$type<AppliedTemplate[]>().notNull().default([]),
   /** Set when a template (including `blank`) is first applied. */
   initializedAt: timestamp('initialized_at', { withTimezone: true }),
+  /**
+   * Digest of the built-in definitions (base, protection, applied templates)
+   * the workspace was last fully upgraded to (3). Null until the first
+   * upgrade run; a mismatch makes the next run plan an upgrade.
+   */
+  definitionsDigest: text('definitions_digest'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

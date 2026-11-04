@@ -102,6 +102,8 @@ export type DiffOp =
       to: { nameSingular: string; namePlural: string };
     }
   | { kind: 'deprecate_object'; objectId: string; object: string }
+  /** Trusted path only: the engine protects an element server code depends on. */
+  | { kind: 'protect_object'; objectId: string; object: string }
   | { kind: 'create_field'; objectId: string; object: string; field: FieldProps }
   | {
       kind: 'update_field';
@@ -129,6 +131,7 @@ export type DiffOp =
       to: string;
     }
   | { kind: 'deprecate_field'; objectId: string; object: string; fieldId: string; field: string }
+  | { kind: 'protect_field'; objectId: string; object: string; fieldId: string; field: string }
   | {
       kind: 'add_option';
       objectId: string;
