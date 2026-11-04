@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, WorkspaceContext } from '../api/client.js';
-import { EventDetailsView, ViaLabel } from './event-details.js';
+import { AddAbout, EventDetailsView, ViaLabel } from './event-details.js';
 
 const meeting = {
   nameSingular: 'meeting',
@@ -194,5 +194,33 @@ describe('EventDetailsView', () => {
     expect(add).toHaveBeenCalledWith('e1', {
       participants: [{ handle: 'avi@acme.test', role: 'guest' }],
     });
+  });
+});
+
+describe('AddAbout', () => {
+  it('offers events as well as records, never the event itself', async () => {
+    vi.spyOn(api, 'search').mockResolvedValue({
+      records: [{ id: 'c1', object: 'company', label: 'Acme', match: 'text' }],
+      facts: [],
+      events: [
+        { id: 'e1', type: 'meeting', occurredAt: '', title: 'Kickoff', summary: null, records: [] },
+        {
+          id: 'e0',
+          type: 'meeting',
+          occurredAt: '',
+          title: 'This one',
+          summary: null,
+          records: [],
+        },
+      ],
+    });
+    const onAdd = vi.fn(async () => true);
+    renderIn(<AddAbout busy={false} exclude={['e0']} onAdd={onAdd} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Add record…' }));
+    await userEvent.type(screen.getByLabelText('Find a record'), 'ki');
+    expect(await screen.findByText('Acme')).toBeTruthy();
+    await userEvent.click(await screen.findByText('Kickoff'));
+    expect(onAdd).toHaveBeenCalledWith('e1');
+    expect(screen.queryByText('This one')).toBeNull();
   });
 });

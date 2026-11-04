@@ -24,7 +24,14 @@ import {
   Stack,
 } from '../ui/index.js';
 import { CandidateRecord } from './record-actions.js';
-import { objectByName, objectLabel, recordTitle, relationsTo, useDebounced } from './state.js';
+import {
+  eventTitle,
+  objectByName,
+  objectLabel,
+  recordTitle,
+  relationsTo,
+  useDebounced,
+} from './state.js';
 
 const REASONS: Record<UnmatchedReason, string> = {
   no_match: 'No matching record',
@@ -253,7 +260,7 @@ export function EventDetailsView({
             {editable ? (
               <AddAbout
                 busy={busy}
-                exclude={event.about}
+                exclude={[id, ...event.about]}
                 onAdd={(record) => change(() => api.addEventLinks(id, { about: [record] }))}
               />
             ) : null}
@@ -322,7 +329,7 @@ function AddParticipant({
 }
 
 /** Finds a record by keyword (`POST /v1/search`) to mark the event as about it. */
-function AddAbout({
+export function AddAbout({
   busy,
   exclude,
   onAdd,
@@ -348,7 +355,19 @@ function AddAbout({
         </Button>
       </Row>
     );
-  const hits = (query ? (results.data?.records ?? []) : []).filter((h) => !exclude.includes(h.id));
+  // `about` may name any live entity or event except the event itself (1.3).
+  const hits = (
+    query && results.data
+      ? [
+          ...results.data.records.map((h) => ({
+            id: h.id,
+            title: recordTitle(h),
+            object: h.object,
+          })),
+          ...results.data.events.map((h) => ({ id: h.id, title: eventTitle(h), object: h.type })),
+        ]
+      : []
+  ).filter((h) => !exclude.includes(h.id));
   return (
     <Stack>
       <Input
@@ -371,7 +390,7 @@ function AddAbout({
             })
           }
         >
-          {recordTitle(hit)}
+          {hit.title}
           <Muted>{objectLabel(schema, hit.object)}</Muted>
         </Button>
       ))}
