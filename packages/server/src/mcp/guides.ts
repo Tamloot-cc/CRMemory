@@ -76,6 +76,12 @@ const DESIGN_RULES = `### Use what Retainer already has
   object (a deal's customer, a company or a person) takes targetObjects
   instead of targetObject, and has no inverseField. Write a relation on its
   owning side; the inverse (isInverse) is read-only. Avoid json.
+- rollUpEvents on a relation (update_field, applied at once, reversible)
+  shows the events of the records pointing at a record in its history too:
+  a company sees the calls about its deals. Set it where a record belongs to
+  its target, such as an appointment's patient. Leave it off where the
+  relation is reassigned, such as a person's company: the events would move
+  to the new company. Nothing in the schema proves a relation never changes.
 - Names are camelCase API names (nameSingular "deal", namePlural "deals";
   field "closeDate"); labels are what people read. Prefer a template's
   names to your own when they mean the same thing.

@@ -424,6 +424,106 @@ describe('polymorphic relations', () => {
   });
 });
 
+describe('event rollups', () => {
+  const toggle = (on: boolean): SchemaOperation => ({
+    op: 'update_field',
+    object: 'person',
+    field: 'company',
+    rollUpEvents: on,
+  });
+
+  it('turns on and off as an additive change, storing only on', () => {
+    const on = applyValid(base, [toggle(true)]);
+    expect(field(on, 'person', 'company')?.settings.rollUpEvents).toBe(true);
+    const ops = diffSchemas(base, on);
+    expect(ops).toEqual([
+      expect.objectContaining({ kind: 'update_field', property: 'rollUpEvents', to: true }),
+    ]);
+    expect(isDestructive(ops)).toBe(false);
+    const off = applyValid(on, [toggle(false)]);
+    expect(field(off, 'person', 'company')?.settings).not.toHaveProperty('rollUpEvents');
+    expect(diffSchemas(base, off)).toEqual([]);
+    expect(isDestructive(diffSchemas(on, off))).toBe(false);
+    const created = applyValid(base, [
+      {
+        op: 'create_field',
+        object: 'task',
+        field: {
+          name: 'account',
+          label: 'Account',
+          type: 'relation',
+          settings: { targetObject: 'company', rollUpEvents: false },
+        },
+      },
+    ]);
+    expect(field(created, 'task', 'account')?.settings).not.toHaveProperty('rollUpEvents');
+  });
+
+  it('is refused on inverses, event types and other field types', () => {
+    const message = (state: SchemaState, operations: SchemaOperation[]) =>
+      issuesOf(state, operations)[0]?.message;
+    expect(
+      message(base, [
+        { op: 'update_field', object: 'company', field: 'people', rollUpEvents: true },
+      ]),
+    ).toMatch(/not its inverse/);
+    expect(
+      message(base, [
+        { op: 'update_field', object: 'person', field: 'jobTitle', rollUpEvents: true },
+      ]),
+    ).toMatch(/only to relation fields/);
+    expect(
+      message(base, [
+        {
+          op: 'create_field',
+          object: 'task',
+          field: { name: 'memo', label: 'Memo', type: 'text', settings: { rollUpEvents: true } },
+        },
+      ]),
+    ).toMatch(/rollUpEvents/);
+    expect(
+      message(base, [
+        {
+          op: 'create_object',
+          object: {
+            class: 'event',
+            nameSingular: 'payment',
+            namePlural: 'payments',
+            labelSingular: 'Payment',
+            labelPlural: 'Payments',
+            fields: [
+              {
+                name: 'payer',
+                label: 'Payer',
+                type: 'relation',
+                settings: { targetObject: 'company', rollUpEvents: true },
+              },
+            ],
+          },
+        },
+      ]),
+    ).toMatch(/already attaches the event/);
+  });
+
+  it('is on in templates only for relations a record belongs to', () => {
+    const on = Object.values(TEMPLATES).flatMap((template) => {
+      const state = applyValid(base, template.operations, 'system');
+      return state.objects.flatMap((o) =>
+        o.fields.filter((f) => f.settings.rollUpEvents).map((f) => `${o.nameSingular}.${f.name}`),
+      );
+    });
+    // Affiliations, ownership and contact assignments stay off (7.2).
+    expect(on.sort()).toEqual([
+      'application.job',
+      'application.person',
+      'appointment.person',
+      'proposal.project',
+      'viewing.person',
+      'viewing.property',
+    ]);
+  });
+});
+
 describe('event types', () => {
   const seeded = applyValid(
     base,

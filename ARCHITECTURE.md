@@ -348,6 +348,53 @@ type takes `linked: { record, link? }` for these events, and
 `GET /v1/records/:id/events` and context packs (6.2) list them across types,
 newest first.
 
+#### Rollups
+
+An owning relation field of an entity can set `rollUpEvents`. Then the
+events attached directly to a record (any of the three ways) also appear in
+the history of the records it points at through that field, with
+`via: { kind: 'rollup', field, record }` naming the field and the record
+they came from: a company sees the calls about its deals. It works for
+single-record, `many_to_many` and polymorphic fields and needs no inverse.
+
+- It is read-time: nothing is copied, so `update_field` turns it on or off
+  at any time, as an additive change (no review), and a changed relation
+  regroups the events at once. `via` describes the current grouping, never
+  who took part back then; explicit participants and `about` are unaffected.
+- One hop. What a record has only by rollup does not roll up again, and
+  direction is always source to target. An event's own relation field
+  attaches it (above) and does not use up the hop: a payment attached to an
+  invoice through `payment.invoice` rolls up once through `invoice.company`,
+  never onward through the company's `parent`.
+- Events only: facts and field values stay on their record.
+- An event appears once. A direct attachment wins over a rollup, and among
+  several rollup paths the one with the smallest field ID, then source
+  record ID, so the same `via` comes back on every read. Pages, counts and
+  context budgets see each event once.
+- It cannot be set on an inverse field, nor on an event type's fields.
+
+A company with thousands of deals is a wide fan-out, so the query never
+gathers it: it reads the incoming edges through `record_links_target_idx`
+(workspace, target, field, covering the source), takes each live source's
+own newest page of directly attached events (through `event_links
+(workspace, record_id, link)`, the event types' relation edges and
+`event_records (record_id, occurred_at)`), and merges those, deduplicated,
+into one keyset page on (`occurred_at`, ID). An event's position among one
+source's events is never later than its position overall, so that covers
+the page and every path to its events. Context packs and
+`GET /v1/records/:id/events` share it, and an integration test checks its
+plan on a seeded fan-out.
+
+The engine cannot prove a relation is stable, so the setting says nothing
+about permanence. Template defaults leave it off on affiliations, ownership
+and contact assignments (`person.company`, `deal.company`,
+`deal.pointOfContact`, `property.owner`, `project.company`,
+`project.primaryContact`, `proposal.company`, `job.company`, the task
+relations), where reassigning should not regroup old events. They turn it
+on only where a record belongs to its target and a change is a correction:
+`appointment.person`, `viewing.property`, `viewing.person`,
+`application.person`, `application.job` and `proposal.project`.
+
 `POST /v1/events/:id/links` adds participants and `about` records to a
 logged event by ID, with the same matching. Removing one
 (`DELETE /v1/events/:id/participants/:participantId` or
@@ -1249,9 +1296,9 @@ A context pack is assembled by fixed rules (5):
   tasks (tasks linked to the record through an active relation field whose
   status is not `done`, earliest due date first, undated last), current facts (not superseded or retracted,
   newest `validFrom` first; a fact resting only on an internal note is
-  marked `internal: true`), then recent events attached to the record
-  (newest first, each with `via`, 1.3, without internal notes, whose text
-  is already a fact). Items
+  marked `internal: true`), then recent events in the record's history
+  (attached directly or rolled up, newest first, each once with `via`, 1.3,
+  without internal notes, whose text is already a fact). Items
   are never cut mid-text; a section stops at the last whole item that fits.
 - `omitted` counts the items left out of each section, so the agent knows
   to read more with `search` or the REST routes.

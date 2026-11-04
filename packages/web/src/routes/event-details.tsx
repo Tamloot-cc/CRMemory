@@ -1,8 +1,10 @@
 import type { EventDetails, ObjectView, UnmatchedReason, Via } from '@retainer/shared';
+import { isInverseRelation } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { X } from 'lucide-react';
-import { useState } from 'react';
+import { CornerDownRight, X } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
+import { relationTargets } from '../fields/common.js';
 import {
   Badge,
   Button,
@@ -17,7 +19,7 @@ import {
   Stack,
 } from '../ui/index.js';
 import { CandidateRecord } from './record-actions.js';
-import { objectLabel, recordTitle, useDebounced } from './state.js';
+import { objectByName, objectLabel, recordTitle, useDebounced } from './state.js';
 
 const REASONS: Record<UnmatchedReason, string> = {
   no_match: 'No matching record',
@@ -30,7 +32,8 @@ const REASONS: Record<UnmatchedReason, string> = {
 /**
  * How an event is attached to the record whose history lists it (7.1):
  * a participant, `about` it, through one of the event's relation fields, or
- * rolled up from a related record.
+ * rolled up from a related record. A rollup reads as a sentence with a link,
+ * not a badge, since the event isn't attached to this record itself.
  */
 export function ViaLabel({
   via,
@@ -42,24 +45,69 @@ export function ViaLabel({
   eventObject?: ObjectView;
   /** The listing record's object, to name the field a rollup follows. */
   recordObject?: ObjectView;
-}) {
-  const label = (object: ObjectView | undefined, name: string) =>
-    object?.fields.find((f) => f.name === name)?.label ?? name;
+}): ReactNode {
   switch (via.kind) {
     case 'participant':
       return <Badge>Participant</Badge>;
     case 'about':
       return <Badge>About</Badge>;
     case 'field':
-      return <Badge>Via field {label(eventObject, via.field)}</Badge>;
+      return <Badge>Via field {fieldLabel(eventObject, via.field)}</Badge>;
     case 'rollup':
-      return (
-        <Row>
-          <Badge>Via {label(recordObject, via.field)}</Badge>
-          <CandidateRecord id={via.record} />
-        </Row>
-      );
+      return <RollupVia via={via} recordObject={recordObject} />;
+    default:
+      return unknownVia(via);
   }
+}
+/** Fails to compile when a `Via` kind has no case above; shows nothing at run time. */
+function unknownVia(via: never): null {
+  void via;
+  return null;
+}
+const fieldLabel = (object: ObjectView | undefined, name: string) =>
+  object?.fields.find((f) => f.name === name)?.label ?? name;
+
+/**
+ * "Rolled up via Company of Dana Levi". `via.field` is a field of the source
+ * record: named from that record's object once its label loads (the query
+ * `CandidateRecord` shares), and until then from the one owning relation of
+ * that name that points at `recordObject`, if there is exactly one.
+ */
+function RollupVia({
+  via,
+  recordObject,
+}: {
+  via: Extract<Via, { kind: 'rollup' }>;
+  recordObject?: ObjectView;
+}) {
+  const { session, schema } = useWorkspace();
+  const source = useQuery({
+    queryKey: [session.workspace.id, 'record', via.record, 'label'],
+    queryFn: ({ signal }) => api.record(via.record, [], signal),
+  });
+  const candidates = recordObject
+    ? schema.objects.flatMap((o) =>
+        o.fields.filter(
+          (f) =>
+            f.name === via.field &&
+            f.type === 'relation' &&
+            !isInverseRelation(f) &&
+            relationTargets(f).includes(recordObject.nameSingular),
+        ),
+      )
+    : [];
+  const sourceObject = source.data ? objectByName(schema, source.data.object) : undefined;
+  const label = sourceObject
+    ? fieldLabel(sourceObject, via.field)
+    : candidates.length === 1
+      ? (candidates[0]?.label ?? via.field)
+      : via.field;
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1 text-sm italic text-muted-foreground">
+      <CornerDownRight size={13} aria-hidden className="shrink-0" />
+      <span>Rolled up via {label} of</span> <CandidateRecord id={via.record} />
+    </span>
+  );
 }
 
 /**

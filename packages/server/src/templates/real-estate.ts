@@ -126,14 +126,18 @@ export const realEstate: Template = {
             name: 'property',
             label: 'Property',
             type: 'relation',
-            settings: { targetObject: PROPERTY, inverseField: 'viewings' },
+            settings: { targetObject: PROPERTY, inverseField: 'viewings', rollUpEvents: true },
           },
           {
             universalId: '3bf3dccd-d40c-4080-ad43-9c33dd75089f',
             name: 'person',
             label: 'Visitor',
             type: 'relation',
-            settings: { targetObject: BASE_OBJECT_IDS.person, inverseField: 'viewings' },
+            settings: {
+              targetObject: BASE_OBJECT_IDS.person,
+              inverseField: 'viewings',
+              rollUpEvents: true,
+            },
           },
           {
             universalId: 'bd095ab1-c943-4dc2-a398-c10dcfa0a4a1',

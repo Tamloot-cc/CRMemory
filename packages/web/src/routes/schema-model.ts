@@ -71,6 +71,14 @@ export function cardinality(
   return `Each ${object.labelSingular.toLowerCase()} has ${what}`;
 }
 
+/**
+ * Whether a field can roll up events: the owning side of a relation on an
+ * entity. Events attached to a record then also show on the record it points
+ * to. Inverse fields and event types can't.
+ */
+export const canRollUpEvents = (object: Pick<ObjectView, 'class'>, field: FieldView) =>
+  field.type === 'relation' && !isInverseRelation(field) && object.class === 'entity';
+
 /** Whether each record holds many related records here: a set, or an inverse list. */
 export const isManyRelation = (f: FieldView) =>
   f.settings.relationCardinality === 'one_to_many' ||
@@ -146,6 +154,7 @@ const FLAG_WORDS: Record<string, [string, string]> = {
   isUnique: ['unique', 'not unique'],
   isFilterable: ['filterable', 'not filterable'],
   isSearchable: ['searchable', 'not searchable'],
+  rollUpEvents: ['roll up events', 'stop rolling up events'],
 };
 /**
  * One schema operation in words, with labels from the current schema where

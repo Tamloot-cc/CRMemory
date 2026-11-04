@@ -36,6 +36,7 @@ import {
   Button,
   CardGrid,
   Check,
+  CheckLabel,
   Code,
   Diagram,
   DiagramKey,
@@ -69,6 +70,7 @@ import {
   Tr,
 } from '../ui/index.js';
 import {
+  canRollUpEvents,
   cardinality,
   describeOperation,
   findObject,
@@ -685,6 +687,11 @@ function FieldSheet({
                 )}
               </Property>
             ) : null}
+            {canRollUpEvents(object, field) ? (
+              <Property label="Roll up events">
+                <RollUpEventsSwitch object={object} field={field} />
+              </Property>
+            ) : null}
             {s.onDelete ? (
               <Property label="If target is deleted">
                 {s.onDelete === 'cascade'
@@ -723,6 +730,60 @@ function FieldSheet({
         </PropertyList>
       </Section>
     </Sheet>
+  );
+}
+
+/**
+ * Turns event rollup on or off for an owning relation field, as an
+ * `update_field` change: additive, so it applies without review. Read only
+ * without `schema:write`.
+ */
+export function RollUpEventsSwitch({ object, field }: { object: ObjectView; field: FieldView }) {
+  const { session } = useWorkspace(),
+    client = useQueryClient();
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  const on = field.settings.rollUpEvents === true;
+  const allowed = canMutate(session, 'schema:write');
+  async function change(next: boolean) {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await api.proposeSchemaChange([
+        { op: 'update_field', object: object.nameSingular, field: field.name, rollUpEvents: next },
+      ]);
+      if (result.status === 'failed') setError(result.change?.error ?? 'The change failed');
+      else if (result.status === 'proposed') setError('Proposed: it applies once approved');
+      await client.invalidateQueries({ queryKey: [session.workspace.id] });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Stack gap="small">
+      {allowed ? (
+        <CheckLabel>
+          <Input
+            type="checkbox"
+            role="switch"
+            aria-label="Roll up events"
+            checked={on}
+            disabled={busy}
+            onChange={(e) => void change(e.target.checked)}
+          />
+          <span>{on ? 'On' : 'Off'}</span>
+        </CheckLabel>
+      ) : (
+        <Check value={on} />
+      )}
+      <Muted small>
+        Events attached to a {object.labelSingular.toLowerCase()} also appear on the record it
+        points to. Turn it on only when regrouping old events after a reassignment is right.
+      </Muted>
+      {error ? <Notice error>{error}</Notice> : null}
+    </Stack>
   );
 }
 

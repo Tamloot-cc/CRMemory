@@ -125,8 +125,15 @@ export function applyOperations(
       issue(path, `universal ID ${universalId} already exists`);
       return;
     }
-    const { targetObject, targetObjects, inverseField, relationCardinality, onDelete, ...rest } =
-      definition.settings ?? {};
+    const {
+      targetObject,
+      targetObjects,
+      inverseField,
+      relationCardinality,
+      onDelete,
+      rollUpEvents,
+      ...rest
+    } = definition.settings ?? {};
 
     const field: FieldState = {
       universalId,
@@ -135,7 +142,8 @@ export function applyOperations(
       label: definition.label,
       description: definition.description ?? null,
       type: definition.type,
-      settings: { ...rest },
+      // Stored only when on, so off is one state (7.2).
+      settings: rollUpEvents ? { ...rest, rollUpEvents } : { ...rest },
       isNullable: definition.isNullable ?? true,
       isUnique: definition.isUnique ?? false,
       isFilterable: definition.isFilterable ?? !NOT_FILTERABLE_BY_DEFAULT.has(definition.type),
@@ -147,10 +155,18 @@ export function applyOperations(
     };
 
     if (definition.type !== 'relation') {
-      if (targetObject || targetObjects || inverseField || relationCardinality || onDelete) {
+      if (
+        targetObject ||
+        targetObjects ||
+        inverseField ||
+        relationCardinality ||
+        onDelete ||
+        rollUpEvents !== undefined
+      ) {
         issue(
           path,
-          'targetObject, targetObjects, inverseField and onDelete apply only to relation fields',
+          'targetObject, targetObjects, inverseField, onDelete and rollUpEvents apply only to ' +
+            'relation fields',
         );
       }
       object.fields.push(field);
@@ -422,6 +438,16 @@ export function applyOperations(
               '(it can be renamed, relabeled and described)',
           );
           break;
+        }
+        if (operation.rollUpEvents !== undefined) {
+          if (field.type !== 'relation') {
+            issue(path, 'rollUpEvents applies only to relation fields');
+            break;
+          }
+          // Only the current edges are read, so even a protected field takes
+          // it (7.2); validation refuses inverses and event types' fields.
+          const { rollUpEvents: _previous, ...settings } = field.settings;
+          field.settings = operation.rollUpEvents ? { ...settings, rollUpEvents: true } : settings;
         }
         if (operation.label !== undefined) field.label = operation.label;
         if (operation.description !== undefined) field.description = operation.description;

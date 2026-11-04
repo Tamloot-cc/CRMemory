@@ -157,6 +157,13 @@ Things worth knowing:
   other side of a relation (`readOnly`, `isInverse` in `describe_schema`) is
   written from its owning side. A relation with `targetObjects` takes records of any
   of those objects; find the records pointing at one by filtering on it.
+- **Rolled-up events.** A relation with `rollUpEvents` (shown in
+  `describe_schema`) also lists the events of the records pointing at a record
+  in its history: a company sees the calls about its deals, with
+  `via: { kind: "rollup", field, record }`. It is one hop and follows the
+  relation's current value, so a reassigned deal takes its events with it.
+  Still put the company in an event's `about` when the event is about the
+  company itself.
 - **Participants and `about`.** Participants are who took part. A meeting
   with Dana about the Acme pilot lists Dana as a participant and the Acme
   company and the pilot project in `about`:
@@ -188,8 +195,8 @@ Things worth knowing:
   `propose_schema_change` with `create_object` and `class: "event"`. It gets
   a title and summary of its own; add only the fields it needs.
 - **Reading back.** `get_context` gives the current values (with who wrote
-  each), open tasks, current facts and recent events (each saying how it is
-  attached, `via`), within
+  each), open tasks, current facts and recent events, rolled-up ones
+  included (each saying how it is attached, `via`), within
   `tokenBudget` tokens (default 2000, at most 16000). `omitted` counts what
   did not fit.
 - **Schema.** Additive changes (new objects, fields, options) apply at once.

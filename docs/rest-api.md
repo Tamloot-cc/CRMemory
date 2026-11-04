@@ -92,7 +92,7 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 | `POST /v1/records/delete-impact`                  | `read`           | The same for `{ "ids": [...] }` (at most 200) deleted together       |
 | `DELETE /v1/records/:id`                          | `write`          | Soft-delete a record; for events, also retract what cites them       |
 | `GET /v1/records/:id/assertions`                  | `read`           | Per-field history; `?field=`                                         |
-| `GET /v1/records/:id/events`                      | `read`           | Events attached to the record, newest first, with `via`; `?link=`    |
+| `GET /v1/records/:id/events`                      | `read`           | The record's event history, rollups included, with `via`; `?link=`   |
 | `GET` · `POST /v1/records/:id/facts`              | `read` · `write` | List facts, or `remember` one                                        |
 | `DELETE /v1/facts/:id`                            | `write`          | Retract a fact                                                       |
 | `GET /v1/records/:id/context`                     | `read`           | Context pack; `?tokenBudget=` (default 2000, at most 16000)          |

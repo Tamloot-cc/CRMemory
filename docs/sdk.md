@@ -95,9 +95,11 @@ const calls = await retainer.queryRecords('call', {
 });
 // calls.records (each with .event: occurredAt, title, summary, participants, about)
 
-// Every event attached to a record, across types, with how it is attached.
+// A record's event history, across types, with how each event is attached:
+// directly, or rolled up from a record pointing at it (rollUpEvents).
 const history = await retainer.recordEvents(acme.id, { limit: 20 });
 // history.items[0].via: { kind: 'participant' } | { kind: 'about' } | { kind: 'field', field }
+//   | { kind: 'rollup', field, record }
 ```
 
 A filter maps field names to a value (equality) or to operators, and nests

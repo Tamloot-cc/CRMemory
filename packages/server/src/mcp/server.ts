@@ -439,8 +439,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       description:
         'Returns what Retainer knows about one record, fitted to a token budget: its current ' +
         'field values (each with who wrote it and when it was observed), then open tasks ' +
-        '(earliest due first), current facts and recent events (newest first), each event ' +
-        'saying how it is attached (via). Field ' +
+        '(earliest due first), current facts and recent events (newest first, including ' +
+        'those rolled up from records pointing at it), each event saying how it is ' +
+        'attached (via). Field ' +
         'values are what the CRM holds; facts are plain-language claims with their sources. ' +
         'omitted counts what did not fit; read more with search or a larger tokenBudget.',
       inputSchema: getContextInput,

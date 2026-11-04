@@ -29,6 +29,8 @@ export type StoredFieldSettings = {
   /** Set by the engine on the derived, read-only side of a relation. */
   isInverse?: boolean;
   onDelete?: OnDeleteBehavior;
+  /** Owning relation of an entity: attached events roll up to the target (7.2). */
+  rollUpEvents?: boolean;
   maxValues?: number;
 };
 
@@ -113,7 +115,8 @@ export type DiffOp =
         | 'isNullable'
         | 'isUnique'
         | 'isFilterable'
-        | 'isSearchable';
+        | 'isSearchable'
+        | 'rollUpEvents';
       from: string | boolean | null;
       to: string | boolean | null;
     }

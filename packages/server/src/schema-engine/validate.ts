@@ -223,6 +223,21 @@ function validateField(
     issue(path, 'options apply only to select and multi_select fields');
   }
 
+  if (settings.rollUpEvents !== undefined && field.type !== 'relation') {
+    issue(path, 'rollUpEvents applies only to relation fields');
+  }
+  if (settings.rollUpEvents && settings.isInverse) {
+    issue(path, 'rollUpEvents belongs on the owning side of a relation, not its inverse');
+  }
+  if (settings.rollUpEvents && object.class === 'event') {
+    // An event's own relation field already attaches it to the target (6.3).
+    issue(
+      path,
+      "rollUpEvents applies to an entity's relations; an event's own relation field " +
+        'already attaches the event to its target',
+    );
+  }
+
   if (settings.maxValues !== undefined && !MULTI_VALUE_TYPES.has(field.type)) {
     issue(path, 'maxValues applies only to emails, phones and links fields');
   }

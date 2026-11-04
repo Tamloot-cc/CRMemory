@@ -1,6 +1,7 @@
 import type { FieldView, ObjectView } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  canRollUpEvents,
   cardinality,
   describeOperation,
   isManyRelation,
@@ -240,6 +241,15 @@ describe('schema page model', () => {
     expect(polymorphic([deal, company]).map((e) => e.to.node)).toEqual(['company']);
   });
 
+  it('offers event rollup only on owning relations of entities', () => {
+    const [name, , toCompany] = person.fields as [FieldView, FieldView, FieldView];
+    const [people] = company.fields as [FieldView];
+    expect(canRollUpEvents(person, toCompany)).toBe(true);
+    expect(canRollUpEvents(company, people)).toBe(false);
+    expect(canRollUpEvents(person, name)).toBe(false);
+    expect(canRollUpEvents({ class: 'event' }, toCompany)).toBe(false);
+  });
+
   it('words cardinality the same way everywhere', () => {
     expect(cardinality(person, company, false)).toBe('Each person has one company');
     expect(cardinality(company, person, true)).toBe('Each company has many people');
@@ -290,6 +300,12 @@ describe('schema page model', () => {
     expect(
       d({ op: 'update_field', object: 'person', field: 'name', isUnique: true, isNullable: false }),
     ).toBe('Change Person → Name: required, unique');
+    expect(d({ op: 'update_field', object: 'person', field: 'company', rollUpEvents: true })).toBe(
+      'Change Person → Company: roll up events',
+    );
+    expect(d({ op: 'update_field', object: 'person', field: 'company', rollUpEvents: false })).toBe(
+      'Change Person → Company: stop rolling up events',
+    );
     expect(
       d({
         op: 'create_field',

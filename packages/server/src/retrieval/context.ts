@@ -9,7 +9,13 @@ import type {
 import { BASE_FIELD_IDS, BASE_OBJECT_IDS, TASK_DONE_OPTION } from '@retainer/shared';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
-import { directAttachments, liveFactSource, viaOf } from '../memory/events.js';
+import {
+  countEventHistory,
+  eventHistory,
+  type HistoryRow,
+  liveFactSource,
+  viaOf,
+} from '../memory/events.js';
 import { getRecord } from '../records/read.js';
 import { references } from '../records/references.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
@@ -251,10 +257,11 @@ async function currentFacts(
 }
 
 /**
- * Live events attached to the record (7.1), newest first, each with how it
- * is attached (`via`: participant, then about, then one of the event's own
- * relation fields). Internal notes are never listed: their text is the
- * fact's, already in `facts`.
+ * The record's event history (7.1, 7.2), newest first, each event once with
+ * how it is attached (`via`: participant, about, one of the event's own
+ * relation fields, then rolled up from a record pointing at this one).
+ * Internal notes are never listed: their text is the fact's, already in
+ * `facts`.
  */
 async function recentEvents(
   tx: Tx,
@@ -264,23 +271,17 @@ async function recentEvents(
   limit: number,
 ): Promise<Section<EventItem>> {
   const rows = await tx<
-    {
-      id: string;
-      object_type_id: string;
-      data: Record<string, unknown>;
-      occurred_at: Date;
-      rank: number;
-      field_id: string | null;
-      total: string;
-    }[]
+    (HistoryRow & { id: string; object_type_id: string; data: Record<string, unknown> })[]
   >`
-    select r.id, r.object_type_id, r.data, e.occurred_at, a.rank, a.field_id,
-      count(*) over () as total
-    from ${directAttachments(tx, schema, workspaceId, recordId)} a
-    join records r on r.id = a.event_id
-    join event_records e on e.record_id = r.id
-    order by e.occurred_at desc, r.id
+    select r.id, r.object_type_id, r.data, h.occurred_at, h.rank, h.field_id, h.via_record_id
+    from ${eventHistory(tx, schema, workspaceId, recordId, { limit })} h
+    join records r on r.id = h.event_id
+    order by h.occurred_at desc, h.event_id desc
     limit ${limit}`;
+  // Counted over the deduplicated history, so `omitted` never counts an
+  // event twice (7.2).
+  const total =
+    rows.length < limit ? rows.length : await countEventHistory(tx, schema, workspaceId, recordId);
   return {
     items: rows.map((row) => {
       const object = schema.objectsById.get(row.object_type_id);
@@ -297,6 +298,6 @@ async function recentEvents(
         via: viaOf(schema, row),
       };
     }),
-    total: Number(rows[0]?.total ?? 0),
+    total,
   };
 }

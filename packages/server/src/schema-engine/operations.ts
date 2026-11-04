@@ -27,6 +27,8 @@ const fieldSettingsSchema = z.strictObject({
    */
   relationCardinality: z.enum(['many_to_one', 'many_to_many']).optional(),
   onDelete: z.enum(['set_null', 'cascade']).optional(),
+  /** Events attached to the source also show on the target (7.2). */
+  rollUpEvents: z.boolean().optional(),
   maxValues: z.number().int().positive().max(100).optional(),
 });
 
@@ -95,6 +97,8 @@ export const schemaOperationSchema = z.discriminatedUnion('op', [
     isUnique: z.boolean().optional(),
     isFilterable: z.boolean().optional(),
     isSearchable: z.boolean().optional(),
+    /** Turn event rollups through this relation on or off (7.2); never destructive. */
+    rollUpEvents: z.boolean().optional(),
     /** Accepted only to explain that type changes are not supported. */
     type: z.enum(FIELD_TYPES).optional(),
   }),

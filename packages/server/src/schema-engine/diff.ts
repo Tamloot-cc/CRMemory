@@ -129,6 +129,20 @@ export function diffSchemas(current: SchemaState, desired: SchemaState): DiffOp[
         }
       }
 
+      const rollUp = (f: FieldState) => f.settings.rollUpEvents === true;
+      if (rollUp(previous) !== rollUp(field)) {
+        ops.push({
+          kind: 'update_field',
+          objectId,
+          object: name,
+          fieldId,
+          field: field.name,
+          property: 'rollUpEvents',
+          from: rollUp(previous),
+          to: rollUp(field),
+        });
+      }
+
       const before = new Map((previous.settings.options ?? []).map((o) => [o.value, o.label]));
       const after = new Map((field.settings.options ?? []).map((o) => [o.value, o.label]));
       const base = { objectId, object: name, fieldId, field: field.name };
@@ -163,6 +177,8 @@ export function classifyOp(op: DiffOp): Classification {
       return op.field.isUnique || !op.field.isNullable ? 'destructive' : 'additive';
     case 'update_field':
       if (op.property === 'label' || op.property === 'description') return 'additive';
+      // A rollup is read-time: nothing is stored, so either direction is safe (7.2).
+      if (op.property === 'rollUpEvents') return 'additive';
       if ((op.property === 'isFilterable' || op.property === 'isSearchable') && op.to === true) {
         return 'additive';
       }

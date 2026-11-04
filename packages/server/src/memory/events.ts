@@ -518,7 +518,7 @@ export function liveFactSource(tx: Tx, factId: Fragment): Fragment {
 }
 
 /** The precedence of attachment kinds (7.1): a lower rank wins. */
-const VIA_RANK = { participant: 1, about: 2, field: 3 } as const;
+const VIA_RANK = { participant: 1, about: 2, field: 3, rollup: 4 } as const;
 
 /**
  * Events directly attached to a record (6.3, 7.1): it took part, the event
@@ -535,7 +535,7 @@ export function directAttachments(
   link?: EventAttachment,
 ): Fragment {
   const recordId = typeof record === 'string' ? tx`${record}::uuid` : record;
-  const fieldIds = activeRelationFieldIds(schema);
+  const fieldIds = eventRelationFieldIds(schema);
   const want = (kind: EventAttachment) => !link || link === kind;
   const parts: Fragment[] = [];
   if (want('participant') || want('about')) {
@@ -548,7 +548,7 @@ export function directAttachments(
         and l.link = any(${kinds as unknown as string[]}::text[])
       group by l.event_id`);
   }
-  if (want('field')) {
+  if (want('field') && fieldIds.length > 0) {
     parts.push(tx`
       select l.source_record_id as event_id, ${VIA_RANK.field}::int as rank,
         min(l.field_id::text)::uuid as field_id
@@ -556,6 +556,9 @@ export function directAttachments(
       where l.workspace_id = ${workspaceId} and l.target_record_id = ${recordId}
         and l.field_id = any(${fieldIds}::uuid[])
       group by l.source_record_id`);
+  }
+  if (parts.length === 0) {
+    parts.push(tx`select null::uuid as event_id, 0 as rank, null::uuid as field_id where false`);
   }
   const union = parts.reduce((a, b) => tx`${a} union all ${b}`);
   return tx`(
@@ -566,14 +569,18 @@ export function directAttachments(
     order by a.event_id, a.rank, a.field_id)`;
 }
 
-/** IDs of active relation fields: a deleted field's edges no longer attach anything. */
-function activeRelationFieldIds(schema: CompiledSchema): string[] {
+/**
+ * IDs of the event types' own active relation fields (6.3): only they attach
+ * an event, and a deleted field's edges no longer attach anything.
+ */
+function eventRelationFieldIds(schema: CompiledSchema): string[] {
   return [...schema.fieldOwners]
     .filter(([id, object]) => {
       const field = object.fieldsById.get(id);
       return (
         field?.status === 'active' &&
         object.state.status === 'active' &&
+        object.isEvent &&
         field.type === 'relation' &&
         !field.settings.isInverse
       );
@@ -581,19 +588,122 @@ function activeRelationFieldIds(schema: CompiledSchema): string[] {
     .map(([id]) => id);
 }
 
-/** How a row from `directAttachments` presents its attachment. */
-export function viaOf(schema: CompiledSchema, row: { rank: number; field_id: string | null }): Via {
+/**
+ * IDs of the relation fields events roll up through (7.2): active, owning
+ * fields of active entity objects with `rollUpEvents` on.
+ */
+export function rollUpFieldIds(schema: CompiledSchema): string[] {
+  return [...schema.fieldOwners]
+    .filter(([id, object]) => {
+      const field = object.fieldsById.get(id);
+      return (
+        field?.status === 'active' &&
+        object.state.status === 'active' &&
+        !object.isEvent &&
+        field.type === 'relation' &&
+        !field.settings.isInverse &&
+        field.settings.rollUpEvents === true
+      );
+    })
+    .map(([id]) => id);
+}
+
+/** A row of `eventHistory`: one event and the attachment that wins. */
+export type HistoryRow = {
+  event_id: string;
+  occurred_at: Date;
+  rank: number;
+  field_id: string | null;
+  via_record_id: string | null;
+};
+
+/**
+ * The events in a record's history (7.1, 7.2): those attached to it
+ * directly and, unless `link` asks for one direct kind, those attached
+ * directly to a live record that points at it through a `rollUpEvents`
+ * field. One row per event, with the attachment that wins: a direct kind
+ * first (participant, about, field), then a rollup, the smallest field ID
+ * and then source record ID among several. Never more than one hop: what a
+ * source has only by rollup stays with it.
+ *
+ * With `limit`, the rows are at least the newest `limit` after `cursor`
+ * (occurred_at, id descending), merged from each source's own newest
+ * `limit`: an event's position among one source's events is never later
+ * than its position overall, so they hold the page and every path to its
+ * events, and the full fan-out is never gathered. The caller orders and
+ * limits. Without `limit`, every event, for counts.
+ */
+export function eventHistory(
+  tx: Tx,
+  schema: CompiledSchema,
+  workspaceId: string,
+  recordId: string,
+  options: { link?: EventAttachment; limit?: number; cursor?: string } = {},
+): Fragment {
+  const { link, limit, cursor } = options;
+  const newest = (events: Fragment) => tx`
+    select d.event_id, e.occurred_at, d.rank, d.field_id
+    from ${events} d
+    join event_records e on e.record_id = d.event_id
+    where ${after(tx, tx`e.occurred_at`, tx`d.event_id`, cursor, true)}
+    ${limit === undefined ? tx`` : tx`order by e.occurred_at desc, d.event_id desc limit ${limit}`}`;
+  const branches = [
+    tx`select t.*, null::uuid as via_record_id
+      from (${newest(directAttachments(tx, schema, workspaceId, recordId, link))}) t`,
+  ];
+  const fieldIds = link ? [] : rollUpFieldIds(schema);
+  if (fieldIds.length > 0) {
+    branches.push(tx`
+      select t.event_id, t.occurred_at, ${VIA_RANK.rollup}::int as rank, s.field_id,
+        s.source_record_id as via_record_id
+      from record_links s
+      join records src on src.id = s.source_record_id and src.deleted_at is null
+      cross join lateral (${newest(
+        directAttachments(tx, schema, workspaceId, tx`s.source_record_id`),
+      )}) t
+      where s.target_record_id = ${recordId} and s.field_id = any(${fieldIds}::uuid[])
+        and s.workspace_id = ${workspaceId} and s.source_record_id <> ${recordId}`);
+  }
+  const union = branches.reduce((a, b) => tx`${a} union all ${b}`);
+  return tx`(
+    select distinct on (m.event_id) m.event_id, m.occurred_at, m.rank, m.field_id,
+      m.via_record_id
+    from (${union}) m
+    order by m.event_id, m.rank, m.field_id, m.via_record_id)`;
+}
+
+/** The number of events in a record's history, each counted once (7.2). */
+export async function countEventHistory(
+  tx: Tx,
+  schema: CompiledSchema,
+  workspaceId: string,
+  recordId: string,
+): Promise<number> {
+  const [row] = await tx<{ total: string }[]>`
+    select count(*) as total from ${eventHistory(tx, schema, workspaceId, recordId)} h`;
+  return Number(row?.total ?? 0);
+}
+
+/** How a row from `directAttachments` or `eventHistory` presents its attachment. */
+export function viaOf(
+  schema: CompiledSchema,
+  row: { rank: number; field_id: string | null; via_record_id?: string | null },
+): Via {
   if (row.rank === VIA_RANK.participant) return { kind: 'participant' };
   if (row.rank === VIA_RANK.about) return { kind: 'about' };
   const field = row.field_id
     ? schema.fieldOwners.get(row.field_id)?.fieldsById.get(row.field_id)
     : undefined;
-  return { kind: 'field', field: field?.name ?? 'unknown' };
+  const name = field?.name ?? 'unknown';
+  if (row.rank === VIA_RANK.rollup && row.via_record_id) {
+    return { kind: 'rollup', field: name, record: row.via_record_id };
+  }
+  return { kind: 'field', field: name };
 }
 
 /**
- * A page of the live events attached directly to a record (7.1), newest
- * first, each with how it is attached. Keyset on (occurred_at, id).
+ * A page of a record's event history (7.1, 7.2), newest first, each event
+ * once with how it is attached. Keyset on (occurred_at, id).
  */
 export async function attachedEventPage(
   tx: Tx,
@@ -604,14 +714,19 @@ export async function attachedEventPage(
   cursor?: string,
   link?: EventAttachment,
 ): Promise<{ items: AttachedEvent[]; nextCursor: string | null }> {
-  const rows = await tx<(RecordRow & { stamp: string; rank: number; field_id: string | null })[]>`
-    select ${tx(RECORD_COLUMNS.map((c) => `r.${c}`))}, e.occurred_at::text as stamp,
-      a.rank, a.field_id
-    from ${directAttachments(tx, schema, workspaceId, recordId, link)} a
-    join records r on r.id = a.event_id
-    join event_records e on e.record_id = r.id
-    where ${after(tx, tx`e.occurred_at`, tx`r.id`, cursor, true)}
-    order by e.occurred_at desc, r.id desc
+  const history = eventHistory(tx, schema, workspaceId, recordId, {
+    link,
+    cursor,
+    limit: limit + 1,
+  });
+  const rows = await tx<
+    (RecordRow & Omit<HistoryRow, 'event_id' | 'occurred_at'> & { stamp: string })[]
+  >`
+    select ${tx(RECORD_COLUMNS.map((c) => `r.${c}`))}, h.occurred_at::text as stamp,
+      h.rank, h.field_id, h.via_record_id
+    from ${history} h
+    join records r on r.id = h.event_id
+    order by h.occurred_at desc, h.event_id desc
     limit ${limit + 1}`;
   const result = page(rows, limit);
   const presented = await presentRecords(tx, schema, result.items);

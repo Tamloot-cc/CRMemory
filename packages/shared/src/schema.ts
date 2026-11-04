@@ -129,6 +129,13 @@ export type FieldSettings = {
    * `cascade` is refused on many_to_many fields.
    */
   onDelete?: OnDeleteBehavior;
+  /**
+   * `relation`, owning side of an entity's field: the events attached to a
+   * record also appear in the event history of the records it points at
+   * through this field, one hop (7.2). Off unless set; changing it rewrites
+   * nothing, so it can be turned on and off at any time.
+   */
+  rollUpEvents?: boolean;
   /** `emails`, `phones`, `links`: cap on total primary plus additional values. */
   maxValues?: number;
 };

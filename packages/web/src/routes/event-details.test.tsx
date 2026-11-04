@@ -17,14 +17,27 @@ const company = {
   class: 'entity',
   fields: [{ name: 'people', label: 'People' }],
 } as unknown as ObjectView;
+// Person → Employer points at a company and rolls its events up to it.
+const person = {
+  nameSingular: 'person',
+  class: 'entity',
+  fields: [
+    {
+      name: 'company',
+      label: 'Employer',
+      type: 'relation',
+      settings: { targetObject: 'company', rollUpEvents: true },
+    },
+  ],
+} as unknown as ObjectView;
 
-function renderIn(children: ReactNode) {
+function renderIn(children: ReactNode, source: Record<string, unknown> = {}) {
   const workspace = {
     session: { workspace: { id: 'w1' } } as unknown as Session,
-    schema: { objects: [meeting, company] } as unknown as SchemaDescription,
+    schema: { objects: [meeting, company, person] } as unknown as SchemaDescription,
   };
   // Record labels are fetched per link; answer them without a server.
-  vi.spyOn(api, 'record').mockResolvedValue({ id: 'r', label: 'Dana Levi' } as never);
+  vi.spyOn(api, 'record').mockResolvedValue({ id: 'r', label: 'Dana Levi', ...source } as never);
   render(
     <QueryClientProvider client={new QueryClient()}>
       <WorkspaceContext.Provider value={workspace}>{children}</WorkspaceContext.Provider>
@@ -48,14 +61,39 @@ describe('ViaLabel', () => {
         <ViaLabel via={{ kind: 'about' }} />
         <ViaLabel via={{ kind: 'field', field: 'deal' }} eventObject={meeting} />
         <ViaLabel via={{ kind: 'field', field: 'renamedAway' }} eventObject={meeting} />
-        <ViaLabel via={{ kind: 'rollup', field: 'people', record: 'p1' }} recordObject={company} />
       </>,
     );
     expect(screen.getByText('Participant')).toBeTruthy();
     expect(screen.getByText('About')).toBeTruthy();
     expect(screen.getByText('Via field Deal')).toBeTruthy();
     expect(screen.getByText('Via field renamedAway')).toBeTruthy();
-    expect(screen.getByText('Via People')).toBeTruthy();
+  });
+
+  it('reads a rollup as a sentence linking the record it came from, not a badge', async () => {
+    renderIn(
+      <ViaLabel via={{ kind: 'rollup', field: 'company', record: 'p1' }} recordObject={company} />,
+      { object: 'person' },
+    );
+    expect(await screen.findByRole('link', { name: 'Dana Levi' })).toBeTruthy();
+    const sentence = screen.getByText('Rolled up via Employer of');
+    // Unlike direct attachments, no badge.
+    expect(sentence.closest('.border')).toBeNull();
+    expect(api.record).toHaveBeenCalledWith('p1', [], expect.anything());
+  });
+
+  it('names the source field from the schema until the source record loads', async () => {
+    renderIn(
+      <>
+        <ViaLabel via={{ kind: 'rollup', field: 'company', record: 'p1' }} recordObject={company} />
+        <ViaLabel via={{ kind: 'rollup', field: 'gone', record: 'p2' }} recordObject={company} />
+      </>,
+    );
+    expect(screen.getByText('Rolled up via Employer of')).toBeTruthy();
+    // A field the schema no longer has keeps its API name.
+    expect(screen.getByText('Rolled up via gone of')).toBeTruthy();
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole('link', { name: 'Dana Levi' })).toHaveLength(2),
+    );
   });
 });
 

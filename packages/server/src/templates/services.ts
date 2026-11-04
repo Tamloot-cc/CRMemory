@@ -137,7 +137,7 @@ export const services: Template = {
             name: 'project',
             label: 'Project',
             type: 'relation',
-            settings: { targetObject: PROJECT, inverseField: 'proposals' },
+            settings: { targetObject: PROJECT, inverseField: 'proposals', rollUpEvents: true },
           },
         ],
       },

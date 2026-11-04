@@ -127,6 +127,13 @@
       "when": 1793824931430,
       "tag": "0017_relation_collections_security",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793826440751,
+      "tag": "0018_event_history_rollups",
+      "breakpoints": true
     }
   ]
 }

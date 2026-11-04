@@ -324,7 +324,14 @@ export const recordLinks = pgTable(
     uniqueIndex('record_links_single_target_uq')
       .on(t.sourceRecordId, t.fieldId)
       .where(sql`not ${t.isCollection}`),
-    index('record_links_target_idx').on(t.targetRecordId, t.fieldId),
+    // Incoming edges by target and field, covering the source, so a record's
+    // rolled-up history finds its sources from the index alone (7.2).
+    index('record_links_target_idx').on(
+      t.workspaceId,
+      t.targetRecordId,
+      t.fieldId,
+      t.sourceRecordId,
+    ),
   ],
 );
 
@@ -406,6 +413,9 @@ export const eventRecords = pgTable(
       .on(t.workspaceId, t.channel, t.externalId)
       .where(sql`${t.externalId} is not null`),
     index('event_records_workspace_time_idx').on(t.workspaceId, t.occurredAt, t.recordId),
+    // An event's time by ID without reading the row: the per-source merge of
+    // a record's history reads it once per attached event (7.2).
+    index('event_records_record_time_idx').on(t.recordId, t.occurredAt),
   ],
 );
 

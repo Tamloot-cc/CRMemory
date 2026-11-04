@@ -392,7 +392,13 @@ export type SchemaOperation =
   | { op: 'rename_object'; object: string; nameSingular: string; namePlural: string }
   | { op: 'delete_object'; object: string }
   | { op: 'create_field'; object: string; field: FieldDefinition }
-  | ({ op: 'update_field'; object: string; field: string; description?: string | null } & Partial<
+  | ({
+      op: 'update_field';
+      object: string;
+      field: string;
+      description?: string | null;
+      rollUpEvents?: boolean;
+    } & Partial<
       Pick<
         FieldDefinition,
         'label' | 'isNullable' | 'isUnique' | 'isFilterable' | 'isSearchable' | 'type'
