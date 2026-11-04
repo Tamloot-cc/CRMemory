@@ -37,15 +37,20 @@ const DIRECTIONS: Partial<Record<string, [number, number]>> = {
 };
 const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
 
-/** Arrow keys jump to the nearest drop target in their direction, not a few pixels. */
+/**
+ * Arrow keys jump to the nearest drop target in their direction, not a few
+ * pixels: the direction counts from the target the item is over, which for
+ * an item in a floating panel is not where the item shows.
+ */
 const jumpToTarget: KeyboardCoordinateGetter = (event, { context }) => {
   const direction = DIRECTIONS[event.code];
   const current = context.collisionRect;
   if (!direction || !current) return undefined;
   event.preventDefault();
   const [dx, dy] = direction;
-  const cx = current.left + current.width / 2,
-    cy = current.top + current.height / 2;
+  const from = (context.over && context.droppableRects.get(context.over.id)) ?? current;
+  const cx = from.left + from.width / 2,
+    cy = from.top + from.height / 2;
   let best: { x: number; y: number; score: number } | undefined;
   for (const [id, rect] of context.droppableRects) {
     if (!rect || id === context.over?.id) continue;
@@ -67,8 +72,24 @@ const jumpToTarget: KeyboardCoordinateGetter = (event, { context }) => {
   return best ? { x: best.x, y: best.y } : undefined;
 };
 
-/** The pointer decides where a drop lands; from the keyboard, the most overlapped target. */
+/**
+ * The pointer decides where a drop lands; from the keyboard, the most
+ * overlapped target. A keyboard drag starts over the item's own target
+ * wherever the item shows: a calendar day's "more" panel floats over other
+ * days.
+ */
 const collisions: CollisionDetection = (args) => {
+  const initial = args.active.rect.current.initial;
+  const from = (args.active.data.current as ItemData | undefined)?.from;
+  if (
+    !args.pointerCoordinates &&
+    from &&
+    initial &&
+    Math.abs(args.collisionRect.top - initial.top) < 1 &&
+    Math.abs(args.collisionRect.left - initial.left) < 1 &&
+    args.droppableContainers.some((c) => c.id === from)
+  )
+    return [{ id: from }];
   const under = pointerWithin(args);
   return under.length ? under : rectIntersection(args);
 };

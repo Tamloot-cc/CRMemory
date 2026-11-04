@@ -158,8 +158,10 @@ export function CalendarEntry({
   draggable,
   selected = false,
   pending = false,
+  inPanel = false,
   onOpen,
 }: {
+  /** Unique among everything draggable on the calendar. */
   id: string;
   day: string;
   /** What `DragArea` hands back when this is moved. */
@@ -169,12 +171,14 @@ export function CalendarEntry({
   draggable: boolean;
   selected?: boolean;
   pending?: boolean;
+  /** In a day's "more" panel: opening the record closes the panel. */
+  inPanel?: boolean;
   onOpen: () => void;
 }) {
   const drag = useDragItem(id, day, item, !draggable);
   // A native button: Enter clicks it (opening the record). While it is being
   // dragged from the keyboard, the drag consumes Space and Enter instead.
-  return (
+  const entry = (
     <button
       ref={drag.ref}
       type="button"
@@ -193,6 +197,7 @@ export function CalendarEntry({
       <EntryBody title={title} time={time} />
     </button>
   );
+  return inPanel ? <PopoverPrimitive.Close asChild>{entry}</PopoverPrimitive.Close> : entry;
 }
 
 /** The entry under the pointer while it is dragged. */
@@ -230,31 +235,5 @@ export function MoreEntries({
       <PanelHeader title={title} />
       <div className="flex flex-col gap-1 overflow-y-auto p-2">{children}</div>
     </Popover>
-  );
-}
-
-/** A calendar entry in the "more" panel; it opens the record. */
-export function EntryButton({
-  title,
-  time,
-  onOpen,
-}: {
-  title: string;
-  time?: string;
-  onOpen: () => void;
-}) {
-  return (
-    <PopoverPrimitive.Close asChild>
-      <button
-        type="button"
-        onClick={onOpen}
-        className={cn(
-          ENTRY,
-          'h-7 hover:border-muted-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        )}
-      >
-        <EntryBody title={title} time={time} />
-      </button>
-    </PopoverPrimitive.Close>
   );
 }

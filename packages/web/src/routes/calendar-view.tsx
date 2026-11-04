@@ -15,7 +15,6 @@ import {
   CalendarEntry,
   CalendarHeader,
   DragArea,
-  EntryButton,
   EntryPreview,
   Inset,
   MonthGrid,
@@ -142,6 +141,25 @@ export function CalendarView({
   const dateValue = (r: PresentedRecord) => shownValue(r, field.name);
   const undatedCount = undated.data?.total ?? 0;
 
+  /** A record on its day, or in the day's "more" panel; both can be moved. */
+  const entry = (r: PresentedRecord, day: string, inPanel: boolean) => (
+    <CalendarEntry
+      key={r.id}
+      // The panel lists the day's first records too, so its entries drag under ids of their own.
+      id={inPanel ? `panel:${r.id}` : r.id}
+      day={day}
+      item={r}
+      title={recordTitle(r)}
+      time={timeOf(field, dateValue(r))}
+      // One move at a time: a record saving its move can't be moved again.
+      draggable={draggable && !Object.hasOwn(moves.moving, r.id)}
+      selected={selected === r.id}
+      pending={Object.hasOwn(moves.moving, r.id)}
+      inPanel={inPanel}
+      onOpen={() => onOpen(r.id)}
+    />
+  );
+
   return (
     <>
       <CalendarHeader
@@ -210,33 +228,12 @@ export function CalendarView({
                 more={
                   rest.length ? (
                     <MoreEntries count={rest.length} title={dayLabel(d)}>
-                      {list.map((r) => (
-                        <EntryButton
-                          key={r.id}
-                          title={recordTitle(r)}
-                          time={timeOf(field, dateValue(r))}
-                          onOpen={() => onOpen(r.id)}
-                        />
-                      ))}
+                      {list.map((r) => entry(r, key, true))}
                     </MoreEntries>
                   ) : null
                 }
               >
-                {visible.map((r) => (
-                  <CalendarEntry
-                    key={r.id}
-                    id={r.id}
-                    day={key}
-                    item={r}
-                    title={recordTitle(r)}
-                    time={timeOf(field, dateValue(r))}
-                    // One move at a time: a record saving its move can't be moved again.
-                    draggable={draggable && !Object.hasOwn(moves.moving, r.id)}
-                    selected={selected === r.id}
-                    pending={Object.hasOwn(moves.moving, r.id)}
-                    onOpen={() => onOpen(r.id)}
-                  />
-                ))}
+                {visible.map((r) => entry(r, key, false))}
               </CalendarDay>
             );
           })}

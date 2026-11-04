@@ -1205,6 +1205,39 @@ test('places records on a calendar and moves one to another day', async ({ page,
   await page.screenshot({ path: '/tmp/retainer-web-calendar.png' });
 });
 
+test('moves a record from a busy day\'s "more" panel', async ({ page, retainer: r }) => {
+  await r.request('/templates/sales/apply', {});
+  for (const name of ['Alpha deal', 'Beta deal', 'Gamma deal', 'Delta deal']) {
+    await r.request('/objects/deal/records', { values: { name, closeDate: '2026-03-11' } });
+  }
+  const view = await r.request(
+    '/objects/deal/views',
+    { name: 'Closing', kind: 'calendar', dateField: 'closeDate' },
+    r.keys.user,
+  );
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/o/deal?view=${view.id}&month=2026-03`);
+  const day = (label: string) =>
+    page.getByRole('heading', { name: label, exact: true }).locator('..');
+  // Three fit; the day shows two and "2 more".
+  await day('Wednesday, March 11').getByRole('button', { name: '2 more' }).click();
+  const panel = page.getByRole('dialog', { name: 'Wednesday, March 11' });
+  const last = panel.getByRole('button', { name: 'Delta deal' });
+  await expect(last).toBeVisible();
+
+  // From the keyboard it starts over its own day, not the days the panel covers.
+  await moveByKeyboard(page, last, 'ArrowRight', 'Wednesday, March 11', 'Thursday, March 12');
+  await expect(day('Thursday, March 12').getByRole('button', { name: 'Delta deal' })).toBeVisible();
+  await expect
+    .poll(async () => {
+      const found = await r.request('/objects/deal/query', {
+        filter: { name: { eq: 'Delta deal' } },
+      });
+      return found.records[0].fields.closeDate;
+    })
+    .toBe('2026-03-12');
+});
+
 test('keeps a changed filter as unsaved until the view is saved or reset', async ({
   page,
   retainer: r,
