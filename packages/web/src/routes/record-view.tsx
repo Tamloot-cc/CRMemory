@@ -3,6 +3,7 @@ import type { AssertionView, FieldView, ObjectView, PresentedRecord } from '@ret
 import {
   isCollectionRelation,
   isInverseRelation,
+  isPolymorphic,
   TASK_DONE_OPTION,
   validateFieldValue,
 } from '@retainer/shared';
@@ -12,9 +13,9 @@ import { History, Maximize2, Pencil } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { api, canMutate, useWorkspace } from '../api/client.js';
-import { FieldPicker, isPolymorphic, pickerFor, relationTargets } from '../fields/common.js';
+import { FieldPicker, pickerFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
-import { ActorBadge, AssertionSource, SourcedValue } from '../provenance/index.js';
+import { ActorBadge, AssertionSource, FactSources, SourcedValue } from '../provenance/index.js';
 import {
   Badge,
   Button,
@@ -39,14 +40,21 @@ import {
 import { EventDetailsView, ViaLabel } from './event-details.js';
 import { CandidateRecord, RecordActions } from './record-actions.js';
 import { RecordTimeline, type TimelineSearch } from './record-timeline.js';
-import { eventTitle, objectByName, objectLabel, QueryError } from './state.js';
+import {
+  eventTitle,
+  objectByName,
+  objectLabel,
+  QueryError,
+  recordTitle,
+  relationsTo,
+} from './state.js';
 import { isWritable } from './write-model.js';
 
 export function AssertionCard({ assertion }: { assertion: AssertionView }) {
   const { schema } = useWorkspace();
-  const field = schema.objects
-    .find((o) => o.nameSingular === assertion.object)
-    ?.fields.find((f) => f.name === assertion.field);
+  const field = objectByName(schema, assertion.object)?.fields.find(
+    (f) => f.name === assertion.field,
+  );
   const Display = field ? fields[field.type].Display : null;
   return (
     <Panel>
@@ -54,7 +62,7 @@ export function AssertionCard({ assertion }: { assertion: AssertionView }) {
         <Row>
           <Badge>{assertion.status}</Badge>
           <RecordLink id={assertion.recordId}>
-            {assertion.recordLabel || 'Untitled record'}
+            {recordTitle({ label: assertion.recordLabel })}
           </RecordLink>
           <Muted>{field?.label ?? assertion.field}</Muted>
         </Row>
@@ -96,14 +104,8 @@ export const pointsAt = (field: FieldView, id: string) =>
  */
 export function polymorphicLinksTo(objects: ObjectView[], object: string) {
   return objects.flatMap((o) =>
-    o.fields
-      .filter(
-        (f) =>
-          isPolymorphic(f) &&
-          f.isFilterable &&
-          !isInverseRelation(f) &&
-          relationTargets(f).includes(object),
-      )
+    relationsTo(o.fields, object)
+      .filter((f) => isPolymorphic(f) && f.isFilterable)
       .map((field) => ({ object: o, field })),
   );
 }
@@ -131,12 +133,12 @@ export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }
   const [memory, setMemory] = useState<{ id: string } & MemoryState>({ id });
   const nav = memory.id === id ? memory : { id };
   const r = record.data;
-  const object = schema.objects.find((o) => o.nameSingular === r?.object);
+  const object = r ? objectByName(schema, r.object) : undefined;
   return (
     <Sheet
       onClose={onClose}
       eyebrow={object?.labelSingular}
-      title={r ? r.label || 'Untitled record' : 'Record'}
+      title={r ? recordTitle(r) : 'Record'}
       description="Record details. Click a value to edit it."
       actions={
         <>
@@ -200,6 +202,8 @@ export function RecordView({
     queryFn: ({ signal }) => api.recordEvents(rid, { cursor, signal }),
     enabled: tab === 'events',
   });
+  // Every record the page's events name, so no link fetches its own label.
+  const eventReferences = events.data?.references ?? {};
   const hist = useQuery({
     queryKey: [session.workspace.id, 'assertions', rid, history?.name, historyCursor],
     queryFn: ({ signal }) =>
@@ -210,14 +214,7 @@ export function RecordView({
   const task = schema.objects.find((o) => o.baseObject === 'task');
   const taskStatus = task?.fields.find((f) => f.baseField === 'taskStatus');
   const taskDue = task?.fields.find((f) => f.baseField === 'taskDueDate');
-  const links =
-    task?.fields.filter(
-      (f) =>
-        f.type === 'relation' &&
-        f.isFilterable &&
-        relationTargets(f).includes(r.object) &&
-        !isInverseRelation(f),
-    ) ?? [];
+  const links = task ? relationsTo(task.fields, r.object).filter((f) => f.isFilterable) : [];
   const taskFilter = {
     and: [
       ...(taskStatus ? [{ [taskStatus.name]: { neq: TASK_DONE_OPTION } }] : []),
@@ -239,7 +236,7 @@ export function RecordView({
       ),
     enabled: tab === 'tasks' && !!task && links.length > 0,
   });
-  const object = schema.objects.find((o) => o.nameSingular === r.object),
+  const object = objectByName(schema, r.object),
     canWrite = canMutate(session);
   const own = object?.fields.filter((f) => !isInverseRelation(f)) ?? [];
   const inverse = object?.fields.filter(isInverseRelation) ?? [];
@@ -362,16 +359,7 @@ export function RecordView({
                     <ActorBadge actor={f.writtenBy} />
                     <Muted>Valid from {new Date(f.validFrom).toLocaleString()}</Muted>
                   </Row>
-                  {f.sources.map((s) =>
-                    s.internal ? (
-                      <Muted key="internal">Internal note</Muted>
-                    ) : (
-                      <Stack key={s.event}>
-                        <EventLink id={s.event}>Source event</EventLink>
-                        {s.quote ? <blockquote>{s.quote}</blockquote> : null}
-                      </Stack>
-                    ),
-                  )}
+                  <FactSources sources={f.sources} />
                   {canWrite ? <Button onClick={() => setRetract(f.id)}>Retract fact</Button> : null}
                 </Stack>
               </Panel>
@@ -399,12 +387,13 @@ export function RecordView({
                       via={e.via}
                       eventObject={objectByName(schema, e.object)}
                       recordObject={object}
+                      references={eventReferences}
                     />
                   </Row>
                   {e.event.summary ? <p>{e.event.summary}</p> : null}
                   <Row>
                     {e.event.participants.matched.map((p) => (
-                      <CandidateRecord key={p.id} id={p.recordId} />
+                      <CandidateRecord key={p.id} id={p.recordId} references={eventReferences} />
                     ))}
                     {e.event.participants.unmatched.map((p) => (
                       <Badge key={p.id}>

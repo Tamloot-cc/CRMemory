@@ -5,7 +5,7 @@ import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { isSuppressed, suppressedOf } from '../privacy/suppression.js';
 import { lockTargets, MAX_MERGE_HOPS } from '../records/write.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import { type Handle, parseHandle } from './handles.js';
 
 /**
@@ -19,14 +19,14 @@ import { type Handle, parseHandle } from './handles.js';
 
 export const MAX_PARTICIPANTS = 200;
 /** How many records an event can be `about` in one write. */
-export const MAX_ABOUT = 200;
+const MAX_ABOUT = 200;
 
 export const participantInputSchema = z.strictObject({
   handle: z.string().trim().min(1).max(320).optional(),
   recordId: z.uuid().optional(),
   role: z.string().trim().min(1).max(100).optional(),
 });
-export type ParticipantInput = z.infer<typeof participantInputSchema>;
+type ParticipantInput = z.infer<typeof participantInputSchema>;
 
 export const linksInputSchema = z.strictObject({
   participants: z.array(participantInputSchema).max(MAX_PARTICIPANTS).default([]),
@@ -40,13 +40,13 @@ export const addLinksInputSchema = linksInputSchema.refine(
 );
 export type AddLinksInput = z.infer<typeof addLinksInputSchema>;
 
-export type NormalizedParticipant = {
+type NormalizedParticipant = {
   handle: Handle | null;
   recordId: string | null;
   role: string | null;
 };
 
-export type LinkRow = {
+type LinkRow = {
   id: string;
   handle: string | null;
   role: string | null;
@@ -55,7 +55,7 @@ export type LinkRow = {
   link: EventLink;
 };
 
-export type StoredLink = LinkRow & { position: number };
+type StoredLink = LinkRow & { position: number };
 
 /** Parses every handle, listing all invalid participants in one error. */
 export function normalizeParticipants(input: readonly ParticipantInput[]): NormalizedParticipant[] {
@@ -79,23 +79,39 @@ export function normalizeParticipants(input: readonly ParticipantInput[]): Norma
   return participants;
 }
 
-export type CanonicalRecord = { id: string; deleted: boolean };
+type CanonicalRecord = { id: string; deleted: boolean };
 
 /**
  * Follows `merged_into_id` from each ID to the surviving record (4.2) and
  * reports whether it is deleted. Unknown IDs, and records of hidden or
  * deleted objects, are absent from the map.
  */
-export async function canonicalRecords(
+async function canonicalRecords(
   tx: Tx,
   workspaceId: string,
   schema: CompiledSchema,
   ids: readonly string[],
 ): Promise<Map<string, CanonicalRecord>> {
-  if (ids.length === 0) return new Map();
-  const rows = await tx<
-    { start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[]
-  >`
+  const rows = await followMerges(tx, workspaceId, ids);
+  const visible = new Set(schema.visibleObjectIds);
+  return new Map(
+    rows
+      .filter((r) => visible.has(r.object_type_id))
+      .map((r) => [r.start_id, { id: r.id, deleted: r.deleted_at !== null }]),
+  );
+}
+
+/**
+ * Follows `merged_into_id` from each ID to the surviving record (4.2), with
+ * its object and whether it is deleted. Unknown IDs are absent.
+ */
+export async function followMerges(
+  tx: Tx,
+  workspaceId: string,
+  ids: readonly string[],
+): Promise<{ start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[]> {
+  if (ids.length === 0) return [];
+  return tx<{ start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[]>`
     with recursive chain (start_id, id, merged_into_id, object_type_id, deleted_at, hops) as (
       select r.id, r.id, r.merged_into_id, r.object_type_id, r.deleted_at, 0 from records r
       where r.workspace_id = ${workspaceId} and r.id = any(${ids as string[]}::uuid[])
@@ -106,12 +122,6 @@ export async function canonicalRecords(
       where c.hops < ${MAX_MERGE_HOPS}
     )
     select start_id, id, object_type_id, deleted_at from chain where merged_into_id is null`;
-  const visible = new Set(schema.visibleObjectIds);
-  return new Map(
-    rows
-      .filter((r) => visible.has(r.object_type_id))
-      .map((r) => [r.start_id, { id: r.id, deleted: r.deleted_at !== null }]),
-  );
 }
 
 type EmailMatch = { live: string[]; deleted: string[] };
@@ -121,7 +131,7 @@ type EmailMatch = { live: string[]; deleted: string[] };
  * through merges and split into live and deleted. Only claims count: a
  * non-unique email never selects a record.
  */
-export async function matchEmails(
+async function matchEmails(
   tx: Tx,
   workspaceId: string,
   schema: CompiledSchema,
@@ -343,18 +353,12 @@ export async function eventDetails(
   for (const event of events) {
     const row = byRecord.get(event.id);
     if (!row) continue;
-    const core = schema.objectsById.get(event.object_type_id)?.core;
-    const text = (key: string | undefined) => {
-      const value = key === undefined ? undefined : event.data[key];
-      return typeof value === 'string' ? value : null;
-    };
     const rows = byEvent.get(event.id) ?? [];
     details.set(event.id, {
       occurredAt: row.occurred_at.toISOString(),
       channel: row.channel,
       externalId: row.external_id,
-      title: text(core?.title.key),
-      summary: text(core?.summary.key),
+      ...eventText(schema.objectsById.get(event.object_type_id), event.data),
       participants: presentParticipants(rows, live, candidates),
       about: aboutOf(rows, live),
     });

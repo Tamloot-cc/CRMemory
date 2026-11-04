@@ -38,7 +38,7 @@ export function deriveUuid(seed: string): string {
  * IDs derive from the type's, so code-defined event types get the same core
  * field IDs in every workspace.
  */
-export const CORE_FIELDS: Record<CoreRole, { name: string; label: string; description: string }> = {
+const CORE_FIELDS: Record<CoreRole, { name: string; label: string; description: string }> = {
   title: { name: 'title', label: 'Title', description: 'A short title.' },
   summary: {
     name: 'summary',

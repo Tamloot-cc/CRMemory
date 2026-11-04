@@ -1,4 +1,5 @@
-import type { ObjectView, SchemaDescription } from '@retainer/shared';
+import type { FieldView, ObjectView, SchemaDescription } from '@retainer/shared';
+import { isInverseRelation, relationTargets } from '@retainer/shared';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import { Button, Notice, Row } from '../ui/index.js';
@@ -32,11 +33,22 @@ export const recordTitle = (r: { label: string | null }) => r.label || 'Untitled
 /** How an event is named on screen. */
 export const eventTitle = (e: { title: string | null }) => e.title || 'Untitled event';
 /** The object (or event type) by its singular API name. */
-export const objectByName = (schema: SchemaDescription, name: string): ObjectView | undefined =>
-  schema.objects.find((o) => o.nameSingular === name);
+export const objectByName = (
+  schema: Pick<SchemaDescription, 'objects'>,
+  name: string,
+): ObjectView | undefined => schema.objects.find((o) => o.nameSingular === name);
 /** An object's (or event type's) singular name for people, falling back to its API name. */
-export const objectLabel = (schema: SchemaDescription, name: string) =>
+export const objectLabel = (schema: Pick<SchemaDescription, 'objects'>, name: string) =>
   objectByName(schema, name)?.labelSingular ?? name;
+/**
+ * The owning relation fields among `fields` that may point at records of
+ * `object` (a singular API name), polymorphic ones included. A record finds
+ * what links to it by filtering on these.
+ */
+export const relationsTo = (fields: FieldView[], object: string) =>
+  fields.filter(
+    (f) => f.type === 'relation' && !isInverseRelation(f) && relationTargets(f).includes(object),
+  );
 
 /** `value` once it has stopped changing for `ms`, so typing is not a request per key. */
 export function useDebounced<T>(value: T, ms = 200): T {

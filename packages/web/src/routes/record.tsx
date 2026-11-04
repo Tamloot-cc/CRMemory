@@ -3,7 +3,7 @@ import { useWorkspace } from '../api/client.js';
 import { Notice, Page } from '../ui/index.js';
 import { RecordActions } from './record-actions.js';
 import { RecordView, useRecord } from './record-view.js';
-import { QueryError, useView } from './state.js';
+import { objectLabel, QueryError, recordTitle, useView } from './state.js';
 
 export function RecordPage() {
   const { id } = useParams({ strict: false }) as { id: string };
@@ -22,11 +22,10 @@ export function RecordPage() {
       </Page>
     );
   const r = record.data;
-  const object = schema.objects.find((o) => o.nameSingular === r.object);
   return (
     <Page
-      eyebrow={object?.labelSingular ?? r.object}
-      title={r.label || 'Untitled record'}
+      eyebrow={objectLabel(schema, r.object)}
+      title={recordTitle(r)}
       description={`Last updated ${new Date(r.updatedAt).toLocaleString()}`}
       actions={
         <RecordActions

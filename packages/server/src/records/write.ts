@@ -383,14 +383,15 @@ async function applyWinners(
   const data = { ...record.data };
   for (const [field, winner] of winners) {
     if (field.type === 'relation') {
-      await tx`delete from record_links where source_record_id = ${record.id}
-        and field_id = ${field.id as string}`;
       // One edge per target; a set's edges are marked by the database (5.3).
       const targets = Array.isArray(winner?.value)
         ? (winner.value as string[])
         : winner?.value
           ? [winner.value as string]
           : [];
+      // Only the edges that changed: a set gaining one member keeps the rest.
+      await tx`delete from record_links where source_record_id = ${record.id}
+        and field_id = ${field.id as string} and target_record_id <> all(${targets}::uuid[])`;
       if (targets.length > 0) {
         await tx`
           insert into record_links ${tx(
@@ -401,7 +402,10 @@ async function applyWinners(
               target_record_id: target,
               created_by: tx.json(jsonValue(winner?.actor ?? context.actor)),
             })),
-          )}`;
+          )}
+          on conflict (workspace_id, source_record_id, field_id, target_record_id) do update
+            set created_by = excluded.created_by
+            where record_links.created_by is distinct from excluded.created_by`;
       }
       continue;
     }

@@ -43,6 +43,12 @@ export type CompiledSchema = {
   visibleObjectIds: string[];
   /** IDs of active, visible event types. */
   eventTypeIds: string[];
+  /** IDs of active, visible entity objects: the visible objects that are not events. */
+  entityTypeIds: string[];
+  /** Owning relation fields of active event types: each attaches its event (6.3). */
+  eventRelationFieldIds: string[];
+  /** Owning relation fields of active entities with `rollUpEvents` on (7.2). */
+  rollUpFieldIds: string[];
   /** The hidden internal-note type, once seeded. */
   internalNote: CompiledObject | undefined;
 };
@@ -57,6 +63,9 @@ export function compileSchema(state: SchemaState, version: number): CompiledSche
     fieldOwners: new Map(),
     visibleObjectIds: [],
     eventTypeIds: [],
+    entityTypeIds: [],
+    eventRelationFieldIds: [],
+    rollUpFieldIds: [],
     internalNote: undefined,
   };
   for (const object of state.objects) {
@@ -81,7 +90,12 @@ export function compileSchema(state: SchemaState, version: number): CompiledSche
     if (object.status === 'active' && !hidden) {
       compiled.objectsByName.set(object.nameSingular, entry);
       compiled.visibleObjectIds.push(object.id);
-      if (isEvent) compiled.eventTypeIds.push(object.id);
+      (isEvent ? compiled.eventTypeIds : compiled.entityTypeIds).push(object.id);
+      for (const field of activeFields) {
+        if (field.type !== 'relation' || field.settings.isInverse) continue;
+        if (isEvent) compiled.eventRelationFieldIds.push(field.id as string);
+        else if (field.settings.rollUpEvents) compiled.rollUpFieldIds.push(field.id as string);
+      }
     }
     if (hidden) compiled.internalNote = entry;
     compiled.objectsById.set(object.id, entry);
@@ -89,6 +103,18 @@ export function compileSchema(state: SchemaState, version: number): CompiledSche
     for (const field of object.fields) compiled.fieldOwners.set(field.id as string, entry);
   }
   return compiled;
+}
+
+/** An event's core title and summary (6.1), found by role; null when not text. */
+export function eventText(
+  object: CompiledObject | undefined,
+  data: Record<string, unknown>,
+): { title: string | null; summary: string | null } {
+  const text = (field: FieldState | undefined) => {
+    const value = field ? data[field.key] : undefined;
+    return typeof value === 'string' ? value : null;
+  };
+  return { title: text(object?.core?.title), summary: text(object?.core?.summary) };
 }
 
 /**

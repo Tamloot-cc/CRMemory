@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { liveFactSource } from '../memory/events.js';
 import { exactQuery, prefixQuery } from '../records/search-sql.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 
 /**
  * Keyword search across records, events and facts (5.1). Postgres
@@ -52,10 +52,6 @@ function rank(tx: Tx, column: 'search' | 'f.search' | 'r.search', text: string) 
 
 type RecordRow = { id: string; object_type_id: string; label: string | null };
 
-/** Entity objects a search may show: active and visible, events apart. */
-const entityIds = (schema: CompiledSchema) =>
-  schema.visibleObjectIds.filter((id) => !schema.eventTypeIds.includes(id));
-
 async function searchRecords(
   tx: Tx,
   workspaceId: string,
@@ -73,7 +69,7 @@ async function searchRecords(
   const text = await tx<RecordRow[]>`
     select id, object_type_id, label from records
     where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${entityIds(schema)}::uuid[])
+      and object_type_id = any(${schema.entityTypeIds}::uuid[])
       and search @@ ${prefixQuery(tx, input.query)}
     order by ${rank(tx, 'search', input.query)}, updated_at desc, id
     limit ${input.limit}`;
@@ -84,7 +80,7 @@ async function searchRecords(
   const similar = await tx<RecordRow[]>`
     select id, object_type_id, label from records
     where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${entityIds(schema)}::uuid[]) and label % ${input.query}
+      and object_type_id = any(${schema.entityTypeIds}::uuid[]) and label % ${input.query}
     order by similarity(label, ${input.query}) desc, updated_at desc, id
     limit ${input.limit}`;
   return present(similar, 'similar_label');
@@ -144,16 +140,11 @@ async function searchEvents(
     limit ${input.limit}`;
   return rows.map((row) => {
     const object = schema.objectsById.get(row.object_type_id);
-    const text = (key: string | undefined) => {
-      const value = key === undefined ? undefined : row.data[key];
-      return typeof value === 'string' ? value : null;
-    };
     return {
       id: row.id,
       type: object?.name ?? 'unknown',
       occurredAt: row.occurred_at.toISOString(),
-      title: text(object?.core?.title.key),
-      summary: text(object?.core?.summary.key),
+      ...eventText(object, row.data),
       records: [...new Set(row.records)],
     };
   });

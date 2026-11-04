@@ -1,5 +1,5 @@
 import { RetainerApiError } from '@retainer/sdk';
-import type { ForgetResult, PresentedRecord } from '@retainer/shared';
+import type { ForgetResult, PresentedRecord, RecordReference } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Combine, MoreHorizontal, ShieldX, Trash2 } from 'lucide-react';
 import { useState } from 'react';
@@ -21,7 +21,7 @@ import {
   Stack,
 } from '../ui/index.js';
 import { MergePicker } from './merge.js';
-import { QueryError, recordTitle as title, useReport } from './state.js';
+import { eventTitle, objectByName, QueryError, recordTitle as title, useReport } from './state.js';
 import { describeImpact, forgetConfirmation } from './write-model.js';
 
 /**
@@ -43,9 +43,7 @@ export function RecordActions({
   const { session, schema } = useWorkspace(),
     client = useQueryClient();
   const [action, setAction] = useState<'merge' | 'delete' | 'forget' | null>(null);
-  const isEvent =
-    !!record.event ||
-    schema.objects.find((o) => o.nameSingular === record.object)?.class === 'event';
+  const isEvent = !!record.event || objectByName(schema, record.object)?.class === 'event';
   const canWrite = canMutate(session),
     canErase = canMutate(session, 'admin');
   if (!canWrite) return null;
@@ -388,7 +386,27 @@ function ForgetReport({ label, result }: { label: string; result: ForgetResult }
     </Stack>
   );
 }
-export function CandidateRecord({ id }: { id: string }) {
+/**
+ * A link to a record by ID. With `references` (a page's map of the records it
+ * names) it is named from the map, and a record missing from it shows as
+ * unavailable; without one, its label is fetched.
+ */
+export function CandidateRecord({
+  id,
+  references,
+}: {
+  id: string;
+  references?: Record<string, RecordReference>;
+}) {
+  if (!references) return <FetchedRecord id={id} />;
+  const reference = references[id];
+  return reference ? (
+    <RecordLink id={id}>{title(reference)}</RecordLink>
+  ) : (
+    <Muted>Unavailable record</Muted>
+  );
+}
+function FetchedRecord({ id }: { id: string }) {
   const { session } = useWorkspace();
   const record = useQuery({
     queryKey: [session.workspace.id, 'record', id, 'label'],
@@ -402,5 +420,5 @@ function CandidateEvent({ id }: { id: string }) {
     queryKey: [session.workspace.id, 'event', id],
     queryFn: ({ signal }) => api.event(id, signal),
   });
-  return <EventLink id={id}>{event.data?.event?.title || 'Untitled event'}</EventLink>;
+  return <EventLink id={id}>{eventTitle({ title: event.data?.event?.title ?? null })}</EventLink>;
 }

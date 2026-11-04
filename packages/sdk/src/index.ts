@@ -3,7 +3,7 @@ import type {
   AggregateInput,
   AggregateResult,
   AssertionView,
-  AttachedEvent,
+  AttachedEventPage,
   BulkDeleteImpact,
   ContextInput,
   ContextPack,
@@ -297,7 +297,7 @@ export class RetainerClient {
    */
   recordEvents(id: string, options: PageOptions & { link?: EventAttachment } = {}) {
     const { signal, ...params } = options;
-    return this.get<Page<AttachedEvent>>(
+    return this.get<AttachedEventPage>(
       `/v1/records/${encodeURIComponent(id)}/events`,
       params,
       signal,

@@ -31,12 +31,16 @@ const person = {
   ],
 } as unknown as ObjectView;
 
-function renderIn(children: ReactNode, source: Record<string, unknown> = {}) {
+function renderIn(
+  children: ReactNode,
+  source: Record<string, unknown> = {},
+  extra: ObjectView[] = [],
+) {
   const workspace = {
     session: { workspace: { id: 'w1' } } as unknown as Session,
-    schema: { objects: [meeting, company, person] } as unknown as SchemaDescription,
+    schema: { objects: [meeting, company, person, ...extra] } as unknown as SchemaDescription,
   };
-  // Record labels are fetched per link; answer them without a server.
+  // Without a references map, record labels are fetched per link; answer them without a server.
   vi.spyOn(api, 'record').mockResolvedValue({ id: 'r', label: 'Dana Levi', ...source } as never);
   render(
     <QueryClientProvider client={new QueryClient()}>
@@ -81,7 +85,60 @@ describe('ViaLabel', () => {
     expect(api.record).toHaveBeenCalledWith('p1', [], expect.anything());
   });
 
-  it('names the source field from the schema until the source record loads', async () => {
+  it('names a rollup from the page’s references without fetching the source', () => {
+    renderIn(
+      <ViaLabel
+        via={{ kind: 'rollup', field: 'company', record: 'p1' }}
+        recordObject={company}
+        references={{ p1: { id: 'p1', object: 'person', label: 'Dana Levi' } }}
+      />,
+    );
+    expect(screen.getByText('Rolled up via Employer of')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Dana Levi' })).toBeTruthy();
+    expect(api.record).not.toHaveBeenCalled();
+  });
+
+  it('names the field from the source’s object, not by guessing from its name', () => {
+    // Two owning `company` relations point at companies: a guess would give up.
+    const vendor = {
+      nameSingular: 'vendor',
+      class: 'entity',
+      fields: [
+        {
+          name: 'company',
+          label: 'Parent',
+          type: 'relation',
+          settings: { targetObject: 'company' },
+        },
+      ],
+    } as unknown as ObjectView;
+    renderIn(
+      <ViaLabel
+        via={{ kind: 'rollup', field: 'company', record: 'v1' }}
+        recordObject={company}
+        references={{ v1: { id: 'v1', object: 'vendor', label: 'Supplier' } }}
+      />,
+      {},
+      [vendor],
+    );
+    expect(screen.getByText('Rolled up via Parent of')).toBeTruthy();
+  });
+
+  it('guesses the field and shows the source unavailable when the map lacks it', () => {
+    renderIn(
+      <ViaLabel
+        via={{ kind: 'rollup', field: 'company', record: 'gone' }}
+        recordObject={company}
+        references={{}}
+      />,
+    );
+    expect(screen.getByText('Rolled up via Employer of')).toBeTruthy();
+    expect(screen.getByText('Unavailable record')).toBeTruthy();
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(api.record).not.toHaveBeenCalled();
+  });
+
+  it('without a references map, guesses the source field until the source record loads', async () => {
     renderIn(
       <>
         <ViaLabel via={{ kind: 'rollup', field: 'company', record: 'p1' }} recordObject={company} />

@@ -131,6 +131,21 @@ export async function getRecord(
   schema: CompiledSchema,
   id: string,
 ): Promise<PresentedRecord> {
+  const row = await findLiveRecord(tx, workspaceId, schema, id);
+  const [presented] = await presentRecords(tx, schema, [row]);
+  return presented as PresentedRecord;
+}
+
+/**
+ * The live, visible record an ID names, after merges, unpresented: for
+ * routes that need only its ID and object. Refuses what `getRecord` refuses.
+ */
+export async function findLiveRecord(
+  tx: Tx,
+  workspaceId: string,
+  schema: CompiledSchema,
+  id: string,
+): Promise<RecordRow> {
   const canonical = await resolveRecordId(tx, workspaceId, id);
   const [row] = await tx<(RecordRow & { deleted_at: Date | null })[]>`
     select ${tx(RECORD_COLUMNS)}, deleted_at from records
@@ -143,6 +158,5 @@ export async function getRecord(
       recordId: canonical,
     });
   }
-  const [presented] = await presentRecords(tx, schema, [row]);
-  return presented as PresentedRecord;
+  return row;
 }

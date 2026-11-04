@@ -1,4 +1,5 @@
 import type { FieldView, ObjectView, SchemaDescription, Session } from '@retainer/shared';
+import { isPolymorphic, relationTargets } from '@retainer/shared';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -12,9 +13,7 @@ import {
   FieldPicker,
   filterValue,
   interleave,
-  isPolymorphic,
   joinOr,
-  relationTargets,
 } from './common.js';
 
 // Links need a router; plain anchors are enough to find them by name.

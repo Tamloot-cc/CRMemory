@@ -18,7 +18,7 @@ import {
 } from '../memory/events.js';
 import { getRecord } from '../records/read.js';
 import { references } from '../records/references.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import { CHARS_PER_TOKEN, estimateTokens, fitSections, jsonLength } from './budget.js';
 
 /**
@@ -285,16 +285,11 @@ async function recentEvents(
   return {
     items: rows.map((row) => {
       const object = schema.objectsById.get(row.object_type_id);
-      const text = (key: string | undefined) => {
-        const value = key === undefined ? undefined : row.data[key];
-        return typeof value === 'string' ? value : null;
-      };
       return {
         id: row.id,
         type: object?.name ?? 'unknown',
         occurredAt: row.occurred_at.toISOString(),
-        title: text(object?.core?.title.key),
-        summary: text(object?.core?.summary.key),
+        ...eventText(object, row.data),
         via: viaOf(schema, row),
       };
     }),

@@ -10,8 +10,8 @@ import { claimIdempotencyKey, storeIdempotentResult } from '../idempotency.js';
 import { getRecord } from '../records/read.js';
 import { type Caller, eventsAmong, withRead, withWrite } from '../records/service.js';
 import { softDeleteRecord } from '../records/write.js';
+import type { AddLinksInput } from './event-links.js';
 import {
-  type AddLinksInput,
   addEventLinks,
   type LogEventInput,
   logEvent,

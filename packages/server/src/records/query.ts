@@ -71,7 +71,7 @@ export const BUILT_IN_COLUMNS: Record<string, 'created_at' | 'updated_at' | 'id'
 };
 
 /** An event record's built-in columns (6.1), filterable and sortable like fields. */
-export const EVENT_COLUMN_NAMES: Record<string, 'occurred_at' | 'channel' | 'external_id'> = {
+const EVENT_COLUMN_NAMES: Record<string, 'occurred_at' | 'channel' | 'external_id'> = {
   occurredAt: 'occurred_at',
   channel: 'channel',
   externalId: 'external_id',
@@ -80,7 +80,7 @@ export const EVENT_COLUMN_NAMES: Record<string, 'occurred_at' | 'channel' | 'ext
 type BuiltIn = { expr: Fragment; type: 'uuid' | 'timestamptz' | 'text' };
 
 /** A built-in column of `object` by API name, as a SQL expression over `records r`. */
-export function builtInColumn(tx: Tx, object: CompiledObject, name: string): BuiltIn | undefined {
+function builtInColumn(tx: Tx, object: CompiledObject, name: string): BuiltIn | undefined {
   const record = BUILT_IN_COLUMNS[name];
   if (record) {
     return { expr: tx`${tx(`r.${record}`)}`, type: record === 'id' ? 'uuid' : 'timestamptz' };

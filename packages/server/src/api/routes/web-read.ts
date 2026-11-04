@@ -4,7 +4,7 @@ import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
 import { AppError, notFound } from '../../errors.js';
 import { attachedEventPage } from '../../memory/events.js';
-import { getRecord } from '../../records/read.js';
+import { findLiveRecord, getRecord } from '../../records/read.js';
 import { withRead } from '../../records/service.js';
 import { assertionById, assertions, enrichedRecord } from '../../web/reads.js';
 import { factsPage, reviewPage } from '../../web/review.js';
@@ -46,7 +46,7 @@ export function webReadRoutes(app: Hono<AppEnv>, sql: Sql) {
   });
   app.get('/records/:id/assertions', requireScope('read'), (c) =>
     withRead(sql, c.get('caller'), async (tx, schema) => {
-      const record = await getRecord(tx, c.get('caller').workspaceId, schema, idParam(c));
+      const record = await findLiveRecord(tx, c.get('caller').workspaceId, schema, idParam(c));
       const field = c.req.query('field');
       return c.json(
         await assertions(
@@ -62,7 +62,7 @@ export function webReadRoutes(app: Hono<AppEnv>, sql: Sql) {
   );
   app.get('/records/:id/events', requireScope('read'), (c) =>
     withRead(sql, c.get('caller'), async (tx, schema) => {
-      const record = await getRecord(tx, c.get('caller').workspaceId, schema, idParam(c));
+      const record = await findLiveRecord(tx, c.get('caller').workspaceId, schema, idParam(c));
       const link = c.req.query('link');
       if (link !== undefined && !(EVENT_ATTACHMENTS as readonly string[]).includes(link)) {
         throw new AppError(
@@ -86,7 +86,7 @@ export function webReadRoutes(app: Hono<AppEnv>, sql: Sql) {
   );
   app.get('/records/:id/facts', requireScope('read'), (c) =>
     withRead(sql, c.get('caller'), async (tx, schema) => {
-      const record = await getRecord(tx, c.get('caller').workspaceId, schema, idParam(c));
+      const record = await findLiveRecord(tx, c.get('caller').workspaceId, schema, idParam(c));
       return c.json({
         record: record.id,
         ...(await factsPage(

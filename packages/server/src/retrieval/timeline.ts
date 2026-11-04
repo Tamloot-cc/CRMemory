@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  type Actor,
   TIMELINE_ITEM_KINDS,
   type TimelineItem,
   type TimelineItemKind,
@@ -9,10 +10,10 @@ import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
-import { eventHistory, liveFactSource, viaOf } from '../memory/events.js';
-import { getRecord } from '../records/read.js';
-import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
-import { assertions } from '../web/reads.js';
+import { eventHistory, liveFactSource, presentSource, viaOf } from '../memory/events.js';
+import { findLiveRecord } from '../records/read.js';
+import { references } from '../records/references.js';
+import { type CompiledObject, type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import { factsPage } from '../web/review.js';
 
 /**
@@ -134,8 +135,8 @@ export async function timelinePage(
   recordId: string,
   input: TimelineInput,
 ): Promise<TimelinePage> {
-  const record = await getRecord(tx, workspaceId, schema, recordId);
-  const object = schema.objectsByName.get(record.object);
+  const record = await findLiveRecord(tx, workspaceId, schema, recordId);
+  const object = schema.objectsById.get(record.object_type_id);
   if (!object) throw new AppError(404, 'not_found', `record ${recordId} not found`);
 
   const kinds = new Set<TimelineItemKind>(
@@ -270,7 +271,7 @@ export async function timelinePage(
       ];
     }
     const item = (row.kind === KIND_ORDER.field_change ? values : facts).get(row.id);
-    return item ? [{ ...item, at }] : [];
+    return item ? [item] : [];
   });
   return { record: record.id, items, nextCursor };
 }
@@ -282,15 +283,7 @@ async function presentEvents(tx: Tx, schema: CompiledSchema, ids: string[]) {
     select id, object_type_id, data from records where id = any(${ids}::uuid[])`;
   for (const row of rows) {
     const object = schema.objectsById.get(row.object_type_id);
-    const text = (key: string | undefined) => {
-      const value = key === undefined ? undefined : row.data[key];
-      return typeof value === 'string' ? value : null;
-    };
-    result.set(row.id, {
-      type: object?.name ?? 'unknown',
-      title: text(object?.core?.title.key),
-      summary: text(object?.core?.summary.key),
-    });
+    result.set(row.id, { type: object?.name ?? 'unknown', ...eventText(object, row.data) });
   }
   return result;
 }
@@ -298,21 +291,55 @@ async function presentEvents(tx: Tx, schema: CompiledSchema, ids: string[]) {
 async function presentValues(tx: Tx, schema: CompiledSchema, ids: string[]) {
   const result = new Map<string, TimelineItem>();
   if (ids.length === 0) return result;
-  const { items } = await assertions(tx, schema, tx`a.id = any(${ids}::uuid[])`, ids.length);
-  for (const a of items) {
-    if (a.status !== 'active' && a.status !== 'superseded') continue;
-    result.set(a.id, {
+  const rows = await tx<
+    {
+      id: string;
+      field_id: string;
+      value: unknown;
+      status: 'active' | 'superseded';
+      actor: Actor;
+      confidence: number;
+      observed_at: Date;
+      source_record_id: string | null;
+      source_type: string | null;
+      source_data: Record<string, unknown> | null;
+      occurred_at: Date | null;
+    }[]
+  >`
+    select a.id, a.field_id, a.value, a.status, a.actor, a.confidence, a.observed_at,
+      a.source_record_id, src.object_type_id as source_type, src.data as source_data,
+      e.occurred_at
+    from field_assertions a
+    left join records src on src.id = a.source_record_id and src.deleted_at is null
+      and src.object_type_id = any(${schema.visibleObjectIds}::uuid[])
+    left join event_records e on e.record_id = src.id
+    where a.id = any(${ids}::uuid[])`;
+  const fieldOf = (id: string) => schema.fieldOwners.get(id)?.fieldsById.get(id);
+  const targetsOf = (row: (typeof rows)[number]) =>
+    fieldOf(row.field_id)?.type === 'relation'
+      ? [row.value].flat().filter((v): v is string => typeof v === 'string')
+      : [];
+  const refs = await references(tx, schema, [...new Set(rows.flatMap(targetsOf))]);
+  for (const row of rows) {
+    const targets = targetsOf(row);
+    result.set(row.id, {
       kind: 'field_change',
-      id: a.id,
-      at: a.observedAt,
-      field: a.field,
-      value: a.value,
-      status: a.status,
-      current: a.status === 'active',
-      actor: a.actor,
-      confidence: a.confidence,
-      source: a.source,
-      ...(a.relationReferences ? { relationReferences: a.relationReferences } : {}),
+      id: row.id,
+      at: row.observed_at.toISOString(),
+      field: fieldOf(row.field_id)?.name ?? row.field_id,
+      value: row.value,
+      status: row.status,
+      current: row.status === 'active',
+      actor: row.actor,
+      confidence: row.confidence,
+      source: presentSource(schema, row),
+      ...(targets.length > 0
+        ? {
+            relationReferences: Object.fromEntries(
+              targets.flatMap((id) => (refs[id] ? [[id, refs[id]]] : [])),
+            ),
+          }
+        : {}),
     });
   }
   return result;

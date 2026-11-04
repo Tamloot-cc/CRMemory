@@ -9,9 +9,22 @@ import type {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, WorkspaceContext } from '../api/client.js';
-import { InlineEditor, pointsAt, polymorphicLinksTo, sameValue } from './record-view.js';
+import {
+  InlineEditor,
+  pointsAt,
+  polymorphicLinksTo,
+  RecordView,
+  sameValue,
+} from './record-view.js';
+
+// Links need a router; plain anchors are enough to find them by name.
+vi.mock('@tanstack/react-router', async (original) => ({
+  ...(await original<typeof import('@tanstack/react-router')>()),
+  Link: ({ children }: { children: ReactNode }) => <a href="/">{children}</a>,
+}));
 
 const stage: FieldView = {
   type: 'select',
@@ -203,5 +216,98 @@ describe('InlineEditor on a many-to-many set', () => {
         A,
       ),
     ).toEqual({ containsAny: [A] });
+  });
+});
+
+describe('RecordView events tab', () => {
+  const company = {
+    nameSingular: 'company',
+    labelSingular: 'Company',
+    labelPlural: 'Companies',
+    class: 'entity',
+    fields: [],
+  } as unknown as ObjectView;
+  const person = {
+    nameSingular: 'person',
+    labelSingular: 'Person',
+    labelPlural: 'People',
+    class: 'entity',
+    fields: [
+      {
+        ...stage,
+        type: 'relation',
+        name: 'company',
+        label: 'Employer',
+        settings: { targetObject: 'company', rollUpEvents: true },
+      },
+    ],
+  } as unknown as ObjectView;
+  const meeting = {
+    nameSingular: 'meeting',
+    labelSingular: 'Meeting',
+    labelPlural: 'Meetings',
+    class: 'event',
+    fields: [],
+  } as unknown as ObjectView;
+  const acme = {
+    id: 'c1',
+    object: 'company',
+    label: 'Acme',
+    updatedAt: '2026-11-03T12:00:00.000Z',
+    fields: {},
+  } as unknown as PresentedRecord;
+
+  it('names participants and rollup sources from the page’s references, one request in all', async () => {
+    const events = vi.spyOn(api, 'recordEvents').mockResolvedValue({
+      items: [
+        {
+          id: 'e1',
+          object: 'meeting',
+          event: {
+            occurredAt: '2026-10-20T10:00:00.000Z',
+            channel: 'email',
+            externalId: null,
+            title: 'Renewal call',
+            summary: null,
+            participants: {
+              matched: [
+                { id: 'l1', handle: 'dana@acme.test', role: null, recordId: 'p1' },
+                { id: 'l2', handle: 'gone@acme.test', role: null, recordId: 'p9' },
+              ],
+              unmatched: [],
+            },
+            about: [],
+          },
+          via: { kind: 'rollup', field: 'company', record: 'p1' },
+        },
+      ],
+      nextCursor: null,
+      references: { p1: { id: 'p1', object: 'person', label: 'Dana Levi' } },
+    } as never);
+    const record = vi.spyOn(api, 'record');
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <WorkspaceContext.Provider
+          value={{
+            session: {
+              workspace: { id: 'w1' },
+              actor: { type: 'agent', id: 'a1' },
+              scopes: ['read'],
+            } as unknown as Session,
+            schema: { objects: [company, person, meeting] } as unknown as SchemaDescription,
+          }}
+        >
+          <RecordView record={acme} requestedId="c1" nav={{ tab: 'events', set: vi.fn() }} />
+        </WorkspaceContext.Provider>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText('Renewal call')).toBeTruthy();
+    expect(screen.getByText('Rolled up via Employer of')).toBeTruthy();
+    // The rollup source and the participant: both named from the map.
+    expect(screen.getAllByRole('link', { name: 'Dana Levi' })).toHaveLength(2);
+    // A participant the map leaves out is unavailable, not fetched.
+    expect(screen.getByText('Unavailable record')).toBeTruthy();
+    expect(events).toHaveBeenCalledOnce();
+    expect(record).not.toHaveBeenCalled();
   });
 });

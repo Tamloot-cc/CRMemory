@@ -4,12 +4,12 @@ import {
   isCollectionRelation,
   type Provenance,
   type RecordReference,
-  type SourceReference,
 } from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
 import { notFound } from '../errors.js';
+import { presentSource } from '../memory/events.js';
 import { identifiersFor } from '../records/derive.js';
 import { getRecord, type PresentedRecord } from '../records/read.js';
 import { references } from '../records/references.js';
@@ -133,7 +133,7 @@ export async function assertions(
         createdAt: r.created_at.toISOString(),
         sourceRecordId: r.source_record_id,
         isInitial: r.is_initial,
-        source: sourceOf(schema, r),
+        source: presentSource(schema, r),
         conflictingRecord: holder ? (refs[holder.record_id] ?? null) : null,
         ...(field?.type === 'relation' ? { relationReferences: refs } : {}),
         reviewedBy: r.reviewed_by,
@@ -141,19 +141,6 @@ export async function assertions(
       };
     }),
     nextCursor: result.nextCursor,
-  };
-}
-/** The live, visible event an assertion cites, presented (6.4). */
-function sourceOf(schema: CompiledSchema, r: AssertionRow): SourceReference | null {
-  if (!r.occurred_at || !r.source_record_id || !r.source_type) return null;
-  const object = schema.objectsById.get(r.source_type);
-  const key = object?.core?.title.key;
-  const title = key === undefined ? undefined : r.source_data?.[key];
-  return {
-    id: r.source_record_id,
-    type: object?.name ?? 'unknown',
-    title: typeof title === 'string' ? title : null,
-    occurredAt: r.occurred_at.toISOString(),
   };
 }
 export async function assertionById(tx: Tx, schema: CompiledSchema, id: string) {

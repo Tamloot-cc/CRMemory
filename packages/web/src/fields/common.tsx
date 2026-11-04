@@ -10,13 +10,18 @@ import type {
   PresentedRecord,
   RecordReference,
 } from '@retainer/shared';
-import { isCollectionRelation, normalizeFieldValue } from '@retainer/shared';
+import {
+  isCollectionRelation,
+  isPolymorphic,
+  normalizeFieldValue,
+  relationTargets,
+} from '@retainer/shared';
 import { useQueries } from '@tanstack/react-query';
 import type { LucideIcon } from 'lucide-react';
 import { Plus, Star, X } from 'lucide-react';
 import { type ComponentType, type ReactNode, useContext, useState } from 'react';
 import { api, useWorkspace, WorkspaceContext } from '../api/client.js';
-import { recordTitle, useDebounced } from '../routes/state.js';
+import { objectByName, objectLabel, recordTitle, useDebounced } from '../routes/state.js';
 import {
   Badge,
   Button,
@@ -74,19 +79,6 @@ export const PICKERS: Partial<Record<FieldView['type'], 'one' | 'many'>> = {
 /** How a field is picked in place, if it is: a many_to_many relation takes a set. */
 export const pickerFor = (field: Pick<FieldView, 'type' | 'settings'>) =>
   isCollectionRelation(field) ? 'many' : PICKERS[field.type];
-/**
- * The objects (singular API names) a relation may point at: its one target,
- * or each of a polymorphic relation's `targetObjects`.
- */
-export const relationTargets = (field: Pick<FieldView, 'settings'>): string[] =>
-  field.settings.targetObjects?.length
-    ? field.settings.targetObjects
-    : field.settings.targetObject
-      ? [field.settings.targetObject]
-      : [];
-/** Whether a relation may point at records of more than one object. */
-export const isPolymorphic = (field: Pick<FieldView, 'type' | 'settings'>) =>
-  field.type === 'relation' && relationTargets(field).length > 1;
 /** "Company", "Company or Person", "Company, Person or Deal". */
 export function joinOr(words: string[]) {
   return words.length > 1
@@ -94,7 +86,7 @@ export function joinOr(words: string[]) {
     : (words[0] ?? '');
 }
 /** The object a polymorphic relation's record belongs to, after its name. */
-export function ObjectTag({ children }: { children: ReactNode }) {
+function ObjectTag({ children }: { children: ReactNode }) {
   // Read as "Acme (Company)"; the parentheses are only for screen readers.
   return (
     <Badge>
@@ -105,7 +97,7 @@ export function ObjectTag({ children }: { children: ReactNode }) {
   );
 }
 /** A record's name, with its object when the field links several (`object`). */
-export function TargetName({ title, object }: { title: ReactNode; object?: string }) {
+function TargetName({ title, object }: { title: ReactNode; object?: string }) {
   return object ? (
     <span className="flex min-w-0 items-center gap-1.5">
       <span className="truncate">{title}</span> <ObjectTag>{object}</ObjectTag>
@@ -285,11 +277,13 @@ function RelationDisplay({ field, value, compact, references = {} }: DisplayProp
       {(compact ? ids.slice(0, 2) : ids).map((id) => {
         const reference = references[id];
         if (!reference) return <Muted key={id}>Unavailable reference</Muted>;
-        const name = reference.label || 'Untitled record';
+        const name = recordTitle(reference);
         return tagged ? (
           <span key={id} className="inline-flex min-w-0 items-center gap-1.5">
             <RecordLink id={id}>{name}</RecordLink>{' '}
-            <ObjectTag>{objectName(workspace?.schema.objects, reference.object)}</ObjectTag>
+            <ObjectTag>
+              {workspace ? objectLabel(workspace.schema, reference.object) : reference.object}
+            </ObjectTag>
           </span>
         ) : (
           <RecordLink key={id} id={id}>
@@ -301,9 +295,6 @@ function RelationDisplay({ field, value, compact, references = {} }: DisplayProp
     </Row>
   );
 }
-/** An object's singular label, or its API name when the schema doesn't have it. */
-const objectName = (objects: ObjectView[] | undefined, name: string) =>
-  objects?.find((o) => o.nameSingular === name)?.labelSingular ?? name;
 
 /** Exact decimal-to-micros conversion; never multiply a floating-point input. */
 export function decimalToMicros(raw: string): number {
@@ -408,7 +399,7 @@ export function interleave<T>(lists: T[][]): T[] {
  * A picker option for a record. Where the field links several objects, its
  * object is named after it ("Acme (Company)"), on screen and to search.
  */
-export function recordOption(title: string, id: string, object?: string): PickerOption {
+function recordOption(title: string, id: string, object?: string): PickerOption {
   return object
     ? {
         value: id,
@@ -435,7 +426,7 @@ function useRelationOptions(
   const [search, setSearch] = useState('');
   const query = useDebounced(search.trim());
   const targets = relationTargets(field)
-    .map((name) => workspace.schema.objects.find((o) => o.nameSingular === name))
+    .map((name) => objectByName(workspace.schema, name))
     .filter((o): o is ObjectView => !!o);
   const tagged = isPolymorphic(field);
   const limit = Math.max(10, Math.ceil(PICKER_LIMIT / Math.max(targets.length, 1)));
@@ -455,7 +446,7 @@ function useRelationOptions(
     })),
   });
   const objectOf = (name: string | undefined) =>
-    tagged && name ? objectName(workspace.schema.objects, name) : undefined;
+    tagged && name ? objectLabel(workspace.schema, name) : undefined;
   // Remember records seen, so the chosen one keeps its name.
   const [seen, setSeen] = useState<Record<string, PickerOption>>({});
   const records = interleave(results.map((r) => (r.data?.records ?? []) as PresentedRecord[]));
@@ -465,8 +456,7 @@ function useRelationOptions(
   const current = relationIds(value);
   const optionOf = (id: string): PickerOption => {
     const reference = references?.[id];
-    if (reference)
-      return recordOption(reference.label || 'Untitled record', id, objectOf(reference.object));
+    if (reference) return recordOption(recordTitle(reference), id, objectOf(reference.object));
     return seen[id] ?? { value: id, label: 'Current record' };
   };
   const first = current[0] ? optionOf(current[0]) : null;
@@ -580,7 +570,18 @@ function RelationPicker({ field, value, onChange, references }: InputProps) {
     />
   );
 }
-function RelationInput({ field, value, onChange, references }: InputProps) {
+/**
+ * A relation chosen from a menu. `multiple` picks a set of records; it
+ * defaults to whether the field holds one, and a filter turns it on to
+ * match any of several records.
+ */
+function RelationInput({
+  field,
+  value,
+  onChange,
+  references,
+  multiple = isCollectionRelation(field),
+}: InputProps & { multiple?: boolean }) {
   const [open, setOpen] = useState(false);
   const r = useRelationOptions(field, value, references, open);
   const openChange = (next: boolean) => {
@@ -588,7 +589,7 @@ function RelationInput({ field, value, onChange, references }: InputProps) {
     // The list's search box starts empty each time; so does the query.
     if (!next) r.setSearch('');
   };
-  if (isCollectionRelation(field))
+  if (multiple)
     return (
       <SelectMenu
         label={field.label}
@@ -926,7 +927,8 @@ export function FieldFilter({
   )
     return (
       <RelationInput
-        field={{ ...field, settings: { ...field.settings, relationCardinality: 'many_to_many' } }}
+        field={field}
+        multiple
         value={relationIds(value)}
         onChange={onChange}
         references={references}

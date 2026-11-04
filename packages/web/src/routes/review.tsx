@@ -23,7 +23,7 @@ import {
 import { MergeSuggestionCard } from './merge.js';
 import { CandidateRecord } from './record-actions.js';
 import { describeOperation } from './schema-model.js';
-import { QueryError, useView } from './state.js';
+import { eventTitle, objectByName, QueryError, recordTitle, useView } from './state.js';
 
 const reasonText = {
   outranked: 'Newer than a value a person or integration set',
@@ -268,9 +268,10 @@ export function ReviewPage() {
         ]}
       />
       {outcomes.map((outcome) => {
-        const field = schema.objects
-          .find((o) => o.nameSingular === outcome.item?.object)
-          ?.fields.find((f) => f.name === outcome.item?.field);
+        const item = outcome.item;
+        const field = item
+          ? objectByName(schema, item.object)?.fields.find((f) => f.name === item.field)
+          : undefined;
         const Display = field ? fields[field.type].Display : null;
         return (
           <Notice key={outcome.id} error={outcome.failed}>
@@ -278,7 +279,7 @@ export function ReviewPage() {
               <Row>
                 {outcome.item ? (
                   <RecordLink id={outcome.item.recordId}>
-                    {outcome.item.recordLabel || 'Untitled record'} ·{' '}
+                    {recordTitle({ label: outcome.item.recordLabel })} ·{' '}
                     {field?.label ?? outcome.item.field}
                   </RecordLink>
                 ) : null}
@@ -344,9 +345,7 @@ export function ReviewPage() {
             </Row>
           ) : null}
           {pending.map((a, index) => {
-            const field = schema.objects
-              .find((o) => o.nameSingular === a.object)
-              ?.fields.find((f) => f.name === a.field);
+            const field = objectByName(schema, a.object)?.fields.find((f) => f.name === a.field);
             const Display = field ? fields[field.type].Display : null;
             return (
               <div key={a.id} id={`review-${a.id}`}>
@@ -364,7 +363,9 @@ export function ReviewPage() {
                         }
                       />
                       <Badge>{a.object}</Badge>
-                      <RecordLink id={a.recordId}>{a.recordLabel || 'Untitled record'}</RecordLink>
+                      <RecordLink id={a.recordId}>
+                        {recordTitle({ label: a.recordLabel })}
+                      </RecordLink>
                       <Muted>{field?.label ?? a.field}</Muted>
                     </Row>
                     <Row>
@@ -403,7 +404,7 @@ export function ReviewPage() {
                     ) : null}
                     {a.source ? (
                       <EventLink id={a.source.id}>
-                        {a.source.title || 'Untitled event'} ·{' '}
+                        {eventTitle(a.source)} ·{' '}
                         {new Date(a.source.occurredAt).toLocaleDateString()}
                       </EventLink>
                     ) : null}
@@ -474,7 +475,7 @@ export function ReviewPage() {
                 <Badge tone="pending">Deleted record</Badge>
                 <span>{p.handle}</span>
                 <EventLink id={p.eventId}>
-                  {p.title || 'Untitled event'} · {new Date(p.occurredAt).toLocaleString()}
+                  {eventTitle(p)} · {new Date(p.occurredAt).toLocaleString()}
                 </EventLink>
               </Row>
             </Panel>

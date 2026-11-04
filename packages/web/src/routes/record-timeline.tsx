@@ -6,7 +6,7 @@ import { format } from 'date-fns';
 import { CalendarClock, Lightbulb, PencilLine } from 'lucide-react';
 import { api, useWorkspace } from '../api/client.js';
 import { fields as fieldModules } from '../fields/index.js';
-import { ActorBadge } from '../provenance/index.js';
+import { ActorBadge, FactSources } from '../provenance/index.js';
 import {
   Badge,
   Button,
@@ -291,16 +291,7 @@ export function TimelineRow({ item, object }: { item: TimelineItem; object?: Obj
             <ActorBadge actor={item.writtenBy} />
             {time(item.at)}
           </Row>
-          {item.sources.map((s) =>
-            s.internal ? (
-              <Muted key="internal">Internal note</Muted>
-            ) : (
-              <Stack key={s.event}>
-                <EventLink id={s.event}>Source event</EventLink>
-                {s.quote ? <blockquote>{s.quote}</blockquote> : null}
-              </Stack>
-            ),
-          )}
+          <FactSources sources={item.sources} />
         </TimelineEntry>
       );
     default:

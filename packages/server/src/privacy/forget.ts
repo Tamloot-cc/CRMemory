@@ -267,12 +267,10 @@ async function findMentions(
       ? tx`false`
       : tx`exists (select 1 from unnest(${names as string[]}::text[]) n
           where search @@ ${phraseQuery(tx, tx`n`)})`;
-  const entityIds = schema.visibleObjectIds.filter((id) => !schema.eventTypeIds.includes(id));
-  const eventTypeIds = schema.eventTypeIds.filter((id) => schema.visibleObjectIds.includes(id));
   const records = await tx<{ id: string }[]>`
     select id from records
     where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${entityIds}::uuid[])
+      and object_type_id = any(${schema.entityTypeIds}::uuid[])
       and id <> all(${recordIds as string[]}::uuid[])
       and (${nameQuery}
         or id in (select record_id from record_identifiers
@@ -287,7 +285,7 @@ async function findMentions(
   const events = await tx<{ id: string }[]>`
     select id from records
     where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${eventTypeIds}::uuid[])
+      and object_type_id = any(${schema.eventTypeIds}::uuid[])
       and id <> all(${recordIds as string[]}::uuid[])
       and (${nameQuery} or data::text ilike any(${patterns}::text[]))
     order by id limit ${CANDIDATE_LIMIT}`;

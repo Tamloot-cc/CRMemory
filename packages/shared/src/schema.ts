@@ -99,8 +99,27 @@ export const isInverseRelation = (field: { settings: { isInverse?: boolean } }) 
 /** Whether a relation field holds a set of records rather than one. */
 export const isCollectionRelation = (field: {
   type: string;
-  settings: { relationCardinality?: RelationCardinality };
+  settings: { relationCardinality?: string };
 }) => field.type === 'relation' && field.settings.relationCardinality === 'many_to_many';
+
+/**
+ * The objects (singular API names) a relation may point at: its one
+ * `targetObject`, or each of a polymorphic relation's `targetObjects`.
+ */
+export const relationTargets = (field: {
+  settings: { targetObject?: string; targetObjects?: string[] };
+}): string[] =>
+  field.settings.targetObjects?.length
+    ? field.settings.targetObjects
+    : field.settings.targetObject
+      ? [field.settings.targetObject]
+      : [];
+
+/** Whether a relation may point at records of more than one object. */
+export const isPolymorphic = (field: {
+  type: string;
+  settings: { targetObject?: string; targetObjects?: string[] };
+}) => field.type === 'relation' && relationTargets(field).length > 1;
 
 export type OnDeleteBehavior = 'set_null' | 'cascade';
 

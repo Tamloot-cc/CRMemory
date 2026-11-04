@@ -13,6 +13,7 @@ import type {
   SchemaOwner,
   SelectOption,
 } from './schema.js';
+import { isCollectionRelation, isInverseRelation } from './schema.js';
 export type Scope = 'read' | 'write' | 'schema:write' | 'admin';
 export type Session = {
   workspace: { id: string; name: string; slug: string };
@@ -375,6 +376,13 @@ export type TimelineItem =
 export type TimelinePage = { record: string; items: TimelineItem[]; nextCursor: string | null };
 /** An event in `GET /v1/records/:id/events`: the full event and how it is attached. */
 export type AttachedEvent = PresentedRecord & { event: EventDetails; via: Via };
+/**
+ * A page of `GET /v1/records/:id/events`, with a reference for every record
+ * its events name (participants, candidates, `about`, rollup sources).
+ */
+export type AttachedEventPage = Page<AttachedEvent> & {
+  references: Record<string, RecordReference>;
+};
 /** `POST /v1/events` input (6.2). */
 export type LogEventInput = {
   /** The event type's API name, e.g. "meeting". */
@@ -577,9 +585,9 @@ export function aggregateOps(field: {
   type: FieldType;
   settings: { relationCardinality?: string; isInverse?: boolean };
 }): AggregateOp[] {
-  if (field.settings.isInverse || field.settings.relationCardinality === 'one_to_many') return [];
+  if (isInverseRelation(field)) return [];
   const ops = [...EMPTINESS];
-  if (field.settings.relationCardinality === 'many_to_many') return ops;
+  if (isCollectionRelation(field)) return ops;
   if (field.type === 'relation' || SORTABLE_TYPES.includes(field.type)) ops.push('countUnique');
   if (field.type === 'number' || field.type === 'money') ops.push('sum', 'avg');
   // The ordered types, which take `gt` and `lt` filters.
@@ -733,7 +741,7 @@ export const FILTER_OPERATORS: Record<FieldType, readonly FilterOperator[]> = {
  * Filters on a many_to_many relation: whether its set holds any or all of
  * some record IDs, or is empty. Sets have no order, so no comparisons.
  */
-export const COLLECTION_FILTER_OPERATORS: readonly FilterOperator[] = [
+const COLLECTION_FILTER_OPERATORS: readonly FilterOperator[] = [
   'containsAny',
   'containsAll',
   'isEmpty',
@@ -743,7 +751,7 @@ export function filterOperatorsFor(field: {
   type: FieldType;
   settings: { relationCardinality?: string };
 }): readonly FilterOperator[] {
-  if (field.type === 'relation' && field.settings.relationCardinality === 'many_to_many') {
+  if (isCollectionRelation(field)) {
     return COLLECTION_FILTER_OPERATORS;
   }
   return [...FILTER_OPERATORS[field.type], 'isNull'];

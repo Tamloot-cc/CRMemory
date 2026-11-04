@@ -452,8 +452,9 @@ it('hydrates event pages in a bounded number of real database queries', async ()
     const all = await read(20);
     expect(statements).toBe(one);
     // The transaction, the page, then one read each for event columns, links,
-    // live link targets and relation references in both directions.
-    expect(statements).toBeLessThanOrEqual(10);
+    // live link targets, relation references in both directions and the
+    // references for every record the events name.
+    expect(statements).toBeLessThanOrEqual(11);
     expect(all.items).toHaveLength(20);
     expect(all.items[0]?.event.title).toBe('Meeting 19');
     expect(all.items[0]?.via).toEqual({ kind: 'participant' });

@@ -2,11 +2,12 @@ import {
   type FieldView,
   isInverseRelation,
   type ObjectView,
+  relationTargets,
   SCHEMA_CHANGE_STATUSES,
   type SchemaChangeStatus,
   type SchemaOperation,
 } from '@retainer/shared';
-import { joinOr, relationTargets } from '../fields/common.js';
+import { joinOr } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import type { DiagramEdge } from '../ui/index.js';
 

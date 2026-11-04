@@ -1,7 +1,8 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
-import { addLinksInputSchema, logEventInputSchema } from '../../memory/events.js';
+import { addLinksInputSchema } from '../../memory/event-links.js';
+import { logEventInputSchema } from '../../memory/events.js';
 import { rememberInputSchema } from '../../memory/facts.js';
 import {
   addEventLinksFor,

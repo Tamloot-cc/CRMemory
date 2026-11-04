@@ -1,8 +1,9 @@
-import type { Actor, AssertionView, FieldView, Provenance } from '@retainer/shared';
+import type { Actor, AssertionView, FactSource, FieldView, Provenance } from '@retainer/shared';
 import { Bot, Cog, Plug, UserRound } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
+import { eventTitle, objectLabel } from '../routes/state.js';
 import { Badge, EventLink, Muted, ReviewLink, Row, Sourced, Stack, Tooltip } from '../ui/index.js';
 export function ActorBadge({ actor }: { actor: Actor }) {
   const Icon = { agent: Bot, user: UserRound, integration: Plug, system: Cog }[actor.type];
@@ -14,19 +15,30 @@ export function ActorBadge({ actor }: { actor: Actor }) {
     </Badge>
   );
 }
+/** What a fact rests on: the internal note, or each source event with its quote. */
+export function FactSources({ sources }: { sources: FactSource[] }) {
+  return sources.map((s) =>
+    s.internal ? (
+      <Muted key="internal">Internal note</Muted>
+    ) : (
+      <Stack key={s.event}>
+        <EventLink id={s.event}>Source event</EventLink>
+        {s.quote ? <blockquote>{s.quote}</blockquote> : null}
+      </Stack>
+    ),
+  );
+}
 export function AssertionSource({ assertion }: { assertion: AssertionView }) {
   const { schema } = useWorkspace();
-  const eventTypeName = (type: string) =>
-    schema.objects.find((o) => o.nameSingular === type)?.labelSingular ?? type;
   return (
     <Stack>
       <ActorBadge actor={assertion.actor} />
       <Muted>Observed {new Date(assertion.observedAt).toLocaleString()}</Muted>
       {assertion.source ? (
         <Row>
-          <Badge>{eventTypeName(assertion.source.type)}</Badge>
+          <Badge>{objectLabel(schema, assertion.source.type)}</Badge>
           <EventLink id={assertion.source.id}>
-            {assertion.source.title || 'Untitled event'} ·{' '}
+            {eventTitle(assertion.source)} ·{' '}
             {new Date(assertion.source.occurredAt).toLocaleDateString()}
           </EventLink>
         </Row>

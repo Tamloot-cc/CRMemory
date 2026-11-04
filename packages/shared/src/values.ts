@@ -9,7 +9,7 @@ import {
   moneyValueSchema,
   type PhonesValue,
 } from './field-types.js';
-import type { FieldSettings } from './schema.js';
+import { type FieldSettings, isCollectionRelation, isInverseRelation } from './schema.js';
 export type ValueField = { type: FieldType; settings: FieldSettings; isNullable?: boolean };
 
 export type ValueError = { field: string; message: string; allowed?: unknown[] };
@@ -193,10 +193,10 @@ export function normalizeFieldValue(field: ValueField, value: unknown): unknown 
     case 'address':
       return parseWith(addressValueSchema.strict(), value);
     case 'relation': {
-      if (field.settings.isInverse || field.settings.relationCardinality === 'one_to_many') {
+      if (isInverseRelation(field)) {
         fail('this is the read-only side of a relation; write the other side instead');
       }
-      if (field.settings.relationCardinality !== 'many_to_many') {
+      if (!isCollectionRelation(field)) {
         return parseWith(z.uuid({ message: 'expected the ID of the related record' }), value);
       }
       // A set: duplicates dropped, ordered by ID, since membership is unordered.
@@ -214,8 +214,7 @@ export function normalizeFieldValue(field: ValueField, value: unknown): unknown 
 
 /** Validates an editor value, including clearing a nullable field. */
 export function validateFieldValue(field: ValueField, value: unknown): unknown {
-  const collection =
-    field.type === 'relation' && field.settings.relationCardinality === 'many_to_many';
+  const collection = isCollectionRelation(field);
   if (value === null) {
     if (collection) throw new FieldValueError('takes an array of record IDs; [] clears it');
     if (!field.isNullable) throw new FieldValueError('is required and cannot be null');

@@ -5,6 +5,8 @@ import type {
   EventRetraction,
   LogEventResult,
   PresentedRecord,
+  RecordReference,
+  SourceReference,
   Via,
 } from '@retainer/shared';
 import type { Fragment } from 'postgres';
@@ -14,6 +16,7 @@ import type { Tx } from '../db/tx.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import { isEventIdentitySuppressed } from '../privacy/suppression.js';
 import { getRecord, presentRecords, RECORD_COLUMNS, type RecordRow } from '../records/read.js';
+import { references } from '../records/references.js';
 import { normalizeFieldValue, prepareValues } from '../records/values.js';
 import { sameValue } from '../records/winner.js';
 import {
@@ -24,11 +27,12 @@ import {
   type WriteContext,
   writeFields,
 } from '../records/write.js';
-import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
+import { type CompiledObject, type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import {
   type AddLinksInput,
   addLinks,
+  followMerges,
   linksInputSchema,
   loadLinks,
   lockLinkTargets,
@@ -71,9 +75,6 @@ export const logEventInputSchema = z
   })
   .extend(linksInputSchema.shape);
 export type LogEventInput = z.infer<typeof logEventInputSchema>;
-
-export type { AddLinksInput } from './event-links.js';
-export { addLinksInputSchema } from './event-links.js';
 
 /** An event type by API name; entities and the hidden note type are refused. */
 export function requireEventType(schema: CompiledSchema, name: string): CompiledObject {
@@ -316,17 +317,7 @@ async function canonicalRecordsAll(
   context: WriteContext,
   ids: readonly string[],
 ): Promise<Map<string, string>> {
-  if (ids.length === 0) return new Map();
-  const rows = await tx<{ start_id: string; id: string }[]>`
-    with recursive chain (start_id, id, merged_into_id, hops) as (
-      select r.id, r.id, r.merged_into_id, 0 from records r
-      where r.workspace_id = ${context.workspaceId} and r.id = any(${[...ids]}::uuid[])
-      union all
-      select c.start_id, r.id, r.merged_into_id, c.hops + 1 from chain c
-      join records r on r.id = c.merged_into_id and r.workspace_id = ${context.workspaceId}
-      where c.hops < 16
-    )
-    select start_id, id from chain where merged_into_id is null`;
+  const rows = await followMerges(tx, context.workspaceId, ids);
   return new Map(rows.map((r) => [r.start_id, r.id]));
 }
 
@@ -517,6 +508,29 @@ export function liveFactSource(tx: Tx, factId: Fragment): Fragment {
     where s.fact_id = ${factId}`;
 }
 
+/**
+ * The live, visible event a claim cites, as callers see it (6.4), from a
+ * row that left-joined it: null when it is gone or hidden (an internal note).
+ */
+export function presentSource(
+  schema: CompiledSchema,
+  row: {
+    source_record_id: string | null;
+    source_type: string | null;
+    source_data: Record<string, unknown> | null;
+    occurred_at: Date | null;
+  },
+): SourceReference | null {
+  if (!row.occurred_at || !row.source_record_id || !row.source_type) return null;
+  const object = schema.objectsById.get(row.source_type);
+  return {
+    id: row.source_record_id,
+    type: object?.name ?? 'unknown',
+    title: eventText(object, row.source_data ?? {}).title,
+    occurredAt: row.occurred_at.toISOString(),
+  };
+}
+
 /** The precedence of attachment kinds (7.1): a lower rank wins. */
 const VIA_RANK = { participant: 1, about: 2, field: 3, rollup: 4 } as const;
 
@@ -536,7 +550,7 @@ export function directAttachments(
   eventTypeIds: string[] = schema.eventTypeIds,
 ): Fragment {
   const recordId = typeof record === 'string' ? tx`${record}::uuid` : record;
-  const fieldIds = eventRelationFieldIds(schema);
+  const fieldIds = schema.eventRelationFieldIds;
   const want = (kind: EventAttachment) => !link || link === kind;
   const parts: Fragment[] = [];
   if (want('participant') || want('about')) {
@@ -568,45 +582,6 @@ export function directAttachments(
     join records ev on ev.id = a.event_id and ev.deleted_at is null
       and ev.object_type_id = any(${eventTypeIds}::uuid[])
     order by a.event_id, a.rank, a.field_id)`;
-}
-
-/**
- * IDs of the event types' own active relation fields (6.3): only they attach
- * an event, and a deleted field's edges no longer attach anything.
- */
-function eventRelationFieldIds(schema: CompiledSchema): string[] {
-  return [...schema.fieldOwners]
-    .filter(([id, object]) => {
-      const field = object.fieldsById.get(id);
-      return (
-        field?.status === 'active' &&
-        object.state.status === 'active' &&
-        object.isEvent &&
-        field.type === 'relation' &&
-        !field.settings.isInverse
-      );
-    })
-    .map(([id]) => id);
-}
-
-/**
- * IDs of the relation fields events roll up through (7.2): active, owning
- * fields of active entity objects with `rollUpEvents` on.
- */
-export function rollUpFieldIds(schema: CompiledSchema): string[] {
-  return [...schema.fieldOwners]
-    .filter(([id, object]) => {
-      const field = object.fieldsById.get(id);
-      return (
-        field?.status === 'active' &&
-        object.state.status === 'active' &&
-        !object.isEvent &&
-        field.type === 'relation' &&
-        !field.settings.isInverse &&
-        field.settings.rollUpEvents === true
-      );
-    })
-    .map(([id]) => id);
 }
 
 /** A row of `eventHistory`: one event and the attachment that wins. */
@@ -647,6 +622,21 @@ export function eventHistory(
     eventTypeIds?: string[];
   } = {},
 ): Fragment {
+  return tx`(
+    select distinct on (m.event_id) m.event_id, m.occurred_at, m.rank, m.field_id,
+      m.via_record_id
+    from (${historyBranches(tx, schema, workspaceId, recordId, options)}) m
+    order by m.event_id, m.rank, m.field_id, m.via_record_id)`;
+}
+
+/** Every path to every event in a record's history, before deduplication. */
+function historyBranches(
+  tx: Tx,
+  schema: CompiledSchema,
+  workspaceId: string,
+  recordId: string,
+  options: Parameters<typeof eventHistory>[4] = {},
+): Fragment {
   const { link, limit, where } = options;
   const types = options.eventTypeIds
     ? options.eventTypeIds.filter((id) => schema.eventTypeIds.includes(id))
@@ -661,7 +651,7 @@ export function eventHistory(
     tx`select t.*, null::uuid as via_record_id
       from (${newest(directAttachments(tx, schema, workspaceId, recordId, link, types))}) t`,
   ];
-  const fieldIds = link ? [] : rollUpFieldIds(schema);
+  const fieldIds = link ? [] : schema.rollUpFieldIds;
   if (fieldIds.length > 0) {
     branches.push(tx`
       select t.event_id, t.occurred_at, ${VIA_RANK.rollup}::int as rank, s.field_id,
@@ -674,12 +664,7 @@ export function eventHistory(
       where s.target_record_id = ${recordId} and s.field_id = any(${fieldIds}::uuid[])
         and s.workspace_id = ${workspaceId} and s.source_record_id <> ${recordId}`);
   }
-  const union = branches.reduce((a, b) => tx`${a} union all ${b}`);
-  return tx`(
-    select distinct on (m.event_id) m.event_id, m.occurred_at, m.rank, m.field_id,
-      m.via_record_id
-    from (${union}) m
-    order by m.event_id, m.rank, m.field_id, m.via_record_id)`;
+  return branches.reduce((a, b) => tx`${a} union all ${b}`);
 }
 
 /** The number of events in a record's history, each counted once (7.2). */
@@ -689,8 +674,11 @@ export async function countEventHistory(
   workspaceId: string,
   recordId: string,
 ): Promise<number> {
+  // Counts distinct events over every path, without choosing each one's
+  // winning attachment, which only a page needs.
   const [row] = await tx<{ total: string }[]>`
-    select count(*) as total from ${eventHistory(tx, schema, workspaceId, recordId)} h`;
+    select count(distinct m.event_id) as total
+    from (${historyBranches(tx, schema, workspaceId, recordId)}) m`;
   return Number(row?.total ?? 0);
 }
 
@@ -723,7 +711,11 @@ export async function attachedEventPage(
   limit: number,
   cursor?: string,
   link?: EventAttachment,
-): Promise<{ items: AttachedEvent[]; nextCursor: string | null }> {
+): Promise<{
+  items: AttachedEvent[];
+  nextCursor: string | null;
+  references: Record<string, RecordReference>;
+}> {
   const history = eventHistory(tx, schema, workspaceId, recordId, {
     link,
     where: (time, id) => after(tx, time, id, cursor, true),
@@ -740,13 +732,21 @@ export async function attachedEventPage(
     limit ${limit + 1}`;
   const result = page(rows, limit);
   const presented = await presentRecords(tx, schema, result.items);
+  const items = presented.flatMap((record, i): AttachedEvent[] => {
+    const row = result.items[i];
+    return row && record.event ? [{ ...record, event: record.event, via: viaOf(schema, row) }] : [];
+  });
+  // Labels for every record the page names, in one read, so a client never
+  // fetches one per participant.
+  const named = items.flatMap(({ event, via }) => [
+    ...event.participants.matched.map((p) => p.recordId),
+    ...event.participants.unmatched.flatMap((p) => p.candidates ?? []),
+    ...event.about,
+    ...(via.kind === 'rollup' ? [via.record] : []),
+  ]);
   return {
-    items: presented.flatMap((record, i) => {
-      const row = result.items[i];
-      return row && record.event
-        ? [{ ...record, event: record.event, via: viaOf(schema, row) }]
-        : [];
-    }),
+    items,
     nextCursor: result.nextCursor,
+    references: await references(tx, schema, [...new Set(named)]),
   };
 }

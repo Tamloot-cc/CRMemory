@@ -5,7 +5,7 @@ import type { Tx } from '../db/tx.js';
 import { liveFactSource } from '../memory/events.js';
 import { factSources } from '../memory/facts.js';
 import { references } from '../records/references.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import { assertions } from './reads.js';
 
 export async function reviewPage(
@@ -81,7 +81,7 @@ export async function reviewPage(
         handle: r.handle,
         role: r.role,
         occurredAt: r.occurred_at.toISOString(),
-        title: titleOf(schema, r.object_type_id, r.data),
+        title: eventText(schema.objectsById.get(r.object_type_id), r.data).title,
         deletedRecordIds: deleted.filter((d) => d.value === r.handle).map((d) => d.record_id),
       }),
     ),
@@ -96,11 +96,6 @@ export async function reviewPage(
       unresolvedParticipants: u.nextCursor,
     },
   };
-}
-function titleOf(schema: CompiledSchema, type: string, data: Record<string, unknown>) {
-  const key = schema.objectsById.get(type)?.core?.title.key;
-  const value = key === undefined ? undefined : data[key];
-  return typeof value === 'string' ? value : null;
 }
 export async function factsPage(
   tx: Tx,

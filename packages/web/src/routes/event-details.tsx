@@ -1,10 +1,15 @@
-import type { EventDetails, ObjectView, UnmatchedReason, Via } from '@retainer/shared';
-import { isInverseRelation } from '@retainer/shared';
+import type {
+  EventDetails,
+  ObjectView,
+  RecordReference,
+  SchemaDescription,
+  UnmatchedReason,
+  Via,
+} from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CornerDownRight, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
-import { relationTargets } from '../fields/common.js';
 import {
   Badge,
   Button,
@@ -19,7 +24,7 @@ import {
   Stack,
 } from '../ui/index.js';
 import { CandidateRecord } from './record-actions.js';
-import { objectByName, objectLabel, recordTitle, useDebounced } from './state.js';
+import { objectByName, objectLabel, recordTitle, relationsTo, useDebounced } from './state.js';
 
 const REASONS: Record<UnmatchedReason, string> = {
   no_match: 'No matching record',
@@ -39,12 +44,18 @@ export function ViaLabel({
   via,
   eventObject,
   recordObject,
+  references,
 }: {
   via: Via;
   /** The event type, to name a relation field the event points through. */
   eventObject?: ObjectView;
   /** The listing record's object, to name the field a rollup follows. */
   recordObject?: ObjectView;
+  /**
+   * The page's map of the records its events name. Given, a rollup's source
+   * record is named from it; otherwise it is fetched.
+   */
+  references?: Record<string, RecordReference>;
 }): ReactNode {
   switch (via.kind) {
     case 'participant':
@@ -54,7 +65,11 @@ export function ViaLabel({
     case 'field':
       return <Badge>Via field {fieldLabel(eventObject, via.field)}</Badge>;
     case 'rollup':
-      return <RollupVia via={via} recordObject={recordObject} />;
+      return references ? (
+        <RollupVia via={via} recordObject={recordObject} references={references} />
+      ) : (
+        <FetchedRollupVia via={via} recordObject={recordObject} />
+      );
     default:
       return unknownVia(via);
   }
@@ -67,45 +82,70 @@ function unknownVia(via: never): null {
 const fieldLabel = (object: ObjectView | undefined, name: string) =>
   object?.fields.find((f) => f.name === name)?.label ?? name;
 
+type RollupProps = { via: Extract<Via, { kind: 'rollup' }>; recordObject?: ObjectView };
+
 /**
  * "Rolled up via Company of Dana Levi". `via.field` is a field of the source
- * record: named from that record's object once its label loads (the query
- * `CandidateRecord` shares), and until then from the one owning relation of
- * that name that points at `recordObject`, if there is exactly one.
+ * record, named from that record's object as `references` gives it. A source
+ * missing from the map shows as unavailable, and its field is guessed.
  */
 function RollupVia({
   via,
   recordObject,
-}: {
-  via: Extract<Via, { kind: 'rollup' }>;
-  recordObject?: ObjectView;
-}) {
+  references,
+}: RollupProps & { references: Record<string, RecordReference> }) {
+  const { schema } = useWorkspace();
+  const source = references[via.record];
+  const label = source
+    ? fieldLabel(objectByName(schema, source.object), via.field)
+    : guessRollupField(schema, via.field, recordObject);
+  return (
+    <RollupSentence label={label}>
+      <CandidateRecord id={via.record} references={references} />
+    </RollupSentence>
+  );
+}
+
+/**
+ * A rollup where no references map is at hand (the timeline): the source
+ * record is fetched (the query `CandidateRecord` shares), and its field is
+ * guessed until the record's object is known.
+ */
+function FetchedRollupVia({ via, recordObject }: RollupProps) {
   const { session, schema } = useWorkspace();
   const source = useQuery({
     queryKey: [session.workspace.id, 'record', via.record, 'label'],
     queryFn: ({ signal }) => api.record(via.record, [], signal),
   });
-  const candidates = recordObject
-    ? schema.objects.flatMap((o) =>
-        o.fields.filter(
-          (f) =>
-            f.name === via.field &&
-            f.type === 'relation' &&
-            !isInverseRelation(f) &&
-            relationTargets(f).includes(recordObject.nameSingular),
-        ),
-      )
-    : [];
   const sourceObject = source.data ? objectByName(schema, source.data.object) : undefined;
   const label = sourceObject
     ? fieldLabel(sourceObject, via.field)
-    : candidates.length === 1
-      ? (candidates[0]?.label ?? via.field)
-      : via.field;
+    : guessRollupField(schema, via.field, recordObject);
+  return (
+    <RollupSentence label={label}>
+      <CandidateRecord id={via.record} />
+    </RollupSentence>
+  );
+}
+
+/**
+ * A rollup's field when its source object is unknown: the one owning relation
+ * of that name that points at `recordObject`, if there is exactly one.
+ */
+function guessRollupField(schema: SchemaDescription, name: string, recordObject?: ObjectView) {
+  const candidates = recordObject
+    ? schema.objects.flatMap((o) =>
+        relationsTo(o.fields, recordObject.nameSingular).filter((f) => f.name === name),
+      )
+    : [];
+  return candidates.length === 1 ? (candidates[0]?.label ?? name) : name;
+}
+
+function RollupSentence({ label, children }: { label: string; children: ReactNode }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-1 text-sm italic text-muted-foreground">
       <CornerDownRight size={13} aria-hidden className="shrink-0" />
-      <span>Rolled up via {label} of</span> <CandidateRecord id={via.record} />
+      <span>Rolled up via {label} of</span> {children}
     </span>
   );
 }

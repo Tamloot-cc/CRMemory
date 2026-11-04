@@ -8,9 +8,10 @@ import type {
   QueryInput,
   RecordReference,
 } from '@retainer/shared';
-import { AGGREGATE_OPS, aggregateOps, SORTABLE_TYPES } from '@retainer/shared';
-import { dateText, isPolymorphic, microsToDecimal, moneyText } from '../fields/common.js';
+import { AGGREGATE_OPS, aggregateOps, isPolymorphic, SORTABLE_TYPES } from '@retainer/shared';
+import { dateText, microsToDecimal, moneyText } from '../fields/common.js';
 import { clampWidth } from '../ui/data-grid.js';
+import { objectLabel, recordTitle } from './state.js';
 
 // ---------------------------------------------------------------------------
 // Columns: which fields show, in what order, at what width. Saved per object.
@@ -249,10 +250,9 @@ function formatFilterValue(
     return value.map((v) => formatFilterValue(v, field, references, objects)).join(', ');
   const reference = typeof value === 'string' ? references?.[value] : undefined;
   if (field?.type === 'relation' && reference) {
-    const name = reference.label || 'Untitled record';
+    const name = recordTitle(reference);
     if (!isPolymorphic(field)) return name;
-    const object = objects?.find((o) => o.nameSingular === reference.object);
-    return `${name} (${object?.labelSingular ?? reference.object})`;
+    return `${name} (${objectLabel({ objects: objects ?? [] }, reference.object)})`;
   }
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   // Money filters are integer micros; anything else came from a hand-edited URL.
