@@ -186,6 +186,12 @@ multiplicity. Make `(workspace, source, field, target)` unique, and keep a
 partial unique index on `(source, field)` where `is_collection` is false, so
 the database itself enforces the single-target maximum. The locked
 recomputation transaction still validates it first, for a clear error.
+An insert/update trigger derives `is_collection` from the referenced field in
+the same workspace, overriding any supplied flag and rejecting non-relation
+or inverse fields. Runtime writers cannot disable the trigger. Multiplicity
+is immutable on an existing field (below), so edges cannot drift after a
+schema edit. The flag plus index is a database guarantee only with this
+consistency enforcement; the partial index alone is insufficient.
 Retraction recomputes the entire winning relation value and its edges.
 
 Keep assertions out of `records.data` for relation fields, as today. New
@@ -299,6 +305,13 @@ Core text is supplied only through top-level title/summary, not duplicated in
   clean. A retry that names a field deleted since logging is a validation
   error, as for any write. A field added since logging is compared as absent
   from the original, so a retry supplying it conflicts.
+- Before comparing relation values on a retry, resolve merged record IDs to
+  their live survivors on both the incoming and initial-assertion sides.
+  Normalize collection sets again after resolution, because distinct original
+  IDs may now identify one survivor. An unchanged original request and one
+  using the equivalent survivor IDs both remain valid retries. A different
+  resolved membership still conflicts. This accommodates merges that rewrite
+  relation assertions without storing a second copy of their original values.
 - Later edits through `upsert_record` are ordinary assertions with no source
   and server time as `observed_at`, and they rank as usual.
 - Editing the displayed summary does not revise downstream claims or their
@@ -323,9 +336,12 @@ call missing from the deal's history.
 
 - Every live edge from an event-class record to a target attaches that event
   to the target's event history: `linked`, `recentEvents` and the timeline.
-  The attachment shows as `via: { kind: 'field', field }` (7.2).
-- This is direct attachment, not a rollup. It needs no opt-in and does not
-  chain into rollups.
+  The attachment shows as `via: { kind: 'field', field }` (7.1).
+- This is direct attachment and needs no opt-in. It may feed one subsequent
+  opted-in rollup, just like participant/about attachment. For example,
+  `payment.invoice` attaches the payment event to its invoice; an opted-in
+  `invoice.company` then includes it on the company. The company cannot pass
+  that rolled-up payment onward through another relation.
 - It follows the current relation value. Unlike `about`, a corrected or
   reassigned relation moves the event.
 - Guides prefer `about` for "what this event concerns" and keep relation
@@ -368,10 +384,26 @@ same retraction lifecycle to its records atomically; it cannot bypass it.
 `forget` retains the current participant-versus-about policy, including
 keeping events only about the forgotten record. Apply erasure to event fields,
 links, initial assertions and collection assertions. When erasure removes an
-event's initial values, keep only its content-free identity
-(`channel`, `external_id`) as a retracted tombstone and reject later retries.
+event's initial values, remove its raw identity and keep a suppression
+tombstone only when it had an external ID. Raw `channel` and `external_id`
+are caller-controlled strings and may contain identifying information; they
+are not content-free.
+
+The tombstone stores the workspace and a keyed HMAC of an unambiguous encoding
+of `(workspace_id, channel, external_id)`, with a domain separator specific to
+event identity suppression. Use the existing suppression-key facility, not
+an unkeyed hash. Store no raw channel, external ID, event text or original
+record ID in the tombstone. This digest is a retained suppression token,
+not a claim that the identity has been anonymized.
+
+Logging checks the digest before creating an event or adding retry links and
+returns `event_retracted` on a match. Check/reservation and erasure must
+serialize on the same identity so concurrent logging cannot recreate the
+erased event. Without external ID there is no identity tombstone or identity
+deduplication guarantee. Key rotation must preserve matching against existing
+tombstones; key management must not silently clear suppression.
 Never use deduplication storage as a second copy of erased data. Port the
-existing privacy tests.
+existing privacy tests and extend them for suppression.
 
 ## 7. Event retrieval and rollups
 
@@ -418,8 +450,11 @@ stored and turning it off restores the earlier reads. `update_field` gains a
 `rollUpEvents` parameter, which is not a destructive change and needs no
 review. Protected fields accept it.
 
-- Read-time, exactly one relation hop. Do not copy links or recursively roll
-  up events that source itself received by rollup.
+- Read-time, at most one relation hop after direct attachment. All direct
+  attachment kinds (participant, about and field) can feed that hop. Do not
+  copy links or recursively roll up events that source itself received by
+  rollup. An event's own relation field establishes attachment; it does not
+  consume the permitted rollup hop.
 - Direction is always source to target. No automatic reverse propagation.
 - Rollups apply only to events, not facts or related-record field assertions.
 - Deduplicate by event ID before pagination, counts and context budgeting.
@@ -571,7 +606,10 @@ Each database test file uses its own fresh database. Never mock Postgres.
   the initial assertions even after field edits, and after fields are added
   or deleted. Source references reject entities and other tenants. An event's
   own relation field attaches it to the target, and reassigning the field
-  moves it.
+  moves it. After merging relation targets, retries using original IDs or
+  survivor IDs both succeed for unchanged single-record and collection
+  values; collapsing multiple members to one survivor does not conflict.
+  Different resolved membership still conflicts.
 - **Internal notes:** every route (query, views, search, record read by ID,
   `upsert_record`, record deletion, describe, counts, context, timeline)
   treats the internal-note type as absent, and user-logged notes stay visible.
@@ -589,19 +627,27 @@ Each database test file uses its own fresh database. Never mock Postgres.
   reads agree with owning fields, and `isInverse` fields of many-to-many
   relations refuse writes. `onDelete: cascade` is rejected on collection
   fields. The database index rejects a second edge on a single-target field
-  even when application checks are bypassed. Merge and hard-erasure
+  even when application checks are bypassed, including when an insert or
+  update attempts to spoof `is_collection: true`. Merge and hard-erasure
   recomputation cannot recreate duplicates or forgotten targets.
 - **Rollups:** test single, collection and polymorphic fields, disabled fields,
   toggling `rollUpEvents` on and off, direction, one-hop limits, relation
   changes, `via` precedence across all four kinds, multiple-path
   deduplication, source deletion, counts, context budgets and the query plan
-  on a large fan-out.
+  on a large fan-out. A payment attached through `payment.invoice` rolls up
+  once through `invoice.company`, but never onward from the company; explicit
+  participant/about attachments follow the same one-hop rule.
 - **Timeline:** test equal timestamps across kinds, cursor/filter binding,
   backdated observations, historical collection assertions, never-winning
   superseded claims, superseded facts and internal-note exclusion.
 - **Privacy and isolation:** port interaction privacy tests; cover initial
   event assertions and tombstones, collection history, RLS and cross-workspace
-  references on every new path. MIT packages must not import server code.
+  references on every new path. Erase an event whose channel/external ID
+  contains identifying strings and verify neither raw string remains in
+  tombstones. The same workspace/identity stays suppressed, while another
+  workspace does not inherit that suppression. Test logging racing erasure
+  and matching across supported suppression-key rotation. MIT packages must
+  not import server code.
 - **Agent scenarios:** define person organizations as a native collection,
   define a company-or-person customer, log an event with custom fields, cite
   it, retrieve rolled-up context and inspect the unified timeline. Scenarios
