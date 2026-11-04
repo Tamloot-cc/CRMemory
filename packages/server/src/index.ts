@@ -25,7 +25,10 @@ try {
 }
 
 // Everything else runs as the runtime role, so row-level security applies.
-const sql = createSql(config.DATABASE_URL, { role: RUNTIME_ROLE });
+const sql = createSql(config.DATABASE_URL, {
+  role: RUNTIME_ROLE,
+  max: config.RETAINER_DB_POOL_MAX,
+});
 const stops: Array<() => Promise<void>> = [];
 
 if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {

@@ -1,0 +1,61 @@
+name: Deploy to AWS
+
+# Ships the current commit to an AWS deployment made with deploy/aws
+# (docs/aws.md): builds the Lambda package and runs deploy/aws/deploy.sh,
+# which stops the API, migrates and starts the new version. It changes no
+# infrastructure; that is `terraform apply`, run by an operator.
+#
+# Runs by hand only, in the GitHub Environment "production", whose variables
+# say where to deploy:
+#   AWS_ROLE_ARN   the github_deploy_role_arn Terraform output
+#   AWS_REGION     the deployment's region
+#   RETAINER_NAME  Terraform's `name` (optional, default "retainer")
+# Restrict the environment to the default branch: the role trusts any job in
+# it.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # AWS credentials through GitHub OIDC
+    steps:
+      - name: Check the environment's variables
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          err=0
+          for var in AWS_ROLE_ARN AWS_REGION; do
+            if [ -z "${!var}" ]; then echo "::error::Set $var on the production environment"; err=1; fi
+          done
+          exit $err
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: deploy/aws/build.sh
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: deploy/aws/deploy.sh --name "${RETAINER_NAME:-retainer}"
+        env:
+          RETAINER_NAME: ${{ vars.RETAINER_NAME }}
