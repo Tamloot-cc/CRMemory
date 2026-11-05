@@ -12,8 +12,8 @@ makes the split visible in the web app.
 ## 1. Why
 
 The findings come from dogfooding the "Live Test" workspace after the event
-upgrade (schema v12–v13): 89 Tamloot recordings re-logged as events, plus one
-new meeting logged with facts and tasks.
+upgrade (schema v12–v13): 88 Tamloot recordings re-logged as events from a
+backup, plus one new meeting logged with facts and tasks, 89 events in all.
 
 ### 1.1 System design
 
@@ -27,8 +27,11 @@ new meeting logged with facts and tasks.
   Zoom conversation is a meeting or a call depending on who logs it. In Live
   Test, 4 of 89 recordings became calls only because the source labeled them
   that way. An event's type cannot change: re-logging under another type is
-  `event_conflict`, and deleting to re-log retracts every assertion and fact
-  that cites the event.
+  `event_conflict`. Deleting the event retracts every assertion and fact that
+  cites it, and its identity stays suppressed for good: logging the same
+  `(channel, externalId)` again returns `event_retracted`. Re-logging needs a
+  new `externalId`, after which the source can no longer be deduplicated
+  against the event.
 - **Type overlaps with channel.** Channel already says where an event came
   from (gmail, zoom, whatsapp), so type mostly repeats it. The two still
   differ: channel `tamloot` holds both meetings and calls. Nothing documents
@@ -38,8 +41,8 @@ new meeting logged with facts and tasks.
   takes one object, and the timeline is per record. "Everything logged this
   week" or "every conversation with someone at Team8" now takes one query
   per event type.
-- **Every workspace starts with five event types.** Live Test uses one of
-  them (85 meetings, 4 calls, nothing else). The guide's "start lean" rule
+- **Every workspace starts with five event types.** Live Test uses two of
+  them (85 meetings and 4 calls) and none of the others. The guide's "start lean" rule
   says to add structure when the data shows it.
 
 ### 1.2 Frontend
@@ -69,16 +72,16 @@ defines them.
 
 ## 3. Decisions
 
-| #   | Decision                                                                                                            | Replaces                                       |
-| --- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| D1  | The base template adds two event types: `conversation` and `note`.                                                  | meeting, call, email, message, note            |
-| D2  | `conversation` has a `medium` select (meeting, call, email, message). It is an ordinary field, editable after logging. | The event type as the medium                   |
-| D3  | Channel is the source system or account and is part of identity. Medium is what kind of conversation it was. Both are documented. | Undocumented overlap                           |
-| D4  | A new event type is for an event whose fields a conversation would never use: payment, form submission, site visit. | No rule                                        |
-| D5  | Events can be queried across all event types, workspace-wide.                                                       | One `query_records` call per type              |
-| D6  | The web app shows two areas, **Records** and **Activity**. "Event" stays the API word.                              | One flat "Objects" list; three words           |
-| D7  | People can write notes in the web app. Every other event is still logged by agents and integrations.                | "Only agents log events" for every type        |
-| D8  | A developer view shows API names, class, IDs and the write tool across the app.                                     | Schema page only                               |
+| #   | Decision                                                                                                                          | Replaces                                |
+| --- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| D1  | The base template adds two event types: `conversation` and `note`.                                                                | meeting, call, email, message, note     |
+| D2  | `conversation` has a `medium` select (meeting, call, email, message). It is an ordinary field, editable after logging.            | The event type as the medium            |
+| D3  | Channel is the source system or account and is part of identity. Medium is what kind of conversation it was. Both are documented. | Undocumented overlap                    |
+| D4  | A new event type is for an event whose fields a conversation would never use: payment, form submission, site visit.               | No rule                                 |
+| D5  | Events can be queried across all event types, workspace-wide.                                                                     | One `query_records` call per type       |
+| D6  | The web app shows two areas, **Records** and **Activity**. "Event" stays the API word.                                            | One flat "Objects" list; three words    |
+| D7  | People can write notes in the web app. Every other event is still logged by agents and integrations.                              | "Only agents log events" for every type |
+| D8  | A developer view shows API names, class, IDs and the write tool across the app.                                                   | Schema page only                        |
 
 ## 4. System design
 
@@ -100,9 +103,9 @@ deletion rules, the same as the base types they replace.
 
 **Why `medium` is a field and not the type.** A field can be corrected after
 logging, with provenance, through `upsert_record`, and it ranks like any other
-assertion. Correcting the type would break event identity and retract
-citations. A misclassified medium then costs one edit, not a delete and
-re-log.
+assertion. Correcting the type means deleting the event, which retracts its
+citations and suppresses its identity (1.1). A misclassified medium then costs
+one edit, not a delete and a re-log under a new identity.
 
 **Channel and medium.** `describe_schema` and the guides say:
 
@@ -136,9 +139,10 @@ Add `POST /v1/events/query` and accept `object: "event"` in `query_records`.
   with `GET /v1/records/:id/events` and the timeline.
 - Type-specific fields such as `medium` are not filterable here, because
   they can differ by type. Filter one type with `query_records` on that type.
-- Each item carries `type`, the core fields, built-in columns, and its
-  participants and `about` IDs. It does not include each type's custom
-  fields; read the event for those.
+- Each item carries `type`, the core fields, built-in columns, its
+  participants and `about` IDs, and its type's other field values (such as
+  `medium`), as a per-type `query_records` returns them. They are returned,
+  not filterable.
 - Same pagination, cursor and limits as `query_records`.
 
 The SDK gains `events.query`. The web app's Activity feed (5.2) uses this
@@ -162,9 +166,10 @@ gains `conversation` and keeps its old types until someone deletes them.
 
 Moving events between types is a separate problem. Event identity spans
 types, so an event can't be re-logged as `conversation` while its old record
-exists, and deleting the old record retracts what cites it. In Live Test,
-one of the 89 events is cited by 4 facts, 6 new tasks and a project's next
-step. See open question 2.
+exists. Deleting the old record retracts what cites it and suppresses its
+identity for good, so a re-log needs a new `externalId` and the source can't
+be deduplicated against it again. In Live Test, one of the 89 events is cited
+by 4 facts, 6 new tasks and a project's next step. See open question 2.
 
 ## 5. Frontend design
 
@@ -233,15 +238,15 @@ a note is the same permission with no new risk.
 
 ### 5.6 Wording (D6)
 
-| The UI says       | The API says                 | Where                                       |
-| ----------------- | ---------------------------- | ------------------------------------------- |
-| Records           | entity objects               | Sidebar group, schema tab                   |
-| Activity          | events, event types          | Sidebar group, record tab, feed             |
-| Conversation      | `conversation`               | Type label                                  |
-| Medium            | `medium`                     | Field label                                 |
-| Source            | `channel`                    | Event page, list column header              |
-| Participants      | participant links            | Event page and rows                         |
-| About             | `about` links                | Event page and rows                         |
+| The UI says  | The API says        | Where                           |
+| ------------ | ------------------- | ------------------------------- |
+| Records      | entity objects      | Sidebar group, schema tab       |
+| Activity     | events, event types | Sidebar group, record tab, feed |
+| Conversation | `conversation`      | Type label                      |
+| Medium       | `medium`            | Field label                     |
+| Source       | `channel`           | Event page, list column header  |
+| Participants | participant links   | Event page and rows             |
+| About        | `about` links       | Event page and rows             |
 
 "Interaction" no longer appears in the UI or the docs, except where
 ARCHITECTURE.md records history.
@@ -255,8 +260,8 @@ A **Developer view** switch in the account menu, remembered per browser in
   headers, filters and forms.
 - Record and event headers show the class (`entity` or `event`), the record
   ID with a copy button, and the write path: `upsert_record` /
-  `POST /v1/objects/:object/records` for entities, `log_event` /
-  `POST /v1/events` for events.
+  `POST /v1/objects/:object/upsert` (or `PATCH /v1/records/:id` for this
+  record) for entities, `log_event` / `POST /v1/events` for events.
 - Event rows show the raw `via` and `externalId`.
 - A **JSON** tab on record and event pages shows the REST response as
   returned.
@@ -273,29 +278,34 @@ It changes what is displayed, never what is sent.
 
 ## 6. Implementation order
 
-| Phase | Work                                                                                       | Depends on |
-| ----- | ------------------------------------------------------------------------------------------ | ---------- |
-| 1     | Shell groups (5.1), class label (5.5), wording (5.6), event list defaults and explanations (5.3) | none       |
-| 2     | Developer view (5.7) and schema page text and diagram (5.8)                                | none       |
-| 3     | Base template change (4.1), guide and instruction text (4.3), reserved-name reasons        | none       |
-| 4     | Cross-type event query: REST, MCP, SDK (4.2)                                               | none       |
-| 5     | All activity feed (5.2) and writing notes (5.4)                                            | 4          |
+| Phase | Work                                                                                                                     | Depends on |
+| ----- | ------------------------------------------------------------------------------------------------------------------------ | ---------- |
+| 1     | Shell groups (5.1), class label (5.5), wording (5.6), event list defaults and explanations (5.3, except the note button) | none       |
+| 2     | Developer view (5.7), schema page text and diagram (5.8), writing notes (5.4) with the note list button                  | none       |
+| 3     | Base template change (4.1), guide and instruction text (4.3), reserved-name reasons                                      | none       |
+| 4     | Cross-type event query: REST, MCP, SDK (4.2)                                                                             | none       |
+| 5     | All activity feed (5.2)                                                                                                  | 4          |
 
-Phases 1 and 2 are web-only and fix most of what people see. Phase 1 alone
+Phases 1 and 2 are web-only and fix most of what people see. Writing notes
+needs only the existing `POST /v1/events`. Phase 1 alone
 is a small change to `main.tsx`, `ui/shell.tsx` and `routes/objects.tsx`.
 
 ## 7. Open questions
 
-1. **Duration in the base type.** 87 of 88 recordings in Live Test carry a
-   duration. Should `conversation` ship with an optional `durationMinutes`, or
+1. **Duration in the base type.** 87 of the 88 recordings migrated from the
+   Live Test backup carry a duration. Should `conversation` ship with an optional `durationMinutes`, or
    should templates and agents add it from evidence? Recommendation: leave it
    out of the base and let the recording-source templates add it.
 2. **Moving events between types.** Should the server offer an admin-approved
    operation that changes an event's type while keeping its record ID,
    identity, links and citations, mapping fields by name? Without it, a
-   workspace that wants `conversation` must delete and re-log, losing claims.
-   Recommendation: build it only if a released workspace needs it. For Live
-   Test, a one-off script against the database is enough.
+   workspace that wants `conversation` must delete and re-log under new
+   `externalId`s. That loses the claims citing the old events, and the
+   suppressed identities mean a later resync from the source can't be
+   deduplicated against the new ones. Recommendation: build it before any
+   released workspace needs to switch, because delete and re-log is not a
+   safe fallback. For Live Test, a one-off script that changes the type in
+   place (not delete and re-log) is enough, or Live Test keeps its old types.
 3. **A `direction` field.** Inbound versus outbound matters for email and
    calls. Add it only when an agent first has data for it.
 4. **Saved views for the feed.** Views are per object today. A cross-type
