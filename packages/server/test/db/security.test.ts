@@ -23,6 +23,7 @@ const TENANT_TABLES = [
   'field_assertions',
   'facts',
   'fact_sources',
+  'comments',
   'merge_suggestions',
   'idempotency_keys',
   'suppressions',
@@ -134,7 +135,7 @@ async function workspaceWithEvent() {
     scopes: ['read', 'write'],
   };
   const event = await logEventFor(app, caller, {
-    type: 'note',
+    type: 'conversation',
     channel: 'api',
     externalId: 'security-1',
     occurredAt: '2026-10-01T10:00:00Z',

@@ -57,7 +57,8 @@ on the last page. `GET /v1/review` pages each collection separately with
 
 ## Idempotency
 
-Creating a record, `remember` and merging accept an `Idempotency-Key` header
+Creating a record, `remember`, merging and adding, editing or deleting a
+comment accept an `Idempotency-Key` header
 (1–200 characters). A retry with the same key and the same body returns the
 original response; the same key with a different body fails with 422
 `idempotency_key_reused`. Logging an event is idempotent through its
@@ -86,7 +87,7 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 | `POST /v1/objects/:object/aggregate`              | `read`           | Count, and per-field totals over, the records a filter matches       |
 | `GET` · `POST /v1/objects/:object/views`          | `read` · `write` | List the saved views the caller can see, or save one                 |
 | `GET` · `PATCH` · `DELETE /v1/views/:id`          | `read` · `write` | Read, change or delete a saved view                                  |
-| `GET /v1/records/:id`                             | `read`           | One record; `?include=provenance,relationReferences`                 |
+| `GET /v1/records/:id`                             | `read`           | One record; `?include=provenance,relationReferences,counts`          |
 | `PATCH /v1/records/:id`                           | `write`          | Update fields; optional `source` and `expectedUpdatedAt`             |
 | `GET /v1/records/:id/delete-impact`               | `read`           | What a delete would take with it through cascades, counted by object |
 | `POST /v1/records/delete-impact`                  | `read`           | The same for `{ "ids": [...] }` (at most 200) deleted together       |
@@ -95,6 +96,8 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 | `GET /v1/records/:id/events`                      | `read`           | The record's event history, rollups included, with `via`; `?link=`   |
 | `GET` · `POST /v1/records/:id/facts`              | `read` · `write` | List facts, or `remember` one                                        |
 | `DELETE /v1/facts/:id`                            | `write`          | Retract a fact                                                       |
+| `GET` · `POST /v1/records/:id/comments`           | `read` · `write` | List comments, newest first, or add one; adding needs a `user` actor |
+| `PATCH` · `DELETE /v1/comments/:id`               | `write`          | Edit (author only), or delete (author, or a `user` with `admin`)     |
 | `GET /v1/records/:id/context`                     | `read`           | Context pack; `?tokenBudget=` (default 2000, at most 16000)          |
 | `GET /v1/records/:id/timeline`                    | `read`           | Events, field values and facts, newest first; filters, cursor        |
 | `POST /v1/records/:id/merge`                      | `write`, user    | Merge `recordId` into this record                                    |
@@ -106,7 +109,7 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 | `POST /v1/events/:id/links`                       | `write`          | Add participants and `about` records; idempotent                     |
 | `DELETE /v1/events/:id/participants/:pid`         | `write`, user    | Remove one participant                                               |
 | `DELETE /v1/events/:id/about/:recordId`           | `write`, user    | Remove a record from the event's `about` list                        |
-| `GET /v1/events/:id/claims`                       | `read`           | Assertions and facts citing an event                                 |
+| `GET /v1/events/:id/claims`                       | `read`           | Assertions and facts citing an event; `?own=false` omits its own     |
 | `POST /v1/search`                                 | `read`           | Keyword search across records, events and facts                      |
 | `GET /v1/review`                                  | `read`           | Pending values, merge suggestions, unresolved participants           |
 | `GET /v1/assertions/:id`                          | `read`           | One assertion with its review state                                  |
@@ -166,7 +169,7 @@ records, and moving a board card is a record `PATCH`.
 
 Events are records of event types (`class: "event"` in `GET /v1/schema`):
 `conversation` (meetings, calls, emails and chats, told apart by its
-`medium` field), `note`, and any type the workspace adds. `channel` is
+`medium` field), and any type the workspace adds. `channel` is
 where an event came from (the source system or account) and is part of its
 identity; `medium` is what kind of conversation it was, and can be corrected
 later like any field.
@@ -179,7 +182,33 @@ sorts by the built-in `occurredAt`, `channel` and `externalId`, and takes
 or through one of the event type's own relation fields, narrowed by `link`
 (`participant`, `about` or `field`). Merged record IDs resolve to their
 survivor. The notes `remember` creates for facts without a source are
-internal and never listed.
+internal and never listed. An event's participants and `about` name entities
+only: an event in `about`, or the event itself, is a 422 `invalid_link`, and
+an event as a participant a 422 `invalid_participants`. Links to events made
+before this rule still read and can be removed.
+
+Comments are plain text people write on any record, entity or event. Only a
+key whose actor is a `user` can add one; any other gets 403, whatever its
+scopes. A comment is never evidence: it can't be a `source`, and it isn't in
+timelines, event lists or context packs. Merges move comments to the
+survivor, and `forget` erases them.
+
+```json
+// POST /v1/records/rec_5a1…/comments
+{ "body": "Their procurement moves slowly. Loop in legal early." }
+// 201
+{
+  "id": "…",
+  "record": "rec_5a1…",
+  "body": "Their procurement moves slowly. Loop in legal early.",
+  "author": { "type": "user", "id": "dana" },
+  "createdAt": "2026-11-06T09:00:00.000Z",
+  "updatedAt": "2026-11-06T09:00:00.000Z",
+  "editedAt": null
+}
+```
+
+`GET /v1/records/:id/comments` returns `{ record, items, total, nextCursor }`.
 
 ```json
 {
@@ -204,7 +233,7 @@ never listed.
 
 ```json
 {
-  "filter": { "type": { "in": ["conversation", "note"] }, "channel": "gmail" },
+  "filter": { "type": { "in": ["conversation", "payment"] }, "channel": "gmail" },
   "linked": { "record": "rec_5a1…" },
   "include": ["relationReferences"]
 }

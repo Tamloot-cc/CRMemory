@@ -105,6 +105,11 @@ export function useView() {
   );
   return { search, setSearch };
 }
+/** `useInfiniteQuery` options for a list paged by `nextCursor`. */
+export const byCursor = {
+  initialPageParam: undefined as string | undefined,
+  getNextPageParam: (last: { nextCursor: string | null }) => last.nextCursor ?? undefined,
+};
 export function QueryError({ error, retry }: { error: Error; retry?: () => void }) {
   return (
     <Notice error>

@@ -16,7 +16,7 @@ import { databaseUrl, useTestDatabase } from '../helpers/db.js';
 
 const db = useTestDatabase();
 const config = () => loadConfig({ DATABASE_URL: db.url, LOG_LEVEL: 'error' });
-const NOTHING_UPGRADED = { upgraded: [], conflicts: [], failed: [] };
+const NOTHING_UPGRADED = { upgraded: [], conflicts: [], failed: [], aboutEventLinks: [] };
 
 /** An API Gateway HTTP API (payload 2.0) event, as the $default route sends it. */
 function httpEvent(

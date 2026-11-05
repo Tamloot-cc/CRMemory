@@ -5,6 +5,7 @@ import type {
   AssertionView,
   AttachedEventPage,
   BulkDeleteImpact,
+  CommentPage,
   ContextInput,
   ContextPack,
   CreateViewInput,
@@ -23,6 +24,7 @@ import type {
   MoveEventsInput,
   MoveEventsResult,
   Page,
+  PresentedComment,
   PresentedFact,
   PresentedRecord,
   QueryInput,
@@ -133,13 +135,22 @@ export class RetainerClient {
     const q = this.query(path, params, signal);
     return this.request<T>(q.path, { signal });
   }
-  private post<T>(path: string, body?: unknown, signal?: AbortSignal, idempotencyKey?: string) {
+  private send<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+    idempotencyKey?: string,
+  ) {
     return this.request<T>(path, {
-      method: 'POST',
+      method,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal,
       headers: idempotencyKey ? { 'idempotency-key': idempotencyKey } : {},
     });
+  }
+  private post<T>(path: string, body?: unknown, signal?: AbortSignal, idempotencyKey?: string) {
+    return this.send<T>('POST', path, body, signal, idempotencyKey);
   }
   /** Health reports database outages in its response body, including HTTP 503. */
   async health(): Promise<HealthResponse> {
@@ -360,6 +371,40 @@ export class RetainerClient {
       method: 'DELETE',
     });
   }
+  /** A record's comments, newest first, with their total. A merged ID follows the merge. */
+  listComments(id: string, options: PageOptions = {}) {
+    const { signal, ...params } = options;
+    return this.get<CommentPage>(`/v1/records/${encodeURIComponent(id)}/comments`, params, signal);
+  }
+  /** Adds a comment (a `user` key only). Retrying with the same key adds it once. */
+  addComment(id: string, input: { body: string }, idempotencyKey?: string) {
+    return this.post<PresentedComment>(
+      `/v1/records/${encodeURIComponent(id)}/comments`,
+      input,
+      undefined,
+      idempotencyKey,
+    );
+  }
+  /** Edits a comment's body; its author only. */
+  editComment(id: string, input: { body: string }, idempotencyKey?: string) {
+    return this.send<PresentedComment>(
+      'PATCH',
+      `/v1/comments/${encodeURIComponent(id)}`,
+      input,
+      undefined,
+      idempotencyKey,
+    );
+  }
+  /** Deletes a comment; its author, or a `user` key with `admin`. */
+  deleteComment(id: string, idempotencyKey?: string) {
+    return this.send<{ id: string; deleted: true }>(
+      'DELETE',
+      `/v1/comments/${encodeURIComponent(id)}`,
+      undefined,
+      undefined,
+      idempotencyKey,
+    );
+  }
   /** One live event: the record with its built-in columns and links. */
   event(id: string, signal?: AbortSignal) {
     return this.get<PresentedRecord>(`/v1/events/${encodeURIComponent(id)}`, {}, signal);
@@ -414,7 +459,12 @@ export class RetainerClient {
   }
   claims(
     id: string,
-    options: Omit<PageOptions, 'cursor'> & { assertionsCursor?: string; factsCursor?: string } = {},
+    options: Omit<PageOptions, 'cursor'> & {
+      assertionsCursor?: string;
+      factsCursor?: string;
+      /** `false` leaves out the event's own logged values, which cite it too. */
+      own?: boolean;
+    } = {},
   ) {
     const { signal, ...params } = options;
     return this.get<{

@@ -547,7 +547,7 @@ describe('event types', () => {
   it('seeds the base event types and the internal-note type with fixed universal IDs', () => {
     const events = seeded.objects.filter((o) => o.class === 'event');
     expect(Object.fromEntries(events.map((o) => [o.nameSingular, o.universalId]))).toEqual({
-      ...BASE_EVENT_TYPE_IDS,
+      conversation: BASE_EVENT_TYPE_IDS.conversation,
       internalNote: INTERNAL_NOTE_TYPE_ID,
     });
     // Base event types can be deleted when unused; the internal one cannot.
@@ -555,6 +555,45 @@ describe('event types', () => {
       'internalNote',
     ]);
     expect(base.objects.every((o) => o.class === 'entity')).toBe(true);
+  });
+
+  it('gives an event type named note its reserved universal ID, not a pinned one', () => {
+    const note = {
+      op: 'create_object',
+      object: {
+        nameSingular: 'note',
+        namePlural: 'notes',
+        labelSingular: 'Note',
+        labelPlural: 'Notes',
+        class: 'event',
+        fields: [],
+      },
+    } as SchemaOperation;
+    const state = applyValid(seeded, [note]);
+    expect(object(state, 'note')?.universalId).toBe(BASE_EVENT_TYPE_IDS.note);
+    // An entity of that name is not a note type, whatever it is called.
+    const entity = {
+      op: 'create_object',
+      object: {
+        nameSingular: 'note',
+        namePlural: 'notes',
+        labelSingular: 'Note',
+        labelPlural: 'Notes',
+        labelField: 'text',
+        fields: [{ name: 'text', label: 'Text', type: 'text' }],
+      },
+    } as SchemaOperation;
+    expect(object(applyValid(seeded, [entity]), 'note')?.universalId).not.toBe(
+      BASE_EVENT_TYPE_IDS.note,
+    );
+    // Added again after deletion, the old row keeps the ID and the new one gets its own.
+    const again = applyValid(
+      applyValid(state, [{ op: 'delete_object', object: 'note' }], 'system'),
+      [note],
+    );
+    const added = again.objects.find((o) => o.nameSingular === 'note' && o.status === 'active');
+    expect(added?.universalId).toBeDefined();
+    expect(added?.universalId).not.toBe(BASE_EVENT_TYPE_IDS.note);
   });
 
   it('gives a new event type protected title and summary fields, the title as its label', () => {

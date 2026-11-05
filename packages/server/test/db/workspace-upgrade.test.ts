@@ -8,6 +8,7 @@ import { BASE_OPERATIONS } from '../../src/templates/index.js';
 import { definitionsFor, upgradeWorkspaces } from '../../src/workspaces/upgrade.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { addNoteType } from '../helpers/note-type.js';
 
 const db = useTestDatabase();
 let api: TestApp;
@@ -80,13 +81,79 @@ const digestOf = async (workspaceId: string) =>
   )[0]?.definitions_digest;
 
 describe('upgrading workspaces to the built-in definitions', () => {
+  it('leaves an existing note type and its events, which an admin can then delete (C5)', async () => {
+    const { workspaceId, key } = await legacyWorkspace('kept-notes');
+    await addNoteType(owner, workspaceId);
+    const admin = (
+      await createApiKey(owner, {
+        workspace: workspaceId,
+        name: 'admin',
+        actor: { type: 'user', id: 'ops' },
+        scopes: ['admin'],
+      })
+    ).key;
+    await upgradeWorkspaces(owner);
+    const eventTypes = async () =>
+      (await api.request('/v1/schema', { key })).body.objects
+        .filter((o: { class: string }) => o.class === 'event')
+        .map((o: { nameSingular: string; baseObject?: string }) => [o.nameSingular, o.baseObject]);
+    expect(await eventTypes()).toEqual(
+      expect.arrayContaining([
+        ['note', 'note'],
+        ['conversation', 'conversation'],
+      ]),
+    );
+    const note = await logCall(key, { type: 'note' });
+    expect(note.status).toBe(201);
+    expect((await upgradeWorkspaces(owner)).failed).toEqual([]);
+    expect((await api.request(`/v1/events/${note.body.id}`, { key })).status).toBe(200);
+
+    const proposed = await api.request('/v1/schema/changes', {
+      key: admin,
+      body: { operations: [{ op: 'delete_object', object: 'note' }] },
+    });
+    expect(['applied', 'proposed']).toContain(proposed.body.status);
+    if (proposed.body.status === 'proposed') {
+      const approved = await api.request(`/v1/schema/changes/${proposed.body.change.id}/approve`, {
+        key: admin,
+        method: 'POST',
+      });
+      expect(approved.body.status).toBe('applied');
+    }
+    expect(await eventTypes()).toEqual([['conversation', 'conversation']]);
+    // The upgrade never brings it back.
+    await owner`update workspaces set definitions_digest = null where id = ${workspaceId}`;
+    await upgradeWorkspaces(owner);
+    expect(await eventTypes()).toEqual([['conversation', 'conversation']]);
+  });
+
+  it('logs how many about links to events a workspace has, and leaves them (C4)', async () => {
+    const { workspaceId, key } = await legacyWorkspace('linked-events');
+    await upgradeWorkspaces(owner);
+    const a = await logCall(key);
+    const b = await logCall(key);
+    await owner`
+      insert into event_links (workspace_id, event_id, position, record_id, link)
+      values (${workspaceId}, ${b.body.id}, 0, ${a.body.id}, 'about')`;
+    await owner`update workspaces set definitions_digest = null where id = ${workspaceId}`;
+    const report = await upgradeWorkspaces(owner);
+    expect(report.aboutEventLinks).toEqual([{ workspace: 'linked-events', count: 1 }]);
+    const read = await api.request(`/v1/events/${b.body.id}`, { key });
+    expect(read.body.event.about).toEqual([a.body.id]);
+  });
+
   it('gives a pre-events workspace its event types, internal notes and protection', async () => {
     const { workspaceId, key } = await legacyWorkspace('legacy');
     const before = await logCall(key);
     expect(before.status).toBe(404);
 
     const report = await upgradeWorkspaces(owner);
-    expect(report).toEqual({ upgraded: ['legacy'], conflicts: [], failed: [] });
+    expect(report).toEqual({
+      upgraded: ['legacy'],
+      conflicts: [],
+      failed: [],
+      aboutEventLinks: [],
+    });
 
     const schema = await api.request('/v1/schema', { key });
     const objects = schema.body.objects as {
@@ -96,7 +163,6 @@ describe('upgrading workspaces to the built-in definitions', () => {
     }[];
     expect(objects.filter((o) => o.class === 'event').map((o) => o.nameSingular)).toEqual([
       'conversation',
-      'note',
     ]);
     expect(objects.filter((o) => o.isProtected).map((o) => o.nameSingular)).toEqual([
       'company',
@@ -137,12 +203,22 @@ describe('upgrading workspaces to the built-in definitions', () => {
 
   it('changes nothing on a second run, and stamps a current workspace without a change', async () => {
     const { workspace } = await api.setupWorkspace({ name: 'Fresh', template: 'clinic' }, {});
-    expect(await upgradeWorkspaces(owner)).toEqual({ upgraded: [], conflicts: [], failed: [] });
+    expect(await upgradeWorkspaces(owner)).toEqual({
+      upgraded: [],
+      conflicts: [],
+      failed: [],
+      aboutEventLinks: [],
+    });
     expect(await changesOf(workspace.id)).toEqual([]);
     expect(await digestOf(workspace.id)).toBe(
       definitionsFor([{ name: 'clinic', version: 1, appliedAt: '' }]).digest,
     );
-    expect(await upgradeWorkspaces(owner)).toEqual({ upgraded: [], conflicts: [], failed: [] });
+    expect(await upgradeWorkspaces(owner)).toEqual({
+      upgraded: [],
+      conflicts: [],
+      failed: [],
+      aboutEventLinks: [],
+    });
   });
 
   it('upgrades each workspace once when two runs race', async () => {
@@ -178,6 +254,7 @@ describe('upgrading workspaces to the built-in definitions', () => {
       upgraded: ['tolerated'],
       conflicts: [],
       failed: [],
+      aboutEventLinks: [],
     });
     expect((await logCall(key)).status).toBe(201);
     expect(await digestOf(workspaceId)).toBe(definitionsFor([]).digest);
@@ -223,11 +300,9 @@ describe('upgrading workspaces to the built-in definitions', () => {
         },
       ],
       failed: [],
+      aboutEventLinks: [],
     });
     expect(await digestOf(workspaceId)).toBeNull();
-    // The rest of the upgrade still applies: notes can be logged.
-    const note = await logCall(key, { type: 'note' });
-    expect(note.status).toBe(201);
 
     const rename = await api.request('/v1/schema/changes', {
       key,
@@ -248,6 +323,7 @@ describe('upgrading workspaces to the built-in definitions', () => {
       upgraded: ['clash'],
       conflicts: [],
       failed: [],
+      aboutEventLinks: [],
     });
     expect(await digestOf(workspaceId)).toBe(definitionsFor([]).digest);
   });

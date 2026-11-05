@@ -79,12 +79,13 @@ export function normalizeParticipants(input: readonly ParticipantInput[]): Norma
   return participants;
 }
 
-type CanonicalRecord = { id: string; deleted: boolean };
+type CanonicalRecord = { id: string; deleted: boolean; isEvent?: boolean };
 
 /**
  * Follows `merged_into_id` from each ID to the surviving record (4.2) and
- * reports whether it is deleted. Unknown IDs, and records of hidden or
- * deleted objects, are absent from the map.
+ * reports whether it is deleted. Unknown IDs, events, and records of hidden
+ * or deleted objects are absent from the map: a handle only ever matches an
+ * entity (1.3).
  */
 async function canonicalRecords(
   tx: Tx,
@@ -93,10 +94,10 @@ async function canonicalRecords(
   ids: readonly string[],
 ): Promise<Map<string, CanonicalRecord>> {
   const rows = await followMerges(tx, workspaceId, ids);
-  const visible = new Set(schema.visibleObjectIds);
+  const entities = new Set(schema.entityTypeIds);
   return new Map(
     rows
-      .filter((r) => visible.has(r.object_type_id))
+      .filter((r) => entities.has(r.object_type_id))
       .map((r) => [r.start_id, { id: r.id, deleted: r.deleted_at !== null }]),
   );
 }
@@ -186,6 +187,12 @@ export function resolveParticipants(
       const record = records.get(p.recordId);
       if (!record) {
         errors.push({ index, recordId: p.recordId, message: 'no record with this ID' });
+      } else if (record.isEvent) {
+        errors.push({
+          index,
+          recordId: record.id,
+          message: 'an event cannot take part in an event',
+        });
       } else if (record.deleted) {
         errors.push({ index, recordId: record.id, message: 'the record is deleted' });
       }
@@ -378,7 +385,8 @@ function participantKey(role: string | null, handle: string | null, recordId: st
 
 /**
  * Locks records `FOR KEY SHARE` in sorted order, following merges (4.2), and
- * reports each one's survivor and whether it is deleted. Unknown IDs, merge
+ * reports each one's survivor, whether it is deleted and whether it is an
+ * event. Unknown IDs, merge
  * chains too long to follow, and records of hidden or deleted objects are
  * absent: an event links only to records a caller can read.
  */
@@ -390,10 +398,15 @@ export async function lockLinkTargets(
 ): Promise<Map<string, CanonicalRecord>> {
   const targets = await lockTargets(tx, workspaceId, [...new Set(ids)]);
   const visible = new Set(schema.visibleObjectIds);
+  const events = new Set(schema.eventTypeIds);
   const records = new Map<string, CanonicalRecord>();
   for (const [id, row] of targets) {
     if (row && visible.has(row.object_type_id)) {
-      records.set(id, { id: row.id, deleted: row.deleted_at !== null });
+      records.set(id, {
+        id: row.id,
+        deleted: row.deleted_at !== null,
+        isEvent: events.has(row.object_type_id),
+      });
     }
   }
   return records;
@@ -405,7 +418,10 @@ export async function lockLinkTargets(
  * it has none) is not added again, so a retry or a re-log adds nothing. An
  * `about` record already linked to the event is skipped, and a record added
  * as a participant replaces its `about` link: a record is linked once.
- * `about` may name any live entity or event, but not the event itself.
+ * `about` names live entities only (C4): a new link to an event is refused
+ * with `invalid_link`, even the event itself. A link to an event stored before
+ * that rule stays, reads as usual and can be removed, and naming it again in a
+ * retry is the no-op a retry always is, so no memory changes under anyone.
  *
  * The caller holds the event's row lock (or has just inserted it), so
  * positions never clash. Every record involved is locked `FOR KEY SHARE`
@@ -484,18 +500,29 @@ export async function addLinks(
     ...attending,
   ]);
   const errors: { index: number; recordId: string; message: string }[] = [];
+  let toEvent = false;
   const newAbout: string[] = [];
   input.about.forEach((id, index) => {
+    if (id === eventId) {
+      toEvent = true;
+      errors.push({ index, recordId: id, message: 'an event cannot be about itself' });
+      return;
+    }
     const record = records.get(id);
     if (!record) {
-      errors.push({
-        index,
-        recordId: id,
-        message: id === eventId ? 'an event cannot be about itself' : 'no record with this ID',
-      });
+      errors.push({ index, recordId: id, message: 'no record with this ID' });
       return;
     }
     if (linked.has(record.id)) return;
+    if (record.isEvent) {
+      toEvent = true;
+      errors.push({
+        index,
+        recordId: record.id,
+        message: 'an event cannot be linked to another event; link the entities it concerns',
+      });
+      return;
+    }
     if (record.deleted) {
       errors.push({ index, recordId: record.id, message: 'the record is deleted' });
       return;
@@ -503,6 +530,14 @@ export async function addLinks(
     linked.add(record.id);
     newAbout.push(record.id);
   });
+  if (toEvent) {
+    throw new AppError(
+      422,
+      'invalid_link',
+      'about names people, companies and other entities, never an event',
+      { errors },
+    );
+  }
   if (errors.length > 0) {
     throw new AppError(422, 'invalid_about', 'some about records cannot be used', { errors });
   }

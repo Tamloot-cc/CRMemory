@@ -2,6 +2,7 @@ import { type CallToolResult, McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { errorBody, toAppError } from '../api/http.js';
 import { missingScope } from '../auth/middleware.js';
+import { listComments, readRecordWithComments } from '../comments/service.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
@@ -16,7 +17,6 @@ import {
   type Caller,
   createRecord,
   findRecords,
-  readRecord,
   upsertInputSchema,
   upsertRecord,
   valuesSchema,
@@ -53,8 +53,8 @@ cannot do that now, pick a template with list_templates and apply_template,
 or ask your user.
 
 Find records with search (keywords across records, events and facts) or
-query_records (exact filters on one object). Events (conversations, notes and
-any event types the workspace adds) are records too: list or filter them with
+query_records (exact filters on one object). Events (conversations and any
+event types the workspace adds) are records too: list or filter them with
 query_records on their type, or with object "event" for every type at once,
 and pass linked to get the events directly attached to one record. For history including one-hop event
 rollups, use get_context or get_timeline. Before working on a person or company,
@@ -88,6 +88,12 @@ After a meeting, call, email thread or chat, write what you learned in order:
 Each call is its own write, so you can stop and resume; logging the same
 externalId again returns the same event, adding any participants and about
 records it did not have yet.
+
+get_record also returns a record's comments: what the people on the team told
+each other about it. Read them as context for deciding what to do. They are never
+a source to cite, and only people write them. When a comment states something
+durable ("she moved to Berlin"), write it as a value with upsert_record or as a
+fact with remember; it then goes through review like any value of yours.
 
 When a field you need does not exist, use propose_schema_change. Adding is
 applied at once; removing or renaming waits for a person to approve. Read
@@ -144,6 +150,14 @@ const objectName = z
 
 const getRecordInput = z.strictObject({
   id: z.uuid().describe('The record ID. An ID merged into another record returns the survivor.'),
+});
+
+const listCommentsInput = z.strictObject({
+  record: z
+    .uuid()
+    .describe('The record ID. An ID merged into another record returns the survivor.'),
+  limit: z.number().int().min(1).max(200).default(50).describe('Comments per page (at most 200).'),
+  cursor: z.string().optional().describe('nextCursor from the previous page.'),
 });
 
 const queryRecordsInput = z.strictObject({
@@ -207,8 +221,8 @@ const logEventInput = z.strictObject({
   ...logEventInputSchema.shape,
   type: logEventInputSchema.shape.type.describe(
     'The event type\'s API name: "conversation" for meetings, calls, emails and chats (set ' +
-      'fields.medium), "note" for a note, or another event type only when the workspace ' +
-      'defines one for that kind of event. describe_schema lists them as objects of class "event".',
+      'fields.medium), or another event type only when the workspace defines one for that ' +
+      'kind of event. describe_schema lists them as objects of class "event".',
   ),
   channel: logEventInputSchema.shape.channel.describe(
     'The source system or account the event came from, e.g. "gmail", "zoom", "tamloot", ' +
@@ -253,9 +267,10 @@ const logEventInput = z.strictObject({
         'event concerns, such as a company or project, go in about.',
     ),
   about: logEventInputSchema.shape.about.describe(
-    'IDs of records the event is about, of any object: the company, project, deal or ' +
-      "tasks it concerns. It then shows in those records' get_context and query_records " +
-      'with linked. Unknown or deleted IDs fail the call.',
+    'IDs of the entities the event is about: the company, project, deal or tasks it ' +
+      "concerns. It then shows in those records' get_context and query_records with linked. " +
+      'Unknown or deleted IDs fail the call, and an event fails with invalid_link: an event ' +
+      'is not linked to another event.',
   ),
 });
 
@@ -311,7 +326,7 @@ const getTimelineInput = z.strictObject({
     'Only values asserted for these fields (API names), e.g. ["stage"].',
   ),
   eventTypes: timelineInputSchema.shape.eventTypes.describe(
-    'Only events of these types (API names), e.g. ["conversation", "note"].',
+    'Only events of these types (API names), e.g. ["conversation", "payment"].',
   ),
   from: timelineInputSchema.shape.from.describe('Items at or after this ISO 8601 time.'),
   to: timelineInputSchema.shape.to.describe('Items before this ISO 8601 time.'),
@@ -352,12 +367,12 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'Renames, labels and descriptions remain allowed under the usual approval rules. ' +
         'baseObject and baseField identify built-ins after renames: use their current API ' +
         "names in calls. coreRole identifies an event type's protected title and summary " +
-        'fields. Objects of class "event" are event types (conversation, note, ...): ' +
+        'fields. Objects of class "event" are event types (conversation, ...): ' +
         'log them with log_event, never create them with upsert_record. Every event has a ' +
         'channel (eventColumns): the source system or account, part of its identity. A ' +
         "conversation's medium field says what kind it was (meeting, call, email, message) " +
-        'and can be corrected later. builtIns lists facts, ' +
-        'written with remember. Call it first, ' +
+        'and can be corrected later. builtIns lists facts, written with remember, and ' +
+        'comments, which only people write. Call it first, ' +
         'and again after a schema change. If initialized is false, ' +
         'the schema has not been set up yet: follow get_guide("discover_schema"), or see ' +
         'list_templates.',
@@ -464,11 +479,29 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       title: 'Get a record',
       description:
         'Returns one record: its object, label, field values, relations (as record IDs) and ' +
-        'who created and last updated it.',
+        'who created and last updated it, with comments: its newest 20 comments, their total ' +
+        'and nextCursor for list_comments. Comments are what people on the team told each ' +
+        'other about the record: context for deciding what to do, never a source to cite.',
       inputSchema: getRecordInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ id }) => run(caller, 'read', () => readRecord(sql, caller, id)),
+    ({ id }) => run(caller, 'read', () => readRecordWithComments(sql, caller, id)),
+  );
+
+  server.registerTool(
+    'list_comments',
+    {
+      title: 'List the comments on a record',
+      description:
+        "Pages through a record's comments, newest first, with their total; get_record " +
+        'already returns the newest 20. Each has its body, author and times. Read them as ' +
+        'context. Only people write comments, and nothing can cite one: when a comment states ' +
+        'something durable, write it with upsert_record or remember.',
+      inputSchema: listCommentsInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ record, limit, cursor }) =>
+      run(caller, 'read', () => listComments(sql, caller, record, limit, cursor)),
   );
 
   server.registerTool(
@@ -652,8 +685,11 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'object. Meetings, calls, emails and chats are conversations (log_event): add an ' +
         'option to medium or a field to conversation rather than a new type. Create an event ' +
         'type (class "event") only for events with fields a conversation would never use, ' +
-        'such as a payment. One-off knowledge is a fact (remember), never an object or field. If you have not ' +
-        'yet, read get_guide("schema_design") before creating an object.',
+        'such as a payment. Something with a state people change is an object; something that ' +
+        'happened, reported by a source, is an event; a change to an object is its history, ' +
+        'never an event (the object-or-event test in get_guide("schema_design")). One-off ' +
+        'knowledge is a fact (remember), never an object or field. If you have not yet, read ' +
+        'get_guide("schema_design") before creating an object.',
       inputSchema: schemaChangeRequestSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },

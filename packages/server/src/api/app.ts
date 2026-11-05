@@ -10,6 +10,7 @@ import { log } from '../log.js';
 import { mcpRoute } from '../mcp/route.js';
 import { VERSION } from '../version.js';
 import { type AppEnv, errorResponse, toAppError } from './http.js';
+import { commentRoutes } from './routes/comments.js';
 import { memoryRoutes } from './routes/memory.js';
 import { recordRoutes } from './routes/records.js';
 import { retrievalRoutes } from './routes/retrieval.js';
@@ -58,6 +59,7 @@ export function createApp(deps: AppDeps) {
   templateRoutes(v1, deps.sql);
   recordRoutes(v1, deps.sql);
   memoryRoutes(v1, deps.sql);
+  commentRoutes(v1, deps.sql);
   retrievalRoutes(v1, deps.sql);
   viewRoutes(v1, deps.sql);
   app.route('/v1', v1);

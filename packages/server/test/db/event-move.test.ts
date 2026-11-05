@@ -678,10 +678,10 @@ describe('what can move', () => {
     const cases: [Partial<MoveEventsInput>, string][] = [
       [{ from: note?.name as string }, 'not_found'],
       [{ to: note?.name as string }, 'not_found'],
-      [{ from: 'note', events: [note?.id as string] }, 'not_found'],
+      [{ events: [note?.id as string] }, 'not_found'],
       [{ from: 'person' }, 'not_an_event_type'],
       [{ to: 'company' }, 'not_an_event_type'],
-      [{ from: 'note', events: [meeting.id] }, 'wrong_event_type'],
+      [{ from: 'conversation', to: 'meeting', events: [meeting.id] }, 'wrong_event_type'],
       [{ events: [acme.id] }, 'not_found'],
     ];
     for (const [input, code] of cases) {

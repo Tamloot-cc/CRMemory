@@ -2,7 +2,9 @@
 
 Status: **implemented** November 5, 2026. Open question 2 (7) is resolved:
 events can be moved between types (`POST /v1/events/move`, `move_events`).
-Open questions 1, 3 and 4 remain open.
+Open questions 1, 3 and 4 remain open. **Amended** by the
+[comments spec](comments-spec.md): D1 and 4.1 (`note` left the base template),
+D7 and 5.4 (Write a note is gone; people write comments).
 The SDK method is `queryEvents` (the client has no namespaces), and the
 events query's `search` uses the records' search index: the core title and
 summary, plus any searchable fields of the type.
@@ -77,16 +79,16 @@ defines them.
 
 ## 3. Decisions
 
-| #   | Decision                                                                                                                          | Replaces                                |
-| --- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| D1  | The base template adds two event types: `conversation` and `note`.                                                                | meeting, call, email, message, note     |
-| D2  | `conversation` has a `medium` select (meeting, call, email, message). It is an ordinary field, editable after logging.            | The event type as the medium            |
-| D3  | Channel is the source system or account and is part of identity. Medium is what kind of conversation it was. Both are documented. | Undocumented overlap                    |
-| D4  | A new event type is for an event whose fields a conversation would never use: payment, form submission, site visit.               | No rule                                 |
-| D5  | Events can be queried across all event types, workspace-wide.                                                                     | One `query_records` call per type       |
-| D6  | The web app shows two areas, **Records** and **Activity**. "Event" stays the API word.                                            | One flat "Objects" list; three words    |
-| D7  | People can write notes in the web app. Every other event is still logged by agents and integrations.                              | "Only agents log events" for every type |
-| D8  | A developer view shows API names, class, IDs and the write tool across the app.                                                   | Schema page only                        |
+| #   | Decision                                                                                                                                                                                                         | Replaces                                |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| D1  | The base template adds two event types: `conversation` and `note`. _Amended by [comments spec](comments-spec.md) C5: only `conversation`._                                                                       | meeting, call, email, message, note     |
+| D2  | `conversation` has a `medium` select (meeting, call, email, message). It is an ordinary field, editable after logging.                                                                                           | The event type as the medium            |
+| D3  | Channel is the source system or account and is part of identity. Medium is what kind of conversation it was. Both are documented.                                                                                | Undocumented overlap                    |
+| D4  | A new event type is for an event whose fields a conversation would never use: payment, form submission, site visit.                                                                                              | No rule                                 |
+| D5  | Events can be queried across all event types, workspace-wide.                                                                                                                                                    | One `query_records` call per type       |
+| D6  | The web app shows two areas, **Records** and **Activity**. "Event" stays the API word.                                                                                                                           | One flat "Objects" list; three words    |
+| D7  | People can write notes in the web app. Every other event is still logged by agents and integrations. _Amended by [comments spec](comments-spec.md) C6: people write comments; no event is written from the app._ | "Only agents log events" for every type |
+| D8  | A developer view shows API names, class, IDs and the write tool across the app.                                                                                                                                  | Schema page only                        |
 
 ## 4. System design
 
@@ -223,6 +225,8 @@ Same grid as entities, with event defaults:
   merged" when two are selected, so the missing action is explained.
 
 ### 5.4 Writing a note (D7)
+
+_Removed by the [comments spec](comments-spec.md) (C6)._
 
 A dialog with title, body (the summary), date (default now) and "About",
 a multi-record picker. It sends `POST /v1/events` with type `note`, channel

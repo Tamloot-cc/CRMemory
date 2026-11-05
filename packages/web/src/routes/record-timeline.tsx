@@ -12,19 +12,22 @@ import {
   Button,
   Code,
   Empty,
+  Entry,
+  EntryDay,
+  EntryList,
+  EntryLoading,
+  EntryText,
   EventLink,
+  LoadMore,
   Muted,
   Notice,
   Row,
-  Section,
   Segmented,
   SelectMenu,
   Stack,
-  Timeline,
-  TimelineItem as TimelineEntry,
 } from '../ui/index.js';
 import { ViaLabel } from './event-details.js';
-import { eventTitle, objectByName, objectLabel, QueryError } from './state.js';
+import { byCursor, eventTitle, objectByName, objectLabel, QueryError } from './state.js';
 import { clockTime } from './views-state.js';
 
 /** The item-type toggle: everything, or one kind. */
@@ -111,22 +114,30 @@ function narrowedNote(filters: TimelineFilters) {
   return null;
 }
 
-/** A record's events, field changes and facts in one list, newest first, by day. */
+/**
+ * A record's events, field changes and facts in one list, newest first, by day.
+ * With `history`, an event's page: only its field changes, by field.
+ */
 export function RecordTimeline({
   recordId,
   object,
+  history = false,
   search,
   onSearchChange,
 }: {
   recordId: string;
   /** The record's object: its fields to filter by and name. */
   object?: ObjectView;
+  history?: boolean;
   search: TimelineSearch;
   onSearchChange: (change: TimelineSearch) => void;
 }) {
   const { session, schema } = useWorkspace(),
     client = useQueryClient();
-  const filters = parseTimelineFilters(search);
+  const parsed = parseTimelineFilters(search);
+  const filters: TimelineFilters = history
+    ? { kind: 'field_change', fields: parsed.fields, eventTypes: [] }
+    : parsed;
   const params = timelineParams(filters);
   // The filters are in the key: changing one starts again from the newest page.
   const queryKey = [session.workspace.id, 'timeline', recordId, params];
@@ -134,38 +145,44 @@ export function RecordTimeline({
     queryKey,
     queryFn: ({ signal, pageParam }) =>
       api.timeline(recordId, { ...params, cursor: pageParam, signal }),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    ...byCursor,
   });
   const items = timeline.data?.pages.flatMap((p) => p.items) ?? [];
   const update = (change: Partial<TimelineFilters>) =>
-    onSearchChange(timelineSearch({ ...filters, ...change }));
+    onSearchChange(
+      history
+        ? { fields: joined(change.fields ?? filters.fields) }
+        : timelineSearch({ ...filters, ...change }),
+    );
   const fieldOptions = (object?.fields ?? [])
     .filter((f) => !isInverseRelation(f))
     .map((f) => ({ value: f.name, label: f.label, keywords: f.name }));
   const eventTypeOptions = schema.objects
     .filter((o) => o.class === 'event')
     .map((o) => ({ value: o.nameSingular, label: o.labelSingular, keywords: o.nameSingular }));
-  const filtered = filters.kind !== 'all' || filters.fields.length || filters.eventTypes.length;
+  const filtered =
+    (!history && filters.kind !== 'all') || filters.fields.length || filters.eventTypes.length;
   const staleCursor =
     timeline.error instanceof RetainerApiError && timeline.error.code === 'invalid_cursor';
   const note = narrowedNote(filters);
   return (
     <Stack>
       <Row>
-        <Segmented
-          label="Show"
-          value={filters.kind}
-          options={KINDS}
-          onChange={(kind) =>
-            // A filter for a kind no longer shown is dropped with it.
-            update({
-              kind,
-              fields: showsFields(kind) ? filters.fields : [],
-              eventTypes: showsEventTypes(kind) ? filters.eventTypes : [],
-            })
-          }
-        />
+        {history ? null : (
+          <Segmented
+            label="Show"
+            value={filters.kind}
+            options={KINDS}
+            onChange={(kind) =>
+              // A filter for a kind no longer shown is dropped with it.
+              update({
+                kind,
+                fields: showsFields(kind) ? filters.fields : [],
+                eventTypes: showsEventTypes(kind) ? filters.eventTypes : [],
+              })
+            }
+          />
+        )}
         {showsFields(filters.kind) ? (
           <SelectMenu
             label="Fields"
@@ -211,89 +228,119 @@ export function RecordTimeline({
       ) : timeline.error ? (
         <QueryError error={timeline.error} retry={() => void timeline.refetch()} />
       ) : null}
-      {timeline.isPending ? <Notice>Loading timeline…</Notice> : null}
+      {timeline.isPending ? (
+        <EntryLoading label={history ? 'Loading history…' : 'Loading timeline…'} />
+      ) : null}
       {timeline.data && !items.length ? (
         <Empty
-          title={filtered ? 'Nothing matches these filters' : 'Nothing on the timeline yet'}
-          description="Events, field changes and facts about this record appear here, newest first."
+          quiet
+          title={
+            filtered
+              ? 'Nothing matches these filters'
+              : history
+                ? 'No edits yet'
+                : 'Nothing on the timeline yet'
+          }
+          description={
+            history
+              ? "Changes to this event's fields appear here, newest first."
+              : 'Events, field changes and facts about this record appear here, newest first.'
+          }
         />
       ) : null}
       {groupByDay(items).map((group) => (
-        <Section
-          key={group.day}
-          title={group.date.toLocaleDateString(undefined, {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-          })}
-        >
-          <Timeline label={`Timeline for ${group.day}`}>
+        <section key={group.day}>
+          <EntryDay>
+            {group.date.toLocaleDateString(undefined, {
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+            })}
+          </EntryDay>
+          <EntryList label={`Timeline for ${group.day}`}>
             {group.items.map((item) => (
-              <TimelineRow key={`${item.kind}:${item.id}`} item={item} object={object} />
+              <TimelineRow
+                key={`${item.kind}:${item.id}`}
+                item={item}
+                object={object}
+                recordId={recordId}
+              />
             ))}
-          </Timeline>
-        </Section>
+          </EntryList>
+        </section>
       ))}
       {timeline.hasNextPage ? (
-        <Button
-          disabled={timeline.isFetchingNextPage}
+        <LoadMore
+          loading={timeline.isFetchingNextPage}
           onClick={() => void timeline.fetchNextPage()}
-        >
-          {timeline.isFetchingNextPage ? 'Loading…' : 'Load more'}
-        </Button>
+        />
       ) : null}
     </Stack>
   );
 }
 
-const time = (at: string) => (
-  <Muted small>
-    <time dateTime={at}>{clockTime(at)}</time>
-  </Muted>
-);
+const time = (at: string) => <time dateTime={at}>{clockTime(at)}</time>;
 
-/** One timeline item; `object` is the record's object. */
-export function TimelineRow({ item, object }: { item: TimelineItem; object?: ObjectView }) {
+/** One timeline item; `object` is the record's object and `recordId` its ID. */
+function TimelineRow({
+  item,
+  object,
+  recordId,
+}: {
+  item: TimelineItem;
+  object?: ObjectView;
+  recordId: string;
+}) {
   const { schema } = useWorkspace();
   switch (item.kind) {
     case 'event':
       return (
-        <TimelineEntry icon={CalendarClock}>
-          <Row>
-            <Badge>{objectLabel(schema, item.type)}</Badge>
-            <EventLink id={item.id}>{eventTitle(item)}</EventLink>
-            {time(item.at)}
-          </Row>
-          {item.summary ? <p>{item.summary}</p> : null}
-          <Row>
+        <Entry
+          icon={CalendarClock}
+          title={
+            <>
+              <Badge>{objectLabel(schema, item.type)}</Badge>
+              <EventLink id={item.id} title>
+                {eventTitle(item)}
+              </EventLink>
+            </>
+          }
+          time={time(item.at)}
+          footer={
             <ViaLabel
               via={item.via}
               eventObject={objectByName(schema, item.type)}
               recordObject={object}
             />
-          </Row>
-        </TimelineEntry>
+          }
+        >
+          {item.summary ? <EntryText clamp={3}>{item.summary}</EntryText> : null}
+        </Entry>
       );
     case 'field_change':
-      return <FieldChange item={item} object={object} />;
+      return <FieldChange item={item} object={object} recordId={recordId} />;
     case 'fact':
       return (
-        <TimelineEntry icon={Lightbulb}>
-          <p>{item.content}</p>
-          <Row>
-            {item.status === 'superseded' ? <Badge>Superseded</Badge> : null}
-            {item.status === 'ended' ? (
-              <Badge>
-                Ended{item.validTo ? ` ${new Date(item.validTo).toLocaleDateString()}` : ''}
-              </Badge>
-            ) : null}
-            {item.factKind === 'inferred' ? <Badge>Inferred</Badge> : null}
-            <ActorBadge actor={item.writtenBy} />
-            {time(item.at)}
-          </Row>
+        <Entry
+          icon={Lightbulb}
+          title={
+            <>
+              <ActorBadge actor={item.writtenBy} />
+              {item.status === 'superseded' ? <Badge>Superseded</Badge> : null}
+              {item.status === 'ended' ? (
+                <Badge>
+                  Ended{item.validTo ? ` ${new Date(item.validTo).toLocaleDateString()}` : ''}
+                </Badge>
+              ) : null}
+              {item.factKind === 'inferred' ? <Badge>Inferred</Badge> : null}
+            </>
+          }
+          time={time(item.at)}
+        >
+          <EntryText clamp={4}>{item.content}</EntryText>
           <FactSources sources={item.sources} />
-        </TimelineEntry>
+        </Entry>
       );
     default:
       return unknownItem(item);
@@ -313,54 +360,64 @@ function unknownItem(item: never): null {
 function FieldChange({
   item,
   object,
+  recordId,
 }: {
   item: Extract<TimelineItem, { kind: 'field_change' }>;
   object?: ObjectView;
+  /** The record whose timeline this is; a value from its own logging needs no "from". */
+  recordId: string;
 }) {
   const { schema } = useWorkspace();
   const field = object?.fields.find((f) => f.name === item.field);
   const module = field ? fieldModules[field.type] : null;
   const label = field?.label ?? item.field;
+  // An event's own values cite the event: saying so on its page says nothing.
+  const source = item.source && item.source.id !== recordId ? item.source : null;
   return (
-    <TimelineEntry icon={PencilLine}>
-      <Row>
-        {field && module ? (
-          module.isEmpty(item.value) ? (
-            <span>{label} cleared</span>
+    <Entry
+      icon={PencilLine}
+      title={
+        <>
+          {field && module ? (
+            module.isEmpty(item.value) ? (
+              <span>{label} cleared</span>
+            ) : (
+              <>
+                <span>{label} set to</span>
+                <module.Display
+                  field={field}
+                  value={item.value}
+                  references={item.relationReferences}
+                />
+              </>
+            )
           ) : (
             <>
               <span>{label} set to</span>
-              <module.Display
-                field={field}
-                value={item.value}
-                references={item.relationReferences}
-              />
+              <Code>{JSON.stringify(item.value)}</Code>
             </>
-          )
-        ) : (
-          <>
-            <span>{label} set to</span>
-            <Code>{JSON.stringify(item.value)}</Code>
-          </>
-        )}
-        {item.current ? null : <Badge>Not the current value</Badge>}
-      </Row>
-      <Row>
-        <ActorBadge actor={item.actor} />
-        {time(item.at)}
-        {item.confidence < 1 ? (
-          <Muted small>Confidence {Math.round(item.confidence * 100)}%</Muted>
-        ) : null}
-        {item.source ? (
-          <>
-            <Muted small>from</Muted>
-            <Badge>{objectLabel(schema, item.source.type)}</Badge>
-            <EventLink id={item.source.id}>
-              {eventTitle(item.source)} · {new Date(item.source.occurredAt).toLocaleDateString()}
-            </EventLink>
-          </>
-        ) : null}
-      </Row>
-    </TimelineEntry>
+          )}
+          {item.current ? null : <Badge>Not the current value</Badge>}
+        </>
+      }
+      time={time(item.at)}
+      footer={
+        <>
+          <ActorBadge actor={item.actor} />
+          {item.confidence < 1 ? (
+            <Muted small>Confidence {Math.round(item.confidence * 100)}%</Muted>
+          ) : null}
+          {source ? (
+            <>
+              <Muted small>from</Muted>
+              <Badge>{objectLabel(schema, source.type)}</Badge>
+              <EventLink id={source.id}>
+                {eventTitle(source)} · {new Date(source.occurredAt).toLocaleDateString()}
+              </EventLink>
+            </>
+          ) : null}
+        </>
+      }
+    />
   );
 }

@@ -12,13 +12,8 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, WorkspaceContext } from '../api/client.js';
-import {
-  InlineEditor,
-  pointsAt,
-  polymorphicLinksTo,
-  RecordView,
-  sameValue,
-} from './record-view.js';
+import { pointsAt } from './record-memory.js';
+import { InlineEditor, polymorphicLinksTo, RecordView, sameValue } from './record-view.js';
 
 // Links need a router; plain anchors are enough to find them by name.
 vi.mock('@tanstack/react-router', async (original) => ({

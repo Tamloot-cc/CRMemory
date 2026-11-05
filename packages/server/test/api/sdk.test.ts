@@ -227,6 +227,24 @@ describe('SDK against the server', () => {
     await expect(user.record(c.id)).rejects.toMatchObject({ status: 404 });
   });
 
+  it('reads and writes comments', async () => {
+    const acme = await user.createRecord('company', { values: { name: 'Comment SDK Inc' } });
+    const added = await user.addComment(acme.id, { body: 'First' }, 'sdk-comment-1');
+    expect(added).toMatchObject({ record: acme.id, body: 'First', editedAt: null });
+    expect(await user.addComment(acme.id, { body: 'First' }, 'sdk-comment-1')).toEqual(added);
+    const edited = await user.editComment(added.id, { body: 'Second' });
+    expect(edited.body).toBe('Second');
+    expect(edited.editedAt).not.toBeNull();
+    const page = await agent.listComments(acme.id, { limit: 1 });
+    expect(page).toMatchObject({ record: acme.id, total: 1, nextCursor: null });
+    expect(page.items[0]?.id).toBe(added.id);
+    await expect(agent.addComment(acme.id, { body: 'A bot' })).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(await admin.deleteComment(added.id)).toEqual({ id: added.id, deleted: true });
+    expect((await user.record(acme.id, ['counts'])).counts?.comments).toBe(0);
+  });
+
   it('raises typed errors for refused requests', async () => {
     const person = await agent.createRecord('person', {
       values: { name: 'Omer Bar', emails: 'omer@acme.test' },

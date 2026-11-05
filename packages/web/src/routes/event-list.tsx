@@ -58,17 +58,15 @@ const builtIn = (
  * Event list columns as fields, so the grid, column menu, sort and filter
  * treat them like any other: read-only, and filterable and sortable where
  * the query engine takes them (`occurredAt`, `channel`, `externalId`).
- * Participants and `about` read as relations to any record.
+ * Participants and `about` read as relations to any entity (C4).
  */
 export function eventColumnFields(schema: Pick<SchemaDescription, 'objects'>): FieldView[] {
-  const many = { relationCardinality: 'many_to_many' as const };
-  // Participants are records of people and other entities; `about` may also
-  // name another event (1.3), so its pickers offer every object.
+  // Links to events from before C4 still read, since a relation displays what
+  // its references name; pickers offer entities only.
   const anyEntity = {
-    ...many,
+    relationCardinality: 'many_to_many' as const,
     targetObjects: schema.objects.filter((o) => o.class !== 'event').map((o) => o.nameSingular),
   };
-  const anyRecord = { ...many, targetObjects: schema.objects.map((o) => o.nameSingular) };
   return [
     builtIn('occurredAt', 'Occurred', 'When it happened', {
       type: 'date_time',
@@ -82,7 +80,7 @@ export function eventColumnFields(schema: Pick<SchemaDescription, 'objects'>): F
     }),
     builtIn('about', 'About', 'Records the event concerns', {
       type: 'relation',
-      settings: anyRecord,
+      settings: anyEntity,
       isFilterable: false,
     }),
     builtIn('channel', 'Source', 'Where it was logged from, e.g. gmail or zoom', {
@@ -98,7 +96,7 @@ export function eventColumnFields(schema: Pick<SchemaDescription, 'objects'>): F
   ];
 }
 
-/** One built-in event column as a field, e.g. `about` for a relation to any record. */
+/** One built-in event column as a field, e.g. `about` for a relation to any entity. */
 export const eventColumnField = (
   schema: Pick<SchemaDescription, 'objects'>,
   name: EventListColumn,
@@ -214,10 +212,6 @@ export function occurredCalendar(object: ObjectView): SavedView {
   };
 }
 
-/** The base `note` event type people write in the web app (D7), if the workspace has one. */
-export const noteType = (schema: Pick<SchemaDescription, 'objects'>) =>
-  schema.objects.find((o) => o.class === 'event' && o.baseObject === 'note');
-
 /**
  * Participants: matched records linked, then other handles. Compact (a grid
  * cell) fits one row and counts the other handles beside matched records;
@@ -286,7 +280,6 @@ export function LoggedByAgents() {
             <Code>POST /v1/events</Code>. Logging the same source and external ID again adds to the
             same event.
           </Muted>
-          <Muted>Notes are the exception: anyone can write one from Activity.</Muted>
         </Stack>
       </PanelBody>
     </Popover>

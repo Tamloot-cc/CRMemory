@@ -22,6 +22,7 @@ import { describeSchema } from '../../src/schema-engine/service.js';
 import { createView } from '../../src/views/service.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { addNoteType } from '../helpers/note-type.js';
 
 /**
  * Event records (spec 6): the storage invariants the database enforces,
@@ -70,6 +71,7 @@ const company = (name: string) => createRecord(app, as(AGENT), 'company', { name
 beforeAll(async () => {
   app = db.connect({ role: RUNTIME_ROLE, max: 20 });
   workspaceId = (await createWorkspace(db.owner, { name: 'Acme', template: 'sales' })).id;
+  await addNoteType(db.owner, workspaceId);
   otherWorkspaceId = (await createWorkspace(db.owner, { name: 'Other' })).id;
   await schemaChange([
     {

@@ -2,13 +2,14 @@ import { useNavigate, useParams } from '@tanstack/react-router';
 import { useWorkspace } from '../api/client.js';
 import { Notice, Page } from '../ui/index.js';
 import { RecordActions } from './record-actions.js';
+import { useMemoryNav } from './record-memory.js';
 import { RecordView, useRecord } from './record-view.js';
-import { classLabel, objectByName, QueryError, recordTitle, useView } from './state.js';
+import { classLabel, objectByName, QueryError, recordTitle } from './state.js';
 
 export function RecordPage() {
   const { id } = useParams({ strict: false }) as { id: string };
   const { schema } = useWorkspace();
-  const { search, setSearch } = useView();
+  const nav = useMemoryNav();
   const navigate = useNavigate();
   const record = useRecord(id);
   if (!record.data)
@@ -35,19 +36,7 @@ export function RecordPage() {
         />
       }
     >
-      <RecordView
-        key={r.id}
-        record={r}
-        requestedId={id}
-        nav={{
-          tab: search.tab,
-          cursor: search.cursor,
-          kind: search.kind,
-          fields: search.fields,
-          eventTypes: search.eventTypes,
-          set: (change) => void setSearch(change),
-        }}
-      />
+      <RecordView key={r.id} record={r} requestedId={id} nav={nav} />
     </Page>
   );
 }

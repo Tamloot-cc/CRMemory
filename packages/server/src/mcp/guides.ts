@@ -15,9 +15,8 @@ import { z } from 'zod';
 const DESIGN_RULES = `### Use what Retainer already has
 
 - Meetings, calls, emails and chats are all one event type, conversation,
-  and its medium field says which. Notes are the note event type.
-  describe_schema lists event types as objects of class "event", and
-  log_event logs them. Never create an entity object for them, nor a join
+  and its medium field says which. describe_schema lists event types as
+  objects of class "event", and log_event logs them. Never create an entity object for them, nor a join
   object for who attended; participants are part of the event. The company,
   project, deal or tasks a meeting concerns go in its about list, so it
   shows on those records too; never list them as participants.
@@ -36,10 +35,18 @@ const DESIGN_RULES = `### Use what Retainer already has
   conversation (a workshop, a voice note) is a new medium option, not a new
   type. A relation field on an event type (a payment's invoice) also
   attaches the event to that record's history; prefer about for "what this
-  concerns". A scheduled piece of business with its own status and outcome,
-  such as an appointment or a viewing, can still be an entity object.
-- describe_schema lists facts under builtIns. They are part of every
-  workspace; don't add fields or objects to copy them.
+  concerns". Notes a source system keeps (a CRM's or a notetaker's notes) are
+  such a type too: create_object with class "event" and nameSingular "note",
+  only when a source has them.
+- The about list and participants name entities, never another event: an
+  event cannot be linked to an event.
+- describe_schema lists facts and comments under builtIns. They are part of
+  every workspace; don't add fields or objects to copy them.
+- Comments are what people told each other about a record. Only people write
+  them; you read them with get_record and list_comments. They are context for
+  deciding what to do, never a source to cite. When a comment states something
+  durable ("she moved to Berlin"), write it as a value or a fact; a value then
+  goes through review like any value of yours.
 - To find events by type, channel, date or linked record, use
   query_records with object "event" (every type) or on one event type, with
   linked; there is no need for a field like "meeting count".
@@ -48,6 +55,33 @@ const DESIGN_RULES = `### Use what Retainer already has
   every record.
 - Commitments are task records. Recency comes from events, so do not
   add a field like "last contacted" that someone has to keep up by hand.
+
+### Object or event
+
+Ask where something stands now, or what happened:
+
+| Question              | Object                            | Event                               |
+| --------------------- | --------------------------------- | ----------------------------------- |
+| What it answers       | Where does it stand now?          | What happened?                      |
+| Does it change?       | Yes: stage, status, amount, owner | No; corrections only                |
+| Do people work on it? | Yes: assign it, move it, close it | No; they refer to it                |
+| Where it comes from   | Created and kept in the workspace | Usually reported by a source system |
+| Its role in memory    | Holds values                      | Evidence that values and facts cite |
+
+- History is not an event. A deal moving to Won, a task being done or a
+  person's title changing are field changes, and the record's history keeps
+  them. Don't add an event type that duplicates them: the two copies can
+  disagree.
+- What happened to an entity is a value; how we learned it is the event. A
+  job change sets the person's company. The conversation or source that
+  reported it is the event, and the value cites it. No "job change" event type
+  is needed.
+- Scheduled things are objects. An appointment, a viewing or a booked demo can
+  be cancelled or rescheduled, so it has a state. When it takes place, the
+  conversation is the event.
+- Some things need both. An invoice is an object, unpaid or paid; a payment
+  from the payment system is an event about it. A contract is an object; its
+  signing, from the e-signature tool, is an event about it.
 
 ### Start lean
 

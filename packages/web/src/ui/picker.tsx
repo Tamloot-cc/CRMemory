@@ -373,7 +373,7 @@ export function Segmented<T extends string>({
           type="button"
           aria-pressed={o.value === value}
           onClick={() => onChange(o.value)}
-          className="flex h-6 flex-1 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-card aria-pressed:text-foreground aria-pressed:shadow-sm [&_svg]:shrink-0"
+          className="flex h-6 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-sm px-2 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-pressed:bg-card aria-pressed:text-foreground aria-pressed:shadow-sm [&_svg]:shrink-0"
         >
           {o.icon}
           {o.label}

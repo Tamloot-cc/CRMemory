@@ -27,6 +27,7 @@ import type { SchemaOperation } from '../../src/schema-engine/operations.js';
 import { reviewPage } from '../../src/web/review.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { addNoteType } from '../helpers/note-type.js';
 import { expectDataMatchesAssertions as expectDataCache } from '../helpers/records.js';
 
 const db = useTestDatabase();
@@ -59,6 +60,7 @@ const schemaChange = (operations: SchemaOperation[]) =>
 beforeAll(async () => {
   app = db.connect({ role: RUNTIME_ROLE, max: 30 });
   workspaceId = (await createWorkspace(db.owner, { name: 'Acme Sales', template: 'sales' })).id;
+  await addNoteType(db.owner, workspaceId);
   otherWorkspaceId = (await createWorkspace(db.owner, { name: 'Other', template: 'sales' })).id;
 });
 

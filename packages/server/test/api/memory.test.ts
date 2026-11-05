@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { startTestApp, type TestApp } from '../helpers/app.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { addNoteType } from '../helpers/note-type.js';
 
 const db = useTestDatabase();
 let t: TestApp;
@@ -9,14 +10,16 @@ let otherKey: string;
 
 beforeAll(async () => {
   t = startTestApp(db);
-  ({ keys } = await t.setupWorkspace(
+  const sales = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     {
       agent: { actor: { type: 'agent', id: 'inbox' }, scopes: ['read', 'write'] },
       user: { actor: { type: 'user', id: 'maya' }, scopes: ['read', 'write'] },
       reader: { actor: { type: 'agent', id: 'reader' }, scopes: ['read'] },
     },
-  ));
+  );
+  keys = sales.keys;
+  await addNoteType(db.owner, sales.workspace.id);
   const other = await t.setupWorkspace(
     { name: 'Other' },
     { agent: { actor: { type: 'agent', id: 'other' }, scopes: ['read', 'write'] } },
@@ -480,6 +483,7 @@ describe('POST /v1/events/query (7.1)', () => {
       },
     );
     const key = own.keys.agent;
+    await addNoteType(db.owner, own.workspace.id);
     const change = await t.request('/v1/schema/changes', {
       key: own.keys.admin,
       body: {

@@ -1,15 +1,19 @@
 import {
   type Actor,
   type AssertionView,
+  BASE_FIELD_IDS,
+  BASE_OBJECT_IDS,
   isCollectionRelation,
   type Provenance,
+  type RecordCounts,
   type RecordReference,
+  TASK_DONE_OPTION,
 } from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
 import { notFound } from '../errors.js';
-import { presentSource } from '../memory/events.js';
+import { liveFactSource, presentSource } from '../memory/events.js';
 import { identifiersFor } from '../records/derive.js';
 import { getRecord, type PresentedRecord } from '../records/read.js';
 import { references } from '../records/references.js';
@@ -167,6 +171,44 @@ export async function assertionById(tx: Tx, schema: CompiledSchema, id: string) 
   if (!result.items[0]) throw notFound('assertion');
   return result.items[0];
 }
+/**
+ * What a record's tabs hold, for `include=counts`, read with the record so its
+ * tabs open with their numbers and stay still (FRONTEND.md 5.4). Each count
+ * matches the list its tab shows.
+ */
+async function recordCounts(
+  tx: Tx,
+  schema: CompiledSchema,
+  recordId: string,
+): Promise<RecordCounts> {
+  const task = schema.objectsByUniversalId.get(BASE_OBJECT_IDS.task);
+  const status = task?.activeFields.find((f) => f.universalId === BASE_FIELD_IDS.taskStatus);
+  // As the tab finds them: it filters on these, so one it can't filter on lists nothing.
+  const relations =
+    task?.activeFields.filter(
+      (f) => f.type === 'relation' && !f.settings.isInverse && f.isFilterable,
+    ) ?? [];
+  const [row] = await tx<RecordCounts[]>`
+    select
+      (select count(*)::int from comments c
+        where c.record_id = ${recordId} and c.deleted_at is null) as comments,
+      (select count(*)::int from facts f
+        where f.record_id = ${recordId} and f.deleted_at is null and f.superseded_by is null
+          and f.valid_to is null and exists (${liveFactSource(tx, tx`f.id`)})) as facts,
+      (select count(distinct t.id)::int from record_links l
+        join records t on t.id = l.source_record_id and t.deleted_at is null
+        where l.target_record_id = ${recordId}
+          and l.field_id = any(${relations.map((f) => f.id as string)}::uuid[])
+          ${status ? tx`and (t.data ->> ${status.key}) is distinct from ${TASK_DONE_OPTION}` : tx``}
+      ) as "openTasks",
+      (select count(*)::int from field_assertions a
+        where a.source_record_id = ${recordId} and a.record_id <> ${recordId})
+      + (select count(*)::int from facts f
+        where exists (select 1 from fact_sources s
+          where s.fact_id = f.id and s.source_record_id = ${recordId})) as claims`;
+  return row as RecordCounts;
+}
+
 export async function enrichedRecord(
   tx: Tx,
   workspaceId: string,
@@ -179,6 +221,7 @@ export async function enrichedRecord(
     provenance?: Record<string, Provenance>;
     relationReferences?: Record<string, RecordReference>;
   } = { ...record };
+  if (includes.includes('counts')) result.counts = await recordCounts(tx, schema, record.id);
   if (includes.includes('relationReferences'))
     result.relationReferences = await relationReferences(tx, schema, [record]);
   if (includes.includes('provenance')) {

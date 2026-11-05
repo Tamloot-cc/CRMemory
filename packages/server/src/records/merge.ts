@@ -99,7 +99,7 @@ export function inboundRelationFields(schema: CompiledSchema, object: CompiledOb
  *    `FOR KEY SHARE`, so one that started earlier commits first and is seen
  *    here, and one that starts later waits and then follows the merge.
  * 3. Point inbound relation assertions and links at A, keeping provenance.
- * 4. Move B's assertions, facts and event links to A; drop B's
+ * 4. Move B's assertions, facts, comments and event links to A; drop B's
  *    identifiers and links, then recompute the moved fields of A with the
  *    normal rules, which rebuilds identifiers and revalidates unique claims.
  * 5. For `emails`, `phones` and `links`, write the combined current winners
@@ -217,6 +217,8 @@ export async function mergeRecords(
   const moved = await tx<{ field_id: string }[]>`
     update field_assertions set record_id = ${a} where record_id = ${b} returning field_id`;
   await tx`update facts set record_id = ${a} where record_id = ${b}`;
+  // Comments keep their authors and times; they were written, not re-written.
+  await tx`update comments set record_id = ${a} where record_id = ${b}`;
   await tx`update event_links set record_id = ${a} where record_id = ${b}`;
   // An event is about a record once: drop an about link that now repeats
   // another link to the survivor (1.3).

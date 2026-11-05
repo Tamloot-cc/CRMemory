@@ -348,7 +348,7 @@ describe('schema page model', () => {
 });
 
 describe('the diagram’s about lines', () => {
-  it('draw one dashed line from each event type’s About row to any record', () => {
+  it('draw one dashed line from each event type’s About row to any entity', () => {
     const edges = aboutEdges([
       object({ nameSingular: 'company' }),
       object({ nameSingular: 'conversation', labelSingular: 'Conversation', class: 'event' }),
@@ -358,7 +358,7 @@ describe('the diagram’s about lines', () => {
       [{ node: 'conversation', row: ABOUT_ROW }, { node: ANY_RECORD_NODE }, true],
       [{ node: 'note', row: ABOUT_ROW }, { node: ANY_RECORD_NODE }, true],
     ]);
-    expect(edges[0]?.description).toMatch(/conversation can be about any number of records/);
+    expect(edges[0]?.description).toMatch(/conversation can be about any number of entities/);
     expect(aboutEdges([object({ nameSingular: 'company' })])).toEqual([]);
   });
 });
