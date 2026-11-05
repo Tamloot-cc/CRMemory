@@ -1,7 +1,7 @@
-import { type Actor, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
+import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
-import { inWorkspace } from '../../src/db/tx.js';
+import type { Backend } from '../../src/db/backend.js';
+import { RecordId } from '../../src/db/cbor.js';
 import { type LogEventInput, logEventInputSchema } from '../../src/memory/events.js';
 import {
   factsOf,
@@ -22,15 +22,18 @@ import {
   upsertRecord,
   withRead,
 } from '../../src/records/service.js';
+import { directoryEntries } from '../../src/records/store.js';
+import type { CompiledSchema } from '../../src/schema-engine/compiled.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import type { SchemaOperation } from '../../src/schema-engine/operations.js';
 import { reviewPage } from '../../src/web/review.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 import { expectDataMatchesAssertions as expectDataCache } from '../helpers/records.js';
 
-const db = useTestDatabase();
-let app: Sql;
+const backend = useTestBackend();
+/** A second process on the same namespace: concurrent writes really compete. */
+let other: Backend;
 let workspaceId: string;
 let otherWorkspaceId: string;
 
@@ -42,24 +45,27 @@ const as = (actor: Actor, ws = workspaceId): Caller => ({
   actor,
   scopes: ['read', 'write', 'schema:write', 'admin'],
 });
+/** Alternates between the two processes. */
+const proc = (i: number) => (i % 2 === 0 ? backend : other);
 
-const reviewQueue = (sql: Sql, caller: Caller, limit: number) =>
-  withRead(sql, caller, (tx, schema) => reviewPage(tx, caller.workspaceId, schema, limit, {}));
+const reviewQueue = (on: Backend, caller: Caller, limit: number) =>
+  withRead(on, caller, (db, schema) => reviewPage(db, caller.workspaceId, schema, limit, {}));
 
 const schemaChange = (operations: SchemaOperation[]) =>
-  inWorkspace(app, workspaceId, (tx) =>
-    runSchemaChange(tx, {
-      workspaceId,
-      actor: USER,
-      scopes: ['schema:write', 'admin'],
-      operations,
-    }),
-  );
+  runSchemaChange(backend, {
+    workspaceId,
+    actor: USER,
+    scopes: ['schema:write', 'admin'],
+    operations,
+  });
+
+const schemaOf = (): Promise<CompiledSchema> =>
+  withRead(backend, as(AGENT), async (_db, schema) => schema);
 
 beforeAll(async () => {
-  app = db.connect({ role: RUNTIME_ROLE, max: 30 });
-  workspaceId = (await createWorkspace(db.owner, { name: 'Acme Sales', template: 'sales' })).id;
-  otherWorkspaceId = (await createWorkspace(db.owner, { name: 'Other', template: 'sales' })).id;
+  other = backend.another();
+  workspaceId = (await createWorkspace(backend, { name: 'Acme Sales', template: 'sales' })).id;
+  otherWorkspaceId = (await createWorkspace(backend, { name: 'Other', template: 'sales' })).id;
 });
 
 let n = 0;
@@ -68,10 +74,10 @@ let externalIds = 0;
 const externalId = () => `ext-${++externalIds}`;
 
 const person = (values: Record<string, unknown> = {}, actor = AGENT, source?: string) =>
-  createRecord(app, as(actor), 'person', { emails: email(), ...values }, { source });
+  createRecord(backend, as(actor), 'person', { emails: email(), ...values }, { source });
 
 const log = (input: Partial<LogEventInput> = {}, actor = AGENT, ws = workspaceId) =>
-  logEventFor(app, as(actor, ws), {
+  logEventFor(backend, as(actor, ws), {
     type: 'call',
     channel: 'zoom',
     occurredAt: '2026-10-29T14:00:00+02:00',
@@ -81,30 +87,93 @@ const log = (input: Partial<LogEventInput> = {}, actor = AGENT, ws = workspaceId
     ...input,
   });
 
-async function assertions(recordId: string) {
-  return db.owner<
+/** Runtime reads of this workspace's database, parameters only. */
+const rows = async <T = Record<string, unknown>>(
+  text: string,
+  vars: Record<string, unknown> = {},
+) => (await backend.workspace(workspaceId)).rows<T>(text, vars);
+
+/** Administrative statements in this workspace's database, to set up states directly. */
+const admin = async (text: string, vars: Record<string, unknown> = {}) =>
+  backend.adminDb((await backend.route(workspaceId)).database).query(text, vars);
+
+/** Sets the outcome of a merge directly, to test resolution alone. */
+async function markMerged(mergedId: string, survivorId: string) {
+  const table = (await schemaOf()).objectsByName.get('person')?.table as string;
+  await admin(
+    'UPDATE $dir SET merged_into = $survivor, deleted_at = time::now(); UPDATE $row SET merged_into = $survivor, deleted_at = time::now();',
     {
-      value: unknown;
-      status: string;
-      observed_at: Date;
-      source_record_id: string | null;
-    }[]
-  >`select value, status, observed_at, source_record_id from field_assertions
-    where record_id = ${recordId} order by created_at`;
+      dir: new RecordId('record_directory', mergedId),
+      row: new RecordId(table, mergedId),
+      survivor: survivorId,
+    },
+  );
+}
+
+async function assertions(recordId: string) {
+  // `value` first would parse as SELECT VALUE.
+  return rows<{
+    status: string;
+    value: unknown;
+    observed_at: Date;
+    source?: string | null;
+    created_at: Date;
+  }>(
+    'SELECT status, value, observed_at, source, created_at FROM field_assertions WHERE record = $r ORDER BY created_at;',
+    { r: recordId },
+  );
+}
+
+/** Events stored with this external ID, on any channel. */
+const eventsWithExternalId = async (id: string) =>
+  (
+    await rows<{ id: RecordId }>('SELECT id FROM event_identity WHERE external_id = $x;', { x: id })
+  ).map((r) => String(r.id.id));
+
+/** The internal notes linked to a record, by their directory entries. */
+async function internalNotesAbout(recordId: string): Promise<string[]> {
+  const schema = await schemaOf();
+  const links = await rows<{ event: string }>('SELECT event FROM event_links WHERE record = $r;', {
+    r: recordId,
+  });
+  const entries = await withRead(backend, as(USER), (db) =>
+    directoryEntries(
+      db,
+      links.map((l) => l.event),
+    ),
+  );
+  return [...entries.values()]
+    .filter((e) => e.object_type_id === schema.internalNote?.id)
+    .map((e) => e.id);
 }
 
 /** The internal note a fact without a source cites; callers never see its ID. */
 async function internalNoteOf(factId: string): Promise<string> {
-  const [row] = await db.owner<{ id: string }[]>`
-    select s.source_record_id as id from fact_sources s
-    join records r on r.id = s.source_record_id
-    join object_types o on o.id = r.object_type_id
-    where s.fact_id = ${factId} and o.universal_id = ${INTERNAL_NOTE_TYPE_ID}`;
-  if (!row) throw new Error(`fact ${factId} cites no internal note`);
-  return row.id;
+  const schema = await schemaOf();
+  const sources = await rows<{ source?: string | null }>(
+    'SELECT source FROM fact_sources WHERE fact = $f;',
+    { f: factId },
+  );
+  const entries = await withRead(backend, as(USER), (db) =>
+    directoryEntries(
+      db,
+      sources.flatMap((s) => (s.source ? [s.source] : [])),
+    ),
+  );
+  const note = [...entries.values()].find((e) => e.object_type_id === schema.internalNote?.id);
+  if (!note) throw new Error(`fact ${factId} cites no internal note`);
+  return note.id;
 }
 
-const expectDataMatchesAssertions = (id: string) => expectDataCache(app, workspaceId, id);
+/** A record's or fact's search document. */
+const searchDocument = async (id: string) =>
+  (
+    await rows<{ label_text: string; folded: string }>('SELECT label_text, folded FROM $doc;', {
+      doc: new RecordId('search_documents', id),
+    })
+  )[0];
+
+const expectDataMatchesAssertions = (id: string) => expectDataCache(backend, workspaceId, id);
 
 describe('log_event: participant matching (4.1)', () => {
   it('matches a unique email whatever its case, and lists the rest with a reason', async () => {
@@ -156,7 +225,7 @@ describe('log_event: participant matching (4.1)', () => {
   it('leaves a handle of a deleted record unresolved and lists it for review (1.2)', async () => {
     const gone = await person();
     const goneEmail = (gone.record.fields.emails as { primary: string }).primary;
-    await deleteRecord(app, as(AGENT), gone.id);
+    await deleteRecord(backend, as(AGENT), gone.id);
     const result = await log({
       title: 'Call with a deleted person',
       participants: [{ handle: goneEmail }],
@@ -167,7 +236,7 @@ describe('log_event: participant matching (4.1)', () => {
         { id: expect.any(String), handle: goneEmail, role: null, reason: 'deleted_record' },
       ],
     });
-    const review = await reviewQueue(app, as(USER), 100);
+    const review = await reviewQueue(backend, as(USER), 100);
     expect(review.unresolvedParticipants).toContainEqual({
       eventId: result.id,
       position: 0,
@@ -179,8 +248,8 @@ describe('log_event: participant matching (4.1)', () => {
     });
 
     // A deleted event leaves the review queue.
-    await retractEventFor(app, as(AGENT), result.id);
-    const after = await reviewQueue(app, as(USER), 100);
+    await retractEventFor(backend, as(AGENT), result.id);
+    const after = await reviewQueue(backend, as(USER), 100);
     expect(after.unresolvedParticipants.map((p) => p.eventId)).not.toContain(result.id);
   });
 
@@ -188,9 +257,7 @@ describe('log_event: participant matching (4.1)', () => {
     const survivor = await person();
     const merged = await person();
     const mergedEmail = (merged.record.fields.emails as { primary: string }).primary;
-    // Set the outcome of a merge directly to test resolution alone.
-    await db.owner`update records set merged_into_id = ${survivor.id}, deleted_at = now()
-      where id = ${merged.id}`;
+    await markMerged(merged.id, survivor.id);
     const result = await log({
       participants: [{ handle: mergedEmail }, { recordId: merged.id, role: 'attendee' }],
     });
@@ -218,8 +285,8 @@ describe('log_event: participant matching (4.1)', () => {
       },
     ]);
     const shared = email();
-    const someone = await createRecord(app, as(AGENT), 'person', { emails: shared });
-    const vendor = await createRecord(app, as(AGENT), 'vendor', {
+    const someone = await createRecord(backend, as(AGENT), 'person', { emails: shared });
+    const vendor = await createRecord(backend, as(AGENT), 'vendor', {
       title: 'Acme billing',
       billingEmails: shared,
     });
@@ -237,7 +304,7 @@ describe('log_event: participant matching (4.1)', () => {
 
   it('rejects invalid handles and unusable record IDs, listing every one', async () => {
     const deleted = await person();
-    await deleteRecord(app, as(AGENT), deleted.id);
+    await deleteRecord(backend, as(AGENT), deleted.id);
     await expect(
       log({ participants: [{ handle: 'Dana Levi' }, { role: 'customer' }] }),
     ).rejects.toMatchObject({
@@ -269,7 +336,7 @@ describe('log_event: participant matching (4.1)', () => {
   });
 
   it("does not match another workspace's records", async () => {
-    const theirs = await createRecord(app, as(AGENT, otherWorkspaceId), 'person', {
+    const theirs = await createRecord(backend, as(AGENT, otherWorkspaceId), 'person', {
       emails: email(),
     });
     const theirEmail = (theirs.record.fields.emails as { primary: string }).primary;
@@ -341,11 +408,7 @@ describe('log_event: external IDs (1.3, 6.2)', () => {
       created: false,
       added: { participants: { matched: [], unmatched: [] }, about: [] },
     });
-    const [{ count }] = (await db.owner`
-      select count(*)::int as count from event_records where external_id = ${id}`) as [
-      { count: number },
-    ];
-    expect(count).toBe(1);
+    expect(await eventsWithExternalId(id)).toEqual([first.id]);
   });
 
   it('treats the same externalId on another channel as another event', async () => {
@@ -373,7 +436,7 @@ describe('log_event: external IDs (1.3, 6.2)', () => {
   it('reports a deleted externalId instead of logging it again', async () => {
     const id = externalId();
     const first = await log({ externalId: id });
-    await retractEventFor(app, as(AGENT), first.id);
+    await retractEventFor(backend, as(AGENT), first.id);
     await expect(log({ externalId: id })).rejects.toMatchObject({
       status: 409,
       code: 'event_retracted',
@@ -390,7 +453,19 @@ describe('log_event: external IDs (1.3, 6.2)', () => {
       title: 'Concurrent',
       participants: [{ handle: danaEmail, role: 'customer' }],
     };
-    const results = await Promise.all(Array.from({ length: 8 }, () => log(input)));
+    // Two processes, so the writes really compete (spec section 6).
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        logEventFor(proc(i), as(AGENT), {
+          type: 'call',
+          channel: 'zoom',
+          occurredAt: '2026-10-29T14:00:00+02:00',
+          fields: {},
+          about: [],
+          ...input,
+        }),
+      ),
+    );
     expect(new Set(results.map((r) => r.id)).size).toBe(1);
     expect(results.filter((r) => r.created)).toHaveLength(1);
     for (const result of results) {
@@ -398,13 +473,15 @@ describe('log_event: external IDs (1.3, 6.2)', () => {
         { id: expect.any(String), handle: danaEmail, role: 'customer', recordId: dana.id },
       ]);
     }
-    const links = await db.owner`
-      select l.id from event_links l join event_records e on e.record_id = l.event_id
-      where e.external_id = ${id}`;
-    expect(links).toHaveLength(1);
-    const initial = await db.owner`
-      select a.id from field_assertions a join event_records e on e.record_id = a.record_id
-      where e.external_id = ${id} and a.is_initial`;
+    const [event] = await eventsWithExternalId(id);
+    expect(event).toBe(results[0]?.id);
+    expect(await rows('SELECT id FROM event_links WHERE event = $e;', { e: event })).toHaveLength(
+      1,
+    );
+    const initial = await rows(
+      'SELECT id FROM field_assertions WHERE record = $e AND is_initial = true;',
+      { e: event },
+    );
     expect(initial).toHaveLength(1);
   });
 
@@ -441,7 +518,7 @@ describe('log_event: custom fields and retries (6.2)', () => {
     ]);
   });
 
-  const deal = (name: string) => createRecord(app, as(AGENT), 'deal', { name });
+  const deal = (name: string) => createRecord(backend, as(AGENT), 'deal', { name });
   const demo = (input: Partial<LogEventInput>) =>
     log({ type: 'demo', channel: 'calendar', title: 'Product demo', ...input });
 
@@ -452,7 +529,7 @@ describe('log_event: custom fields and retries (6.2)', () => {
       summary: 'Walked through reporting',
       fields: { durationMinutes: 45, deal: pilot.id },
     });
-    const read = await readEvent(app, as(AGENT), logged.id);
+    const read = await readEvent(backend, as(AGENT), logged.id);
     expect(read).toMatchObject({
       object: 'demo',
       label: 'Product demo',
@@ -464,14 +541,14 @@ describe('log_event: custom fields and retries (6.2)', () => {
       },
       event: { title: 'Product demo', summary: 'Walked through reporting' },
     });
-    const rows = await db.owner<
-      { source_record_id: string; observed_at: Date; is_initial: boolean }[]
-    >`select source_record_id, observed_at, is_initial from field_assertions
-      where record_id = ${logged.id}`;
-    expect(rows).toHaveLength(4);
-    for (const row of rows) {
+    const initial = await rows<{ source: string; observed_at: Date; is_initial: boolean }>(
+      'SELECT source, observed_at, is_initial FROM field_assertions WHERE record = $r;',
+      { r: logged.id },
+    );
+    expect(initial).toHaveLength(4);
+    for (const row of initial) {
       expect(row).toEqual({
-        source_record_id: logged.id,
+        source: logged.id,
         observed_at: new Date('2026-10-29T12:00:00Z'),
         is_initial: true,
       });
@@ -516,7 +593,7 @@ describe('log_event: custom fields and retries (6.2)', () => {
       summary: 'As logged',
       fields: { durationMinutes: 20 },
     });
-    const edited = await upsertRecord(app, as(USER), 'demo', {
+    const edited = await upsertRecord(backend, as(USER), 'demo', {
       id: first.id,
       values: { summary: 'Edited by a person', durationMinutes: 25 },
       ifMissing: 'fail',
@@ -529,7 +606,9 @@ describe('log_event: custom fields and retries (6.2)', () => {
       demo({ externalId: id, summary: 'Edited by a person', fields: { durationMinutes: 25 } }),
     ).rejects.toMatchObject({ code: 'event_conflict' });
     // The retry leaves the edit standing.
-    expect((await readEvent(app, as(AGENT), first.id)).event?.summary).toBe('Edited by a person');
+    expect((await readEvent(backend, as(AGENT), first.id)).event?.summary).toBe(
+      'Edited by a person',
+    );
   });
 
   it('accepts a retry naming the merged or the surviving relation ID', async () => {
@@ -537,7 +616,7 @@ describe('log_event: custom fields and retries (6.2)', () => {
     const merged = await deal('Merged');
     const id = externalId();
     const first = await demo({ externalId: id, fields: { deal: merged.id } });
-    await mergeRecord(app, as(USER), survivor.id, { recordId: merged.id });
+    await mergeRecord(backend, as(USER), survivor.id, { recordId: merged.id });
     for (const target of [merged.id, survivor.id]) {
       await expect(demo({ externalId: id, fields: { deal: target } })).resolves.toMatchObject({
         id: first.id,
@@ -572,10 +651,10 @@ describe('log_event: custom fields and retries (6.2)', () => {
 describe('events are records (6.2)', () => {
   it('refuses to create an event through a record write', async () => {
     await expect(
-      createRecord(app, as(AGENT), 'call', { title: 'Created as a record' }),
+      createRecord(backend, as(AGENT), 'call', { title: 'Created as a record' }),
     ).rejects.toMatchObject({ status: 422, code: 'use_log_event' });
     await expect(
-      upsertRecord(app, as(AGENT), 'meeting', {
+      upsertRecord(backend, as(AGENT), 'meeting', {
         values: { title: 'Upserted' },
         ifMissing: 'create',
       }),
@@ -585,7 +664,7 @@ describe('events are records (6.2)', () => {
   it('never merges events', async () => {
     const a = await log({ externalId: externalId() });
     const b = await log({ externalId: externalId() });
-    await expect(mergeRecord(app, as(USER), a.id, { recordId: b.id })).rejects.toMatchObject({
+    await expect(mergeRecord(backend, as(USER), a.id, { recordId: b.id })).rejects.toMatchObject({
       status: 422,
       code: 'invalid_merge',
     });
@@ -594,8 +673,11 @@ describe('events are records (6.2)', () => {
   it('retracts claims when an event is deleted as a record too', async () => {
     const dana = await person();
     const call = await log({ occurredAt: '2026-10-01T10:00:00Z' });
-    await patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'CFO' }, source: call.id });
-    const deleted = await deleteRecord(app, as(AGENT), call.id);
+    await patchRecord(backend, as(AGENT), dana.id, {
+      values: { jobTitle: 'CFO' },
+      source: call.id,
+    });
+    const deleted = await deleteRecord(backend, as(AGENT), call.id);
     expect(deleted).toMatchObject({
       id: call.id,
       deleted: true,
@@ -603,7 +685,7 @@ describe('events are records (6.2)', () => {
       recomputedRecordIds: [dana.id],
       hiddenFactIds: [],
     });
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
     await expectDataMatchesAssertions(dana.id);
   });
 });
@@ -619,7 +701,7 @@ describe('reading and retracting events', () => {
       summary: 'Showed the data platform',
       participants: [{ recordId: dana.id, role: 'attendee' }],
     });
-    const read = await readEvent(app, as(AGENT2), logged.id);
+    const read = await readEvent(backend, as(AGENT2), logged.id);
     expect(read).toMatchObject({
       id: logged.id,
       object: 'meeting',
@@ -640,18 +722,19 @@ describe('reading and retracting events', () => {
         about: [],
       },
     });
-    const [row] = await db.owner<{ search: string }[]>`
-      select search::text from records where id = ${logged.id}`;
-    expect(row?.search).toContain("'demo':1A");
-    expect(row?.search).toContain("'platform'");
+    // The tsvector's weighted label is the search document's label text;
+    // the analyzer lowercases it at index time.
+    const doc = await searchDocument(logged.id);
+    expect(doc?.label_text).toBe('Demo');
+    expect(doc?.folded.split(/\s+/)).toContain('platform');
 
-    const retracted = await retractEventFor(app, as(AGENT), logged.id);
+    const retracted = await retractEventFor(backend, as(AGENT), logged.id);
     expect(retracted).toMatchObject({ id: logged.id, deleted: true });
-    await expect(readEvent(app, as(AGENT), logged.id)).rejects.toMatchObject({
+    await expect(readEvent(backend, as(AGENT), logged.id)).rejects.toMatchObject({
       status: 404,
       code: 'record_deleted',
     });
-    await expect(retractEventFor(app, as(AGENT), logged.id)).rejects.toMatchObject({
+    await expect(retractEventFor(backend, as(AGENT), logged.id)).rejects.toMatchObject({
       status: 409,
       code: 'event_deleted',
     });
@@ -659,16 +742,16 @@ describe('reading and retracting events', () => {
 
   it("cannot read or retract another workspace's event, or a record that is not one", async () => {
     const theirs = await log({}, AGENT, otherWorkspaceId);
-    await expect(readEvent(app, as(AGENT), theirs.id)).rejects.toMatchObject({ status: 404 });
-    await expect(retractEventFor(app, as(AGENT), theirs.id)).rejects.toMatchObject({
+    await expect(readEvent(backend, as(AGENT), theirs.id)).rejects.toMatchObject({ status: 404 });
+    await expect(retractEventFor(backend, as(AGENT), theirs.id)).rejects.toMatchObject({
       status: 404,
     });
     const dana = await person();
-    await expect(readEvent(app, as(AGENT), dana.id)).rejects.toMatchObject({ status: 404 });
-    await expect(retractEventFor(app, as(AGENT), dana.id)).rejects.toMatchObject({
+    await expect(readEvent(backend, as(AGENT), dana.id)).rejects.toMatchObject({ status: 404 });
+    await expect(retractEventFor(backend, as(AGENT), dana.id)).rejects.toMatchObject({
       status: 404,
     });
-    expect((await readRecord(app, as(AGENT), dana.id)).id).toBe(dana.id);
+    expect((await readRecord(backend, as(AGENT), dana.id)).id).toBe(dana.id);
   });
 });
 
@@ -676,16 +759,16 @@ describe('source on record writes (rules 2.1, 2.2)', () => {
   it("stores the source and takes observed_at from the event's occurred_at", async () => {
     const call = await log({ occurredAt: '2026-10-20T09:30:00+03:00' });
     const created = await createRecord(
-      app,
+      backend,
       as(AGENT),
       'person',
       { emails: email(), jobTitle: 'CTO' },
       { source: call.id },
     );
-    const rows = await assertions(created.id);
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      expect(row.source_record_id).toBe(call.id);
+    const stored = await assertions(created.id);
+    expect(stored).toHaveLength(2);
+    for (const row of stored) {
+      expect(row.source).toBe(call.id);
       expect(row.observed_at.toISOString()).toBe('2026-10-20T06:30:00.000Z');
     }
   });
@@ -696,7 +779,7 @@ describe('source on record writes (rules 2.1, 2.2)', () => {
     const call = await log({ type: 'call', occurredAt: '2026-10-28T10:00:00Z' });
     const mail = await log({ type: 'email', channel: 'gmail', occurredAt: '2026-09-01T10:00:00Z' });
 
-    const fromCall = await upsertRecord(app, as(AGENT), 'person', {
+    const fromCall = await upsertRecord(backend, as(AGENT), 'person', {
       id: dana.id,
       values: { jobTitle: 'VP Sales' },
       ifMissing: 'fail',
@@ -704,7 +787,7 @@ describe('source on record writes (rules 2.1, 2.2)', () => {
     });
     expect(fromCall.fields).toEqual({ jobTitle: 'applied' });
 
-    const fromMail = await upsertRecord(app, as(AGENT2), 'person', {
+    const fromMail = await upsertRecord(backend, as(AGENT2), 'person', {
       id: dana.id,
       values: { jobTitle: 'Sales Director' },
       ifMissing: 'fail',
@@ -719,32 +802,32 @@ describe('source on record writes (rules 2.1, 2.2)', () => {
     const dana = await person();
     const danaEmail = (dana.record.fields.emails as { primary: string }).primary;
     const call = await log({ occurredAt: '2026-10-01T08:00:00Z' });
-    await patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'A' }, source: call.id });
-    await upsertRecord(app, as(AGENT), 'person', {
+    await patchRecord(backend, as(AGENT), dana.id, { values: { jobTitle: 'A' }, source: call.id });
+    await upsertRecord(backend, as(AGENT), 'person', {
       match: { emails: danaEmail },
       values: { jobTitle: 'B' },
       ifMissing: 'fail',
       source: call.id,
     });
-    const rows = (await assertions(dana.id)).filter((r) => r.value === 'A' || r.value === 'B');
-    expect(rows.map((r) => r.source_record_id)).toEqual([call.id, call.id]);
+    const cited = (await assertions(dana.id)).filter((r) => r.value === 'A' || r.value === 'B');
+    expect(cited.map((r) => r.source)).toEqual([call.id, call.id]);
   });
 
   it('rejects an unknown, foreign, entity or deleted source and writes nothing', async () => {
     const dana = await person();
     const foreign = await log({}, AGENT, otherWorkspaceId);
-    const company = await createRecord(app, as(AGENT), 'company', { name: 'Not an event' });
+    const company = await createRecord(backend, as(AGENT), 'company', { name: 'Not an event' });
     for (const source of ['00000000-0000-4000-8000-000000000000', foreign.id, company.id]) {
       await expect(
-        patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'X' }, source }),
+        patchRecord(backend, as(AGENT), dana.id, { values: { jobTitle: 'X' }, source }),
       ).rejects.toMatchObject({ status: 422, code: 'invalid_source' });
     }
     const retracted = await log();
-    await retractEventFor(app, as(AGENT), retracted.id);
+    await retractEventFor(backend, as(AGENT), retracted.id);
     await expect(
-      patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'X' }, source: retracted.id }),
+      patchRecord(backend, as(AGENT), dana.id, { values: { jobTitle: 'X' }, source: retracted.id }),
     ).rejects.toMatchObject({ status: 409, code: 'source_retracted' });
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
   });
 });
 
@@ -753,17 +836,17 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const dana = await person({ name: 'Dana Levi' });
     const mail = await log({ type: 'email', channel: 'gmail', occurredAt: '2026-09-01T10:00:00Z' });
     const call = await log({ type: 'call', occurredAt: '2026-10-28T10:00:00Z' });
-    await patchRecord(app, as(AGENT), dana.id, {
+    await patchRecord(backend, as(AGENT), dana.id, {
       values: { jobTitle: 'Sales Director' },
       source: mail.id,
     });
-    await patchRecord(app, as(AGENT), dana.id, {
+    await patchRecord(backend, as(AGENT), dana.id, {
       values: { jobTitle: 'VP Sales' },
       source: call.id,
     });
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('VP Sales');
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBe('VP Sales');
 
-    const retracted = await retractEventFor(app, as(AGENT), call.id);
+    const retracted = await retractEventFor(backend, as(AGENT), call.id);
     expect(retracted).toEqual({
       id: call.id,
       deleted: true,
@@ -771,16 +854,14 @@ describe('deleting an event (6.4, rule 2.4)', () => {
       recomputedRecordIds: [dana.id],
       hiddenFactIds: [],
     });
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('Sales Director');
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBe('Sales Director');
     await expectDataMatchesAssertions(dana.id);
 
     // Deleting the last source of a field removes the value.
-    await retractEventFor(app, as(AGENT), mail.id);
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
+    await retractEventFor(backend, as(AGENT), mail.id);
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
     await expectDataMatchesAssertions(dana.id);
-    const statuses = (await assertions(dana.id))
-      .filter((a) => a.source_record_id !== null)
-      .map((a) => a.status);
+    const statuses = (await assertions(dana.id)).filter((a) => !!a.source).map((a) => a.status);
     expect(new Set(statuses)).toEqual(new Set(['retracted']));
   });
 
@@ -789,22 +870,25 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const old = await log({ occurredAt: '2026-08-01T10:00:00Z' });
     const mid = await log({ occurredAt: '2026-09-01T10:00:00Z' });
     const recent = await log({ occurredAt: '2026-10-01T10:00:00Z' });
-    await patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'Old' }, source: old.id });
-    await patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'Mid' }, source: mid.id });
-    await patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'New' }, source: recent.id });
+    await patchRecord(backend, as(AGENT), dana.id, { values: { jobTitle: 'Old' }, source: old.id });
+    await patchRecord(backend, as(AGENT), dana.id, { values: { jobTitle: 'Mid' }, source: mid.id });
+    await patchRecord(backend, as(AGENT), dana.id, {
+      values: { jobTitle: 'New' },
+      source: recent.id,
+    });
     // Mid is superseded; deleting it changes nothing visible.
-    const midResult = await retractEventFor(app, as(AGENT), mid.id);
+    const midResult = await retractEventFor(backend, as(AGENT), mid.id);
     expect(midResult.recomputedRecordIds).toEqual([]);
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('New');
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBe('New');
     // Deleting the winner falls back past the retracted claim to the oldest.
-    await retractEventFor(app, as(AGENT), recent.id);
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('Old');
+    await retractEventFor(backend, as(AGENT), recent.id);
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBe('Old');
     await expectDataMatchesAssertions(dana.id);
   });
 
   it("keeps the event's own initial values with it", async () => {
     const call = await log({ title: 'Kept with the event', summary: 'Its own text' });
-    const result = await retractEventFor(app, as(AGENT), call.id);
+    const result = await retractEventFor(backend, as(AGENT), call.id);
     expect(result.retractedAssertions).toBe(0);
     const own = await assertions(call.id);
     expect(own.map((a) => a.status)).toEqual(['active', 'active']);
@@ -816,12 +900,15 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const earlier = await log({ occurredAt: '2026-09-01T10:00:00Z' });
     const dana = await person({ emails: oldEmail }, AGENT, earlier.id);
     const call = await log();
-    await patchRecord(app, as(AGENT), dana.id, { values: { emails: newEmail }, source: call.id });
+    await patchRecord(backend, as(AGENT), dana.id, {
+      values: { emails: newEmail },
+      source: call.id,
+    });
     expect((await log({ participants: [{ handle: newEmail }] })).participants.matched).toHaveLength(
       1,
     );
 
-    await retractEventFor(app, as(AGENT), call.id);
+    await retractEventFor(backend, as(AGENT), call.id);
     expect((await log({ participants: [{ handle: newEmail }] })).participants.unmatched).toEqual([
       { id: expect.any(String), handle: newEmail, role: null, reason: 'no_match' },
     ]);
@@ -841,18 +928,24 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const aliceOld = (alice.record.fields.emails as { primary: string }).primary;
     const bobOld = (bob.record.fields.emails as { primary: string }).primary;
     const call = await log({ occurredAt: '2026-10-01T10:00:00Z' });
-    await patchRecord(app, as(AGENT), alice.id, { values: { emails: email() }, source: call.id });
-    await patchRecord(app, as(AGENT), bob.id, { values: { emails: aliceOld }, source: call.id });
+    await patchRecord(backend, as(AGENT), alice.id, {
+      values: { emails: email() },
+      source: call.id,
+    });
+    await patchRecord(backend, as(AGENT), bob.id, {
+      values: { emails: aliceOld },
+      source: call.id,
+    });
 
-    const result = await retractEventFor(app, as(AGENT), call.id);
+    const result = await retractEventFor(backend, as(AGENT), call.id);
     expect(result.recomputedRecordIds).toEqual([alice.id, bob.id]);
-    expect((await readRecord(app, as(AGENT), alice.id)).fields.emails).toMatchObject({
+    expect((await readRecord(backend, as(AGENT), alice.id)).fields.emails).toMatchObject({
       primary: aliceOld,
     });
-    expect((await readRecord(app, as(AGENT), bob.id)).fields.emails).toMatchObject({
+    expect((await readRecord(backend, as(AGENT), bob.id)).fields.emails).toMatchObject({
       primary: bobOld,
     });
-    const review = await reviewQueue(app, as(USER), 500);
+    const review = await reviewQueue(backend, as(USER), 500);
     expect(review.pendingAssertions.filter((a) => [alice.id, bob.id].includes(a.recordId))).toEqual(
       [],
     );
@@ -862,16 +955,19 @@ describe('deleting an event (6.4, rule 2.4)', () => {
   });
 
   it('restores the previous relation link', async () => {
-    const acme = await createRecord(app, as(AGENT), 'company', { name: 'Acme' });
-    const globex = await createRecord(app, as(AGENT), 'company', { name: 'Globex' });
+    const acme = await createRecord(backend, as(AGENT), 'company', { name: 'Acme' });
+    const globex = await createRecord(backend, as(AGENT), 'company', { name: 'Globex' });
     const earlier = await log({ occurredAt: '2026-09-01T10:00:00Z' });
     const dana = await person({ company: acme.id }, AGENT, earlier.id);
     const call = await log();
-    await patchRecord(app, as(AGENT), dana.id, { values: { company: globex.id }, source: call.id });
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.company).toBe(globex.id);
-    await retractEventFor(app, as(AGENT), call.id);
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.company).toBe(acme.id);
-    expect((await readRecord(app, as(AGENT), acme.id)).fields.people).toContain(dana.id);
+    await patchRecord(backend, as(AGENT), dana.id, {
+      values: { company: globex.id },
+      source: call.id,
+    });
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.company).toBe(globex.id);
+    await retractEventFor(backend, as(AGENT), call.id);
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.company).toBe(acme.id);
+    expect((await readRecord(backend, as(AGENT), acme.id)).fields.people).toContain(dana.id);
   });
 
   it('removes pending assertions from the source from the review queue', async () => {
@@ -879,22 +975,22 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const meeting = await log({ type: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
     const dana = await person({ jobTitle: 'Set by a person' }, USER, meeting.id);
     const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
-    const pending = await patchRecord(app, as(AGENT), dana.id, {
+    const pending = await patchRecord(backend, as(AGENT), dana.id, {
       values: { jobTitle: 'From the call' },
       source: call.id,
     });
     expect(pending.fields).toEqual({ jobTitle: 'pending_review' });
-    const before = await reviewQueue(app, as(USER), 500);
+    const before = await reviewQueue(backend, as(USER), 500);
     const item = before.pendingAssertions.find((a) => a.recordId === dana.id);
     expect(item?.sourceRecordId).toBe(call.id);
 
-    await retractEventFor(app, as(AGENT), call.id);
-    const after = await reviewQueue(app, as(USER), 500);
+    await retractEventFor(backend, as(AGENT), call.id);
+    const after = await reviewQueue(backend, as(USER), 500);
     expect(after.pendingAssertions.find((a) => a.recordId === dana.id)).toBeUndefined();
     await expect(
-      decideAssertion(app, as(USER), item?.id as string, 'accept'),
+      decideAssertion(backend, as(USER), item?.id as string, 'accept'),
     ).rejects.toMatchObject({ code: 'not_pending' });
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('Set by a person');
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBe('Set by a person');
   });
 
   it('still retracts when another record has since claimed the older value', async () => {
@@ -902,20 +998,23 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const earlier = await log({ occurredAt: '2026-09-01T10:00:00Z' });
     const dana = await person({ emails: oldEmail }, AGENT, earlier.id);
     const call = await log({ occurredAt: '2026-10-01T10:00:00Z' });
-    await patchRecord(app, as(AGENT), dana.id, { values: { emails: email() }, source: call.id });
+    await patchRecord(backend, as(AGENT), dana.id, {
+      values: { emails: email() },
+      source: call.id,
+    });
     // Dana's old address is free again, and another person takes it.
     const ron = await person({ emails: oldEmail });
 
-    const result = await retractEventFor(app, as(AGENT), call.id);
+    const result = await retractEventFor(backend, as(AGENT), call.id);
     expect(result.recomputedRecordIds).toEqual([dana.id]);
     // The old value cannot come back while Ron holds it: it waits for review.
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.emails).toBeUndefined();
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.emails).toBeUndefined();
     await expectDataMatchesAssertions(dana.id);
-    const review = await reviewQueue(app, as(USER), 500);
+    const review = await reviewQueue(backend, as(USER), 500);
     const item = review.pendingAssertions.find((a) => a.recordId === dana.id);
     expect(item).toMatchObject({ field: 'emails', reason: 'unique_conflict' });
     await expect(
-      decideAssertion(app, as(USER), item?.id as string, 'accept'),
+      decideAssertion(backend, as(USER), item?.id as string, 'accept'),
     ).rejects.toMatchObject({ code: 'unique_conflict', details: { recordId: ron.id } });
   });
 
@@ -925,14 +1024,17 @@ describe('deleting an event (6.4, rule 2.4)', () => {
       const earlier = await log({ occurredAt: '2026-09-01T10:00:00Z' });
       const dana = await person({ emails: oldEmail }, AGENT, earlier.id);
       const call = await log({ occurredAt: '2026-10-01T10:00:00Z' });
-      await patchRecord(app, as(AGENT), dana.id, { values: { emails: email() }, source: call.id });
+      await patchRecord(backend, as(AGENT), dana.id, {
+        values: { emails: email() },
+        source: call.id,
+      });
 
       const [retract, create] = await Promise.allSettled([
-        retractEventFor(app, as(AGENT), call.id),
-        createRecord(app, as(AGENT2), 'person', { emails: oldEmail }),
+        retractEventFor(backend, as(AGENT), call.id),
+        createRecord(other, as(AGENT2), 'person', { emails: oldEmail }),
       ]);
       expect(retract.status).toBe('fulfilled');
-      const danaEmails = (await readRecord(app, as(AGENT), dana.id)).fields.emails;
+      const danaEmails = (await readRecord(backend, as(AGENT), dana.id)).fields.emails;
       if (create.status === 'fulfilled') {
         // The other record took the address: Dana's old value waits for review.
         expect(danaEmails).toBeUndefined();
@@ -945,8 +1047,10 @@ describe('deleting an event (6.4, rule 2.4)', () => {
         expect(danaEmails).toMatchObject({ primary: oldEmail });
       }
       await expectDataMatchesAssertions(dana.id);
-      const holders = await db.owner`
-        select record_id from record_identifiers where value = ${oldEmail} and is_claim`;
+      // Claims are `unique_claims` rows (spec section 5).
+      const holders = await rows('SELECT record FROM unique_claims WHERE value = $v;', {
+        v: oldEmail,
+      });
       expect(holders).toHaveLength(1);
     }
   });
@@ -955,47 +1059,49 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const meeting = await log({ type: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
     const dana = await person({ jobTitle: 'From the meeting' }, USER, meeting.id);
     const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
-    await patchRecord(app, as(AGENT), dana.id, {
+    await patchRecord(backend, as(AGENT), dana.id, {
       values: { jobTitle: 'From the call' },
       source: call.id,
     });
     // A person edits the field directly after the call.
-    await patchRecord(app, as(USER), dana.id, { values: { jobTitle: 'Edited today' } });
-    const review = await reviewQueue(app, as(USER), 500);
+    await patchRecord(backend, as(USER), dana.id, { values: { jobTitle: 'Edited today' } });
+    const review = await reviewQueue(backend, as(USER), 500);
     const item = review.pendingAssertions.find((a) => a.recordId === dana.id);
 
-    const accepted = await decideAssertion(app, as(USER), item?.id as string, 'accept');
+    const accepted = await decideAssertion(backend, as(USER), item?.id as string, 'accept');
     expect(accepted.fields).toEqual({ jobTitle: 'superseded' });
     expect(accepted.record.fields.jobTitle).toBe('Edited today');
-    const [reasserted] = await db.owner<{ observed_at: Date; source_record_id: string }[]>`
-      select observed_at, source_record_id from field_assertions
-      where record_id = ${dana.id} and value = '"From the call"' and actor->>'type' = 'user'`;
+    const [reasserted] = await rows<{ observed_at: Date; source: string }>(
+      "SELECT observed_at, source FROM field_assertions WHERE record = $r AND value = $v AND actor.type = 'user';",
+      { r: dana.id, v: 'From the call' },
+    );
     expect(reasserted?.observed_at.toISOString()).toBe('2026-10-30T10:00:00.000Z');
-    expect(reasserted?.source_record_id).toBe(call.id);
+    expect(reasserted?.source).toBe(call.id);
   });
 
+  // No deadlocks without row locks: the revision check makes one replan (spec section 6).
   it('does not deadlock when a pending claim is accepted while its source is deleted', async () => {
     for (let round = 0; round < 5; round++) {
       const meeting = await log({ type: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
       const dana = await person({ jobTitle: 'Person value' }, USER, meeting.id);
       const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
-      await patchRecord(app, as(AGENT), dana.id, {
+      await patchRecord(backend, as(AGENT), dana.id, {
         values: { jobTitle: 'Agent value' },
         source: call.id,
       });
-      const review = await reviewQueue(app, as(USER), 500);
+      const review = await reviewQueue(backend, as(USER), 500);
       const item = review.pendingAssertions.find((a) => a.recordId === dana.id);
 
       const [accept, retract] = await Promise.allSettled([
-        decideAssertion(app, as(USER), item?.id as string, 'accept'),
-        retractEventFor(app, as(AGENT), call.id),
+        decideAssertion(backend, as(USER), item?.id as string, 'accept'),
+        retractEventFor(other, as(AGENT), call.id),
       ]);
       expect(retract.status).toBe('fulfilled');
       if (accept.status === 'rejected') {
         expect(['not_pending', 'source_retracted']).toContain(accept.reason.code);
       }
       // Either way the call's claims no longer count.
-      expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBe('Person value');
+      expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBe('Person value');
       await expectDataMatchesAssertions(dana.id);
     }
   });
@@ -1004,10 +1110,13 @@ describe('deleting an event (6.4, rule 2.4)', () => {
     const dana = await person();
     const call = await log();
     const writes = Array.from({ length: 10 }, (_, i) =>
-      patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: `T${i}` }, source: call.id }),
+      patchRecord(proc(i + 1), as(AGENT), dana.id, {
+        values: { jobTitle: `T${i}` },
+        source: call.id,
+      }),
     );
     const [, ...settled] = await Promise.allSettled([
-      retractEventFor(app, as(AGENT), call.id),
+      retractEventFor(backend, as(AGENT), call.id),
       ...writes,
     ]);
     for (const result of settled) {
@@ -1015,9 +1124,9 @@ describe('deleting an event (6.4, rule 2.4)', () => {
         expect(result.reason).toMatchObject({ code: 'source_retracted' });
       }
     }
-    const cited = (await assertions(dana.id)).filter((a) => a.source_record_id === call.id);
+    const cited = (await assertions(dana.id)).filter((a) => a.source === call.id);
     expect(cited.every((a) => a.status === 'retracted')).toBe(true);
-    expect((await readRecord(app, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
+    expect((await readRecord(backend, as(AGENT), dana.id)).fields.jobTitle).toBeUndefined();
     await expectDataMatchesAssertions(dana.id);
   });
 });
@@ -1026,7 +1135,7 @@ describe('remember (6.2, rule 2.6)', () => {
   it('writes a stated fact citing the source, valid from its occurred_at', async () => {
     const dana = await person();
     const call = await log({ occurredAt: '2026-10-29T14:00:00+02:00' });
-    const result = await remember(app, as(AGENT), dana.id, {
+    const result = await remember(backend, as(AGENT), dana.id, {
       text: 'Legal review at Acme usually takes two weeks.',
       source: call.id,
       quote: 'legal usually needs two weeks with these',
@@ -1043,64 +1152,76 @@ describe('remember (6.2, rule 2.6)', () => {
         sources: [{ event: call.id, quote: 'legal usually needs two weeks with these' }],
       },
     });
-    const [row] = await db.owner<{ search: string }[]>`
-      select search::text from facts where id = ${result.fact.id}`;
-    expect(row?.search).toContain("'legal'");
+    expect((await searchDocument(result.fact.id))?.folded.split(/\s+/)).toContain('legal');
   });
 
   it('creates an internal note for a fact without a source, valid from the write time', async () => {
     const dana = await person();
     const before = Date.now();
-    const result = await remember(app, as(AGENT), dana.id, { text: 'Prefers WhatsApp.' });
+    const result = await remember(backend, as(AGENT), dana.id, { text: 'Prefers WhatsApp.' });
     expect(result).toEqual({ fact: expect.any(Object) });
     expect(result.fact.sources).toEqual([{ event: null, internal: true, quote: null }]);
     expect(new Date(result.fact.validFrom).getTime()).toBeGreaterThanOrEqual(before - 5_000);
 
     const noteId = await internalNoteOf(result.fact.id);
-    const [note] = await db.owner<
-      { channel: string; external_id: string | null; occurred_at: Date; summary: unknown }[]
-    >`select e.channel, e.external_id, e.occurred_at, a.value as summary
-      from event_records e join field_assertions a on a.record_id = e.record_id and a.is_initial
-      where e.record_id = ${noteId}`;
-    expect(note).toEqual({
+    const [identity] = await rows<{ channel: string; external_id?: string; occurred_at: Date }>(
+      'SELECT channel, external_id, occurred_at FROM $e;',
+      { e: new RecordId('event_identity', noteId) },
+    );
+    const initial = await rows<{ is_initial: boolean; value: unknown }>(
+      'SELECT is_initial, value FROM field_assertions WHERE record = $r AND is_initial = true;',
+      { r: noteId },
+    );
+    expect({
+      channel: identity?.channel,
+      external_id: identity?.external_id ?? null,
+      occurred_at: identity?.occurred_at,
+      summary: initial.map((a) => a.value),
+    }).toEqual({
       channel: 'retainer',
       external_id: null,
       occurred_at: new Date(result.fact.validFrom),
-      summary: 'Prefers WhatsApp.',
+      summary: ['Prefers WhatsApp.'],
     });
-    expect(
-      await db.owner`select record_id, link, handle from event_links where event_id = ${noteId}`,
-    ).toEqual([{ record_id: dana.id, link: 'about', handle: null }]);
+    const links = await rows<{ record: string; link: string; handle?: string | null }>(
+      'SELECT record, link, handle FROM event_links WHERE event = $e;',
+      { e: noteId },
+    );
+    expect(links.map((l) => ({ ...l, handle: l.handle ?? null }))).toEqual([
+      { record: dana.id, link: 'about', handle: null },
+    ]);
 
     // The note is hidden: no read, edit, delete or citation reaches it.
-    await expect(readEvent(app, as(AGENT), noteId)).rejects.toMatchObject({ status: 404 });
-    await expect(readRecord(app, as(AGENT), noteId)).rejects.toMatchObject({ status: 404 });
-    await expect(retractEventFor(app, as(AGENT), noteId)).rejects.toMatchObject({ status: 404 });
+    await expect(readEvent(backend, as(AGENT), noteId)).rejects.toMatchObject({ status: 404 });
+    await expect(readRecord(backend, as(AGENT), noteId)).rejects.toMatchObject({ status: 404 });
+    await expect(retractEventFor(backend, as(AGENT), noteId)).rejects.toMatchObject({
+      status: 404,
+    });
     await expect(
-      patchRecord(app, as(AGENT), noteId, { values: { summary: 'Rewritten' } }),
+      patchRecord(backend, as(AGENT), noteId, { values: { summary: 'Rewritten' } }),
     ).rejects.toMatchObject({ status: 404 });
     await expect(
-      patchRecord(app, as(AGENT), dana.id, { values: { jobTitle: 'X' }, source: noteId }),
+      patchRecord(backend, as(AGENT), dana.id, { values: { jobTitle: 'X' }, source: noteId }),
     ).rejects.toMatchObject({ status: 422, code: 'invalid_source' });
     await expect(
-      remember(app, as(AGENT), dana.id, { text: 'Cites a note', source: noteId }),
+      remember(backend, as(AGENT), dana.id, { text: 'Cites a note', source: noteId }),
     ).rejects.toMatchObject({ status: 422, code: 'invalid_source' });
   });
 
   it('rejects a quote without a source, a deleted record and a deleted source', async () => {
     const dana = await person();
     await expect(
-      remember(app, as(AGENT), dana.id, { text: 'x', quote: 'y' }),
+      remember(backend, as(AGENT), dana.id, { text: 'x', quote: 'y' }),
     ).rejects.toMatchObject({ status: 400 });
 
     const call = await log();
-    await retractEventFor(app, as(AGENT), call.id);
+    await retractEventFor(backend, as(AGENT), call.id);
     await expect(
-      remember(app, as(AGENT), dana.id, { text: 'x', source: call.id }),
+      remember(backend, as(AGENT), dana.id, { text: 'x', source: call.id }),
     ).rejects.toMatchObject({ code: 'source_retracted' });
 
-    await deleteRecord(app, as(AGENT), dana.id);
-    await expect(remember(app, as(AGENT), dana.id, { text: 'x' })).rejects.toMatchObject({
+    await deleteRecord(backend, as(AGENT), dana.id);
+    await expect(remember(backend, as(AGENT), dana.id, { text: 'x' })).rejects.toMatchObject({
       code: 'record_deleted',
     });
   });
@@ -1108,9 +1229,8 @@ describe('remember (6.2, rule 2.6)', () => {
   it('writes to the surviving record when given a merged ID', async () => {
     const survivor = await person();
     const merged = await person();
-    await db.owner`update records set merged_into_id = ${survivor.id}, deleted_at = now()
-      where id = ${merged.id}`;
-    const result = await remember(app, as(AGENT), merged.id, { text: 'Merged fact.' });
+    await markMerged(merged.id, survivor.id);
+    const result = await remember(backend, as(AGENT), merged.id, { text: 'Merged fact.' });
     expect(result.fact.record).toBe(survivor.id);
   });
 
@@ -1119,31 +1239,28 @@ describe('remember (6.2, rule 2.6)', () => {
     const call = await log();
     const input = { text: 'Budget is approved for Q1.', source: call.id };
     const results = await Promise.all(
-      Array.from({ length: 6 }, () => remember(app, as(AGENT), dana.id, input, 'fact-key-1')),
+      Array.from({ length: 6 }, (_, i) =>
+        remember(proc(i), as(AGENT), dana.id, input, 'fact-key-1'),
+      ),
     );
     expect(new Set(results.map((r) => r.fact.id)).size).toBe(1);
     for (const result of results) expect(result).toEqual(results[0]);
-    const facts = await db.owner`select id from facts where record_id = ${dana.id}`;
-    expect(facts).toHaveLength(1);
+    expect(await rows('SELECT id FROM facts WHERE record = $r;', { r: dana.id })).toHaveLength(1);
 
     await expect(
-      remember(app, as(AGENT), dana.id, { text: 'Something else.' }, 'fact-key-1'),
+      remember(backend, as(AGENT), dana.id, { text: 'Something else.' }, 'fact-key-1'),
     ).rejects.toMatchObject({ status: 422, code: 'idempotency_key_reused' });
   });
 
   it('replays a note fact without creating a second note', async () => {
     const dana = await person();
     const results = await Promise.all(
-      Array.from({ length: 4 }, () =>
-        remember(app, as(AGENT), dana.id, { text: 'Note once.' }, 'note-key-1'),
+      Array.from({ length: 4 }, (_, i) =>
+        remember(proc(i), as(AGENT), dana.id, { text: 'Note once.' }, 'note-key-1'),
       ),
     );
     expect(new Set(results.map((r) => r.fact.id)).size).toBe(1);
-    const notes = await db.owner`
-      select r.id from records r join event_links l on l.event_id = r.id
-      join object_types o on o.id = r.object_type_id
-      where l.record_id = ${dana.id} and o.universal_id = ${INTERNAL_NOTE_TYPE_ID}`;
-    expect(notes).toHaveLength(1);
+    expect(await internalNotesAbout(dana.id)).toHaveLength(1);
   });
 });
 
@@ -1152,17 +1269,25 @@ describe('listing and retracting facts', () => {
     const dana = await person();
     const older = await log({ occurredAt: '2026-09-01T10:00:00Z' });
     const newer = await log({ occurredAt: '2026-10-01T10:00:00Z' });
-    const a = await remember(app, as(AGENT), dana.id, { text: 'Older fact.', source: older.id });
-    const b = await remember(app, as(AGENT), dana.id, { text: 'Newer fact.', source: newer.id });
-    const c = await remember(app, as(AGENT), dana.id, {
+    const a = await remember(backend, as(AGENT), dana.id, {
+      text: 'Older fact.',
+      source: older.id,
+    });
+    const b = await remember(backend, as(AGENT), dana.id, {
+      text: 'Newer fact.',
+      source: newer.id,
+    });
+    const c = await remember(backend, as(AGENT), dana.id, {
       text: 'Retracted fact.',
       source: newer.id,
     });
     // A second live source keeps a fact visible after one source is deleted.
-    await db.owner`insert into fact_sources (workspace_id, fact_id, source_record_id)
-      values (${workspaceId}, ${b.fact.id}, ${older.id})`;
+    await admin('CREATE fact_sources CONTENT { fact: $f, source: $s };', {
+      f: b.fact.id,
+      s: older.id,
+    });
 
-    const listed = await factsOf(app, as(AGENT2), dana.id, 100);
+    const listed = await factsOf(backend, as(AGENT2), dana.id, 100);
     // Same validFrom: the one recorded later comes first.
     expect(listed.facts.map((f) => f.content)).toEqual([
       'Retracted fact.',
@@ -1175,40 +1300,42 @@ describe('listing and retracting facts', () => {
       { event: newer.id, quote: null },
     ]);
 
-    expect(await retractFactFor(app, as(USER), c.fact.id)).toEqual({
+    expect(await retractFactFor(backend, as(USER), c.fact.id)).toEqual({
       id: c.fact.id,
       deleted: true,
     });
-    await expect(retractFactFor(app, as(USER), c.fact.id)).rejects.toMatchObject({
+    await expect(retractFactFor(backend, as(USER), c.fact.id)).rejects.toMatchObject({
       code: 'fact_deleted',
     });
 
-    const retracted = await retractEventFor(app, as(AGENT), older.id);
+    const retracted = await retractEventFor(backend, as(AGENT), older.id);
     expect(retracted.hiddenFactIds).toEqual([a.fact.id]);
-    const after = await factsOf(app, as(AGENT), dana.id, 100);
+    const after = await factsOf(backend, as(AGENT), dana.id, 100);
     expect(after.facts).toEqual([{ ...b.fact, sources: [{ event: newer.id, quote: null }] }]);
   });
 
   it('lists a fact resting on an internal note as internal, without its ID', async () => {
     const dana = await person();
-    const { fact } = await remember(app, as(AGENT), dana.id, { text: 'Prefers mornings.' });
-    const listed = await factsOf(app, as(AGENT2), dana.id, 100);
+    const { fact } = await remember(backend, as(AGENT), dana.id, { text: 'Prefers mornings.' });
+    const listed = await factsOf(backend, as(AGENT2), dana.id, 100);
     expect(listed.facts).toEqual([fact]);
     expect(listed.facts[0]?.sources).toEqual([{ event: null, internal: true, quote: null }]);
   });
 
   it("hides a deleted record's facts and cannot read another workspace's", async () => {
     const dana = await person();
-    await remember(app, as(AGENT), dana.id, { text: 'Visible until deleted.' });
-    await deleteRecord(app, as(AGENT), dana.id);
-    await expect(factsOf(app, as(AGENT), dana.id, 100)).rejects.toMatchObject({ status: 404 });
+    await remember(backend, as(AGENT), dana.id, { text: 'Visible until deleted.' });
+    await deleteRecord(backend, as(AGENT), dana.id);
+    await expect(factsOf(backend, as(AGENT), dana.id, 100)).rejects.toMatchObject({ status: 404 });
 
-    const theirs = await createRecord(app, as(AGENT, otherWorkspaceId), 'person', {
+    const theirs = await createRecord(backend, as(AGENT, otherWorkspaceId), 'person', {
       emails: email(),
     });
-    await expect(factsOf(app, as(AGENT), theirs.id, 100)).rejects.toMatchObject({ status: 404 });
+    await expect(factsOf(backend, as(AGENT), theirs.id, 100)).rejects.toMatchObject({
+      status: 404,
+    });
     await expect(
-      remember(app, as(AGENT), theirs.id, { text: 'Cross-workspace' }),
+      remember(backend, as(AGENT), theirs.id, { text: 'Cross-workspace' }),
     ).rejects.toMatchObject({ status: 404 });
   });
 });

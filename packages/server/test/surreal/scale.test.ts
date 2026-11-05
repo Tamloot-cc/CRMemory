@@ -59,8 +59,8 @@ function counting(db: Db, reads: Reads): Db {
       for (const r of results) reads.rows += rowsOf(r);
       return results;
     },
-    async rows(text, vars) {
-      const rows = await db.rows(text, vars);
+    async rows<T>(text: string, vars?: Record<string, unknown>) {
+      const rows = await db.rows<T>(text, vars);
       reads.statements += 1;
       reads.rows += rows.length;
       return rows;
@@ -227,7 +227,9 @@ describe.skipIf(SIZES.length === 0)('scale', () => {
       expect(reads.dealList.result.records).toHaveLength(PAGE);
 
       // The context pack: reported, not page-bounded (spec section 13).
-      const context = await measure(() => contextFor(app, caller, company.id, {}));
+      const context = await measure(() =>
+        contextFor(app, caller, company.id, { tokenBudget: 4000 }),
+      );
       const timeline = await timelineFor(app, caller, company.id, { limit: PAGE });
       expect(timeline.items.length).toBeGreaterThan(0);
 

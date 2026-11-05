@@ -1,15 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 let t: TestApp;
 let keys: Record<'agent' | 'user', string>;
 let otherKey: string;
 
 beforeAll(async () => {
-  t = startTestApp(db);
+  t = startTestApp(backend);
   ({ keys } = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     {
@@ -177,15 +177,17 @@ describe('POST /v1/search', () => {
   });
 
   it('falls back to similar labels only when no record matches word for word', async () => {
+    // Similarity is Jaro-Winkler (>= 0.8), which weighs a shared prefix: the
+    // tag leads the label so other tests' "Dana …" records stay below it.
     const tag = word();
-    const dana = await create('person', { name: `Dana Levi${tag}` });
-    const res = await search({ query: `Dana Levy${tag}` });
+    const dana = await create('person', { name: `${tag} Dana Levi` });
+    const res = await search({ query: `${tag} Dana Levy` });
     expect(res.body.records).toEqual([
-      { id: dana, object: 'person', label: `Dana Levi${tag}`, match: 'similar_label' },
+      { id: dana, object: 'person', label: `${tag} Dana Levi`, match: 'similar_label' },
     ]);
     // A word-for-word hit wins outright; similar labels are not added to it.
-    const exact = await create('person', { name: `Dana Levy${tag}` });
-    const again = await search({ query: `Dana Levy${tag}` });
+    const exact = await create('person', { name: `${tag} Dana Levy` });
+    const again = await search({ query: `${tag} Dana Levy` });
     expect(again.body.records.map((r: { id: string }) => r.id)).toEqual([exact]);
   });
 
@@ -232,16 +234,21 @@ describe('POST /v1/search', () => {
     const meeting = await logEvent({ type: 'meeting', summary: `Kickoff ${tag}` });
     const res = await search({ query: tag });
     expect(res.body.records).toEqual([]);
-    expect(res.body.events).toEqual([
-      expect.objectContaining({ id: call, type: 'call', records: [dana, acme] }),
-      expect.objectContaining({
-        id: meeting,
-        type: 'meeting',
-        title: null,
-        summary: `Kickoff ${tag}`,
-        records: [],
-      }),
-    ]);
+    // Both match the word as typed. BM25 does not weigh a title above a
+    // summary as the tsvector weights did, so the two hits come in either order.
+    expect(res.body.events).toHaveLength(2);
+    expect(res.body.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: call, type: 'call', records: [dana, acme] }),
+        expect.objectContaining({
+          id: meeting,
+          type: 'meeting',
+          title: null,
+          summary: `Kickoff ${tag}`,
+          records: [],
+        }),
+      ]),
+    );
   });
 
   it('never lists internal notes: their text is found with the fact', async () => {

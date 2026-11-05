@@ -54,4 +54,3 @@ jobs:
           name: web-browser-traces
           path: packages/server/test-results
           retention-days: 7
-

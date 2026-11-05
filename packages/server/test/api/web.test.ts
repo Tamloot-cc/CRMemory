@@ -1,16 +1,19 @@
-import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { revokeApiKey } from '../../src/auth/keys.js';
-import { RUNTIME_ROLE } from '../../src/db/client.js';
-import { attachedEventPage } from '../../src/memory/events.js';
+import type { Db } from '../../src/db/backend.js';
+import { RecordId } from '../../src/db/cbor.js';
+import { publicId } from '../../src/db/names.js';
 import { withRead } from '../../src/records/service.js';
+import { attachedEventPage } from '../../src/retrieval/history.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
-import { createTestDatabase, type TestDatabase } from '../helpers/db.js';
+import { createTestBackend, type TestBackend } from '../helpers/backend.js';
 
-let db: TestDatabase, t: TestApp, keys: Record<'user' | 'agent' | 'reader' | 'other', string>;
+// Each test gets a fresh namespace of its own, as it had a fresh database.
+let backend: TestBackend, t: TestApp, keys: Record<'user' | 'agent' | 'reader' | 'other', string>;
+let workspaceId: string;
 beforeEach(async () => {
-  db = await createTestDatabase();
-  t = startTestApp(db);
+  backend = await createTestBackend();
+  t = startTestApp(backend);
   const first = await t.setupWorkspace(
     { name: 'Web' },
     {
@@ -24,9 +27,10 @@ beforeEach(async () => {
     { other: { actor: { type: 'user', id: 'other' }, scopes: ['admin'] } },
   );
   keys = { ...first.keys, ...other.keys };
+  workspaceId = first.workspace.id;
 });
 afterEach(async () => {
-  await db?.drop();
+  await backend?.drop();
 });
 const create = (values: Record<string, unknown>, key = keys.user) =>
   t.request('/v1/objects/person/records', { key, body: { values } });
@@ -97,11 +101,11 @@ describe('web session', () => {
     expect(
       (await t.request('/mcp', { method: 'POST', headers: { cookie }, body: {} })).status,
     ).toBe(403);
-    const [key] = await db.owner<
-      { id: string }[]
-    >`select id from api_keys where actor ->> 'id' = 'dana'`;
+    const [key] = await backend
+      .adminCatalog()
+      .rows<{ id: RecordId }>("SELECT id FROM api_keys WHERE actor.id = 'dana';");
     if (!key) throw new Error('Missing test key');
-    await revokeApiKey(db.owner, key.id);
+    await revokeApiKey(backend, publicId(key.id));
     expect((await t.request('/v1/me', { headers: { cookie } })).status).toBe(401);
   });
 });
@@ -134,7 +138,7 @@ describe('web read contracts', () => {
       (await t.request('/v1/review?pendingAssertionsCursor=invalid', { key: keys.user })).status,
     ).toBe(400);
   });
-  it('returns winning provenance, source details, all assertion statuses and relation labels under RLS', async () => {
+  it('returns winning provenance, source details, all assertion statuses and relation labels per workspace', async () => {
     const company = (
       await t.request('/v1/objects/company/records', {
         key: keys.user,
@@ -266,7 +270,7 @@ describe('web read contracts', () => {
   });
 });
 
-it('searches labels within one object under RLS even when the label field is not filterable', async () => {
+it('searches labels within one object, in one workspace, even when the label field is not filterable', async () => {
   await create({ name: 'Dana Levi' });
   await create({ name: 'Other person' });
   await t.request('/v1/objects/company/records', {
@@ -288,7 +292,7 @@ it('searches labels within one object under RLS even when the label field is not
 });
 
 it('uses a configured external origin behind TLS proxies without trusting forwarded headers', async () => {
-  const proxied = startTestApp(db, { publicOrigin: 'https://retainer.example/' });
+  const proxied = startTestApp(backend, { publicOrigin: 'https://retainer.example/' });
   const headers = {
     'X-Retainer-Client': 'web',
     origin: 'https://retainer.example',
@@ -386,9 +390,16 @@ it('keeps historical facts in event claims while record memory only lists curren
       ).body.fact.id,
     );
   await t.request(`/v1/facts/${ids[0]}`, { key: keys.user, method: 'DELETE' });
-  // Seed the two historical states written by consolidation in a migrated test DB.
-  await db.owner`update facts set valid_to = '2026-10-21T10:00:00Z' where id = ${ids[1] as string}`;
-  await db.owner`update facts set superseded_by = ${ids[3] as string} where id = ${ids[2] as string}`;
+  // Seed the two historical states the consolidator writes, directly as the administrator.
+  const admin = backend.adminDb((await backend.route(workspaceId)).database);
+  await admin.query('UPDATE $f SET valid_to = $at;', {
+    f: new RecordId('facts', ids[1] as string),
+    at: new Date('2026-10-21T10:00:00Z'),
+  });
+  await admin.query('UPDATE $f SET superseded_by = $by;', {
+    f: new RecordId('facts', ids[2] as string),
+    by: ids[3] as string,
+  });
   const current = (await t.request(`/v1/records/${record.id}/facts`, { key: keys.user })).body;
   expect(current.facts.map((f: any) => f.content)).toEqual(['Current']);
   const claims = (await t.request(`/v1/events/${source.id}/claims`, { key: keys.user })).body;
@@ -430,41 +441,47 @@ it('hydrates event pages in a bounded number of real database queries', async ()
       },
     });
   const me = (await t.request('/v1/me', { key: keys.user })).body;
-  let statements = 0;
-  const sql = postgres(db.url, {
-    connection: { role: RUNTIME_ROLE },
-    onnotice: false,
-    debug: () => {
-      statements++;
+  // Round trips to the database, counted on the page's own session.
+  let requests = 0;
+  const counted =
+    <A extends unknown[], R>(fn: (...args: A) => R) =>
+    (...args: A): R => {
+      requests++;
+      return fn(...args);
+    };
+  const counting = (db: Db): Db => ({
+    target: db.target,
+    query: counted(db.query),
+    rows: <T>(text: string, vars?: Record<string, unknown>) => {
+      requests++;
+      return db.rows<T>(text, vars);
     },
+    raw: counted(db.raw),
   });
   const caller = { workspaceId: me.workspace.id, actor: me.actor, scopes: ['read'] as const };
   const read = (limit: number) =>
-    withRead(sql, caller, (tx, schema) =>
-      attachedEventPage(tx, schema, caller.workspaceId, record.id, limit),
+    withRead(backend, caller, (db, schema) =>
+      attachedEventPage(counting(db), schema, caller.workspaceId, record.id, limit),
     );
-  try {
-    await read(1);
-    statements = 0;
-    await read(1);
-    const one = statements;
-    statements = 0;
-    const all = await read(20);
-    expect(statements).toBe(one);
-    // The transaction, the page, then one read each for event columns, links,
-    // live link targets, relation references in both directions and the
-    // references for every record the events name.
-    expect(statements).toBeLessThanOrEqual(11);
-    expect(all.items).toHaveLength(20);
-    expect(all.items[0]?.event.title).toBe('Meeting 19');
-    expect(all.items[0]?.via).toEqual({ kind: 'participant' });
-    expect(all.items[0]?.event.participants).toMatchObject({
-      matched: [{ recordId: record.id, role: 'subject' }],
-      unmatched: [{ handle: 'missing@example.test', reason: 'no_match' }],
-    });
-  } finally {
-    await sql.end();
-  }
+  await read(1);
+  requests = 0;
+  await read(1);
+  const one = requests;
+  requests = 0;
+  const all = await read(20);
+  // Twenty events take no more round trips than one: no read runs per event.
+  // (A page that reaches the end of the history needs a few fewer.)
+  expect(requests).toBeLessThanOrEqual(one);
+  // The history streams, event rows, links, live link targets and the
+  // references for every record the events name.
+  expect(one).toBeLessThanOrEqual(11);
+  expect(all.items).toHaveLength(20);
+  expect(all.items[0]?.event.title).toBe('Meeting 19');
+  expect(all.items[0]?.via).toEqual({ kind: 'participant' });
+  expect(all.items[0]?.event.participants).toMatchObject({
+    matched: [{ recordId: record.id, role: 'subject' }],
+    unmatched: [{ handle: 'missing@example.test', reason: 'no_match' }],
+  });
 });
 
 describe('GET /v1/records/:id/events', () => {

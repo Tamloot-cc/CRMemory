@@ -502,6 +502,8 @@ async function linkedTo(
       field: 'linked',
     });
   }
+  // An unknown ID links nothing too.
+  if (!(await directoryEntry(db, linked.record))) return [];
   const id = await resolveRecordIdIn(db, linked.record);
   const entry = await directoryEntry(db, id);
   if (!entry || entry.deleted_at || !schema.visibleObjectIds.includes(entry.object_type_id)) {

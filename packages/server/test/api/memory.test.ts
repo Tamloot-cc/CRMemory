@@ -1,15 +1,18 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { RecordId } from '../../src/db/cbor.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 let t: TestApp;
 let keys: Record<'agent' | 'user' | 'reader', string>;
 let otherKey: string;
+let workspaceId: string;
 
 beforeAll(async () => {
-  t = startTestApp(db);
-  ({ keys } = await t.setupWorkspace(
+  t = startTestApp(backend);
+  let workspace: { id: string };
+  ({ keys, workspace } = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     {
       agent: { actor: { type: 'agent', id: 'inbox' }, scopes: ['read', 'write'] },
@@ -17,6 +20,7 @@ beforeAll(async () => {
       reader: { actor: { type: 'agent', id: 'reader' }, scopes: ['read'] },
     },
   ));
+  workspaceId = workspace.id;
   const other = await t.setupWorkspace(
     { name: 'Other' },
     { agent: { actor: { type: 'agent', id: 'other' }, scopes: ['read', 'write'] } },
@@ -52,11 +56,18 @@ const logCall = (body: Record<string, unknown> = {}, key = keys.agent) =>
     body: { type: 'call', channel: 'zoom', occurredAt: '2026-10-29T14:00:00+02:00', ...body },
   });
 
-/** The internal note `remember` created for a fact with no source, read as the owner. */
+/** Runtime reads of the workspace's database, parameters only. */
+const rows = async <T = Record<string, unknown>>(
+  text: string,
+  vars: Record<string, unknown> = {},
+) => (await backend.workspace(workspaceId)).rows<T>(text, vars);
+
+/** The internal note `remember` created for a fact with no source. */
 const internalNoteOf = async (factId: string) => {
-  const [row] = await db.owner<{ source_record_id: string }[]>`
-    select source_record_id from fact_sources where fact_id = ${factId}`;
-  return row?.source_record_id as string;
+  const [row] = await rows<{ source: string }>('SELECT source FROM fact_sources WHERE fact = $f;', {
+    f: factId,
+  });
+  return row?.source as string;
 };
 
 describe('POST /v1/events', () => {
@@ -476,10 +487,11 @@ describe('source on record writes', () => {
     });
     expect(upserted.status).toBe(200);
     expect(upserted.body.fields).toEqual({ jobTitle: 'applied' });
-    const [row] = await db.owner<{ source_record_id: string; observed_at: Date }[]>`
-      select source_record_id, observed_at from field_assertions
-      where record_id = ${created.body.id} and value = '"CTO"'`;
-    expect(row?.source_record_id).toBe(call.body.id);
+    const [row] = await rows<{ source: string; observed_at: Date }>(
+      'SELECT source, observed_at FROM field_assertions WHERE record = $r AND value = $v;',
+      { r: created.body.id, v: 'CTO' },
+    );
+    expect(row?.source).toBe(call.body.id);
     expect(row?.observed_at.toISOString()).toBe('2026-10-20T09:00:00.000Z');
 
     const unknown = await t.request('/v1/objects/person/upsert', {
@@ -595,10 +607,14 @@ describe('facts', () => {
     expect(a.body).toEqual(b.body);
     expect(a.body.fact.sources).toEqual([{ event: null, internal: true, quote: null }]);
     // One fact and one note, not two.
-    const [notes] = await db.owner<{ count: string }[]>`
-      select count(*) from fact_sources where fact_id in (
-        select id from facts where record_id = ${dana.id})`;
-    expect(Number(notes?.count)).toBe(1);
+    const facts = await rows<{ id: RecordId }>('SELECT id FROM facts WHERE record = $r;', {
+      r: dana.id,
+    });
+    expect(facts).toHaveLength(1);
+    const sources = await rows('SELECT source FROM fact_sources WHERE fact = $f;', {
+      f: String(facts[0]?.id.id),
+    });
+    expect(sources).toHaveLength(1);
     const reused = await post('Prefers evenings.');
     expect(reused.status).toBe(422);
     expect(reused.body.error.code).toBe('idempotency_key_reused');
@@ -695,9 +711,11 @@ describe('internal notes', () => {
     expect(facts.body.facts.map((f: { content: string }) => f.content)).toEqual([
       'Hidden note text.',
     ]);
-    const [row] = await db.owner<{ deleted_at: Date | null }[]>`
-      select deleted_at from records where id = ${note}`;
-    expect(row?.deleted_at).toBeNull();
+    const [entry] = await rows<{ deleted_at?: Date | null }>('SELECT deleted_at FROM $dir;', {
+      dir: new RecordId('record_directory', note),
+    });
+    expect(entry).toBeDefined();
+    expect(entry?.deleted_at ?? null).toBeNull();
   });
 
   it('reserves the channel of internal notes', async () => {

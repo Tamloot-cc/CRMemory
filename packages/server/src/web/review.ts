@@ -211,7 +211,7 @@ async function deletedHolders(
       handles
         .map(
           (_, i) =>
-            `SELECT value, record FROM record_identifiers WHERE kind = 'email' AND value = $h${i};`,
+            `SELECT record, value FROM record_identifiers WHERE kind = 'email' AND value = $h${i};`,
         )
         .join('\n'),
       Object.fromEntries(handles.map((h, i) => [`h${i}`, h])),
