@@ -32,6 +32,10 @@ describe('feed filters in the address', () => {
       linked: '0b1c2d3e-4f50-4a61-8b72-9c83d4e5f607',
     });
     expect(parseFeedSearch({ channel: '   ', from: 'yesterday' })).toEqual({ types: [] });
+    // A type the schema no longer has (renamed or deleted) is dropped too.
+    expect(parseFeedSearch({ eventTypes: 'meeting,note' }, ['conversation', 'note'])).toEqual({
+      types: ['note'],
+    });
     // A linked value that is not a record ID would fail the whole query; it is dropped.
     expect(parseFeedSearch({ linked: 'acme' })).toEqual({ types: [] });
   });

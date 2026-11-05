@@ -31,13 +31,19 @@ const recordId = (raw: string | undefined) => {
   return id && RECORD_ID.test(id) ? id : undefined;
 };
 
-/** The feed's filters from the address; malformed parts are ignored. */
+/**
+ * The feed's filters from the address; malformed parts are ignored. With
+ * `eventTypes` (the workspace's event type names), a type the address names
+ * but the schema no longer has, after a rename or deletion, is ignored too,
+ * since the server rejects an unknown type.
+ */
 export function parseFeedSearch(
   search: Pick<ViewSearch, 'eventTypes' | 'channel' | 'from' | 'to' | 'linked'>,
+  eventTypes?: readonly string[],
 ): FeedFilters {
   const types = list(search.eventTypes)
     .map((t) => t.trim())
-    .filter((t, i, all) => t && all.indexOf(t) === i);
+    .filter((t, i, all) => t && all.indexOf(t) === i && (!eventTypes || eventTypes.includes(t)));
   const filters: FeedFilters = { types };
   const channel = nonEmpty(search.channel),
     from = validDay(search.from),

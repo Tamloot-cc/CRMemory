@@ -65,7 +65,10 @@ export function ActivityPage() {
   const { session, schema } = useWorkspace(),
     { search, setSearch } = useView(),
     developer = useDeveloper();
-  const filters = parseFeedSearch(search);
+  const filters = parseFeedSearch(
+    search,
+    schema.objects.filter((o) => o.class === 'event').map((o) => o.nameSingular),
+  );
   const input = feedQuery(filters);
   const feed = useInfiniteQuery({
     queryKey: [session.workspace.id, 'events', 'feed', input],
