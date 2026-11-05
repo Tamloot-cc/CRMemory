@@ -10,7 +10,7 @@ import type {
 } from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
-import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
+import type { ApiKeyScope, WorkspaceSettings } from '../db/types.js';
 import { inWorkspace, lockForWrite, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';

@@ -7,8 +7,11 @@ describe('public browser origin configuration', () => {
       'https://retainer.example',
     );
     expect(
-      loadConfig({ DATABASE_URL: 'postgres://localhost/test', RETAINER_PUBLIC_ORIGIN: '' })
-        .RETAINER_PUBLIC_ORIGIN,
+      loadConfig({
+        RETAINER_SURREAL_PASS: 'test',
+        RETAINER_SIGNING_KEY: 'k1:test',
+        RETAINER_PUBLIC_ORIGIN: '',
+      }).RETAINER_PUBLIC_ORIGIN,
     ).toBeUndefined();
   });
   it('rejects values that are not HTTP origins', () => {

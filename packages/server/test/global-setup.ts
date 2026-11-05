@@ -1,38 +1,20 @@
-import { randomBytes } from 'node:crypto';
-import postgres from 'postgres';
 import type { TestProject } from 'vitest/node';
-import { runMigrations } from '../src/db/migrate.js';
-import { databaseUrl } from './helpers/db.js';
+import { generateSigningKeyEntry } from '../src/db/access.js';
+import { serverHealthy, serverVersion } from '../src/db/surreal.js';
 
 /**
- * Migrates once into a template database for this run. Every test file
- * clones it (see helpers/db.ts), so migrations never run per test.
+ * Integration tests need a SurrealDB server (CLAUDE.md has the Compose
+ * command). Each test file gets a fresh namespace of its own (helpers/backend.ts);
+ * this run's signing keys are generated once and shared.
  */
 export default async function setup(project: TestProject) {
-  const adminUrl = process.env.DATABASE_URL;
-  if (!adminUrl) {
+  const url = (process.env.RETAINER_SURREAL_URL ?? 'http://127.0.0.1:8000').replace(/\/+$/, '');
+  if (!(await serverHealthy(url))) {
     throw new Error(
-      'DATABASE_URL is not set. Integration tests need Postgres; see CLAUDE.md for the Compose command.',
+      `SurrealDB is not reachable at ${url}. Start it with: docker compose -f docker/compose.yml up -d surrealdb (set RETAINER_SURREAL_URL and RETAINER_SURREAL_PASS if needed)`,
     );
   }
-
-  // One template per run, so two runs on the same server do not collide.
-  const template = `retainer_test_template_${randomBytes(4).toString('hex')}`;
-  const admin = postgres(adminUrl, { max: 1, onnotice: false });
-  await admin.unsafe(`create database "${template}"`);
-  try {
-    await runMigrations(databaseUrl(adminUrl, template));
-  } catch (error) {
-    await admin.unsafe(`drop database if exists "${template}" with (force)`);
-    await admin.end();
-    throw error;
-  }
-
-  project.provide('adminDatabaseUrl', adminUrl);
-  project.provide('templateDatabase', template);
-
-  return async () => {
-    await admin.unsafe(`drop database if exists "${template}" with (force)`);
-    await admin.end();
-  };
+  project.provide('surrealUrl', url);
+  project.provide('surrealVersion', await serverVersion(url));
+  project.provide('signingKeys', [generateSigningKeyEntry('t1'), generateSigningKeyEntry('t2')]);
 }

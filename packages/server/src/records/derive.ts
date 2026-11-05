@@ -6,7 +6,7 @@ import type {
   PhonesValue,
 } from '@retainer/shared';
 import { type CountryCode, parsePhoneNumberFromString } from 'libphonenumber-js';
-import type { IdentifierKind } from '../db/schema.js';
+import type { IdentifierKind } from '../db/types.js';
 import type { FieldState } from '../schema-engine/types.js';
 
 /**

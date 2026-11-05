@@ -1,12 +1,18 @@
 import type { Actor } from '@retainer/shared';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { tableStatements } from '../db/definitions.js';
+import { fieldColumn, objectTable, publicId, relationTable } from '../db/names.js';
+import { fromColumn, physicalChanges } from '../db/physical.js';
+import type { Operation } from '../db/protocol.js';
+import { applyIndexes } from '../db/provision.js';
+import { ident } from '../db/surreal.js';
 import { identifiersFor } from '../records/derive.js';
-import { rewriteSearchText } from '../records/rebuild-search.js';
-import { deleteEventsOfType } from '../records/service.js';
+import { deleteEventsOfType } from '../records/lifecycle.js';
+import { refreshObjectSearch } from '../records/search-docs.js';
 import { repairViews } from '../views/service.js';
 import { compileSchema } from './compiled.js';
-import { loadSchemaState } from './load.js';
-import type { DiffOp, FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
+import type { DiffOp, FieldState, SchemaIssue, SchemaState } from './types.js';
 
 /** A change that validates but conflicts with existing records. */
 export class SchemaCheckError extends Error {
@@ -21,14 +27,15 @@ export class SchemaCheckError extends Error {
 
 const SAMPLE_LIMIT = 50;
 
+const rowId = (row: { id: unknown }) => publicId(row.id);
+
 /**
  * Checks existing records before a change makes a field unique or required
- * or removes an option (3). Runs under the exclusive schema lock, so no
- * record write can slip in between the check and the commit.
+ * or removes an option (3). Runs in the plan; the commit's revision check
+ * fails if any record changed before the change is published (section 6).
  */
 export async function checkExistingRecords(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   current: SchemaState,
   desired: SchemaState,
   ops: DiffOp[],
@@ -45,26 +52,25 @@ export async function checkExistingRecords(
   for (const op of ops) {
     const object = 'objectId' in op ? objectOf(op.objectId) : undefined;
     if (!object?.id) continue; // a new object has no records
+    const table = ident(objectTable(object.universalId));
 
     if (op.kind === 'create_field' && !op.field.isNullable) {
-      const rows = await tx<{ id: string }[]>`
-        select id from records
-        where workspace_id = ${workspaceId} and object_type_id = ${object.id}
-          and deleted_at is null
-        limit ${SAMPLE_LIMIT}`;
+      const rows = await db.rows<{ id: unknown }>(
+        `SELECT id FROM ${table} WHERE deleted_at = NONE LIMIT ${SAMPLE_LIMIT};`,
+      );
       if (rows.length > 0) {
         issues.push({
           path: `${op.object}.${op.field.name}`,
           message: 'a required field cannot be added while records lack a value for it',
         });
-        for (const row of rows) recordIds.add(row.id);
+        for (const row of rows) recordIds.add(rowId(row));
       }
     }
 
     if (op.kind === 'update_field' && op.to === true && op.property === 'isUnique') {
       const field = desiredField(op.objectId, op.fieldId);
       if (!field) continue;
-      const duplicates = await findDuplicateValues(tx, workspaceId, object.id, field);
+      const duplicates = await findDuplicateValues(db, table, field);
       if (duplicates.length > 0) {
         issues.push({
           path: `${op.object}.${op.field}`,
@@ -79,42 +85,41 @@ export async function checkExistingRecords(
       if (!field) continue;
       const rows =
         field.type === 'relation'
-          ? await tx<{ id: string }[]>`
-              select r.id from records r
-              where r.workspace_id = ${workspaceId} and r.object_type_id = ${object.id}
-                and r.deleted_at is null
-                and not exists (select 1 from record_links l
-                  where l.source_record_id = r.id and l.field_id = ${field.id ?? null})
-              limit ${SAMPLE_LIMIT}`
-          : await tx<{ id: string }[]>`
-              select id from records
-              where workspace_id = ${workspaceId} and object_type_id = ${object.id}
-                and deleted_at is null and coalesce(data -> ${field.key}, 'null') = 'null'
-              limit ${SAMPLE_LIMIT}`;
+          ? await db.rows<{ id: unknown }>(
+              `SELECT id FROM ${table} WHERE deleted_at = NONE
+                 AND count(->${ident(relationTable(field.universalId))}) = 0
+               LIMIT ${SAMPLE_LIMIT};`,
+            )
+          : await db.rows<{ id: unknown }>(
+              `SELECT id FROM ${table} WHERE deleted_at = NONE
+                 AND (${ident(fieldColumn(field.key))} = NONE OR ${ident(fieldColumn(field.key))} = NULL)
+               LIMIT ${SAMPLE_LIMIT};`,
+            );
       if (rows.length > 0) {
         issues.push({
           path: `${op.object}.${op.field}`,
           message: 'records have no value, so the field cannot be required',
         });
-        for (const row of rows) recordIds.add(row.id);
+        for (const row of rows) recordIds.add(rowId(row));
       }
     }
 
     if (op.kind === 'remove_option') {
       const field = desiredField(op.objectId, op.fieldId);
       if (!field) continue;
-      const probe = field.type === 'multi_select' ? [op.value] : op.value;
-      const rows = await tx<{ id: string }[]>`
-        select id from records
-        where workspace_id = ${workspaceId} and object_type_id = ${object.id}
-          and deleted_at is null and data @> ${tx.json({ [field.key]: probe })}
-        limit ${SAMPLE_LIMIT}`;
+      const column = ident(fieldColumn(field.key));
+      const condition =
+        field.type === 'multi_select' ? `${column} CONTAINS $value` : `${column} = $value`;
+      const rows = await db.rows<{ id: unknown }>(
+        `SELECT id FROM ${table} WHERE deleted_at = NONE AND ${condition} LIMIT ${SAMPLE_LIMIT};`,
+        { value: op.value },
+      );
       if (rows.length > 0) {
         issues.push({
           path: `${op.object}.${op.field}`,
           message: `records use option "${op.value}"; change their values before removing it`,
         });
-        for (const row of rows) recordIds.add(row.id);
+        for (const row of rows) recordIds.add(rowId(row));
       }
     }
   }
@@ -123,41 +128,105 @@ export async function checkExistingRecords(
 }
 
 /** Records (soft-deleted included, since they keep their claims) sharing a value. */
-async function findDuplicateValues(
-  tx: Tx,
-  workspaceId: string,
-  objectTypeId: string,
-  field: FieldState,
-): Promise<string[]> {
-  const rows = await tx<{ id: string; value: unknown }[]>`
-    select id, data -> ${field.key} as value from records
-    where workspace_id = ${workspaceId} and object_type_id = ${objectTypeId}
-      and merged_into_id is null and data ? ${field.key}`;
+async function findDuplicateValues(db: Db, table: string, field: FieldState): Promise<string[]> {
+  const column = ident(fieldColumn(field.key));
+  const rows = await db.rows<{ id: unknown; value: unknown }>(
+    `SELECT id, ${column} AS value FROM ${table} WHERE merged_into = NONE AND ${column} != NONE;`,
+  );
   const holders = new Map<string, string[]>();
   for (const row of rows) {
-    for (const identifier of identifiersFor({ ...field, isUnique: true }, row.value)) {
+    const id = rowId(row);
+    for (const identifier of identifiersFor(
+      { ...field, isUnique: true },
+      fromColumn(field, row.value),
+    )) {
       const list = holders.get(identifier.value) ?? [];
-      if (!list.includes(row.id)) list.push(row.id);
+      if (!list.includes(id)) list.push(id);
       holders.set(identifier.value, list);
     }
   }
   return [...holders.values()].filter((ids) => ids.length > 1).flat();
 }
 
+const objectRow = (object: SchemaState['objects'][number]) => ({
+  universal_id: object.universalId,
+  owner: object.owner,
+  status: object.status,
+  name_singular: object.nameSingular,
+  name_plural: object.namePlural,
+  label_singular: object.labelSingular,
+  label_plural: object.labelPlural,
+  description: object.description,
+  is_protected: object.isProtected,
+  class: object.class,
+});
+
+const fieldRow = (field: FieldState) => ({
+  universal_id: field.universalId,
+  key: field.key,
+  name: field.name,
+  label: field.label,
+  description: field.description,
+  type: field.type,
+  settings: field.settings,
+  is_nullable: field.isNullable,
+  is_unique: field.isUnique,
+  is_filterable: field.isFilterable,
+  is_searchable: field.isSearchable,
+  is_protected: field.isProtected,
+  core_role: field.coreRole,
+  owner: field.owner,
+  status: field.status,
+});
+
 /**
- * Step 6 (apply): writes the desired schema. New objects and fields are
- * inserted, changed ones updated; then uniqueness claims and derived
- * search text follow the change. Returns the new schema version.
+ * Defines what the change adds physically before it is published: new
+ * tables and their indexes, each index alone and verified (section 7). They
+ * are not in published metadata yet, so nothing writes to them; a plan that
+ * is retried or abandoned leaves only unused, empty definitions.
+ */
+export async function prepareDefinitions(
+  adminDb: Db,
+  current: SchemaState,
+  desired: SchemaState,
+): Promise<string[]> {
+  const { statements, indexes, model } = physicalChanges(current, desired);
+  if (statements.length === 0 && indexes.length === 0) return [];
+  const newTables = model.tables.filter((t) =>
+    indexes.some((index) => index.table === t.name),
+  );
+  if (newTables.length > 0) {
+    await adminDb.query(
+      ['BEGIN;', ...newTables.flatMap(tableStatements), 'COMMIT;'].join('\n'),
+    );
+  }
+  await applyIndexes(
+    adminDb,
+    indexes,
+    new Map(model.tables.map((t) => [t.name, t])),
+    model.relations,
+  );
+  return statements;
+}
+
+/**
+ * Step 6 (apply): adds the desired schema to the operation's batch. New
+ * objects and fields are created, changed ones updated, definitions applied
+ * in the same transaction, then uniqueness claims, search documents and
+ * views follow the change. Returns the new schema version.
  */
 export async function persistSchema(
-  tx: Tx,
-  workspaceId: string,
+  op: Operation,
   current: SchemaState,
   desired: SchemaState,
   ops: DiffOp[],
   actor: Actor,
+  definitions: string[],
+  version: number,
 ): Promise<number> {
-  const createdBy = tx.json(actor);
+  const batch = op.batch;
+  for (const statement of definitions) batch.plain(statement);
+
   const currentObjects = new Map(current.objects.map((o) => [o.universalId, o]));
   const objectIds = new Map<string, string>();
   const fieldIds = new Map<string, string>();
@@ -165,49 +234,35 @@ export async function persistSchema(
     objectIds.set(object.universalId, object.id as string);
     for (const field of object.fields) fieldIds.set(field.universalId, field.id as string);
   }
+  // Definition order: `seq` keeps it, as `created_at` did.
+  let seq = op.now.getTime() * 1000;
 
-  // Insert new objects, then new fields (relations may point at new objects).
   for (const object of desired.objects) {
     if (currentObjects.has(object.universalId)) continue;
-    const [row] = await tx<{ id: string }[]>`
-      insert into object_types (workspace_id, universal_id, owner, status, name_singular,
-        name_plural, label_singular, label_plural, description, is_protected, class, created_by,
-        created_at, updated_at)
-      values (${workspaceId}, ${object.universalId}, ${object.owner}, ${object.status},
-        ${object.nameSingular}, ${object.namePlural}, ${object.labelSingular},
-        ${object.labelPlural}, ${object.description}, ${object.isProtected}, ${object.class},
-        ${createdBy}, clock_timestamp(), clock_timestamp())
-      returning id`;
-    objectIds.set(object.universalId, row?.id as string);
+    objectIds.set(object.universalId, op.newId());
   }
-
   for (const object of desired.objects) {
-    const before = currentObjects.get(object.universalId);
-    const existing = new Set(before?.fields.map((f) => f.universalId));
+    const existing = new Set(currentObjects.get(object.universalId)?.fields.map((f) => f.universalId));
     for (const field of object.fields) {
-      if (existing.has(field.universalId)) continue;
-      // clock_timestamp keeps definition order in `order by created_at`.
-      const [row] = await tx<{ id: string }[]>`
-        insert into fields (workspace_id, object_type_id, universal_id, key, name, label,
-          description, type, settings, is_nullable, is_unique, is_filterable, is_searchable,
-          is_protected, core_role, owner, status, created_by, created_at, updated_at)
-        values (${workspaceId}, ${objectIds.get(object.universalId) as string},
-          ${field.universalId}, ${field.key}, ${field.name}, ${field.label}, ${field.description},
-          ${field.type}, ${tx.json(field.settings)}, ${field.isNullable}, ${field.isUnique},
-          ${field.isFilterable}, ${field.isSearchable}, ${field.isProtected}, ${field.coreRole},
-          ${field.owner}, ${field.status}, ${createdBy}, clock_timestamp(), clock_timestamp())
-        returning id`;
-      fieldIds.set(field.universalId, row?.id as string);
+      if (!existing.has(field.universalId)) fieldIds.set(field.universalId, op.newId());
     }
   }
 
-  // Update changed objects and fields.
   for (const object of desired.objects) {
     const before = currentObjects.get(object.universalId);
-    const labelFieldId = object.labelFieldId ? (fieldIds.get(object.labelFieldId) ?? null) : null;
     const objectId = objectIds.get(object.universalId) as string;
-    if (
-      !before ||
+    const labelFieldId = object.labelFieldId ? (fieldIds.get(object.labelFieldId) ?? null) : null;
+    if (!before) {
+      batch.create('object_types', objectId, {
+        ...objectRow(object),
+        label_field_id: labelFieldId,
+        table: objectTable(object.universalId),
+        seq: seq++,
+        created_by: actor,
+        created_at: op.now,
+        updated_at: op.now,
+      });
+    } else if (
       before.nameSingular !== object.nameSingular ||
       before.namePlural !== object.namePlural ||
       before.labelSingular !== object.labelSingular ||
@@ -217,106 +272,100 @@ export async function persistSchema(
       before.isProtected !== object.isProtected ||
       before.status !== object.status
     ) {
-      await tx`
-        update object_types set name_singular = ${object.nameSingular},
-          name_plural = ${object.namePlural}, label_singular = ${object.labelSingular},
-          label_plural = ${object.labelPlural}, description = ${object.description},
-          label_field_id = ${labelFieldId}, is_protected = ${object.isProtected},
-          status = ${object.status}, updated_at = now()
-        where id = ${objectId}`;
+      batch.update('object_types', objectId, {
+        ...objectRow(object),
+        label_field_id: labelFieldId,
+        updated_at: op.now,
+      });
     }
     const beforeFields = new Map(before?.fields.map((f) => [f.universalId, f]));
     for (const field of object.fields) {
       const previous = beforeFields.get(field.universalId);
-      if (!previous || !fieldChanged(previous, field)) continue;
-      await tx`
-        update fields set name = ${field.name}, label = ${field.label},
-          description = ${field.description}, settings = ${tx.json(field.settings)},
-          is_nullable = ${field.isNullable}, is_unique = ${field.isUnique},
-          is_filterable = ${field.isFilterable}, is_searchable = ${field.isSearchable},
-          is_protected = ${field.isProtected}, status = ${field.status}, updated_at = now()
-        where id = ${fieldIds.get(field.universalId) as string}`;
+      const fieldId = fieldIds.get(field.universalId) as string;
+      if (!previous) {
+        batch.create('fields', fieldId, {
+          ...fieldRow(field),
+          object_type_id: objectId,
+          seq: seq++,
+          created_by: actor,
+          created_at: op.now,
+          updated_at: op.now,
+        });
+      } else if (fieldChanged(previous, field)) {
+        batch.update('fields', fieldId, { ...fieldRow(field), updated_at: op.now });
+      }
     }
   }
+
+  // The new version's compiled schema, with database IDs for new elements.
+  const withIds: SchemaState = {
+    objects: desired.objects.map((object) => ({
+      ...object,
+      id: objectIds.get(object.universalId) as string,
+      fields: object.fields.map((f) => ({ ...f, id: fieldIds.get(f.universalId) as string })),
+    })),
+  };
+  const next = compileSchema(withIds, version);
+  const previous = compileSchema(current, version - 1);
 
   // Follow-up work on existing records.
   const refreshObjects = new Set<string>();
-  // Objects whose saved views may name something this change makes unusable.
   const viewObjects = new Set<string>();
-  for (const op of ops) {
-    // A deleted object is only deprecated, so its views don't cascade (1.4).
-    if (op.kind === 'deprecate_object') {
-      await tx`delete from views where object_type_id = ${objectIds.get(op.objectId) as string}`;
-      // Deleting an event type deletes its events through the same lifecycle
-      // as deleting one event (6.4): what cites them is retracted.
-      if (currentObjects.get(op.objectId)?.class === 'event') {
-        const [workspace] = await tx<{ schema_version: number }[]>`
-          select schema_version from workspaces where id = ${workspaceId}`;
-        await deleteEventsOfType(
-          tx,
-          {
-            workspaceId,
-            actor,
-            schema: compileSchema(current, workspace?.schema_version ?? 0),
-            confidenceThreshold: 1,
-          },
-          objectIds.get(op.objectId) as string,
-        );
+  for (const change of ops) {
+    if (change.kind === 'deprecate_object') {
+      const objectId = objectIds.get(change.objectId) as string;
+      batch.write(
+        `DELETE views WHERE object_type_id = ${batch.v(objectId)} RETURN BEFORE`,
+        { min: 0 },
+        'views',
+      );
+      // Deleting an event type deletes its events through the same
+      // lifecycle as deleting one event (6.4): what cites them is retracted.
+      if (currentObjects.get(change.objectId)?.class === 'event') {
+        await deleteEventsOfType(op, previous, objectId, actor);
       }
     }
     if (
-      op.kind === 'deprecate_field' ||
-      op.kind === 'remove_option' ||
-      (op.kind === 'update_field' && op.property === 'isFilterable' && op.to === false)
+      change.kind === 'deprecate_field' ||
+      change.kind === 'remove_option' ||
+      (change.kind === 'update_field' && change.property === 'isFilterable' && change.to === false)
     ) {
-      viewObjects.add(op.objectId);
+      viewObjects.add(change.objectId);
     }
-    if (op.kind === 'update_field' && op.property === 'isUnique') {
-      const fieldId = fieldIds.get(op.fieldId) as string;
-      if (op.to === true) {
-        const field = findField(desired, op.objectId, op.fieldId);
-        if (field) await claimExistingValues(tx, workspaceId, fieldId, field);
+    if (change.kind === 'update_field' && change.property === 'isUnique') {
+      const fieldId = fieldIds.get(change.fieldId) as string;
+      const object = withIds.objects.find((o) => o.universalId === change.objectId);
+      const field = object?.fields.find((f) => f.universalId === change.fieldId);
+      if (change.to === true && object && field) {
+        await claimExistingValues(op, objectTable(object.universalId), fieldId, field);
       } else {
-        await releaseClaims(tx, fieldId);
+        releaseClaims(op, fieldId);
       }
     }
     if (
-      (op.kind === 'update_object' && op.property === 'labelFieldId') ||
-      (op.kind === 'update_field' && op.property === 'isSearchable') ||
-      op.kind === 'deprecate_field' ||
-      op.kind === 'update_option'
+      (change.kind === 'update_object' && change.property === 'labelFieldId') ||
+      (change.kind === 'update_field' && change.property === 'isSearchable') ||
+      change.kind === 'deprecate_field' ||
+      change.kind === 'update_option'
     ) {
-      refreshObjects.add(op.objectId);
+      refreshObjects.add(change.objectId);
     }
   }
   for (const universalId of refreshObjects) {
-    const object = desired.objects.find((o) => o.universalId === universalId);
-    if (object && object.status === 'active') {
-      await refreshSearchText(tx, workspaceId, objectIds.get(universalId) as string, object);
-    }
+    const object = next.objectsByUniversalId.get(universalId);
+    if (object && object.state.status === 'active') await refreshObjectSearch(op, object);
   }
 
-  const [workspace] = await tx<{ schema_version: number }[]>`
-    update workspaces set schema_version = schema_version + 1, updated_at = now()
-    where id = ${workspaceId} returning schema_version`;
-  const version = workspace?.schema_version as number;
+  batch.update('workspace_state', 'current', { schema_version: version, updated_at: op.now });
   if (viewObjects.size > 0) {
-    // Compiled here, not through the cache: this version isn't committed yet.
-    const schema = compileSchema(await loadSchemaState(tx, workspaceId), version);
     await repairViews(
-      tx,
-      schema,
+      op,
+      next,
       [...viewObjects].map((id) => objectIds.get(id) as string),
       actor,
     );
   }
   return version;
-}
-
-function findField(state: SchemaState, objectId: string, fieldId: string) {
-  return state.objects
-    .find((o) => o.universalId === objectId)
-    ?.fields.find((f) => f.universalId === fieldId);
 }
 
 function fieldChanged(a: FieldState, b: FieldState): boolean {
@@ -334,45 +383,63 @@ function fieldChanged(a: FieldState, b: FieldState): boolean {
   );
 }
 
-/** Populates claims atomically when a field becomes unique (checked beforehand). */
+/** Claims existing values when a field becomes unique (checked beforehand). */
 async function claimExistingValues(
-  tx: Tx,
-  workspaceId: string,
+  op: Operation,
+  table: string,
   fieldId: string,
   field: FieldState,
 ): Promise<void> {
-  const records = await tx<{ id: string; value: unknown }[]>`
-    select r.id, r.data -> ${field.key} as value from records r
-    join fields f on f.id = ${fieldId}
-    where r.workspace_id = ${workspaceId} and r.object_type_id = f.object_type_id
-      and r.merged_into_id is null and r.data ? ${field.key}`;
-  await tx`delete from record_identifiers where field_id = ${fieldId}`;
-  for (const record of records) {
-    for (const identifier of identifiersFor(field, record.value)) {
-      await tx`
-        insert into record_identifiers (workspace_id, record_id, field_id, kind, value, is_claim)
-        values (${workspaceId}, ${record.id}, ${fieldId}, ${identifier.kind}, ${identifier.value},
-          true)`;
+  const column = ident(fieldColumn(field.key));
+  const rows = await op.rows<{ id: unknown; value: unknown }>(
+    `SELECT id, ${column} AS value FROM ${ident(table)} WHERE merged_into = NONE AND ${column} != NONE;`,
+  );
+  const batch = op.batch;
+  batch.write(
+    `DELETE unique_claims WHERE field_id = ${batch.v(fieldId)} RETURN BEFORE`,
+    { min: 0 },
+    'unique_claims',
+  );
+  const claims: Array<Record<string, unknown> & { id: string }> = [];
+  const lookups: Array<Record<string, unknown> & { id: string }> = [];
+  for (const row of rows) {
+    const record = rowId(row);
+    for (const identifier of identifiersFor(field, fromColumn(field, row.value))) {
+      claims.push({
+        id: op.newId(),
+        record,
+        field_id: fieldId,
+        value: identifier.value,
+        created_at: op.now,
+      });
+      if (identifier.kind === 'value') {
+        lookups.push({
+          id: op.newId(),
+          record,
+          field_id: fieldId,
+          kind: identifier.kind,
+          value: identifier.value,
+          created_at: op.now,
+        });
+      }
     }
   }
+  batch.insert('unique_claims', claims);
+  batch.insert('record_identifiers', lookups);
 }
 
-/** A field that stops being unique keeps its email/phone/domain rows, but not as claims. */
-async function releaseClaims(tx: Tx, fieldId: string): Promise<void> {
-  await tx`delete from record_identifiers where field_id = ${fieldId} and kind = 'value'`;
-  await tx`update record_identifiers set is_claim = false where field_id = ${fieldId}`;
+/** A field that stops being unique keeps its email/phone/domain lookups, but no claims. */
+function releaseClaims(op: Operation, fieldId: string): void {
+  const batch = op.batch;
+  const field = batch.v(fieldId);
+  batch.write(`DELETE unique_claims WHERE field_id = ${field} RETURN BEFORE`, { min: 0 }, 'claims');
+  batch.write(
+    `DELETE record_identifiers WHERE field_id = ${field} AND kind = 'value' RETURN BEFORE`,
+    { min: 0 },
+    'identifiers',
+  );
 }
 
-/** Recomputes label and search text after the label field or searchable set changed. */
-async function refreshSearchText(
-  tx: Tx,
-  workspaceId: string,
-  objectTypeId: string,
-  object: ObjectState,
-): Promise<void> {
-  const labelField = object.fields.find((f) => f.universalId === object.labelFieldId);
-  const records = await tx<{ id: string; data: Record<string, unknown> }[]>`
-    select id, data from records
-    where workspace_id = ${workspaceId} and object_type_id = ${objectTypeId}`;
-  await rewriteSearchText(tx, object.fields, labelField, records);
-}
+/** A record's native ID in its object table. */
+export const recordIdOf = (universalId: string, id: string) =>
+  new RecordId(objectTable(universalId), id);

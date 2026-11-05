@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { errorBody, toAppError } from '../api/http.js';
 import { missingScope } from '../auth/middleware.js';
 import type { Sql } from '../db/client.js';
-import type { ApiKeyScope } from '../db/schema.js';
+import type { ApiKeyScope } from '../db/types.js';
 import { AppError } from '../errors.js';
 import { log } from '../log.js';
 import { MAX_PARTICIPANTS, participantInputSchema } from '../memory/event-links.js';

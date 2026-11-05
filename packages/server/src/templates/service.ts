@@ -1,36 +1,29 @@
-import type { Sql } from '../db/client.js';
-import { inWorkspace } from '../db/tx.js';
+import type { Backend } from '../db/backend.js';
+import { readWorkspace } from '../db/protocol.js';
 import type { Caller } from '../records/service.js';
 import { type ApplyTemplateResult, applyTemplate } from './apply.js';
 import { listTemplates, type TemplateView } from './catalog.js';
 
 /** list_templates and GET /v1/templates: every template, marked if applied (3.1). */
 export async function templatesFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
 ): Promise<{ templates: TemplateView[] }> {
-  const { workspaceId } = caller;
-  const [workspace] = await inWorkspace(
-    sql,
-    workspaceId,
-    (tx) => tx<{ templates: { name: string }[] }[]>`
-      select templates from workspaces where id = ${workspaceId}`,
-  );
-  return { templates: listTemplates(workspace?.templates.map((t) => t.name) ?? []) };
+  return readWorkspace(backend, caller.workspaceId, async ({ state }) => ({
+    templates: listTemplates(state.templates.map((t) => t.name)),
+  }));
 }
 
 /** apply_template and POST /v1/templates/:name/apply. */
 export async function applyTemplateFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   name: string,
 ): Promise<ApplyTemplateResult> {
-  return inWorkspace(sql, caller.workspaceId, (tx) =>
-    applyTemplate(tx, {
-      workspaceId: caller.workspaceId,
-      actor: caller.actor,
-      scopes: caller.scopes,
-      name,
-    }),
-  );
+  return applyTemplate(backend, {
+    workspaceId: caller.workspaceId,
+    actor: caller.actor,
+    scopes: caller.scopes,
+    name,
+  });
 }

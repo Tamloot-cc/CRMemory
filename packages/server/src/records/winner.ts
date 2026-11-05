@@ -1,5 +1,5 @@
 import { ACTOR_PRECEDENCE, type ActorType } from '@retainer/shared';
-import type { AssertionStatus, ReviewReason } from '../db/schema.js';
+import type { AssertionStatus, ReviewReason } from '../db/types.js';
 
 /** The parts of an assertion the winner rules look at. */
 export type RankedAssertion = {

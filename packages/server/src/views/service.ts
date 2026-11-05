@@ -11,7 +11,7 @@ import {
 } from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
-import type { StoredViewConfig } from '../db/schema.js';
+import type { StoredViewConfig } from '../db/types.js';
 import { inWorkspace, jsonValue, lockSchemaShared, type Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { checkAggregateOp } from '../records/aggregate.js';

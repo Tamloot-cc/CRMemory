@@ -1,19 +1,20 @@
-# Self-hosted Retainer: Postgres, plus one app container
-# running both the API and the workers.
+# Self-hosted Retainer: SurrealDB (single node, persistent SurrealKV) and one
+# app container running the API and the workers (RETAINER_ROLE=all).
 #   docker compose -f docker/compose.yml up --build
+# For development, start only the database:
+#   docker compose -f docker/compose.yml up -d surrealdb
 services:
-  postgres:
-    image: postgres:17
-    environment:
-      POSTGRES_USER: retainer
-      POSTGRES_PASSWORD: retainer
-      POSTGRES_DB: retainer
+  surrealdb:
+    # SurrealDB 4.0.0 Community, the digest the migration spike tested.
+    image: surrealdb/surrealdb:v4.0.0@sha256:c35893410644e65fa90aa1bef446ac9cb0a0c2733b9d405ce3eb56754b85c330
+    user: root
+    command: start --user ${RETAINER_SURREAL_USER:-root} --pass ${RETAINER_SURREAL_PASS:-retainer} --bind 0.0.0.0:8000 surrealkv:/data/retainer
     ports:
-      - "${RETAINER_PG_PORT:-5432}:5432"
+      - "127.0.0.1:${RETAINER_SURREAL_PORT:-8000}:8000"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - surrealdata:/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U retainer"]
+      test: ["CMD", "/surreal", "is-ready", "--endpoint", "http://localhost:8000"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -23,7 +24,13 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     environment:
-      DATABASE_URL: postgres://retainer:retainer@postgres:5432/retainer
+      RETAINER_SURREAL_URL: http://surrealdb:8000
+      RETAINER_SURREAL_NAMESPACE: "${RETAINER_SURREAL_NAMESPACE:-retainer}"
+      RETAINER_SURREAL_USER: "${RETAINER_SURREAL_USER:-root}"
+      RETAINER_SURREAL_PASS: "${RETAINER_SURREAL_PASS:-retainer}"
+      RETAINER_SIGNING_KEY: "${RETAINER_SIGNING_KEY:-}"
+      RETAINER_SIGNING_PREVIOUS_KEYS: "${RETAINER_SIGNING_PREVIOUS_KEYS:-}"
+      RETAINER_SIGNING_REVOKED_KEY_IDS: "${RETAINER_SIGNING_REVOKED_KEY_IDS:-}"
       RETAINER_PUBLIC_ORIGIN: "${RETAINER_PUBLIC_ORIGIN:-}"
       RETAINER_SUPPRESSION_KEY: "${RETAINER_SUPPRESSION_KEY:-}"
       RETAINER_SUPPRESSION_PREVIOUS_KEYS: "${RETAINER_SUPPRESSION_PREVIOUS_KEYS:-}"
@@ -32,8 +39,8 @@ services:
     ports:
       - "8787:8787"
     depends_on:
-      postgres:
+      surrealdb:
         condition: service_healthy
 
 volumes:
-  pgdata:
+  surrealdata:

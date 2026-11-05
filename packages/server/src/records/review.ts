@@ -1,5 +1,5 @@
 import type { Actor } from '@retainer/shared';
-import type { AssertionStatus } from '../db/schema.js';
+import type { AssertionStatus } from '../db/types.js';
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import { lockSource } from '../memory/events.js';

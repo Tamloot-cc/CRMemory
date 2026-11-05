@@ -1,6 +1,6 @@
 import type { AddedLinks, EventDetails, Participants } from '@retainer/shared';
 import { z } from 'zod';
-import type { EventLink, UnmatchedReason } from '../db/schema.js';
+import type { EventLink, UnmatchedReason } from '../db/types.js';
 import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { isSuppressed, suppressedOf } from '../privacy/suppression.js';

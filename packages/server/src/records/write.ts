@@ -1,5 +1,5 @@
 import type { Actor, ActorType } from '@retainer/shared';
-import type { AssertionStatus, ReviewReason } from '../db/schema.js';
+import type { AssertionStatus, ReviewReason } from '../db/types.js';
 import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { isSuppressed, suppressedOf, suppressibleHandles } from '../privacy/suppression.js';

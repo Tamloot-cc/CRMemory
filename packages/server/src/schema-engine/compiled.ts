@@ -1,5 +1,6 @@
 import { INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import { objectTable } from '../db/names.js';
 import { loadSchemaState } from './load.js';
 import type { FieldState, ObjectState, SchemaState } from './types.js';
 
@@ -25,6 +26,8 @@ export type CompiledObject = {
   hidden: boolean;
   /** Event types only: the core fields, found by role, never by name. */
   core?: { title: FieldState; summary: FieldState };
+  /** The object's table (spec section 5). */
+  table: string;
 };
 
 /** A workspace schema at one `schema_version`, ready for validation and reads. */
@@ -86,6 +89,7 @@ export function compileSchema(state: SchemaState, version: number): CompiledSche
       isEvent,
       hidden,
       ...(isEvent && title && summary ? { core: { title, summary } } : {}),
+      table: objectTable(object.universalId),
     };
     if (object.status === 'active' && !hidden) {
       compiled.objectsByName.set(object.nameSingular, entry);
@@ -118,23 +122,32 @@ export function eventText(
 }
 
 /**
- * Compiled schemas cached per (workspace, schema_version). Every applied
+ * Compiled schemas cached per (workspace, schema_version). Every published
  * change increments the version, so a cached entry never goes stale; old
  * versions are dropped when a newer one is loaded.
  */
 const cache = new Map<string, CompiledSchema>();
 
 /**
- * The workspace's current schema. Call it after taking the schema lock, so
- * the version read here stays current for the rest of the transaction.
+ * The schema published at `version`. The caller read the version from
+ * `workspace_state` first; a plan built on it fails its commit check if the
+ * schema changes before it commits (section 6).
  */
-export async function getSchema(tx: Tx, workspaceId: string): Promise<CompiledSchema> {
-  const [workspace] = await tx<{ schema_version: number }[]>`
-    select schema_version from workspaces where id = ${workspaceId}`;
-  if (!workspace) throw new Error(`workspace ${workspaceId} not found`);
+export async function loadCompiledSchema(
+  db: Db,
+  workspaceId: string,
+  version: number,
+): Promise<CompiledSchema> {
   const cached = cache.get(workspaceId);
-  if (cached && cached.version === workspace.schema_version) return cached;
-  const compiled = compileSchema(await loadSchemaState(tx, workspaceId), workspace.schema_version);
-  cache.set(workspaceId, compiled);
+  if (cached && cached.version === version) return cached;
+  const compiled = compileSchema(await loadSchemaState(db), version);
+  // Metadata is published in the same transaction as the version, so a
+  // newer version may be read here; cache only what was asked for.
+  if (!cached || cached.version < version) cache.set(workspaceId, compiled);
   return compiled;
+}
+
+/** Drops a workspace's cached schema (tests that rebuild a workspace). */
+export function forgetCompiledSchema(workspaceId: string): void {
+  cache.delete(workspaceId);
 }

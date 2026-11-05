@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { AppEnv } from '../api/http.js';
 import { readBody } from '../api/request.js';
 import type { Sql } from '../db/client.js';
-import type { ApiKeyScope } from '../db/schema.js';
+import type { ApiKeyScope } from '../db/types.js';
 import { inWorkspace } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import type { Caller } from '../records/service.js';

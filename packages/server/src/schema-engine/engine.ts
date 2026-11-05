@@ -1,12 +1,13 @@
 import type { Actor, SchemaChange as SchemaChangeView, SchemaOwner } from '@retainer/shared';
-import type { ApiKeyScope, SchemaChangeStatus } from '../db/schema.js';
-import { jsonValue, lockSchemaExclusive, type Tx } from '../db/tx.js';
+import type { Backend, Db } from '../db/backend.js';
+import { publicId } from '../db/names.js';
+import { mutate, type Operation, toStorable } from '../db/protocol.js';
+import type { ApiKeyScope, SchemaChangeStatus } from '../db/types.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { applyOperations } from './apply.js';
 import { diffSchemas, isDestructive } from './diff.js';
-import { loadSchemaState } from './load.js';
 import type { SchemaOperation } from './operations.js';
-import { checkExistingRecords, persistSchema, SchemaCheckError } from './persist.js';
+import { checkExistingRecords, persistSchema, prepareDefinitions, SchemaCheckError } from './persist.js';
 import { applyProtection } from './protection.js';
 import { type DiffOp, type SchemaIssue, type SchemaState, SchemaValidationError } from './types.js';
 import { issueKey, validateSchema } from './validate.js';
@@ -88,17 +89,19 @@ function dedupe(issues: SchemaIssue[]): SchemaIssue[] {
 }
 
 /**
- * The one entry point for schema changes (ARCHITECTURE.md 3). Runs in the
- * caller's workspace transaction, holding the workspace's exclusive schema
- * lock until it commits.
+ * Plans a schema change inside a mutation (ARCHITECTURE.md 3): the change
+ * row, and for an applied change its definitions, metadata and the new
+ * schema version, all in the operation's one transaction. Callers that
+ * write more in the same transaction (templates, workspace upgrades) call
+ * this directly; everyone else uses `runSchemaChange`.
  */
-export async function runSchemaChange(
-  tx: Tx,
+export async function planSchemaChange(
+  op: Operation,
   request: SchemaChangeRequest,
 ): Promise<SchemaChangeResult> {
-  const { workspaceId, actor } = request;
-  await lockSchemaExclusive(tx, workspaceId);
-  const current = await loadSchemaState(tx, workspaceId);
+  const { actor } = request;
+  const current = (await op.schema()).state;
+  const version = op.state.schema_version;
   const { desired, ops } = plan(
     current,
     request.operations,
@@ -106,17 +109,10 @@ export async function runSchemaChange(
     request.trusted,
   );
 
-  if (ops.length === 0) {
-    return {
-      status: 'unchanged',
-      change: null,
-      schemaVersion: await schemaVersion(tx, workspaceId),
-    };
-  }
+  if (ops.length === 0) return { status: 'unchanged', change: null, schemaVersion: version };
 
   const destructive = isDestructive(ops);
   const row = {
-    workspaceId,
     request: request.operations,
     operations: ops,
     isDestructive: destructive,
@@ -125,36 +121,58 @@ export async function runSchemaChange(
   };
 
   if (destructive && !request.trusted && !canApproveDestructive(actor, request.scopes)) {
-    const change = await insertChange(tx, { ...row, status: 'proposed' });
-    return { status: 'proposed', change, schemaVersion: await schemaVersion(tx, workspaceId) };
+    const change = insertChange(op, { ...row, status: 'proposed' });
+    return { status: 'proposed', change, schemaVersion: version };
   }
 
   try {
-    await checkExistingRecords(tx, workspaceId, current, desired, ops);
+    await checkExistingRecords(op.db, current, desired, ops);
   } catch (error) {
     if (!(error instanceof SchemaCheckError)) throw error;
-    const change = await insertChange(tx, {
+    const change = insertChange(op, {
       ...row,
       status: 'failed',
       error: error.message,
       decidedBy: actor,
     });
-    return {
-      status: 'failed',
-      change,
-      schemaVersion: await schemaVersion(tx, workspaceId),
-      recordIds: error.recordIds,
-    };
+    return { status: 'failed', change, schemaVersion: version, recordIds: error.recordIds };
   }
 
-  const version = await persistSchema(tx, workspaceId, current, desired, ops, actor);
-  const change = await insertChange(tx, {
+  const applied = await publish(op, current, desired, ops, actor);
+  const change = insertChange(op, {
     ...row,
     status: 'applied',
-    appliedVersion: version,
+    appliedVersion: applied,
     decidedBy: actor,
   });
-  return { status: 'applied', change, schemaVersion: version };
+  return { status: 'applied', change, schemaVersion: applied };
+}
+
+/** Definitions first (outside the transaction), then everything else in the batch. */
+async function publish(
+  op: Operation,
+  current: SchemaState,
+  desired: SchemaState,
+  ops: DiffOp[],
+  actor: Actor,
+): Promise<number> {
+  if (!op.admin) throw new Error('a schema change must run as an administrative operation');
+  const definitions = await prepareDefinitions(op.admin, current, desired);
+  return persistSchema(op, current, desired, ops, actor, definitions, op.state.schema_version + 1);
+}
+
+/** The one entry point for schema changes (ARCHITECTURE.md 3). */
+export async function runSchemaChange(
+  backend: Backend,
+  request: SchemaChangeRequest,
+): Promise<SchemaChangeResult> {
+  const { result } = await mutate(backend, request.workspaceId, {
+    kind: 'schema_change',
+    admin: true,
+    plan: (op) => planSchemaChange(op, request),
+    refs: () => [],
+  });
+  return result;
 }
 
 /**
@@ -163,7 +181,7 @@ export async function runSchemaChange(
  * validate, the change is marked failed with the error.
  */
 export async function decideSchemaChange(
-  tx: Tx,
+  backend: Backend,
   input: {
     workspaceId: string;
     changeId: string;
@@ -172,124 +190,124 @@ export async function decideSchemaChange(
     decision: 'approve' | 'reject';
   },
 ): Promise<SchemaChangeResult> {
-  const { workspaceId, changeId, actor } = input;
+  const { changeId, actor } = input;
   if (!canApproveDestructive(actor, input.scopes)) {
     throw forbidden('only a user key with admin scope can decide schema changes');
   }
-  await lockSchemaExclusive(tx, workspaceId);
-  const [row] = await tx<ChangeRow[]>`
-    select * from schema_changes where id = ${changeId} and workspace_id = ${workspaceId}
-    for update`;
-  if (!row) throw notFound('schema change');
-  if (row.status !== 'proposed') {
-    throw new AppError(409, 'already_decided', `this change is already ${row.status}`);
-  }
+  const { result } = await mutate(backend, input.workspaceId, {
+    kind: 'decide_schema_change',
+    admin: true,
+    refs: () => [],
+    plan: async (op): Promise<SchemaChangeResult> => {
+      const version = op.state.schema_version;
+      const [row] = await op.rows<ChangeRow>(
+        'SELECT * FROM type::record("schema_changes", $id);',
+        { id: changeId },
+      );
+      if (!row) throw notFound('schema change');
+      if (row.status !== 'proposed') {
+        throw new AppError(409, 'already_decided', `this change is already ${row.status}`);
+      }
 
-  if (input.decision === 'reject') {
-    const change = await updateChange(tx, changeId, { status: 'rejected', decidedBy: actor });
-    return { status: 'rejected', change, schemaVersion: await schemaVersion(tx, workspaceId) };
-  }
+      if (input.decision === 'reject') {
+        const change = updateChange(op, row, { status: 'rejected', decidedBy: actor });
+        return { status: 'rejected', change, schemaVersion: version };
+      }
 
-  const current = await loadSchemaState(tx, workspaceId);
-  const operations = row.request as SchemaOperation[];
-  let planned: ReturnType<typeof plan>;
-  try {
-    planned = plan(current, operations, ownerFor(row.requested_by));
-    await checkExistingRecords(tx, workspaceId, current, planned.desired, planned.ops);
-  } catch (error) {
-    if (!(error instanceof SchemaValidationError || error instanceof SchemaCheckError)) throw error;
-    const change = await updateChange(tx, changeId, {
-      status: 'failed',
-      decidedBy: actor,
-      error: error.message,
-    });
-    return {
-      status: 'failed',
-      change,
-      schemaVersion: await schemaVersion(tx, workspaceId),
-      ...(error instanceof SchemaCheckError ? { recordIds: error.recordIds } : {}),
-    };
-  }
+      const current = (await op.schema()).state;
+      const operations = row.request as SchemaOperation[];
+      let planned: ReturnType<typeof plan>;
+      try {
+        planned = plan(current, operations, ownerFor(row.requested_by));
+        await checkExistingRecords(op.db, current, planned.desired, planned.ops);
+      } catch (error) {
+        if (!(error instanceof SchemaValidationError || error instanceof SchemaCheckError))
+          throw error;
+        const change = updateChange(op, row, {
+          status: 'failed',
+          decidedBy: actor,
+          error: error.message,
+        });
+        return {
+          status: 'failed',
+          change,
+          schemaVersion: version,
+          ...(error instanceof SchemaCheckError ? { recordIds: error.recordIds } : {}),
+        };
+      }
 
-  const version =
-    planned.ops.length > 0
-      ? await persistSchema(tx, workspaceId, current, planned.desired, planned.ops, actor)
-      : await schemaVersion(tx, workspaceId);
-  const change = await updateChange(tx, changeId, {
-    status: 'applied',
-    decidedBy: actor,
-    appliedVersion: version,
-    operations: planned.ops,
+      const applied =
+        planned.ops.length > 0
+          ? await publish(op, current, planned.desired, planned.ops, actor)
+          : version;
+      const change = updateChange(op, row, {
+        status: 'applied',
+        decidedBy: actor,
+        appliedVersion: applied,
+        operations: planned.ops,
+      });
+      return { status: 'applied', change, schemaVersion: applied };
+    },
   });
-  return { status: 'applied', change, schemaVersion: version };
+  return result;
 }
 
-export async function getSchemaChange(
-  tx: Tx,
-  workspaceId: string,
-  changeId: string,
-): Promise<SchemaChangeView> {
-  const [row] = await tx<ChangeRow[]>`
-    select * from schema_changes where id = ${changeId} and workspace_id = ${workspaceId}`;
+export async function getSchemaChange(db: Db, changeId: string): Promise<SchemaChangeView> {
+  const [row] = await db.rows<ChangeRow>('SELECT * FROM type::record("schema_changes", $id);', {
+    id: changeId,
+  });
   if (!row) throw notFound('schema change');
   return toView(row);
 }
 
 export async function listSchemaChanges(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   status: SchemaChangeStatus | undefined,
   limit: number,
 ): Promise<SchemaChangeView[]> {
-  const rows = await tx<ChangeRow[]>`
-    select * from schema_changes
-    where workspace_id = ${workspaceId} ${status ? tx`and status = ${status}` : tx``}
-    order by created_at desc, id desc limit ${limit}`;
+  const rows = await db.rows<ChangeRow>(
+    `SELECT * FROM schema_changes ${status ? 'WHERE status = $status' : ''}
+     ORDER BY created_at DESC, id DESC LIMIT $limit;`,
+    { status, limit },
+  );
   return rows.map(toView);
 }
 
-async function schemaVersion(tx: Tx, workspaceId: string): Promise<number> {
-  const [row] = await tx<{ schema_version: number }[]>`
-    select schema_version from workspaces where id = ${workspaceId}`;
-  return row?.schema_version ?? 0;
-}
-
 type ChangeRow = {
-  id: string;
+  id: unknown;
   status: SchemaChangeStatus;
   request: unknown[];
   operations: unknown[];
   is_destructive: boolean;
-  reason: string | null;
+  reason?: string | null;
   requested_by: Actor;
-  decided_by: Actor | null;
-  applied_version: number | null;
-  error: string | null;
+  decided_by?: Actor | null;
+  applied_version?: number | null;
+  error?: string | null;
   created_at: Date;
-  decided_at: Date | null;
+  decided_at?: Date | null;
 };
 
 function toView(row: ChangeRow): SchemaChangeView {
   return {
-    id: row.id,
+    id: publicId(row.id),
     status: row.status,
     operations: row.operations as DiffOp[],
     request: row.request as SchemaOperation[],
     isDestructive: row.is_destructive,
-    reason: row.reason,
+    reason: row.reason ?? null,
     requestedBy: row.requested_by,
-    decidedBy: row.decided_by,
-    appliedVersion: row.applied_version,
-    error: row.error,
+    decidedBy: row.decided_by ?? null,
+    appliedVersion: row.applied_version ?? null,
+    error: row.error ?? null,
     createdAt: row.created_at.toISOString(),
     decidedAt: row.decided_at?.toISOString() ?? null,
   };
 }
 
-async function insertChange(
-  tx: Tx,
+function insertChange(
+  op: Operation,
   change: {
-    workspaceId: string;
     status: SchemaChangeStatus;
     request: SchemaOperation[];
     operations: DiffOp[];
@@ -300,23 +318,30 @@ async function insertChange(
     appliedVersion?: number;
     error?: string;
   },
-): Promise<SchemaChangeView> {
+): SchemaChangeView {
   const decided = change.status !== 'proposed';
-  const [row] = await tx<ChangeRow[]>`
-    insert into schema_changes (workspace_id, status, request, operations, is_destructive, reason,
-      requested_by, decided_by, applied_version, error, decided_at)
-    values (${change.workspaceId}, ${change.status}, ${tx.json(change.request)},
-      ${tx.json(jsonValue(change.operations))}, ${change.isDestructive}, ${change.reason},
-      ${tx.json(change.requestedBy)}, ${change.decidedBy ? tx.json(change.decidedBy) : null},
-      ${change.appliedVersion ?? null}, ${change.error ?? null},
-      ${decided ? tx`now()` : null})
-    returning *`;
-  return toView(row as ChangeRow);
+  const row: ChangeRow = {
+    id: op.newId(),
+    status: change.status,
+    request: toStorable(change.request) as unknown[],
+    operations: toStorable(change.operations) as unknown[],
+    is_destructive: change.isDestructive,
+    reason: change.reason,
+    requested_by: change.requestedBy,
+    decided_by: change.decidedBy ?? null,
+    applied_version: change.appliedVersion ?? null,
+    error: change.error ?? null,
+    created_at: op.now,
+    decided_at: decided ? op.now : null,
+  };
+  const { id, ...content } = row;
+  op.batch.create('schema_changes', id as string, content);
+  return toView(row);
 }
 
-async function updateChange(
-  tx: Tx,
-  id: string,
+function updateChange(
+  op: Operation,
+  row: ChangeRow,
   update: {
     status: SchemaChangeStatus;
     decidedBy: Actor;
@@ -324,13 +349,23 @@ async function updateChange(
     error?: string;
     operations?: DiffOp[];
   },
-): Promise<SchemaChangeView> {
-  const [row] = await tx<ChangeRow[]>`
-    update schema_changes set status = ${update.status}, decided_by = ${tx.json(update.decidedBy)},
-      decided_at = now(), applied_version = ${update.appliedVersion ?? null},
-      error = ${update.error ?? null},
-      operations = ${update.operations ? tx.json(jsonValue(update.operations)) : tx`operations`}
-    where id = ${id}
-    returning *`;
-  return toView(row as ChangeRow);
+): SchemaChangeView {
+  const next: ChangeRow = {
+    ...row,
+    status: update.status,
+    decided_by: update.decidedBy,
+    decided_at: op.now,
+    applied_version: update.appliedVersion ?? null,
+    error: update.error ?? null,
+    operations: update.operations ? (toStorable(update.operations) as unknown[]) : row.operations,
+  };
+  op.batch.update('schema_changes', publicId(row.id), {
+    status: next.status,
+    decided_by: next.decided_by,
+    decided_at: next.decided_at,
+    applied_version: next.applied_version,
+    error: next.error,
+    operations: next.operations,
+  });
+  return toView(next);
 }

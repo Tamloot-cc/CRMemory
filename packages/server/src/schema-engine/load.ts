@@ -1,9 +1,10 @@
 import type { CoreRole, FieldType, ObjectClass, SchemaOwner, SchemaStatus } from '@retainer/shared';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import { publicId } from '../db/names.js';
 import type { FieldState, ObjectState, SchemaState, StoredFieldSettings } from './types.js';
 
 type ObjectRow = {
-  id: string;
+  id: unknown;
   universal_id: string;
   name_singular: string;
   name_plural: string;
@@ -18,7 +19,7 @@ type ObjectRow = {
 };
 
 type FieldRow = {
-  id: string;
+  id: unknown;
   object_type_id: string;
   universal_id: string;
   key: string;
@@ -38,41 +39,33 @@ type FieldRow = {
 };
 
 /** Step 1 of the engine: a workspace's schema as it is now, deprecated rows included. */
-export async function loadSchemaState(tx: Tx, workspaceId: string): Promise<SchemaState> {
-  const [objectRows, fieldRows] = await Promise.all([
-    tx<ObjectRow[]>`
-      select id, universal_id, name_singular, name_plural, label_singular, label_plural,
-        description, label_field_id, is_protected, class, owner, status
-      from object_types where workspace_id = ${workspaceId}
-      order by created_at, id`,
-    tx<FieldRow[]>`
-      select id, object_type_id, universal_id, key, name, label, description, type, settings,
-        is_nullable, is_unique, is_filterable, is_searchable, is_protected, core_role, owner,
-        status
-      from fields where workspace_id = ${workspaceId}
-      order by created_at, id`,
-  ]);
+export async function loadSchemaState(db: Db): Promise<SchemaState> {
+  const [objectRows, fieldRows] = (await db.query(
+    `SELECT * FROM object_types ORDER BY seq, id;
+     SELECT * FROM fields ORDER BY seq, id;`,
+  )) as [ObjectRow[], FieldRow[]];
 
   const fieldsByObject = new Map<string, FieldState[]>();
   const universalIdByFieldId = new Map<string, string>();
   for (const row of fieldRows) {
-    universalIdByFieldId.set(row.id, row.universal_id);
+    const id = publicId(row.id);
+    universalIdByFieldId.set(id, row.universal_id);
     const list = fieldsByObject.get(row.object_type_id) ?? [];
     list.push({
-      id: row.id,
+      id,
       universalId: row.universal_id,
       key: row.key,
       name: row.name,
       label: row.label,
-      description: row.description,
+      description: row.description ?? null,
       type: row.type,
-      settings: row.settings,
+      settings: row.settings ?? {},
       isNullable: row.is_nullable,
       isUnique: row.is_unique,
       isFilterable: row.is_filterable,
       isSearchable: row.is_searchable,
       isProtected: row.is_protected,
-      coreRole: row.core_role,
+      coreRole: row.core_role ?? null,
       owner: row.owner,
       status: row.status,
     });
@@ -80,13 +73,13 @@ export async function loadSchemaState(tx: Tx, workspaceId: string): Promise<Sche
   }
 
   const objects: ObjectState[] = objectRows.map((row) => ({
-    id: row.id,
+    id: publicId(row.id),
     universalId: row.universal_id,
     nameSingular: row.name_singular,
     namePlural: row.name_plural,
     labelSingular: row.label_singular,
     labelPlural: row.label_plural,
-    description: row.description,
+    description: row.description ?? null,
     labelFieldId: row.label_field_id
       ? (universalIdByFieldId.get(row.label_field_id) ?? null)
       : null,
@@ -94,7 +87,7 @@ export async function loadSchemaState(tx: Tx, workspaceId: string): Promise<Sche
     class: row.class,
     owner: row.owner,
     status: row.status,
-    fields: fieldsByObject.get(row.id) ?? [],
+    fields: fieldsByObject.get(publicId(row.id)) ?? [],
   }));
 
   return { objects };

@@ -3,7 +3,7 @@ import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
 import { type AppEnv, errorResponse } from '../api/http.js';
 import type { Sql } from '../db/client.js';
-import type { ApiKeyScope } from '../db/schema.js';
+import type { ApiKeyScope } from '../db/types.js';
 import { AppError } from '../errors.js';
 import { lookupKey, requireWebHeader, SESSION_COOKIE } from './session.js';
 
