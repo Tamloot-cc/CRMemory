@@ -397,6 +397,19 @@ export async function mutate<T>(
       } catch (error) {
         if (error instanceof NoChange)
           return { result: error.value as T, operationId, replayed: false };
+        // A conflict in a transaction the plan ran itself (a schema change
+        // defining its new tables) is retried like a commit conflict, after
+        // a longer wait: the other process is still building indexes and
+        // publishing, and a replan after it does finds nothing left to do.
+        if (
+          error instanceof SurrealError &&
+          isRetryableConflict(error.message) &&
+          attempt < MAX_ATTEMPTS
+        ) {
+          lastError = error;
+          await new Promise((r) => setTimeout(r, 100 * 2 ** attempt + Math.random() * 100));
+          continue;
+        }
         // A domain error from a torn read is replanned, not reported (step 2).
         const current = await readState(db);
         if (current.revision !== state.revision && attempt < MAX_ATTEMPTS) {

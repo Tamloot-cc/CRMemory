@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { log } from '../log.js';
 import type { Backend } from './backend.js';
+import { isRetryableConflict } from './surreal.js';
 
 /**
  * The single-process lease (spec section 9). It detects a mistaken second
@@ -40,23 +41,31 @@ export async function acquireLease(
   const catalog = backend.catalog();
   const now = () => new Date();
   const started = now();
-  const results = await catalog.raw(
-    `BEGIN;
-     LET $current = (SELECT * FROM ONLY process_lease:current);
-     IF $current != NONE AND $current.holder != $holder AND $current.expires_at > $now {
-       THROW 'retainer:lease_held:' + $current.holder
-     };
-     UPSERT process_lease:current CONTENT { holder: $holder, started_at: $now, heartbeat_at: $now, expires_at: $expires };
-     COMMIT;`,
-    { holder, now: started, expires: new Date(started.getTime() + ttl) },
-  );
-  const failed = results.find(
-    (r) => r.status === 'ERR' && !/not executed|Cannot COMMIT/i.test(String(r.result)),
-  );
-  if (failed) {
-    const held = /retainer:lease_held:(\S+?)['"]?$/.exec(String(failed.result));
+  // Racing first boots: the database lets one transaction commit and fails
+  // the others at COMMIT with a retryable conflict. A retry then sees the
+  // winner and refuses with LeaseHeldError.
+  for (let attempt = 1; ; attempt++) {
+    const at = attempt === 1 ? started : now();
+    const results = await catalog.raw(
+      `BEGIN;
+       LET $current = (SELECT * FROM ONLY process_lease:current);
+       IF $current != NONE AND $current.holder != $holder AND $current.expires_at > $now {
+         THROW 'retainer:lease_held:' + $current.holder
+       };
+       UPSERT process_lease:current CONTENT { holder: $holder, started_at: $now, heartbeat_at: $now, expires_at: $expires };
+       COMMIT;`,
+      { holder, now: at, expires: new Date(at.getTime() + ttl) },
+    );
+    if (results.every((r) => r.status === 'OK')) break;
+    const messages = results.filter((r) => r.status === 'ERR').map((r) => String(r.result));
+    const held = messages
+      .map((m) => /retainer:lease_held:(\S+?)['"]?$/.exec(m))
+      .find((m) => m !== null);
     if (held) throw new LeaseHeldError(held[1] as string);
-    throw new Error(`could not take the process lease: ${failed.result}`);
+    if (messages.some(isRetryableConflict) && attempt < 5) continue;
+    const cause =
+      messages.find((m) => !/not executed|transaction was aborted/i.test(m)) ?? messages[0];
+    throw new Error(`could not take the process lease: ${cause}`);
   }
 
   let stopped = false;

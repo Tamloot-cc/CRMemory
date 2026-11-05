@@ -251,12 +251,12 @@ export async function ensureCatalog(backend: Backend): Promise<void> {
     await backend
       .adminNamespace()
       .query(
-        `DEFINE NAMESPACE IF NOT EXISTS ${ident(ns)}; DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)};`,
+        `DEFINE NAMESPACE IF NOT EXISTS ${ident(ns)}; DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)} STRICT;`,
       );
   } else {
     await backend
       .adminNamespace()
-      .query(`DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)};`);
+      .query(`DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)} STRICT;`);
   }
   const db = backend.adminCatalog();
   const [state] = await db
@@ -354,7 +354,7 @@ export async function provisionDatabase(
     }
     row = (await catalogWorkspace(backend, input.id)) as CatalogWorkspace;
   }
-  await backend.adminNamespace().query(`DEFINE DATABASE IF NOT EXISTS ${ident(database)};`);
+  await backend.adminNamespace().query(`DEFINE DATABASE IF NOT EXISTS ${ident(database)} STRICT;`);
   await upgradeFixedTables(backend, input.id, database, input.now);
   await upgradeAccessMethods(backend, input.id, database);
   return (await catalogWorkspace(backend, input.id)) as CatalogWorkspace;
