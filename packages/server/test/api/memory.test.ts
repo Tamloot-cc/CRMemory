@@ -606,6 +606,12 @@ describe('POST /v1/events/query (7.1)', () => {
       'payment',
     ]);
     expect((await query({ sort: [{ field: 'title' }] })).status).toBe(422);
+    // eq and neq take one type; several go in `in`.
+    for (const op of ['eq', 'neq']) {
+      const several = await query({ filter: { type: { [op]: ['note', 'payment'] } } });
+      expect(several.status, op).toBe(422);
+      expect(several.body.error.code).toBe('invalid_filter');
+    }
     // type filters but does not sort; the error lists what does.
     const byType = await query({ sort: [{ field: 'type' }] });
     expect(byType.status).toBe(422);

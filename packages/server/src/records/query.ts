@@ -603,6 +603,11 @@ function eventCondition(
   if (name === 'type') {
     const parts: Fragment[] = [];
     for (const [op, value] of Object.entries(conditions)) {
+      if ((op === 'eq' || op === 'neq') && typeof value !== 'string') {
+        throw invalidFilter(`type.${op} takes one event type API name; use in for several`, {
+          field: 'type',
+        });
+      }
       if (op === 'eq' || op === 'in') {
         if (op === 'in' && !Array.isArray(value)) throw invalidFilter('type.in takes an array');
         parts.push(tx`r.object_type_id = any(${eventTypeIds(schema, value)}::uuid[])`);

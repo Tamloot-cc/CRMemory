@@ -23,15 +23,17 @@ describe('feed filters in the address', () => {
         channel: '  gmail ',
         from: '2026-11-01',
         to: '2026-02-30',
-        linked: 'r1',
+        linked: ' 0b1c2d3e-4f50-4a61-8b72-9c83d4e5f607 ',
       }),
     ).toEqual({
       types: ['conversation', 'note'],
       channel: 'gmail',
       from: '2026-11-01',
-      linked: 'r1',
+      linked: '0b1c2d3e-4f50-4a61-8b72-9c83d4e5f607',
     });
     expect(parseFeedSearch({ channel: '   ', from: 'yesterday' })).toEqual({ types: [] });
+    // A linked value that is not a record ID would fail the whole query; it is dropped.
+    expect(parseFeedSearch({ linked: 'acme' })).toEqual({ types: [] });
   });
 
   it('writes them back, clearing what is unset', () => {

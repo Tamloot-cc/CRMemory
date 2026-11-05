@@ -24,6 +24,12 @@ export type FeedFilters = {
 const validDay = (raw: string | undefined) =>
   raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) && isValid(parse(raw, DAY, new Date())) ? raw : undefined;
 const nonEmpty = (raw: string | undefined) => (raw?.trim() ? raw.trim() : undefined);
+/** A record ID, as the server's `linked.record` takes it; anything else is ignored. */
+const RECORD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const recordId = (raw: string | undefined) => {
+  const id = nonEmpty(raw);
+  return id && RECORD_ID.test(id) ? id : undefined;
+};
 
 /** The feed's filters from the address; malformed parts are ignored. */
 export function parseFeedSearch(
@@ -36,7 +42,7 @@ export function parseFeedSearch(
   const channel = nonEmpty(search.channel),
     from = validDay(search.from),
     to = validDay(search.to),
-    linked = nonEmpty(search.linked);
+    linked = recordId(search.linked);
   if (channel) filters.channel = channel;
   if (from) filters.from = from;
   if (to) filters.to = to;
