@@ -65,7 +65,14 @@ function plan(
   const { state: desired, issues } = applyOperations(current, operations, { owner });
   if (trusted) applyProtection(desired);
   // Reference issues first; validation of a half-applied state can repeat them.
-  const all = [...issues, ...validateSchema(desired)];
+  let all = [...issues, ...validateSchema(desired)];
+  if (trusted) {
+    // Code-defined schema must not be blocked by an issue the workspace
+    // already has, such as a name a later release reserved: only issues
+    // the change itself introduces count.
+    const existing = new Set(validateSchema(current).map(issueKey));
+    all = all.filter((i) => !existing.has(issueKey(i)));
+  }
   if (all.length > 0) throw new SchemaValidationError(dedupe(all));
   return { desired, ops: diffSchemas(current, desired) };
 }

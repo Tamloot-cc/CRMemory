@@ -159,6 +159,49 @@ describe('upgrading workspaces to the built-in definitions', () => {
     expect(await changesOf(workspaceId)).toHaveLength(1);
   });
 
+  it('upgrades a workspace whose schema has an issue an older release allowed', async () => {
+    const visit: SchemaOperation = {
+      op: 'create_object',
+      object: {
+        nameSingular: 'visit',
+        namePlural: 'visits',
+        labelSingular: 'Visit',
+        labelPlural: 'Visits',
+        labelField: 'name',
+        fields: [{ name: 'name', label: 'Name', type: 'text' }],
+      },
+    };
+    const { workspaceId, key } = await legacyWorkspace('tolerated', [visit]);
+    // Before "interaction" was reserved, a workspace could name its own object so.
+    await owner`
+      update object_types set name_singular = 'interaction', name_plural = 'interactions'
+      where workspace_id = ${workspaceId} and name_singular = 'visit'`;
+
+    expect(await upgradeWorkspaces(owner)).toEqual({
+      upgraded: ['tolerated'],
+      conflicts: [],
+      failed: [],
+    });
+    expect((await logCall(key)).status).toBe(201);
+    expect(await digestOf(workspaceId)).toBe(definitionsFor([]).digest);
+    // Changes outside the trusted path still refuse the old issue.
+    const change = await api.request('/v1/schema/changes', {
+      key,
+      body: {
+        reason: 'test',
+        operations: [
+          {
+            op: 'create_field',
+            object: 'company',
+            field: { name: 'size', label: 'Size', type: 'number' },
+          },
+        ],
+      },
+    });
+    expect(change.status, JSON.stringify(change.body)).toBe(422);
+    expect(JSON.stringify(change.body)).toContain('reserved');
+  });
+
   it("reports a name the workspace's own object uses, and adds it once that is renamed", async () => {
     const meeting: SchemaOperation = {
       op: 'create_object',
