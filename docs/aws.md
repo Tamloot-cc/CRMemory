@@ -155,6 +155,17 @@ only. To use it:
      --url https://token.actions.githubusercontent.com \
      --client-id-list sts.amazonaws.com
    ```
+
+   The role trusts jobs whose OIDC subject starts with
+   `repo:<owner>/<repo>`. A repository with immutable subject claims signs
+   `repo:<owner>@<owner-id>/<repo>@<repo-id>` instead, and assuming the
+   role fails with "Not authorized to perform
+   sts:AssumeRoleWithWebIdentity". GitHub switches some repositories to
+   that format on its own, such as those created or renamed after July
+   2026, so check the prefix GitHub actually uses rather than the opt-in
+   flag: run `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`,
+   and if its `sub_claim_prefix` differs from `repo:<owner>/<repo>`, set
+   `github_subject_prefix` to it and apply again.
 2. In the repository's settings, create the `production` environment.
    Under deployment branches, allow only the default branch: the role trusts
    every job in that environment.
