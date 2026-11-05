@@ -3,10 +3,12 @@ import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
+import { emptyValue } from '../records/query.js';
 import { normalizeFieldValue, prepareValues } from '../records/values.js';
 import {
   type LockedRecord,
   recomputeFields,
+  relationTargets,
   type WriteContext,
   writeFields,
 } from '../records/write.js';
@@ -87,6 +89,12 @@ type AssertionRow = {
 
 /** A source field that cannot move, and why; listed in the refusal. */
 type Unmovable = { field: string; reason: string; events: number; assertions: number };
+
+/** How many moved events, and how many of their assertions, some assertions span. */
+const counts = (rows: readonly AssertionRow[]) => ({
+  events: new Set(rows.map((a) => a.record_id)).size,
+  assertions: rows.length,
+});
 
 /**
  * The fields of `source` that a move carries, by its plan: core fields to
@@ -271,24 +279,22 @@ export async function moveEvents(
   const assertions = await tx<AssertionRow[]>`
     select id, record_id, field_id, value, status from field_assertions
     where workspace_id = ${workspaceId} and record_id = any(${ids}::uuid[])`;
-  const byField = (field: FieldState) => assertions.filter((a) => a.field_id === field.id);
-  const eventCount = (rows: AssertionRow[]) => new Set(rows.map((a) => a.record_id)).size;
+  const grouped = new Map<string, AssertionRow[]>();
+  for (const a of assertions) {
+    const rows = grouped.get(a.field_id);
+    if (rows) rows.push(a);
+    else grouped.set(a.field_id, [a]);
+  }
+  const byField = (field: FieldState) => grouped.get(field.id as string) ?? [];
 
   // Values the target has nowhere to keep never vanish silently: the caller
   // maps them, or lists them in drop.
   const unmovable: Unmovable[] = [];
   for (const { from, reason } of plan.unmapped) {
     const rows = byField(from);
-    if (rows.length > 0) {
-      unmovable.push({
-        field: from.name,
-        reason,
-        events: eventCount(rows),
-        assertions: rows.length,
-      });
-    }
+    if (rows.length > 0) unmovable.push({ field: from.name, reason, ...counts(rows) });
   }
-  unmovable.push(...(await checkValues(tx, context, target, plan, assertions, new Set(ids))));
+  unmovable.push(...(await checkValues(tx, context, target, plan, byField, new Set(ids))));
   if (unmovable.length > 0) {
     throw new AppError(
       422,
@@ -326,14 +332,16 @@ export async function moveEvents(
   await tx`delete from record_identifiers
     where workspace_id = ${workspaceId} and record_id = any(${ids}::uuid[])`;
 
-  const pendingBefore = await pendingReview(tx, workspaceId, ids);
+  // A unique value another record claims fails the move, rather than going
+  // to review as it would after a retraction (rule 2.4): no value is lost.
   const targetFieldIds = movable(target).map((f) => f.id as string);
   for (const event of events) {
     event.object_type_id = target.id;
     event.data = {};
-    await recomputeFields(tx, context, target, event, targetFieldIds);
+    await recomputeFields(tx, context, target, event, targetFieldIds, {
+      onUniqueConflict: 'refuse',
+    });
   }
-  await refuseNewUniqueConflicts(tx, workspaceId, ids, pendingBefore, target);
 
   result.defaults = await writeDefaults(tx, context, target, events, defaults);
   await requireTargetValues(tx, target, ids);
@@ -341,12 +349,9 @@ export async function moveEvents(
   result.fields = plan.mapped.map(({ from, to }) => ({
     from: from.name,
     to: to.name,
-    events: eventCount(byField(from)),
+    events: counts(byField(from)).events,
   }));
-  result.dropped = plan.dropped.map((field) => {
-    const rows = byField(field);
-    return { field: field.name, events: eventCount(rows), assertions: rows.length };
-  });
+  result.dropped = plan.dropped.map((field) => ({ field: field.name, ...counts(byField(field)) }));
   const [logged] = await tx<{ id: string }[]>`
     insert into event_moves (workspace_id, actor, from_object_type_id, to_object_type_id,
       event_ids, fields)
@@ -396,39 +401,40 @@ async function checkValues(
   context: WriteContext,
   target: CompiledObject,
   plan: FieldPlan,
-  assertions: AssertionRow[],
+  byField: (field: FieldState) => AssertionRow[],
   moving: ReadonlySet<string>,
 ): Promise<Unmovable[]> {
   const live = (a: AssertionRow) =>
     a.value !== null && ['active', 'superseded', 'pending_review'].includes(a.status);
   const relationIds = plan.mapped
     .filter(({ to }) => to.type === 'relation')
-    .flatMap(({ from }) => assertions.filter((a) => a.field_id === from.id && live(a)))
+    .flatMap(({ from }) => byField(from).filter(live))
     .flatMap((a) => (Array.isArray(a.value) ? (a.value as string[]) : [a.value as string]));
-  const typeOf = new Map(
-    relationIds.length === 0
-      ? []
-      : (
-          await tx<{ id: string; object_type_id: string }[]>`
-            select id, object_type_id from records
-            where workspace_id = ${context.workspaceId} and id = any(${[...new Set(relationIds)]}::uuid[])`
-        ).map((r) => [r.id, moving.has(r.id) ? target.id : r.object_type_id]),
-  );
+  // Moved events count as the target type, so links among them stay valid.
+  const typeOf = new Map<string, string>();
+  if (relationIds.length > 0) {
+    const rows = await tx<{ id: string; object_type_id: string }[]>`
+      select id, object_type_id from records
+      where workspace_id = ${context.workspaceId} and id = any(${[...new Set(relationIds)]}::uuid[])`;
+    for (const r of rows) typeOf.set(r.id, moving.has(r.id) ? target.id : r.object_type_id);
+  }
 
   const problems: Unmovable[] = [];
   for (const { from, to } of plan.mapped) {
-    const bad = new Map<string, string>();
-    for (const a of assertions.filter((a) => a.field_id === from.id && live(a))) {
-      const reason = valueProblem(context, to, a.value, typeOf);
-      if (reason) bad.set(a.id, reason);
+    const allowed = new Set(relationTargets(context.schema, to).map((o) => o.id));
+    const rows: AssertionRow[] = [];
+    const reasons = new Set<string>();
+    for (const a of byField(from).filter(live)) {
+      const reason = valueProblem(context, to, a.value, typeOf, allowed);
+      if (!reason) continue;
+      rows.push(a);
+      reasons.add(reason);
     }
-    if (bad.size === 0) continue;
-    const rows = assertions.filter((a) => bad.has(a.id));
+    if (rows.length === 0) continue;
     problems.push({
       field: from.name,
-      reason: `${[...new Set(bad.values())].slice(0, 3).join('; ')} (as ${target.name}.${to.name})`,
-      events: new Set(rows.map((a) => a.record_id)).size,
-      assertions: rows.length,
+      reason: `${[...reasons].slice(0, 3).join('; ')} (as ${target.name}.${to.name})`,
+      ...counts(rows),
     });
   }
   return problems;
@@ -438,16 +444,14 @@ function valueProblem(
   context: WriteContext,
   to: FieldState,
   value: unknown,
-  typeOf: Map<string, string>,
+  typeOf: ReadonlyMap<string, string>,
+  allowed: ReadonlySet<string>,
 ): string | undefined {
   if (to.type === 'relation') {
-    const allowed = relationTargetIds(to.settings).map(
-      (id) => context.schema.objectsByUniversalId.get(id)?.id,
-    );
     const ids = Array.isArray(value) ? (value as string[]) : [value as string];
     const wrong = ids.find((id) => {
       const type = typeOf.get(id);
-      return type !== undefined && !allowed.includes(type);
+      return type !== undefined && !allowed.has(type);
     });
     if (!wrong) return undefined;
     const object = context.schema.objectsById.get(typeOf.get(wrong) as string);
@@ -499,45 +503,6 @@ async function checkInboundRelations(
   }
 }
 
-async function pendingReview(tx: Tx, workspaceId: string, ids: string[]): Promise<Set<string>> {
-  const rows = await tx<{ id: string }[]>`
-    select id from field_assertions
-    where workspace_id = ${workspaceId} and record_id = any(${ids}::uuid[])
-      and status = 'pending_review'`;
-  return new Set(rows.map((r) => r.id));
-}
-
-/**
- * Recomputing sends a unique value another record already claims to review
- * rather than failing (rule 2.4). A move must not lose a value that way, so
- * it refuses instead.
- */
-async function refuseNewUniqueConflicts(
-  tx: Tx,
-  workspaceId: string,
-  ids: string[],
-  before: ReadonlySet<string>,
-  target: CompiledObject,
-): Promise<void> {
-  const after = await tx<{ id: string; field_id: string }[]>`
-    select id, field_id from field_assertions
-    where workspace_id = ${workspaceId} and record_id = any(${ids}::uuid[])
-      and status = 'pending_review' and review_reason = 'unique_conflict'`;
-  const fields = [
-    ...new Set(
-      after.filter((a) => !before.has(a.id)).map((a) => target.fieldsById.get(a.field_id)?.name),
-    ),
-  ];
-  if (fields.length > 0) {
-    throw new AppError(
-      409,
-      'unique_conflict',
-      `moved values of ${fields.join(', ')} are already claimed by other ${target.name} records`,
-      { errors: fields.map((field) => ({ field, message: 'already belongs to another record' })) },
-    );
-  }
-}
-
 /**
  * Writes each default to the moved events with no claim for its field, as
  * the event's own initial value: citing the event, observed when it
@@ -575,23 +540,27 @@ async function writeDefaults(
 
 /** Every required field of the target has a value on every moved event. */
 async function requireTargetValues(tx: Tx, target: CompiledObject, ids: string[]): Promise<void> {
-  const errors: { field: string; message: string }[] = [];
-  for (const field of movable(target).filter((f) => !f.isNullable)) {
-    const empty =
-      field.type === 'relation'
-        ? tx`not exists (select 1 from record_links l
-            where l.source_record_id = r.id and l.field_id = ${field.id as string})`
-        : tx`coalesce(r.data -> ${field.key}, 'null'::jsonb) = 'null'::jsonb`;
-    const [row] = await tx<{ count: number }[]>`
-      select count(*)::int as count from records r
-      where r.id = any(${ids}::uuid[]) and ${empty}`;
-    if (row && row.count > 0) {
-      errors.push({
-        field: field.name,
-        message: `is required on ${target.name}, and ${row.count} moved events have no value: give one in defaults`,
-      });
-    }
-  }
+  const required = movable(target).filter((f) => !f.isNullable);
+  if (required.length === 0) return;
+  // One pass over the moved events, a count per required field.
+  const [row] = await tx<Record<string, number>[]>`
+    select ${required
+      .map(
+        (field, i) => tx`count(*) filter (where ${emptyValue(tx, field)})::int as ${tx(`f${i}`)}`,
+      )
+      .reduce((a, b) => tx`${a}, ${b}`)}
+    from records r where r.id = any(${ids}::uuid[])`;
+  const errors = required.flatMap((field, i) => {
+    const missing = row?.[`f${i}`] ?? 0;
+    return missing > 0
+      ? [
+          {
+            field: field.name,
+            message: `is required on ${target.name}, and ${missing} moved events have no value: give one in defaults`,
+          },
+        ]
+      : [];
+  });
   if (errors.length > 0) {
     throw new AppError(422, 'invalid_values', `moved events lack required ${target.name} fields`, {
       errors,

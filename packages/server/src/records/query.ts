@@ -188,13 +188,7 @@ function builtInValue(name: string, type: BuiltIn['type'], value: unknown): stri
     throw invalidFilter(`invalid value for ${name}: expected a record ID (UUID)`, { field: name });
   }
   if (type === 'timestamptz') {
-    try {
-      return normalizeFieldValue({ type: 'date_time', settings: {} }, value) as string;
-    } catch (error) {
-      throw invalidFilter(`invalid value for ${name}: ${(error as Error).message}`, {
-        field: name,
-      });
-    }
+    return valueFor({ name, type: 'date_time', settings: {} }, value) as string;
   }
   if (typeof value === 'string') return value;
   throw invalidFilter(`invalid value for ${name}: expected text`, { field: name });
@@ -278,7 +272,7 @@ function filterableNames(object: CompiledObject): string[] {
 }
 
 /** Validates a filter value with the field's own rules, naming the field on error. */
-function valueFor(field: FieldState, value: unknown): unknown {
+function valueFor(field: Pick<FieldState, 'name' | 'type' | 'settings'>, value: unknown): unknown {
   try {
     if (field.type === 'money') {
       if (typeof value !== 'number') throw new Error('expected amountMicros as a number');

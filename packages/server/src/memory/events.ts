@@ -9,6 +9,7 @@ import type {
   SourceReference,
   Via,
 } from '@retainer/shared';
+import { isoDateTimeSchema } from '@retainer/shared';
 import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import { after, page } from '../db/pagination.js';
@@ -73,7 +74,7 @@ export const logEventInputSchema = z
         message: `channel "${NOTE_CHANNEL}" is reserved for the notes remember creates`,
       }),
     externalId: z.string().min(1).max(500).optional(),
-    occurredAt: z.iso.datetime({ offset: true }),
+    occurredAt: isoDateTimeSchema,
     title: z.string().max(500).optional(),
     summary: z.string().max(20_000).optional(),
     fields: z.record(z.string(), z.unknown()).default({}),

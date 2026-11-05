@@ -632,6 +632,17 @@ describe('POST /v1/events/query (7.1)', () => {
     expect(other.body.records.map((r: { id: string }) => r.id)).not.toContain(meeting);
   });
 
+  it('refuses times Postgres cannot store as invalid requests, never 500', async () => {
+    const logged = await logCall({ occurredAt: '0000-06-01T10:00:00Z', externalId: `y0-${++n}` });
+    expect(logged.status).toBe(400);
+    expect(logged.body.error.code).toBe('invalid_request');
+    const company = await createCompany();
+    const timeline = await t.request(`/v1/records/${company}/timeline?from=0000-01-01T00:00:00Z`, {
+      key: keys.reader,
+    });
+    expect(timeline.status).toBe(400);
+  });
+
   it('refuses malformed values for shared columns with 422 naming the field, never 500', async () => {
     const cases: [Record<string, unknown>, string][] = [
       [{ id: 'not-a-uuid' }, 'id'],

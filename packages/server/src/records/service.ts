@@ -10,6 +10,7 @@ import type {
   MergeSuggestionDecision,
   RecordPage,
 } from '@retainer/shared';
+import { isoDateTimeSchema } from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
@@ -211,7 +212,7 @@ export const upsertInputSchema = z.strictObject({
   match: z.record(z.string(), z.unknown()).optional(),
   values: valuesSchema.default({}),
   ifMissing: z.enum(['fail', 'create']).default('fail'),
-  expectedUpdatedAt: z.iso.datetime({ offset: true }).optional(),
+  expectedUpdatedAt: isoDateTimeSchema.optional(),
   source: sourceSchema.optional(),
 });
 export type UpsertInput = z.infer<typeof upsertInputSchema>;
@@ -369,7 +370,7 @@ export async function upsertRecord(
 
 export const patchInputSchema = z.strictObject({
   values: valuesSchema,
-  expectedUpdatedAt: z.iso.datetime({ offset: true }).optional(),
+  expectedUpdatedAt: isoDateTimeSchema.optional(),
   source: sourceSchema.optional(),
 });
 

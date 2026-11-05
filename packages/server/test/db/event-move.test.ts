@@ -577,6 +577,50 @@ describe('fields the target cannot hold', () => {
   });
 });
 
+describe('unique values', () => {
+  it('refuses a moved value another record already claims, rather than sending it to review', async () => {
+    const w = await workspace();
+    const unique = (object: string): SchemaOperation => ({
+      op: 'create_field',
+      object,
+      field: { name: 'ref', label: 'Reference', type: 'text', isUnique: true },
+    });
+    await w.change([unique('meeting'), unique('conversation')]);
+    const taken = await logEventFor(app, w.as(AGENT), {
+      type: 'conversation',
+      channel: 'zoom',
+      externalId: 'taken',
+      occurredAt: '2026-10-01T10:00:00Z',
+      fields: { ref: 'R-1' },
+      participants: [],
+      about: [],
+    });
+    const meeting = await w.log({ fields: { ref: 'R-1' } });
+    const free = await w.log({ fields: { ref: 'R-2' } });
+    const refused = await failure(w.move({}));
+    expect(refused).toMatchObject({
+      status: 409,
+      code: 'unique_conflict',
+      details: { field: 'ref' },
+    });
+    expect(await w.typeOf(meeting.id)).toBe('meeting');
+    expect(await w.typeOf(free.id)).toBe('meeting');
+    const [pending] = await db.owner<{ count: number }[]>`
+      select count(*)::int as count from field_assertions
+      where workspace_id = ${w.id} and status = 'pending_review'`;
+    expect(pending?.count).toBe(0);
+
+    // Moving the one that does not collide claims its value under the target field.
+    expect((await w.move({ events: [free.id] })).eventIds).toEqual([free.id]);
+    const found = await findRecords(app, w.as(AGENT), 'conversation', {
+      filter: { ref: 'R-2' },
+      limit: 50,
+    });
+    expect(found.records.map((r) => r.id)).toEqual([free.id]);
+    expect(taken.id).not.toBe(free.id);
+  });
+});
+
 describe('what can move', () => {
   it('never moves into or out of the hidden internal-note type, or between entities', async () => {
     const w = await workspace();

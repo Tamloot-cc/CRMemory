@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   type Actor,
+  isoDateTimeSchema,
   TIMELINE_ITEM_KINDS,
   type TimelineItem,
   type TimelineItemKind,
@@ -22,7 +23,7 @@ import { factsPage } from '../web/review.js';
  * time, newest first.
  */
 
-const isoTime = z.iso.datetime({ offset: true });
+const isoTime = isoDateTimeSchema;
 /** A timestamptz as Postgres prints it, e.g. `2026-10-29 12:00:00.123456+00`. */
 const STAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}(:\d{2})?$/;
 const uuid = z.uuid();
