@@ -5,7 +5,7 @@ import { BASE_OBJECT_IDS, BASE_OPERATIONS, TEMPLATES } from '../templates/index.
 import { definitionsFor } from '../workspaces/upgrade.js';
 import { applyOperations } from './apply.js';
 import { classifyOp, diffSchemas } from './diff.js';
-import type { SchemaOperation } from './operations.js';
+import type { FieldDefinitionInput, ObjectDefinitionInput, SchemaOperation } from './operations.js';
 import { applyProtection } from './protection.js';
 import type { SchemaState } from './types.js';
 import { planUpgrade } from './upgrade.js';
@@ -41,6 +41,28 @@ const upgrade = (state: SchemaState, definitions: SchemaOperation[]) => {
   const plan = planUpgrade(state, definitions);
   return { ...plan, upgraded: applyValid(state, plan.operations) };
 };
+/**
+ * A template as an older release defined it: `objectName` without the field
+ * `pick` chooses.
+ */
+function withoutField(
+  operations: SchemaOperation[],
+  objectName: string,
+  pick: (field: FieldDefinitionInput, object: ObjectDefinitionInput) => boolean,
+) {
+  const create = operations.find(
+    (o): o is Extract<SchemaOperation, { op: 'create_object' }> =>
+      o.op === 'create_object' && o.object.nameSingular === objectName,
+  );
+  const field = create?.object.fields.find((f) => pick(f, create.object));
+  if (!create || !field) throw new Error(`no ${objectName} field to leave out`);
+  const object = { ...create.object, fields: create.object.fields.filter((f) => f !== field) };
+  return {
+    older: operations.map((o) => (o === create ? { ...create, object } : o)),
+    object: create.object,
+    field,
+  };
+}
 const objectOf = (state: SchemaState, universalId: string) =>
   state.objects.find((o) => o.universalId === universalId);
 const named = (state: SchemaState, name: string) =>
@@ -78,11 +100,9 @@ describe('planUpgrade', () => {
   });
 
   it('matches a renamed base object by universal ID and resolves relations to it', () => {
-    const renamed = applyValid(
-      legacy,
-      [{ op: 'rename_object', object: 'person', nameSingular: 'contact', namePlural: 'contacts' }],
-      'system',
-    );
+    const renamed = applyValid(legacy, [
+      { op: 'rename_object', object: 'person', nameSingular: 'contact', namePlural: 'contacts' },
+    ]);
     const { operations, conflicts, upgraded } = upgrade(renamed, [...SEED_OPERATIONS, ...clinic]);
     expect(conflicts).toEqual([]);
     expect(created(operations)).not.toContain('person');
@@ -99,14 +119,10 @@ describe('planUpgrade', () => {
 
   it('does not re-create a base event type or template object the workspace deleted', () => {
     const withTemplate = applyValid(seeded, clinic);
-    const deleted = applyValid(
-      withTemplate,
-      [
-        { op: 'delete_object', object: 'call' },
-        { op: 'delete_object', object: 'appointment' },
-      ],
-      'system',
-    );
+    const deleted = applyValid(withTemplate, [
+      { op: 'delete_object', object: 'call' },
+      { op: 'delete_object', object: 'appointment' },
+    ]);
     expect(planUpgrade(deleted, [...SEED_OPERATIONS, ...clinic])).toEqual({
       operations: [],
       conflicts: [],
@@ -139,15 +155,10 @@ describe('planUpgrade', () => {
   });
 
   it('adds a missing template field to an existing object, but not to a deleted one', () => {
-    const appointment = clinic.find(
-      (o): o is Extract<SchemaOperation, { op: 'create_object' }> => o.op === 'create_object',
-    );
-    if (!appointment) throw new Error('clinic has no object');
-    // The clinic as an older release defined it: one field fewer.
-    const first = appointment.object.fields.find((f) => f.name !== appointment.object.labelField);
-    const rest = appointment.object.fields.filter((f) => f !== first);
-    const older = clinic.map((o) =>
-      o === appointment ? { ...appointment, object: { ...appointment.object, fields: rest } } : o,
+    const { older, object, field } = withoutField(
+      clinic,
+      'appointment',
+      (f, o) => f.name !== o.labelField,
     );
     const withOlder = applyValid(seeded, older);
     const { operations, conflicts } = upgrade(withOlder, [...SEED_OPERATIONS, ...clinic]);
@@ -155,43 +166,20 @@ describe('planUpgrade', () => {
     expect(operations).toEqual([
       expect.objectContaining({
         op: 'create_field',
-        object: appointment.object.universalId,
-        field: expect.objectContaining({ universalId: first?.universalId }),
+        object: object.universalId,
+        field: expect.objectContaining({ universalId: field.universalId }),
       }),
     ]);
 
-    const deleted = applyValid(
-      withOlder,
-      [{ op: 'delete_object', object: 'appointment' }],
-      'system',
-    );
+    const deleted = applyValid(withOlder, [{ op: 'delete_object', object: 'appointment' }]);
     expect(planUpgrade(deleted, [...SEED_OPERATIONS, ...clinic]).operations).toEqual([]);
   });
 
   it('reports a template field whose relation target the workspace deleted', () => {
-    const viewing = realEstate.find(
-      (o): o is Extract<SchemaOperation, { op: 'create_object' }> =>
-        o.op === 'create_object' && o.object.nameSingular === 'viewing',
-    );
-    if (!viewing) throw new Error('real_estate has no viewing');
     // An older viewing without its property, in a workspace that deleted properties.
-    const older = realEstate.map((o) =>
-      o === viewing
-        ? {
-            ...viewing,
-            object: {
-              ...viewing.object,
-              fields: viewing.object.fields.filter((f) => f.name !== 'property'),
-            },
-          }
-        : o,
-    );
+    const { older } = withoutField(realEstate, 'viewing', (f) => f.name === 'property');
     const withOlder = applyValid(seeded, older);
-    const noProperties = applyValid(
-      withOlder,
-      [{ op: 'delete_object', object: 'property' }],
-      'system',
-    );
+    const noProperties = applyValid(withOlder, [{ op: 'delete_object', object: 'property' }]);
     const { operations, conflicts } = planUpgrade(noProperties, [
       ...SEED_OPERATIONS,
       ...realEstate,
@@ -200,6 +188,28 @@ describe('planUpgrade', () => {
     expect(conflicts).toEqual([
       { element: 'viewing.property', message: expect.stringContaining('property') },
     ]);
+  });
+});
+
+describe('built-in definitions', () => {
+  it('refer to objects by universal ID, which survives a workspace renaming them', () => {
+    const all = [SEED_OPERATIONS, ...Object.values(TEMPLATES).map((t) => t.operations)].flat();
+    const ids = new Set(
+      all.flatMap((o) => (o.op === 'create_object' ? [o.object.universalId] : [])),
+    );
+    const references = all.flatMap((o) => {
+      const fields =
+        o.op === 'create_object' ? o.object.fields : o.op === 'create_field' ? [o.field] : [];
+      return [
+        ...(o.op === 'create_field' ? [o.object] : []),
+        ...fields.flatMap((f) => [
+          ...(f.settings?.targetObject ? [f.settings.targetObject] : []),
+          ...(f.settings?.targetObjects ?? []),
+        ]),
+      ];
+    });
+    expect(references.length).toBeGreaterThan(0);
+    expect(references.filter((ref) => !ids.has(ref))).toEqual([]);
   });
 });
 

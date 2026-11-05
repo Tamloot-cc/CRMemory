@@ -22,7 +22,10 @@ export type UpgradeReport = {
   failed: { workspace: string; message: string }[];
 };
 
-type Definitions = { operations: SchemaOperation[]; digest: string; templates: Template[] };
+type Definitions = { operations: SchemaOperation[]; digest: string };
+
+/** By sorted template names; the definitions are constant while the process runs. */
+const definitionsCache = new Map<string, Definitions>();
 
 /**
  * The code-defined schema a workspace should have (3): the seed operations
@@ -31,6 +34,9 @@ type Definitions = { operations: SchemaOperation[]; digest: string; templates: T
  */
 export function definitionsFor(applied: readonly AppliedTemplate[]): Definitions {
   const names = [...new Set(applied.map((t) => t.name))].sort();
+  const cacheKey = names.join('\n');
+  const cached = definitionsCache.get(cacheKey);
+  if (cached) return cached;
   const templates = names.map(getTemplate).filter((t): t is Template => t !== undefined);
   const digest = createHash('sha256')
     .update(
@@ -45,19 +51,15 @@ export function definitionsFor(applied: readonly AppliedTemplate[]): Definitions
       }),
     )
     .digest('hex');
-  return {
+  const definitions = {
     operations: [...SEED_OPERATIONS, ...templates.flatMap((t) => t.operations)],
     digest,
-    templates,
   };
+  definitionsCache.set(cacheKey, definitions);
+  return definitions;
 }
 
-type WorkspaceRow = {
-  id: string;
-  slug: string;
-  templates: AppliedTemplate[];
-  definitions_digest: string | null;
-};
+type WorkspaceRow = { templates: AppliedTemplate[]; definitions_digest: string | null };
 
 type WorkspaceUpgrade = { changed: boolean; conflicts: UpgradeConflict[] };
 
@@ -67,11 +69,11 @@ type WorkspaceUpgrade = { changed: boolean; conflicts: UpgradeConflict[] };
  * schema lock and re-reads the digest under it, so concurrent runs upgrade
  * the workspace once. The digest is stamped only when nothing conflicted.
  */
-export async function upgradeWorkspace(sql: Sql, workspaceId: string): Promise<WorkspaceUpgrade> {
+async function upgradeWorkspace(sql: Sql, workspaceId: string): Promise<WorkspaceUpgrade> {
   return inWorkspace(sql, workspaceId, async (tx) => {
     await lockSchemaExclusive(tx, workspaceId);
     const [row] = await tx<WorkspaceRow[]>`
-      select id, slug, templates, definitions_digest from workspaces where id = ${workspaceId}`;
+      select templates, definitions_digest from workspaces where id = ${workspaceId}`;
     if (!row) return { changed: false, conflicts: [] };
     const definitions = definitionsFor(row.templates);
     if (row.definitions_digest === definitions.digest) return { changed: false, conflicts: [] };
@@ -94,12 +96,9 @@ export async function upgradeWorkspace(sql: Sql, workspaceId: string): Promise<W
       throw new Error(`the upgrade change was ${result.status}: ${result.change?.error ?? ''}`);
     }
     if (conflicts.length === 0) {
-      const versions = new Map<string, number>(
-        definitions.templates.map((t) => [t.name, t.version]),
-      );
       const templates = row.templates.map((t) => ({
         ...t,
-        version: versions.get(t.name) ?? t.version,
+        version: getTemplate(t.name)?.version ?? t.version,
       }));
       await tx`
         update workspaces
@@ -118,7 +117,7 @@ export async function upgradeWorkspace(sql: Sql, workspaceId: string): Promise<W
  */
 export async function upgradeWorkspaces(sql: Sql): Promise<UpgradeReport> {
   const report: UpgradeReport = { upgraded: [], conflicts: [], failed: [] };
-  const rows = await sql<WorkspaceRow[]>`
+  const rows = await sql<(WorkspaceRow & { id: string; slug: string })[]>`
     select id, slug, templates, definitions_digest from workspaces order by created_at, id`;
   for (const row of rows) {
     if (row.definitions_digest === definitionsFor(row.templates).digest) continue;

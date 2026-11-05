@@ -56,6 +56,18 @@ async function legacyWorkspace(slug: string, extra: SchemaOperation[] = []) {
   return { workspaceId, key };
 }
 
+const logCall = (key: string, extra: Record<string, unknown> = {}) =>
+  api.request('/v1/events', {
+    key,
+    body: {
+      type: 'call',
+      channel: 'phone',
+      occurredAt: '2026-11-01T09:00:00Z',
+      title: 'Intro call',
+      ...extra,
+    },
+  });
+
 const changesOf = (workspaceId: string) =>
   owner<{ requested_by: { type: string; id: string }; reason: string; status: string }[]>`
     select requested_by, reason, status from schema_changes
@@ -70,15 +82,7 @@ const digestOf = async (workspaceId: string) =>
 describe('upgrading workspaces to the built-in definitions', () => {
   it('gives a pre-events workspace its event types, internal notes and protection', async () => {
     const { workspaceId, key } = await legacyWorkspace('legacy');
-    const before = await api.request('/v1/events', {
-      key,
-      body: {
-        type: 'call',
-        channel: 'phone',
-        occurredAt: '2026-11-01T09:00:00Z',
-        title: 'Intro call',
-      },
-    });
+    const before = await logCall(key);
     expect(before.status).toBe(404);
 
     const report = await upgradeWorkspaces(owner);
@@ -108,16 +112,7 @@ describe('upgrading workspaces to the built-in definitions', () => {
       body: { values: { name: 'Noa Levi', emails: 'noa@example.com' } },
     });
     expect(person.status).toBe(201);
-    const call = await api.request('/v1/events', {
-      key,
-      body: {
-        type: 'call',
-        channel: 'phone',
-        occurredAt: '2026-11-01T09:00:00Z',
-        title: 'Intro call',
-        participants: [{ recordId: person.body.id }],
-      },
-    });
+    const call = await logCall(key, { participants: [{ recordId: person.body.id }] });
     expect(call.status).toBe(201);
     // remember without a source writes an internal note.
     const fact = await api.request(`/v1/records/${person.body.id}/facts`, {
@@ -186,10 +181,7 @@ describe('upgrading workspaces to the built-in definitions', () => {
       failed: [],
     });
     expect(await digestOf(workspaceId)).toBeNull();
-    const call = await api.request('/v1/events', {
-      key,
-      body: { type: 'call', channel: 'phone', occurredAt: '2026-11-01T09:00:00Z', title: 'x' },
-    });
+    const call = await logCall(key);
     expect(call.status).toBe(201);
 
     const rename = await api.request('/v1/schema/changes', {

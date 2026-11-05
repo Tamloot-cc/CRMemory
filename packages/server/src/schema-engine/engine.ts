@@ -9,7 +9,7 @@ import type { SchemaOperation } from './operations.js';
 import { checkExistingRecords, persistSchema, SchemaCheckError } from './persist.js';
 import { applyProtection } from './protection.js';
 import { type DiffOp, type SchemaIssue, type SchemaState, SchemaValidationError } from './types.js';
-import { validateSchema } from './validate.js';
+import { issueKey, validateSchema } from './validate.js';
 
 /** The server's own actor, for seeding and upgrades. */
 export const SYSTEM_ACTOR: Actor = { type: 'system', id: 'retainer' };
@@ -73,7 +73,7 @@ function plan(
 function dedupe(issues: SchemaIssue[]): SchemaIssue[] {
   const seen = new Set<string>();
   return issues.filter((i) => {
-    const key = `${i.path}\n${i.message}`;
+    const key = issueKey(i);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
