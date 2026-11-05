@@ -358,7 +358,9 @@ async function suggestMerges(
   });
   const similarEntries = await directoryEntries(op.db, [...similarPairs.values()].flat());
   let similar = 0;
-  for (const [a, b] of [...similarPairs.values()].sort((x, y) => x.join().localeCompare(y.join()))) {
+  for (const [a, b] of [...similarPairs.values()].sort((x, y) =>
+    x.join().localeCompare(y.join()),
+  )) {
     if (similar >= cap) break;
     if (similarEntries.get(a)?.deleted_at || similarEntries.get(b)?.deleted_at) continue;
     if (!similarEntries.get(a) || !similarEntries.get(b)) continue;

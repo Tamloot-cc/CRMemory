@@ -134,8 +134,12 @@ export async function followMerges(
   db: Db,
   ids: readonly string[],
 ): Promise<{ start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[]> {
-  const result: { start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[] =
-    [];
+  const result: {
+    start_id: string;
+    id: string;
+    object_type_id: string;
+    deleted_at: Date | null;
+  }[] = [];
   let current = new Map([...new Set(ids)].map((id) => [id, id]));
   for (let hops = 0; hops <= MAX_MERGE_HOPS && current.size > 0; hops++) {
     const entries = await directoryEntries(db, [...new Set(current.values())]);
@@ -184,7 +188,9 @@ async function matchEmails(
   const claims =
     statements.length === 0
       ? []
-      : ((await db.query(statements.join('\n'), vars)) as { value: string; record_id: string }[][]).flat();
+      : (
+          (await db.query(statements.join('\n'), vars)) as { value: string; record_id: string }[][]
+        ).flat();
   const canonical = await canonicalRecords(
     db,
     schema,
@@ -367,7 +373,9 @@ export async function loadLinksOf(
     return `SELECT * FROM event_links WHERE event = $e${i} ORDER BY position;`;
   });
   const results = (await db.query(statements.join('\n'), vars)) as StoredLinkRow[][];
-  ids.forEach((id, i) => byEvent.set(id, (results[i] ?? []).map(linkOf)));
+  ids.forEach((id, i) => {
+    byEvent.set(id, (results[i] ?? []).map(linkOf));
+  });
   return byEvent;
 }
 
@@ -613,9 +621,7 @@ export async function addLinks(
   await addDirectAttachments(
     context,
     inserted.flatMap((l) =>
-      l.record_id
-        ? [{ event: eventId, target: l.record_id, via: l.link, linkId: l.id }]
-        : [],
+      l.record_id ? [{ event: eventId, target: l.record_id, via: l.link, linkId: l.id }] : [],
     ),
   );
   const gone = new Set(replaced.map((r) => r.id));

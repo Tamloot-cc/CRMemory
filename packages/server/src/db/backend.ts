@@ -58,7 +58,9 @@ export function dbOf(target: SurrealTarget): Db {
     rows: async <T>(text: string, vars?: Record<string, unknown>) => {
       const results = await query(target, text, vars);
       const last = results.at(-1);
-      return (Array.isArray(last) ? last : last === undefined || last === null ? [] : [last]) as T[];
+      return (
+        Array.isArray(last) ? last : last === undefined || last === null ? [] : [last]
+      ) as T[];
     },
     raw: (text, vars, options) => rawQuery(target, text, vars, options),
   };
@@ -137,7 +139,10 @@ export class Backend {
    * A workspace's route. Requests for a workspace this process has not
    * upgraded yet trigger its upgrade first (section 7).
    */
-  async route(workspaceId: string, options: { provisioning?: boolean } = {}): Promise<WorkspaceRoute> {
+  async route(
+    workspaceId: string,
+    options: { provisioning?: boolean } = {},
+  ): Promise<WorkspaceRoute> {
     if (!options.provisioning && !this.upgraded.has(workspaceId) && this.upgradeWorkspace) {
       await this.upgradeWorkspace(workspaceId);
     }
@@ -150,7 +155,10 @@ export class Backend {
     }>('SELECT database, state, access_keys FROM type::record("workspaces", $id);', {
       id: workspaceId,
     });
-    if (!row || (row.state !== 'active' && !(options.provisioning && row.state === 'provisioning'))) {
+    if (
+      !row ||
+      (row.state !== 'active' && !(options.provisioning && row.state === 'provisioning'))
+    ) {
       throw new AppError(401, 'unauthorized', 'workspace is unavailable');
     }
     const keyId = acceptedKeys(this.keys)

@@ -245,9 +245,7 @@ export async function mergeRecords(
   for (const record of await lockRecordsForUpdate(context, inboundIds)) {
     const owner = context.schema.objectsById.get(record.object_type_id);
     if (owner) {
-      await recomputeFields(context, owner, record, [
-        ...(inboundByRecord.get(record.id) ?? []),
-      ]);
+      await recomputeFields(context, owner, record, [...(inboundByRecord.get(record.id) ?? [])]);
     }
   }
 
@@ -341,7 +339,11 @@ export async function mergeRecords(
     if (field.type !== 'relation') cleared[fieldColumn(field.key)] = undefined;
   }
   op.batch.update(object.table, b, cleared);
-  op.batch.update('record_directory', b, { merged_into: a, deleted_at: op.now, updated_at: op.now });
+  op.batch.update('record_directory', b, {
+    merged_into: a,
+    deleted_at: op.now,
+    updated_at: op.now,
+  });
   const entryOfB = (await entriesOf(op, [b])).get(b);
   if (entryOfB) {
     planState(op).directory.set(b, { ...entryOfB, merged_into: a, deleted_at: op.now });

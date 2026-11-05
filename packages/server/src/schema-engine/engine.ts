@@ -8,7 +8,12 @@ import { AppError, forbidden, notFound } from '../errors.js';
 import { applyOperations } from './apply.js';
 import { diffSchemas, isDestructive } from './diff.js';
 import type { SchemaOperation } from './operations.js';
-import { checkExistingRecords, persistSchema, prepareDefinitions, SchemaCheckError } from './persist.js';
+import {
+  checkExistingRecords,
+  persistSchema,
+  prepareDefinitions,
+  SchemaCheckError,
+} from './persist.js';
 import { applyProtection } from './protection.js';
 import { type DiffOp, type SchemaIssue, type SchemaState, SchemaValidationError } from './types.js';
 import { issueKey, validateSchema } from './validate.js';
@@ -201,10 +206,9 @@ export async function decideSchemaChange(
     refs: () => [],
     plan: async (op): Promise<SchemaChangeResult> => {
       const version = op.state.schema_version;
-      const [row] = await op.rows<ChangeRow>(
-        'SELECT * FROM type::record("schema_changes", $id);',
-        { id: changeId },
-      );
+      const [row] = await op.rows<ChangeRow>('SELECT * FROM type::record("schema_changes", $id);', {
+        id: changeId,
+      });
       if (!row) throw notFound('schema change');
       if (row.status !== 'proposed') {
         throw new AppError(409, 'already_decided', `this change is already ${row.status}`);

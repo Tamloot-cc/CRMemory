@@ -182,7 +182,17 @@ export async function logEvent(
       const id = publicId(identity.id);
       const entry = (await entriesOf(op, [id])).get(id);
       if (!entry || entry.deleted_at) throw retracted(id);
-      await checkSameEvent(context, { record_id: id, object_type_id: identity.object_type_id, occurred_at: identity.occurred_at }, object, occurredAt, values);
+      await checkSameEvent(
+        context,
+        {
+          record_id: id,
+          object_type_id: identity.object_type_id,
+          occurred_at: identity.occurred_at,
+        },
+        object,
+        occurredAt,
+        values,
+      );
       const stored = await loadLinks(op.db, id);
       const { rows, inserted } = await addLinks(context, id, stored, {
         participants,
@@ -406,10 +416,7 @@ export type CitedSource = { id: string; occurredAt: Date };
  * entity record, the hidden internal notes and other workspaces' records
  * cannot.
  */
-export async function lockSource(
-  context: WriteContext,
-  recordId: string,
-): Promise<CitedSource> {
+export async function lockSource(context: WriteContext, recordId: string): Promise<CitedSource> {
   const record = isUuid(recordId)
     ? (await loadRecords(context, [recordId])).get(recordId)
     : undefined;
@@ -472,8 +479,7 @@ export async function retractEventClaims(
   }
   const ids = new Set(eventIds);
   const citing = (await assertionsCiting(context, [...ids])).filter(
-    (a) =>
-      !ids.has(a.record) && ['active', 'superseded', 'pending_review'].includes(a.status),
+    (a) => !ids.has(a.record) && ['active', 'superseded', 'pending_review'].includes(a.status),
   );
   const locked = await lockRecordsForUpdate(
     context,
@@ -502,7 +508,9 @@ async function factsCiting(db: Db, eventIds: readonly string[]): Promise<string[
     vars[`e${i}`] = id;
     return `SELECT VALUE fact FROM fact_sources WHERE source = $e${i};`;
   });
-  const factIds = [...new Set(((await db.query(statements.join('\n'), vars)) as string[][]).flat())];
+  const factIds = [
+    ...new Set(((await db.query(statements.join('\n'), vars)) as string[][]).flat()),
+  ];
   if (factIds.length === 0) return [];
   const facts = await db.rows<{ id: RecordId; deleted_at?: Date | null }>(
     'SELECT id, deleted_at FROM $ids;',
@@ -595,4 +603,3 @@ export function presentSource(
     occurredAt: row.occurred_at.toISOString(),
   };
 }
-

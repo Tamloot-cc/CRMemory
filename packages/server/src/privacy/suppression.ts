@@ -181,7 +181,9 @@ export async function tombstoneEventIdentity(
   const known = new Set(existing.map((r) => r.hmac));
   op.batch.insert(
     'event_identity_tombstones',
-    rows.filter((r) => !known.has(r.hmac)).map((r) => ({ id: op.newId(), ...r, created_at: op.now })),
+    rows
+      .filter((r) => !known.has(r.hmac))
+      .map((r) => ({ id: op.newId(), ...r, created_at: op.now })),
   );
 }
 

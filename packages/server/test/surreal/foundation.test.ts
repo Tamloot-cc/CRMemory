@@ -10,11 +10,13 @@ describe('foundation', () => {
     const workspace = await createWorkspace(backend, { name: 'Acme' });
     expect(workspace.schemaVersion).toBe(1);
     const db = await backend.workspace(workspace.id);
-    const [info] = (await backend.adminDb((await backend.route(workspace.id)).database).query(
-      'INFO FOR DB;',
-    )) as [{ tables: Record<string, string> }];
+    const [info] = (await backend
+      .adminDb((await backend.route(workspace.id)).database)
+      .query('INFO FOR DB;')) as [{ tables: Record<string, string> }];
     expect(Object.keys(info.tables).filter((t) => t.startsWith('o_')).length).toBeGreaterThan(3);
-    const objects = await db.rows<{ name_singular: string }>('SELECT name_singular FROM object_types;');
+    const objects = await db.rows<{ name_singular: string }>(
+      'SELECT name_singular FROM object_types;',
+    );
     expect(objects.map((o) => o.name_singular)).toContain('person');
   });
 

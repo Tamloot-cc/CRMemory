@@ -86,7 +86,9 @@ export async function consolidateDue(options: ConsolidateDueOptions): Promise<Co
       await cleanupReceipts(backend, workspace.id);
     } catch (error) {
       pass.failed++;
-      log.error(`Background work for workspace ${workspace.id} failed: ${(error as Error).message}`);
+      log.error(
+        `Background work for workspace ${workspace.id} failed: ${(error as Error).message}`,
+      );
     }
   }
   return pass;

@@ -193,13 +193,9 @@ export async function prepareDefinitions(
 ): Promise<string[]> {
   const { statements, indexes, model } = physicalChanges(current, desired);
   if (statements.length === 0 && indexes.length === 0) return [];
-  const newTables = model.tables.filter((t) =>
-    indexes.some((index) => index.table === t.name),
-  );
+  const newTables = model.tables.filter((t) => indexes.some((index) => index.table === t.name));
   if (newTables.length > 0) {
-    await adminDb.query(
-      ['BEGIN;', ...newTables.flatMap(tableStatements), 'COMMIT;'].join('\n'),
-    );
+    await adminDb.query(['BEGIN;', ...newTables.flatMap(tableStatements), 'COMMIT;'].join('\n'));
   }
   await applyIndexes(
     adminDb,
@@ -243,7 +239,9 @@ export async function persistSchema(
     objectIds.set(object.universalId, op.newId());
   }
   for (const object of desired.objects) {
-    const existing = new Set(currentObjects.get(object.universalId)?.fields.map((f) => f.universalId));
+    const existing = new Set(
+      currentObjects.get(object.universalId)?.fields.map((f) => f.universalId),
+    );
     for (const field of object.fields) {
       if (!existing.has(field.universalId)) fieldIds.set(field.universalId, op.newId());
     }
@@ -344,9 +342,9 @@ export async function persistSchema(
       }
     }
     if (change.kind === 'update_field' && change.property === 'rollUpEvents') {
-      const field = next.fieldOwners.get(fieldIds.get(change.fieldId) as string)?.fieldsById.get(
-        fieldIds.get(change.fieldId) as string,
-      );
+      const field = next.fieldOwners
+        .get(fieldIds.get(change.fieldId) as string)
+        ?.fieldsById.get(fieldIds.get(change.fieldId) as string);
       if (field) await rebuildRollupsForField(op, next, field);
     }
     if (

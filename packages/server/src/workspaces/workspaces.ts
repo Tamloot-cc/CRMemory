@@ -41,7 +41,10 @@ export function slugify(name: string): string {
  * workspace active (section 4). Each step checks what is already there, so
  * an interrupted creation resumes.
  */
-async function finishProvisioning(backend: Backend, row: CatalogWorkspace & { template?: string | null }) {
+async function finishProvisioning(
+  backend: Backend,
+  row: CatalogWorkspace & { template?: string | null },
+) {
   const db = await backend.workspace(row.id, { provisioning: true });
   const state = await readState(db);
   if (state.schema_version === 0) {
@@ -154,7 +157,7 @@ export async function getWorkspace(backend: Backend, idOrSlug: string): Promise<
       });
     row = found ? { ...found, id: String(found.id.id) } : undefined;
   }
-  if (!row || row.state !== 'active') {
+  if (row?.state !== 'active') {
     throw new AppError(404, 'not_found', `workspace "${idOrSlug}" not found`);
   }
   return toWorkspace(backend, row);
@@ -167,9 +170,12 @@ export async function readWorkspaceInfo(
 ): Promise<{ id: string; slug: string; name: string }> {
   const [row] = await backend
     .catalog()
-    .rows<{ slug: string; name: string }>('SELECT slug, name FROM type::record("workspaces", $id);', {
-      id: workspaceId,
-    });
+    .rows<{ slug: string; name: string }>(
+      'SELECT slug, name FROM type::record("workspaces", $id);',
+      {
+        id: workspaceId,
+      },
+    );
   if (!row) throw new AppError(404, 'not_found', `workspace "${workspaceId}" not found`);
   return { id: workspaceId, slug: row.slug, name: row.name };
 }

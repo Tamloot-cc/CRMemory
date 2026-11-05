@@ -5,7 +5,6 @@ import type { Backend } from '../../db/backend.js';
 import { aggregateInputSchema } from '../../records/aggregate.js';
 import { mergeInputSchema } from '../../records/merge.js';
 import { queryInputSchema } from '../../records/query.js';
-import { traverseInputSchema } from '../../records/traverse.js';
 import {
   aggregate,
   bulkDeleteImpact,
@@ -27,6 +26,7 @@ import {
   upsertRecord,
   valuesSchema,
 } from '../../records/service.js';
+import { traverseInputSchema } from '../../records/traverse.js';
 import type { AppEnv } from '../http.js';
 import { idParam, readBody } from '../request.js';
 
@@ -58,7 +58,9 @@ export function recordRoutes(app: Hono<AppEnv>, backend: Backend) {
   );
 
   app.post('/records/delete-impact', requireScope('read'), async (c) =>
-    c.json(await bulkDeleteImpact(backend, c.get('caller'), await readBody(c, bulkDeleteImpactSchema))),
+    c.json(
+      await bulkDeleteImpact(backend, c.get('caller'), await readBody(c, bulkDeleteImpactSchema)),
+    ),
   );
 
   app.post('/objects/:object/upsert', requireScope('write'), async (c) => {

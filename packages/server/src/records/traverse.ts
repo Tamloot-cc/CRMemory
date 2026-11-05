@@ -72,7 +72,7 @@ function resolveFieldHops(
   for (const id of schema.visibleObjectIds) {
     const other = schema.objectsById.get(id);
     const field = other?.fieldsByName.get(step.field);
-    if (!field || field.type !== 'relation' || field.settings.isInverse) continue;
+    if (field?.type !== 'relation' || field.settings.isInverse) continue;
     if (relationTargetIds(field.settings).includes(object.state.universalId)) {
       hops.push({ field, reverse: true });
     }
@@ -133,9 +133,14 @@ export async function traverseRecords(
         (id) => schema.objectsById.get(id)?.fieldsByName.get(step.field)?.type === 'relation',
       );
       if (!known) {
-        throw new AppError(422, 'invalid_path', `step ${index}: no relation field "${step.field}"`, {
-          step: index,
-        });
+        throw new AppError(
+          422,
+          'invalid_path',
+          `step ${index}: no relation field "${step.field}"`,
+          {
+            step: index,
+          },
+        );
       }
     }
   });
@@ -181,7 +186,10 @@ export async function traverseRecords(
           continue;
         }
         if (partial.records.includes(hop.to)) continue;
-        next.push({ records: [...partial.records, hop.to], steps: [...partial.steps, hop.evidence] });
+        next.push({
+          records: [...partial.records, hop.to],
+          steps: [...partial.steps, hop.evidence],
+        });
       }
     }
     frontier = next;
@@ -220,7 +228,9 @@ async function adjacency(
   schema: CompiledSchema,
   object: CompiledObject,
   entry: DirEntry,
-  step: { field: string; direction: 'out' | 'in' } | { link: 'participant' | 'about'; direction: 'out' | 'in' },
+  step:
+    | { field: string; direction: 'out' | 'in' }
+    | { link: 'participant' | 'about'; direction: 'out' | 'in' },
   limit: number,
 ): Promise<Hop[]> {
   if ('link' in step) {
@@ -265,7 +275,11 @@ async function adjacency(
     for (const row of rows) {
       out.push({
         to: publicId(row.other),
-        evidence: { field: step.field, direction: step.direction, assertionId: row.assertion ?? null },
+        evidence: {
+          field: step.field,
+          direction: step.direction,
+          assertionId: row.assertion ?? null,
+        },
       });
     }
   }

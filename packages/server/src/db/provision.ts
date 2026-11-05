@@ -250,18 +250,20 @@ export async function ensureCatalog(backend: Backend): Promise<void> {
   if (backend.config.admin.level === 'root') {
     await backend
       .adminNamespace()
-      .query(`DEFINE NAMESPACE IF NOT EXISTS ${ident(ns)}; DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)};`);
+      .query(
+        `DEFINE NAMESPACE IF NOT EXISTS ${ident(ns)}; DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)};`,
+      );
   } else {
-    await backend.adminNamespace().query(`DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)};`);
+    await backend
+      .adminNamespace()
+      .query(`DEFINE DATABASE IF NOT EXISTS ${ident(CATALOG_DATABASE)};`);
   }
   const db = backend.adminCatalog();
-  const [state] = await db.rows<{ revision: number }>(
-    'SELECT revision FROM ONLY catalog_state:current;',
-  ).catch(() => [] as { revision: number }[]);
+  const [state] = await db
+    .rows<{ revision: number }>('SELECT revision FROM ONLY catalog_state:current;')
+    .catch(() => [] as { revision: number }[]);
   if (!state || state.revision < CATALOG_REVISION) {
-    await db.query(
-      ['BEGIN;', ...CATALOG_TABLES.flatMap(tableStatements), 'COMMIT;'].join('\n'),
-    );
+    await db.query(['BEGIN;', ...CATALOG_TABLES.flatMap(tableStatements), 'COMMIT;'].join('\n'));
   }
   await applyIndexes(db, CATALOG_INDEXES, tableMap(CATALOG_TABLES));
   await applyAccess(backend, db, []);
@@ -342,7 +344,11 @@ export async function provisionDatabase(
       );
     } catch (error) {
       if (error instanceof SurrealError && error.message.includes('workspaces_slug_uq')) {
-        throw new AppError(409, 'slug_taken', `a workspace with slug "${input.slug}" already exists`);
+        throw new AppError(
+          409,
+          'slug_taken',
+          `a workspace with slug "${input.slug}" already exists`,
+        );
       }
       throw error;
     }
@@ -379,7 +385,9 @@ export async function upgradeFixedTables(
       { revision: WORKSPACE_REVISION, now },
     );
   }
-  log.info(`Upgraded the fixed tables of workspace ${workspaceId} to revision ${WORKSPACE_REVISION}.`);
+  log.info(
+    `Upgraded the fixed tables of workspace ${workspaceId} to revision ${WORKSPACE_REVISION}.`,
+  );
   return true;
 }
 
@@ -394,7 +402,9 @@ export async function upgradeAccessMethods(
   database: string,
 ): Promise<string[]> {
   const db = backend.adminDb(database);
-  const [state] = await db.rows<WorkspaceState>('SELECT access_keys FROM ONLY workspace_state:current;');
+  const [state] = await db.rows<WorkspaceState>(
+    'SELECT access_keys FROM ONLY workspace_state:current;',
+  );
   const before = state?.access_keys ?? [];
   const accepted = acceptedKeys(backend.keys).map((k) => k.id);
   const upToDate =
@@ -431,10 +441,9 @@ export async function removeWorkspace(backend: Backend, workspaceId: string): Pr
   }
   await backend
     .adminCatalog()
-    .query(
-      'DELETE type::record("workspaces", $id); DELETE api_keys WHERE workspace = $id;',
-      { id: workspaceId },
-    );
+    .query('DELETE type::record("workspaces", $id); DELETE api_keys WHERE workspace = $id;', {
+      id: workspaceId,
+    });
   backend.forgetRoute(workspaceId);
   backend.upgraded.delete(workspaceId);
 }

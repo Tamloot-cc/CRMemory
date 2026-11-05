@@ -55,7 +55,7 @@ export function toColumn(field: Pick<FieldState, 'type'>, value: unknown): unkno
 }
 
 /** A native column value as the JSON value the API has always returned. */
-export function fromColumn(field: Pick<FieldState, 'type'>, value: unknown): unknown {
+export function fromColumn(_field: Pick<FieldState, 'type'>, value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
   return value;
 }

@@ -1,21 +1,24 @@
 import { expect } from 'vitest';
-import type { Sql } from '../../src/db/client.js';
-import { inWorkspace } from '../../src/db/tx.js';
+import type { Backend } from '../../src/db/backend.js';
+import { readWorkspace } from '../../src/db/protocol.js';
+import { rowsByIds } from '../../src/records/store.js';
 import { computeDataFromAssertions } from '../../src/records/write.js';
-import { getSchema } from '../../src/schema-engine/compiled.js';
 
-/** records.data must always equal what the assertions say (rule 2.4). */
+/**
+ * A record's stored values must always equal what its assertions say
+ * (rule 2.4): the typed columns, read back as `data`, against a fresh
+ * computation from `field_assertions`.
+ */
 export async function expectDataMatchesAssertions(
-  sql: Sql,
+  backend: Backend,
   workspaceId: string,
   id: string,
 ): Promise<void> {
-  await inWorkspace(sql, workspaceId, async (tx) => {
-    const schema = await getSchema(tx, workspaceId);
-    const [row] = await tx<{ object_type_id: string; data: Record<string, unknown> }[]>`
-      select object_type_id, data from records where id = ${id}`;
-    const object = schema.objectsById.get(row?.object_type_id as string);
-    if (!object) throw new Error('object not found');
-    expect(await computeDataFromAssertions(tx, object, id)).toEqual(row?.data);
+  await readWorkspace(backend, workspaceId, async ({ db, schema }) => {
+    const compiled = await schema();
+    const row = (await rowsByIds(db, workspaceId, compiled, [id])).get(id);
+    const object = compiled.objectsById.get(row?.object_type_id as string);
+    if (!row || !object) throw new Error('record not found');
+    expect(await computeDataFromAssertions(db, object, id)).toEqual(row.data);
   });
 }

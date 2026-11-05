@@ -95,9 +95,7 @@ async function createInternalNote(
     record: recordId,
     link: 'about',
   });
-  await addDirectAttachments(context, [
-    { event: note.id, target: recordId, via: 'about', linkId },
-  ]);
+  await addDirectAttachments(context, [{ event: note.id, target: recordId, via: 'about', linkId }]);
   return { id: note.id, occurredAt };
 }
 
@@ -271,7 +269,10 @@ export async function listFacts(
 }
 
 /** Retracts a fact (soft delete, 2.1). Its sources and history are kept. */
-export async function retractFact(op: Operation, id: string): Promise<{ id: string; deleted: true }> {
+export async function retractFact(
+  op: Operation,
+  id: string,
+): Promise<{ id: string; deleted: true }> {
   const [row] = isUuid(id)
     ? await op.rows<{ deleted_at?: Date | null }>('SELECT deleted_at FROM $id;', {
         id: new RecordId('facts', id),

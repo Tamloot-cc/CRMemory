@@ -470,7 +470,12 @@ export const WORKSPACE_TABLES: TableDefinition[] = [
 ];
 
 export const WORKSPACE_INDEXES: IndexDefinition[] = [
-  { name: 'object_types_universal_uq', table: 'object_types', fields: ['universal_id'], unique: true },
+  {
+    name: 'object_types_universal_uq',
+    table: 'object_types',
+    fields: ['universal_id'],
+    unique: true,
+  },
   { name: 'fields_universal_uq', table: 'fields', fields: ['universal_id'], unique: true },
   { name: 'fields_key_uq', table: 'fields', fields: ['object_type_id', 'key'], unique: true },
   { name: 'schema_changes_status_idx', table: 'schema_changes', fields: ['status', 'created_at'] },

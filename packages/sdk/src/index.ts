@@ -19,8 +19,6 @@ import type {
   MergeResult,
   MergeSuggestionDecision,
   OperationReceipt,
-  TraverseInput,
-  TraverseResult,
   Page,
   PresentedFact,
   PresentedRecord,
@@ -40,6 +38,8 @@ import type {
   TemplateView,
   TimelineItemKind,
   TimelinePage,
+  TraverseInput,
+  TraverseResult,
   UpdateViewInput,
   WriteResponse,
 } from '@retainer/shared';

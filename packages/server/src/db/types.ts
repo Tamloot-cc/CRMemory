@@ -3,8 +3,8 @@
  * PostgreSQL `main` these lived beside the Drizzle tables in `db/schema.ts`.)
  */
 
-export type { AppliedTemplate, WorkspaceSettings } from './protocol.js';
 export { SCHEMA_CHANGE_STATUSES, type SchemaChangeStatus } from '@retainer/shared';
+export type { AppliedTemplate, WorkspaceSettings } from './protocol.js';
 
 export const API_KEY_SCOPES = ['read', 'write', 'schema:write', 'admin'] as const;
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];

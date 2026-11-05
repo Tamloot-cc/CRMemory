@@ -15,10 +15,7 @@ export type { SchemaDescription } from '@retainer/shared';
  * describe_schema and GET /v1/schema: the workspace, its objects and fields,
  * and the built-in facts (5).
  */
-export async function describeSchema(
-  backend: Backend,
-  caller: Caller,
-): Promise<SchemaDescription> {
+export async function describeSchema(backend: Backend, caller: Caller): Promise<SchemaDescription> {
   const { workspaceId } = caller;
   const info = await readWorkspaceInfo(backend, workspaceId);
   return readWorkspace(backend, workspaceId, async ({ state, schema }) => {

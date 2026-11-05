@@ -17,7 +17,10 @@ const BURST = 200;
 
 describe('baseline: 200-event ingestion burst', () => {
   it('logs every event once and reports latency and queue wait', async () => {
-    const { id: workspaceId } = await createWorkspace(backend, { name: 'Burst', template: 'sales' });
+    const { id: workspaceId } = await createWorkspace(backend, {
+      name: 'Burst',
+      template: 'sales',
+    });
     const caller: Caller = { workspaceId, actor: AGENT, scopes: ['read', 'write'] };
     const people = await Promise.all(
       Array.from({ length: 10 }, (_, i) =>

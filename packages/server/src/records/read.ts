@@ -89,7 +89,9 @@ export async function presentRecords(
     .sort((a, b) => {
       const x = others.get(a.other_id) as { created_at: Date };
       const y = others.get(b.other_id) as { created_at: Date };
-      return x.created_at.getTime() - y.created_at.getTime() || a.other_id.localeCompare(b.other_id);
+      return (
+        x.created_at.getTime() - y.created_at.getTime() || a.other_id.localeCompare(b.other_id)
+      );
     });
   for (const link of sorted) {
     const inverse = inverseOf.get(link.field_id);

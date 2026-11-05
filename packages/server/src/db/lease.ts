@@ -1,5 +1,5 @@
-import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { log } from '../log.js';
 import type { Backend } from './backend.js';
 

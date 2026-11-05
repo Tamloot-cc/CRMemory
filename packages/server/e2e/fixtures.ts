@@ -2,11 +2,14 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { test as base, expect } from '@playwright/test';
-import postgres from 'postgres';
 import { createApp } from '../src/api/app.js';
 import { createApiKey } from '../src/auth/keys.js';
-import { createSql, RUNTIME_ROLE } from '../src/db/client.js';
+import { generateSigningKeyEntry, parseSigningKeys } from '../src/db/access.js';
+import { Backend } from '../src/db/backend.js';
+import { ensureCatalog } from '../src/db/provision.js';
+import { ident } from '../src/db/surreal.js';
 import { consolidateWorkspace } from '../src/worker/consolidate.js';
+import { installUpgrader } from '../src/workspaces/upgrade.js';
 import { createWorkspace } from '../src/workspaces/workspaces.js';
 export const test = base.extend<{
   retainer: {
@@ -18,17 +21,24 @@ export const test = base.extend<{
   };
 }>({
   retainer: async ({ browserName: _browserName }, use) => {
-    const adminUrl = process.env.DATABASE_URL;
-    if (!adminUrl) throw new Error('DATABASE_URL is required');
-    const name = `retainer_browser_${randomBytes(6).toString('hex')}`;
-    const admin = postgres(adminUrl, { max: 1, onnotice: false });
-    await admin.unsafe(
-      `create database "${name}" template "${process.env.RETAINER_BROWSER_TEMPLATE}"`,
-    );
-    const dbUrl = new URL(adminUrl);
-    dbUrl.pathname = `/${name}`;
-    const owner = createSql(dbUrl.toString()),
-      sql = createSql(dbUrl.toString(), { role: RUNTIME_ROLE });
+    const surrealUrl = process.env.RETAINER_SURREAL_URL;
+    if (!surrealUrl) throw new Error('RETAINER_SURREAL_URL is required');
+    // A fresh namespace per test: its own catalog and workspace databases.
+    const namespace = `rt_browser_${randomBytes(6).toString('hex')}`;
+    const owner = new Backend({
+      url: surrealUrl.replace(/\/+$/, ''),
+      namespace,
+      admin: {
+        user: process.env.RETAINER_SURREAL_USER ?? 'root',
+        pass: process.env.RETAINER_SURREAL_PASS ?? 'retainer',
+        level: 'root',
+      },
+      signingKeys: parseSigningKeys({
+        current: process.env.RETAINER_BROWSER_SIGNING_KEY ?? generateSigningKeyEntry('browser'),
+      }),
+    });
+    installUpgrader(owner);
+    await ensureCatalog(owner);
     const workspace = await createWorkspace(owner, { name: 'Acme' }),
       other = await createWorkspace(owner, { name: 'Other workspace' });
     const user = (
@@ -72,7 +82,7 @@ export const test = base.extend<{
       })
     ).key;
     const app = createApp({
-      sql,
+      backend: owner,
       webDir: fileURLToPath(new URL('../../web/dist', import.meta.url)),
     });
     const server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
@@ -98,7 +108,7 @@ export const test = base.extend<{
         url,
         keys: { user, writer, agent, reader, other: otherKey },
         request,
-        consolidate: () => consolidateWorkspace(sql, workspace.id),
+        consolidate: () => consolidateWorkspace(owner, workspace.id),
       });
     } finally {
       await new Promise<void>((resolve, reject) => {
@@ -107,10 +117,7 @@ export const test = base.extend<{
         // assertions finish. Stop accepting first, then close those sockets.
         if ('closeAllConnections' in server) server.closeAllConnections();
       });
-      await sql.end();
-      await owner.end();
-      await admin.unsafe(`drop database "${name}" with (force)`);
-      await admin.end();
+      await owner.adminNamespace().query(`REMOVE NAMESPACE IF EXISTS ${ident(namespace)};`);
     }
   },
 });

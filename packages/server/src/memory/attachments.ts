@@ -2,9 +2,9 @@ import { RecordId } from '../db/cbor.js';
 import { publicId, relationTable } from '../db/names.js';
 import type { Operation } from '../db/protocol.js';
 import { ident } from '../db/surreal.js';
+import { currentTargets, entriesOf, loadRecords, type WriteContext } from '../records/write.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
-import { currentTargets, entriesOf, loadRecords, type WriteContext } from '../records/write.js';
 
 /**
  * Stored event attachments (spec section 5). `event_attachments` holds the
@@ -258,7 +258,9 @@ export async function addDirectAttachments(
     if (!firstToTarget) continue;
     // The event now belongs to the target's history: roll it up one hop.
     const targetEntry = (await entriesOf(context.op, [item.target])).get(item.target);
-    const object = targetEntry ? context.schema.objectsById.get(targetEntry.object_type_id) : undefined;
+    const object = targetEntry
+      ? context.schema.objectsById.get(targetEntry.object_type_id)
+      : undefined;
     if (!object) continue;
     for (const field of rollupFields(object)) {
       const targets = await rollupTargets(context, object, field, item.target);
@@ -278,7 +280,11 @@ export async function removeDirectAttachments(
   const s = state(context.op);
   for (const item of items) {
     const ofEvent = await directOfEvent(context.op, item.event);
-    const key = directKey({ via: item.via, field_id: item.fieldId ?? null, link_id: item.linkId ?? null });
+    const key = directKey({
+      via: item.via,
+      field_id: item.fieldId ?? null,
+      link_id: item.linkId ?? null,
+    });
     const gone = ofEvent.filter((a) => a.target === item.target && directKey(a) === key);
     if (gone.length === 0) continue;
     context.op.batch.deleteIds(
@@ -294,7 +300,9 @@ export async function removeDirectAttachments(
     );
     if (remaining.some((a) => a.target === item.target)) continue;
     const targetEntry = (await entriesOf(context.op, [item.target])).get(item.target);
-    const object = targetEntry ? context.schema.objectsById.get(targetEntry.object_type_id) : undefined;
+    const object = targetEntry
+      ? context.schema.objectsById.get(targetEntry.object_type_id)
+      : undefined;
     if (!object) continue;
     for (const field of rollupFields(object)) {
       const targets = await rollupTargets(context, object, field, item.target);
@@ -319,11 +327,21 @@ export async function edgesChanged(
   if (object.isEvent) {
     await removeDirectAttachments(
       context,
-      removed.map((target) => ({ event: sourceId, target, via: 'field' as const, fieldId: field.id })),
+      removed.map((target) => ({
+        event: sourceId,
+        target,
+        via: 'field' as const,
+        fieldId: field.id,
+      })),
     );
     await addDirectAttachments(
       context,
-      added.map((target) => ({ event: sourceId, target, via: 'field' as const, fieldId: field.id })),
+      added.map((target) => ({
+        event: sourceId,
+        target,
+        via: 'field' as const,
+        fieldId: field.id,
+      })),
     );
     return;
   }

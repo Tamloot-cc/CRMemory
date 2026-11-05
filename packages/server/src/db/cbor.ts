@@ -98,9 +98,18 @@ function writeValue(w: Writer, value: unknown): void {
     w.push(Buffer.from([0xf6]));
     return;
   }
-  if (value === null) return w.push(Buffer.from([0xf6]));
-  if (value === true) return w.push(Buffer.from([0xf5]));
-  if (value === false) return w.push(Buffer.from([0xf4]));
+  if (value === null) {
+    w.push(Buffer.from([0xf6]));
+    return;
+  }
+  if (value === true) {
+    w.push(Buffer.from([0xf5]));
+    return;
+  }
+  if (value === false) {
+    w.push(Buffer.from([0xf4]));
+    return;
+  }
   if (typeof value === 'number') {
     if (Number.isSafeInteger(value) && !Object.is(value, -0)) {
       if (value >= 0) w.head(0, value);
@@ -110,7 +119,8 @@ function writeValue(w: Writer, value: unknown): void {
     const b = Buffer.alloc(9);
     b[0] = 0xfb;
     b.writeDoubleBE(value, 1);
-    return w.push(b);
+    w.push(b);
+    return;
   }
   if (typeof value === 'bigint') {
     if (value >= 0n) w.head(0, value);
@@ -120,7 +130,8 @@ function writeValue(w: Writer, value: unknown): void {
   if (typeof value === 'string') {
     const bytes = Buffer.from(value, 'utf8');
     w.head(3, bytes.length);
-    return w.push(bytes);
+    w.push(bytes);
+    return;
   }
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) throw new Error('cannot encode an invalid date');
@@ -142,19 +153,23 @@ function writeValue(w: Writer, value: unknown): void {
   }
   if (value instanceof Table) {
     w.head(6, TAG_TABLE);
-    return writeValue(w, value.name);
+    writeValue(w, value.name);
+    return;
   }
   if (value instanceof Decimal) {
     w.head(6, TAG_DECIMAL);
-    return writeValue(w, value.value);
+    writeValue(w, value.value);
+    return;
   }
   if (value instanceof Tagged) {
     w.head(6, value.tag);
-    return writeValue(w, value.value);
+    writeValue(w, value.value);
+    return;
   }
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
     w.head(2, value.length);
-    return w.push(Buffer.from(value));
+    w.push(Buffer.from(value));
+    return;
   }
   if (Array.isArray(value)) {
     w.head(4, value.length);

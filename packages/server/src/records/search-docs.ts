@@ -17,10 +17,7 @@ import type { WriteContext } from './write.js';
 
 /** Lowercase, accents removed: what the exact-word index and phrase checks compare. */
 export function fold(text: string): string {
-  return text
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase();
+  return text.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
 export type SearchDocument = {

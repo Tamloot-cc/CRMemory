@@ -21,7 +21,10 @@ export type TestBackend = Backend & {
   drop: () => Promise<void>;
 };
 
-export function testBackendConfig(namespace: string, keys?: { current: string; previous?: string }) {
+export function testBackendConfig(
+  namespace: string,
+  keys?: { current: string; previous?: string },
+) {
   const [current, previous] = inject('signingKeys');
   return {
     url: inject('surrealUrl'),

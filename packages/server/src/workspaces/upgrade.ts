@@ -128,9 +128,9 @@ export async function upgradeDefinitions(
 export async function upgradeWorkspace(
   backend: Backend,
   workspaceId: string,
-): Promise<WorkspaceUpgrade & { slug: string } | undefined> {
+): Promise<(WorkspaceUpgrade & { slug: string }) | undefined> {
   const row = await catalogWorkspace(backend, workspaceId);
-  if (!row || row.state !== 'active') return undefined;
+  if (row?.state !== 'active') return undefined;
   try {
     await upgradeFixedTables(backend, workspaceId, row.database);
     await upgradeAccessMethods(backend, workspaceId, row.database);

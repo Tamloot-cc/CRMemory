@@ -801,7 +801,12 @@ export type TraverseRecordRef = { id: string; type: string; label: string | null
 /** What supports one hop: the assertion behind an edge, or the event link. */
 export type TraverseEvidence =
   | { field: string; direction: 'out' | 'in'; assertionId: string | null }
-  | { link: 'participant' | 'about'; direction: 'out' | 'in'; eventId: string; linkId: string | null };
+  | {
+      link: 'participant' | 'about';
+      direction: 'out' | 'in';
+      eventId: string;
+      linkId: string | null;
+    };
 
 export type TraversePath = { records: TraverseRecordRef[]; steps: TraverseEvidence[] };
 

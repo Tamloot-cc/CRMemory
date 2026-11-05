@@ -22,16 +22,21 @@ import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.j
 import type { FieldState } from '../schema-engine/types.js';
 import { type AggregateInput, aggregateRecords } from './aggregate.js';
 import { identifiersFor, lookupValue } from './derive.js';
-import { dismissMergeSuggestion, type MergeInput, type MergeOutcome, mergeRecords } from './merge.js';
+import {
+  dismissMergeSuggestion,
+  type MergeInput,
+  type MergeOutcome,
+  mergeRecords,
+} from './merge.js';
 import { type QueryInput, queryRecords } from './query.js';
 import { getRecord, type PresentedRecord } from './read.js';
-import { directoryEntries } from './store.js';
-import { traverseRecords } from './traverse.js';
 import {
   acceptAssertion,
   type DecisionResult as DecisionOutcome,
   rejectAssertion,
 } from './review.js';
+import { directoryEntries } from './store.js';
+import { traverseRecords } from './traverse.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 import {
   cascadeSet,
@@ -490,7 +495,10 @@ export async function deleteRecord(
 }
 
 /** The event records among `ids`. */
-export async function eventsAmong(context: WriteContext, ids: readonly string[]): Promise<string[]> {
+export async function eventsAmong(
+  context: WriteContext,
+  ids: readonly string[],
+): Promise<string[]> {
   if (ids.length === 0) return [];
   const entries = await entriesOf(context.op, ids);
   return [...entries.values()]

@@ -136,11 +136,7 @@ export class Batch {
         `${field.split('.').map(ident).join('.')} = ${value === undefined ? 'NONE' : this.v(value)}`,
     );
     if (assignments.length === 0) return;
-    this.write(
-      `UPDATE ${rec(this, table, id)} SET ${assignments.join(', ')} RETURN id`,
-      1,
-      label,
-    );
+    this.write(`UPDATE ${rec(this, table, id)} SET ${assignments.join(', ')} RETURN id`, 1, label);
   }
 
   /** Creates or replaces one record's content. */
@@ -399,7 +395,8 @@ export async function mutate<T>(
       try {
         result = await input.plan(op);
       } catch (error) {
-        if (error instanceof NoChange) return { result: error.value as T, operationId, replayed: false };
+        if (error instanceof NoChange)
+          return { result: error.value as T, operationId, replayed: false };
         // A domain error from a torn read is replanned, not reported (step 2).
         const current = await readState(db);
         if (current.revision !== state.revision && attempt < MAX_ATTEMPTS) {
@@ -464,9 +461,7 @@ async function commit<T>(
       created_at: op.now,
       expires_at: new Date(op.now.getTime() + RECEIPT_TTL_MS),
     };
-    tail.push(
-      `CREATE type::record('operations', ${batch.v(op.id)}) CONTENT ${batch.v(receipt)};`,
-    );
+    tail.push(`CREATE type::record('operations', ${batch.v(op.id)}) CONTENT ${batch.v(receipt)};`);
   }
   const text = [...head, ...batch.statements, ...tail, 'COMMIT;'].join('\n');
   let results: StatementResult[];
@@ -502,7 +497,11 @@ export function toStorable(value: unknown): unknown {
 export async function readWorkspace<T>(
   backend: Backend,
   workspaceId: string,
-  fn: (read: { db: Db; state: WorkspaceState; schema: () => Promise<CompiledSchema> }) => Promise<T>,
+  fn: (read: {
+    db: Db;
+    state: WorkspaceState;
+    schema: () => Promise<CompiledSchema>;
+  }) => Promise<T>,
 ): Promise<T> {
   const db = await backend.workspace(workspaceId);
   const state = await readState(db);

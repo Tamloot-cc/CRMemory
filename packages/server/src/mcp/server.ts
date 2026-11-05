@@ -3,8 +3,6 @@ import { z } from 'zod';
 import { errorBody, toAppError } from '../api/http.js';
 import { missingScope } from '../auth/middleware.js';
 import type { Backend } from '../db/backend.js';
-import { getOperation } from '../operations/service.js';
-import { traverseInputSchema } from '../records/traverse.js';
 import type { ApiKeyScope } from '../db/types.js';
 import { AppError } from '../errors.js';
 import { log } from '../log.js';
@@ -12,6 +10,7 @@ import { MAX_PARTICIPANTS, participantInputSchema } from '../memory/event-links.
 import { logEventInputSchema } from '../memory/events.js';
 import { rememberInputSchema } from '../memory/facts.js';
 import { logEventFor, remember } from '../memory/service.js';
+import { getOperation } from '../operations/service.js';
 import { queryInputSchema } from '../records/query.js';
 import {
   type Caller,
@@ -23,6 +22,7 @@ import {
   upsertRecord,
   valuesSchema,
 } from '../records/service.js';
+import { traverseInputSchema } from '../records/traverse.js';
 import { contextInputSchema } from '../retrieval/context.js';
 import { searchInputSchema } from '../retrieval/search.js';
 import { contextFor, searchFor, timelineFor } from '../retrieval/service.js';
@@ -444,7 +444,8 @@ export function createMcpServer(backend: Backend, caller: Caller): McpServer {
       inputSchema: queryRecordsInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ object, ...input }) => run(caller, 'read', () => findRecords(backend, caller, object, input)),
+    ({ object, ...input }) =>
+      run(caller, 'read', () => findRecords(backend, caller, object, input)),
   );
 
   server.registerTool(
@@ -470,7 +471,7 @@ export function createMcpServer(backend: Backend, caller: Caller): McpServer {
         '({ field, direction }: out follows the field from the current records, an inverse ' +
         'name included; in finds records whose field of that name points at them) or an ' +
         'event link ({ link: participant|about, direction }: in goes from records to their ' +
-        'events, out from events to their records). Example, people who met a deal\'s ' +
+        "events, out from events to their records). Example, people who met a deal's " +
         'decision-maker: starts [deal], path [{ field: "decisionMaker" }, { link: ' +
         '"participant", direction: "in" }, { link: "participant", direction: "out" }]. ' +
         'At most 500 edges are read and 50 paths returned; truncated says when the result ' +
@@ -552,7 +553,8 @@ export function createMcpServer(backend: Backend, caller: Caller): McpServer {
       inputSchema: getTimelineInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ record, ...input }) => run(caller, 'read', () => timelineFor(backend, caller, record, input)),
+    ({ record, ...input }) =>
+      run(caller, 'read', () => timelineFor(backend, caller, record, input)),
   );
 
   server.registerTool(

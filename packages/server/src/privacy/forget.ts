@@ -224,9 +224,7 @@ export async function forgetRecord(context: WriteContext, id: string): Promise<F
     ids: [...eventIds, ...initialErased].map((e) => new RecordId('event_identity', e)),
   });
   const identities = identityRows.flatMap((row) =>
-    row.channel && row.external_id
-      ? [{ channel: row.channel, externalId: row.external_id }]
-      : [],
+    row.channel && row.external_id ? [{ channel: row.channel, externalId: row.external_id }] : [],
   );
 
   // Removed claims leave the plan's view first, so recomputation never
@@ -449,4 +447,3 @@ async function findMentions(
     events: await live(eventIds, eventTypes),
   };
 }
-

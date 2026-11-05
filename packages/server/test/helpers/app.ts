@@ -2,10 +2,9 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import type { Actor } from '@retainer/shared';
 import { type AppDeps, createApp } from '../../src/api/app.js';
 import { createApiKey } from '../../src/auth/keys.js';
-import { RUNTIME_ROLE } from '../../src/db/client.js';
-import type { ApiKeyScope } from '../../src/db/schema.js';
+import type { Backend } from '../../src/db/backend.js';
+import type { ApiKeyScope } from '../../src/db/types.js';
 import { createWorkspace, type Workspace } from '../../src/workspaces/workspaces.js';
-import type { TestDatabase } from './db.js';
 
 export type TestResponse<T = any> = {
   status: number;
@@ -22,13 +21,12 @@ export type RequestOptions = {
 };
 
 /**
- * Builds the Hono app against a test database and calls it in-process, the
- * way layer 3 (API) tests use it. No port is opened. The app runs as the
- * runtime role, as in production, so RLS applies.
+ * Builds the Hono app against a test backend and calls it in-process, the
+ * way layer 3 (API) tests use it. No port is opened. Requests run through
+ * runtime sessions, as in production, so database isolation applies.
  */
-export function startTestApp(db: TestDatabase, options: Omit<AppDeps, 'sql'> = {}) {
-  const sql = db.connect({ role: RUNTIME_ROLE, max: 20 });
-  const app = createApp({ sql, ...options });
+export function startTestApp(backend: Backend, options: Omit<AppDeps, 'backend'> = {}) {
+  const app = createApp({ backend, ...options });
 
   async function request<T = any>(
     path: string,
@@ -62,13 +60,13 @@ export function startTestApp(db: TestDatabase, options: Omit<AppDeps, 'sql'> = {
     options: { name: string; template?: string },
     keys: Record<K, { actor: Actor; scopes: ApiKeyScope[] }>,
   ): Promise<{ workspace: Workspace; keys: Record<K, string> }> {
-    const workspace = await createWorkspace(db.owner, options);
+    const workspace = await createWorkspace(backend, options);
     const issued = {} as Record<K, string>;
     for (const [name, spec] of Object.entries(keys) as [
       K,
       { actor: Actor; scopes: ApiKeyScope[] },
     ][]) {
-      issued[name] = (await createApiKey(db.owner, { workspace: workspace.id, name, ...spec })).key;
+      issued[name] = (await createApiKey(backend, { workspace: workspace.id, name, ...spec })).key;
     }
     return { workspace, keys: issued };
   }
@@ -95,7 +93,7 @@ export function startTestApp(db: TestDatabase, options: Omit<AppDeps, 'sql'> = {
     return Promise.resolve(app.request(url.toString(), init));
   }
 
-  return { app, sql, request, setupWorkspace, mcpClient, inProcessFetch };
+  return { app, backend, request, setupWorkspace, mcpClient, inProcessFetch };
 }
 
 /** Calls a tool and parses its JSON text, keeping `isError`. */

@@ -837,7 +837,10 @@ export async function saveRecord(
     if (field.type === 'relation') continue;
     const before = record.data[field.key];
     const after = data[field.key];
-    if (JSON.stringify(before) === JSON.stringify(after) && Object.hasOwn(record.data, field.key) === Object.hasOwn(data, field.key)) {
+    if (
+      JSON.stringify(before) === JSON.stringify(after) &&
+      Object.hasOwn(record.data, field.key) === Object.hasOwn(data, field.key)
+    ) {
       continue;
     }
     set[fieldColumn(field.key)] = Object.hasOwn(data, field.key)
@@ -853,7 +856,8 @@ export async function saveRecord(
     ...extra,
   });
   // The directory's `updated_at` is what change scans (the consolidator) read.
-  const touched = (context.op.cache.get('directoryTouched') as Set<string> | undefined) ?? new Set();
+  const touched =
+    (context.op.cache.get('directoryTouched') as Set<string> | undefined) ?? new Set();
   context.op.cache.set('directoryTouched', touched);
   if (!touched.has(record.id)) {
     touched.add(record.id);
@@ -1148,9 +1152,7 @@ export async function cascadeSet(
         .map((e) => new RecordId(e.tb, e.id));
       if (refs.length === 0) continue;
       vars[`t${n}`] = refs;
-      statements.push(
-        `SELECT VALUE <-${ident(relationTable(field.universalId))}<-? FROM $t${n};`,
-      );
+      statements.push(`SELECT VALUE <-${ident(relationTable(field.universalId))}<-? FROM $t${n};`);
       n++;
     }
     if (statements.length === 0) break;
@@ -1188,7 +1190,10 @@ export async function softDeleteRecord(context: WriteContext, id: string): Promi
 }
 
 /** Sets `deleted_at` on records, returning those it deleted now. */
-export async function markDeleted(context: WriteContext, ids: readonly string[]): Promise<string[]> {
+export async function markDeleted(
+  context: WriteContext,
+  ids: readonly string[],
+): Promise<string[]> {
   if (ids.length === 0) return [];
   const records = await lockRecordsForUpdate(context, ids);
   const deleted: string[] = [];
