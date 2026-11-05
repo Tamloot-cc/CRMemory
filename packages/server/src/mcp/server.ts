@@ -86,8 +86,17 @@ When a field you need does not exist, use propose_schema_change. Adding is
 applied at once; removing or renaming waits for a person to approve. Read
 get_guide("schema_design") once before you first add an object.
 
+To explain how records connect (who at a company met a deal's decision-maker),
+use traverse_records with explicit steps; pick its start records with
+query_records or search.
+
 Errors are JSON { error: { code, message, details } }. Messages say what was
-wrong and what is allowed, so read them and retry.`;
+wrong and what is allowed, so read them and retry. Before a write that takes an
+idempotencyKey, choose the key and keep it: if the call times out or returns
+unknown_outcome, the write may still have happened. Check it with
+get_operation (the operationId in the error, or the kind and your key), and
+retry only with the same key. workspace_busy and not_accepting_writes are safe
+to retry after a moment.`;
 
 /** A successful result: the JSON as text, and as structured content; a string as plain text. */
 function ok(result: object | string): CallToolResult {
