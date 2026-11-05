@@ -21,6 +21,7 @@ resolves conflicts and searches. It never calls a language model.
 | [Event types and record history](event-types-and-history-spec.md)            | Superseded by the merged spec; kept as the original decision record                                                 |
 | [Schema, events and history: merged spec](schema-events-and-history-spec.md) | Consolidated proposal: event records, native collection/polymorphic relations, rollups, history and phased delivery |
 | [Workspace upgrade spec](workspace-upgrade-spec.md)                          | Bringing existing workspaces up to new built-in objects, event types, templates and protection                      |
+| [Comments spec](comments-spec.md)                                            | Proposed: comments by people on any record, events linked to entities only, `note` out of the base template         |
 
 The design, the data model and the write rules are in
 [ARCHITECTURE.md](../ARCHITECTURE.md); the web app's design is in
