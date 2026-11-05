@@ -108,27 +108,39 @@ docker compose -f packages/server/experiments/surrealdb/compose.yml exec -T surr
 
 ## Migration spike
 
-`spike/` holds the local checks behind section 12 of
+`spike/` holds the local and Cloud checks behind section 12 of
 [the migration spec](../../../../docs/surrealdb-migration-spec.md#12-local-spike-findings).
-They use the same Compose services and only the `retainer_spike` namespace; each
+Locally they use the same Compose services and only the `retainer_spike` namespace; each
 script creates fresh databases and removes them, including after a failure.
 Every script prints its observations rather than asserting them.
 
 ```sh
 docker compose -f packages/server/experiments/surrealdb/compose.yml up -d --wait
 cd packages/server/experiments/surrealdb/spike
-node latency.mjs       # Basic auth vs token, /sql vs /rpc
+node latency.mjs       # auth methods, /sql vs /rpc, write transactions by size
 node access.mjs        # record-access JWTs, permissions, silent refusal, database confinement
 node transport.mjs     # JSON-RPC type coercion vs CBOR; failures outside a transaction
 node schema.mjs        # transactional DEFINE, relation constraints, null vs none
 node search.mjs        # full-text parity with ARCHITECTURE.md 5.1
 node rollup.mjs        # rollup fan-out vs the Postgres lateral join (several minutes)
 node provisioning.mjs  # time to provision a workspace-sized database
+node integrity.mjs     # unique-index enforcement by definition style; conflict granularity
+node cleanup.mjs       # remove the retainer_spike namespace after an interrupted run
 ```
 
+To run checks against SurrealDB Cloud, mint a short-lived database token
+through the Cloud MCP tool `get_instance_database_token` and send it to
+`cloud.mjs` as one JSON line on standard input, never as an argument or a file:
+`{"token": "…", "endpoint": "https://<host>", "checks": ["latency", "integrity"]}`.
+Tokens last about 10 minutes, so run a few checks per token. For `rollup`, set
+`SPIKE_POSTGRES=0` and smaller sizes (for example `SPIKE_SINGLE=1000,5000
+SPIKE_FANOUT=100,500 SPIKE_NOISE=10000`), since Earth bills by use. Finish with
+the `cleanup` check.
+
 `rollup.mjs` also creates and drops a `spike_*` schema in the Compose
-PostgreSQL. `SPIKE_FANOUT` (default `100,1000,5000`) and `SPIKE_NOISE` (default
-100,000 unrelated attachments) change its sizes. Its closure variant scans the
+PostgreSQL, unless `SPIKE_POSTGRES=0`. `SPIKE_SINGLE` (default
+`1000,10000,50000`), `SPIKE_FANOUT` (default `100,1000,5000`) and `SPIKE_NOISE`
+(default 100,000 unrelated attachments) change its sizes. Its closure variant scans the
 table once per source, so it runs once, at the smallest fan-out. `cbor.mjs` is a
 minimal encoder/decoder for these checks, not a client to reuse.
 

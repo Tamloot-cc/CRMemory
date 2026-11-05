@@ -1,6 +1,6 @@
 // How caller values reach SurrealDB: JSON-RPC variable coercion, CBOR, /sql
 // query-string variables, and statement failures outside a transaction.
-import { BASE, BASIC, NS, ok, rpc, rpcCbor, show, sql, statuses, withDbs } from './lib.mjs';
+import { ADMIN, BASE, NS, ok, rpc, rpcCbor, show, sql, statuses, withDbs } from './lib.mjs';
 
 const texts = [
   'INV:2026',
@@ -66,7 +66,7 @@ await withDbs(1, async (db) => {
     method: 'POST',
     headers: {
       Accept: 'application/json',
-      Authorization: BASIC,
+      Authorization: ADMIN,
       'surreal-ns': NS,
       'surreal-db': db,
     },

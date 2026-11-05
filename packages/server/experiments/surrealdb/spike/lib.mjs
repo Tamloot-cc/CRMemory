@@ -2,10 +2,22 @@ import { createSign, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { dec, enc } from './cbor.mjs';
 
-/** The experiment's local SurrealDB (compose.yml); never a Cloud instance. */
-export const BASE = `http://127.0.0.1:${process.env.EXPERIMENT_SURREAL_PORT || 18180}`;
 export const NS = 'retainer_spike';
 export const BASIC = `Basic ${Buffer.from('experiment:local-experiment').toString('base64')}`;
+
+/**
+ * The target: the experiment's local SurrealDB (compose.yml) unless cloud.mjs
+ * reconfigures it. These are live bindings, so every script sees the change.
+ */
+export let BASE = `http://127.0.0.1:${process.env.EXPERIMENT_SURREAL_PORT || 18180}`;
+export let ADMIN = BASIC;
+export let TARGET = 'local';
+
+export function configure({ base, auth, target }) {
+  BASE = base;
+  ADMIN = auth;
+  TARGET = target;
+}
 
 export const newDb = (prefix = 'spike') => `${prefix}_${randomBytes(6).toString('hex')}`;
 
@@ -17,7 +29,7 @@ function headers(auth, ns, db, type = 'application/json') {
 }
 
 /** POST /sql; returns every statement's result object. */
-export async function sql(query, { auth = BASIC, ns = NS, db, raw = false } = {}) {
+export async function sql(query, { auth = ADMIN, ns = NS, db, raw = false } = {}) {
   const response = await fetch(`${BASE}/sql`, {
     method: 'POST',
     headers: headers(auth, ns, db),
@@ -42,7 +54,7 @@ export const statuses = (results) =>
   results.map((r) => (r.status === 'OK' ? r.result : `ERR ${String(r.result).slice(0, 160)}`));
 
 /** POST /rpc with a JSON body. */
-export async function rpc(method, params, { auth = BASIC, ns = NS, db } = {}) {
+export async function rpc(method, params, { auth = ADMIN, ns = NS, db } = {}) {
   const response = await fetch(`${BASE}/rpc`, {
     method: 'POST',
     headers: headers(auth, ns, db),
@@ -57,7 +69,7 @@ export async function rpc(method, params, { auth = BASIC, ns = NS, db } = {}) {
 }
 
 /** POST /rpc with a CBOR body, as the official SDK sends it. */
-export async function rpcCbor(method, params, { auth = BASIC, ns = NS, db } = {}) {
+export async function rpcCbor(method, params, { auth = ADMIN, ns = NS, db } = {}) {
   const response = await fetch(`${BASE}/rpc`, {
     method: 'POST',
     headers: headers(auth, ns, db, 'application/cbor'),
@@ -68,6 +80,7 @@ export async function rpcCbor(method, params, { auth = BASIC, ns = NS, db } = {}
 
 /** A root session token, so timings exclude per-request password verification. */
 export async function rootToken() {
+  if (TARGET !== 'local') return ADMIN;
   const response = await fetch(`${BASE}/signin`, {
     method: 'POST',
     headers: headers(undefined, undefined, undefined),
@@ -105,7 +118,7 @@ export async function time(n, fn, warmup = 3) {
   return { p50: at(0.5), p95: at(0.95) };
 }
 
-export async function createDb(db, auth = BASIC) {
+export async function createDb(db, auth = ADMIN) {
   await ok(`DEFINE NAMESPACE IF NOT EXISTS ${NS}; USE NS ${NS}; DEFINE DATABASE ${db};`, {
     db: undefined,
     auth,
@@ -113,7 +126,7 @@ export async function createDb(db, auth = BASIC) {
 }
 
 /** Runs `fn` with fresh databases and removes only those databases afterwards. */
-export async function withDbs(count, fn, auth = BASIC) {
+export async function withDbs(count, fn, auth = ADMIN) {
   const dbs = Array.from({ length: count }, () => newDb());
   for (const db of dbs) await createDb(db, auth);
   try {

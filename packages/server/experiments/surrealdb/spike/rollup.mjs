@@ -2,21 +2,27 @@
 // through a lateral join (memory/events.ts, eventHistory); this measures the
 // SurrealDB equivalents at increasing fan-out, with the same shapes in Postgres.
 // The closure variant is a table scan per source; it runs once, at 100 sources.
-import postgres from 'postgres';
 import { ok, rootToken, show, time, withDbs } from './lib.mjs';
 
 const FANOUT = (process.env.SPIKE_FANOUT || '100,1000,5000').split(',').map(Number);
 const NOISE = Number(process.env.SPIKE_NOISE || 100000);
+const SINGLE = (process.env.SPIKE_SINGLE || '1000,10000,50000').split(',').map(Number);
+// SPIKE_POSTGRES=0 skips the Postgres baseline (for example, against Cloud).
+const USE_PG = process.env.SPIKE_POSTGRES !== '0';
 const T0 = Date.parse('2020-01-01T00:00:00Z');
 const iso = (minutes) => new Date(T0 + minutes * 60000).toISOString();
 const page = 'ORDER BY occurred_at DESC LIMIT 21';
 const operators = (plan) => JSON.stringify(plan).match(/"operator":"(TableScan|IndexScan)"/g);
 
 const auth = await rootToken();
-const pg = postgres(
-  `postgres://experiment:local-experiment@127.0.0.1:${process.env.EXPERIMENT_PG_PORT || 18181}/experiment`,
-  { onnotice: () => {} },
-);
+const pg = USE_PG
+  ? (await import('postgres')).default(
+      `postgres://experiment:local-experiment@127.0.0.1:${process.env.EXPERIMENT_PG_PORT || 18181}/experiment`,
+      { onnotice: () => {} },
+    )
+  : null;
+/** Runs Postgres statements when the baseline is enabled. */
+const pgq = (text) => (pg ? pg.unsafe(text) : null);
 const schema = `spike_${Date.now()}`;
 
 try {
@@ -67,7 +73,7 @@ try {
       await insert(
         Array.from({ length: NOISE }, (_, i) => [payment++, `invoice:n${i % 20000}`, i]),
       );
-      await pg.unsafe(`create schema ${schema}; set search_path = ${schema};
+      await pgq(`create schema ${schema}; set search_path = ${schema};
         create table links (source text, target text); create index on links (target);
         create table att (out text, occurred_at timestamptz); create index on att (out, occurred_at desc);
         insert into att select 'invoice:n' || (g % 20000), timestamptz '2020-01-01' + g * interval '1 minute'
@@ -76,7 +82,7 @@ try {
 
       const single = [];
       let loaded = 0;
-      for (const n of [1000, 10000, 50000]) {
+      for (const n of SINGLE) {
         await insert(
           Array.from({ length: n - loaded }, (_, i) => [payment++, 'invoice:hot', loaded + i]),
         );
@@ -107,7 +113,7 @@ try {
           await q(`INSERT RELATION INTO inv_company [${links.slice(i, i + 5000).join(',')}];`);
         }
         await insert(rows);
-        await pg.unsafe(`set search_path = ${schema};
+        await pgq(`set search_path = ${schema};
           insert into links select 'invoice:f' || g, 'company:c1' from generate_series(${invoices}, ${sources - 1}) g;
           insert into att select 'invoice:f' || g, timestamptz '2020-01-01' + (200000 + g * 5 + j) * interval '1 minute'
             from generate_series(${invoices}, ${sources - 1}) g, generate_series(0, 4) j;
@@ -143,18 +149,20 @@ try {
             0,
           );
         }
-        result.postgres_lateral = await time(20, () =>
-          pg.unsafe(`set search_path = ${schema};
+        if (pg) {
+          result.postgres_lateral = await time(20, () =>
+            pgq(`set search_path = ${schema};
             select t.* from links s cross join lateral (
               select out, occurred_at from att where att.out = s.source order by occurred_at desc limit 21
             ) t where s.target = 'company:c1' order by t.occurred_at desc limit 21`),
-        );
+          );
+        }
         console.log(JSON.stringify(result));
       }
     },
     auth,
   );
 } finally {
-  await pg.unsafe(`drop schema if exists ${schema} cascade`);
-  await pg.end();
+  await pgq(`drop schema if exists ${schema} cascade`);
+  await pg?.end();
 }

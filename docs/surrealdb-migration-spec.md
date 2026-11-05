@@ -1,8 +1,8 @@
 # SurrealDB backend migration spec
 
 Date: November 5, 2026. Status: **implementation plan; not implemented**. A
-local spike on the pinned release (section 12) has revised the transport, write
-protocol, schema evolution, rollup storage and search sections.
+spike on the pinned release and on Cloud (section 12) has revised the
+transport, write protocol, schema evolution, rollup storage and search sections.
 
 The design decisions in this document are settled for implementation. A phase
 whose checks disprove one records the change here before continuing. The spec
@@ -37,22 +37,22 @@ SurrealQL or knowledge of physical table names to use Retainer.
 
 ## 2. Decisions and deliberate limits
 
-| Area                | Decision                                                                                                                                                                                                            |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Branch              | Start `codex/surrealdb-v1` from the PostgreSQL baseline. Keep `main` on PostgreSQL; keep the experiment branch as research.                                                                                         |
-| Runtime storage     | SurrealDB only, including auth/catalog data, views, jobs and operation receipts. No PostgreSQL sidecar or runtime backend switch.                                                                                   |
-| Deployment baseline | Single-node Community SurrealDB with persistent SurrealKV; start from the tested 4.0.0 image digest in the experiment Compose file.                                                                                 |
-| Cloud               | Use the same server through the supported database HTTP API. Cloud is a separate verification target, not the source of truth for a reproducible local release.                                                     |
-| Topology            | One Retainer process (`RETAINER_ROLE=all`) per deployment, held to one by a catalog lease (section 9). `main`'s AWS Lambda deployment, separate API/worker processes and replicas are not supported on this branch. |
-| Tenancy             | One catalog database and one database per workspace, under a Retainer namespace.                                                                                                                                    |
-| CRM storage         | One typed table per object, one native relation table per owning relation field, shared assertion/fact/event-link tables within each workspace.                                                                     |
-| Metadata            | Retainer metadata remains authoritative and generates database definitions, tool discovery and presentation.                                                                                                        |
-| Policy              | TypeScript owns validation, claim ranking, review, schema approval and lifecycle policy. Database constraints supplement it.                                                                                        |
-| Concurrency         | Intentionally serialize writes per workspace using a local queue plus a database revision check. Read only affected data, not the whole workspace.                                                                  |
-| Transport           | HTTP `/rpc` with CBOR parameters and token authentication. No JSON-RPC parameters, no per-request password authentication (section 9).                                                                              |
-| Rollups             | Store one-hop rollup attachments at write time, so a record's history is an indexed page rather than a per-source fan-out at read time (section 5).                                                                 |
-| Interfaces          | Preserve existing REST/MCP/SDK behavior and the web app. Add one bounded traversal operation after core parity.                                                                                                     |
-| Intelligence        | External agents make model calls. Retainer performs no extraction, embeddings or model-based maintenance. Agent Memory is outside this migration.                                                                   |
+| Area                | Decision                                                                                                                                                                                                                                                                                                                                   |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Branch              | Start `codex/surrealdb-v1` from the PostgreSQL baseline. Keep `main` on PostgreSQL; keep the experiment branch as research.                                                                                                                                                                                                                |
+| Runtime storage     | SurrealDB only, including auth/catalog data, views, jobs and operation receipts. No PostgreSQL sidecar or runtime backend switch.                                                                                                                                                                                                          |
+| Deployment baseline | Single-node Community SurrealDB with persistent SurrealKV; start from the tested 4.0.0 image digest in the experiment Compose file.                                                                                                                                                                                                        |
+| Cloud               | Use the same server through the supported database HTTP API. Cloud is a separate verification target, not the source of truth for a reproducible local release. Earth spent 160–250 ms of server-side time per request (section 12), so the serialized write protocol targets a self-hosted server, where a write transaction took 2–8 ms. |
+| Topology            | One Retainer process (`RETAINER_ROLE=all`) per deployment, held to one by a catalog lease (section 9). `main`'s AWS Lambda deployment, separate API/worker processes and replicas are not supported on this branch.                                                                                                                        |
+| Tenancy             | One catalog database and one database per workspace, under a Retainer namespace.                                                                                                                                                                                                                                                           |
+| CRM storage         | One typed table per object, one native relation table per owning relation field, shared assertion/fact/event-link tables within each workspace.                                                                                                                                                                                            |
+| Metadata            | Retainer metadata remains authoritative and generates database definitions, tool discovery and presentation.                                                                                                                                                                                                                               |
+| Policy              | TypeScript owns validation, claim ranking, review, schema approval and lifecycle policy. Database constraints supplement it.                                                                                                                                                                                                               |
+| Concurrency         | Intentionally serialize writes per workspace using a local queue plus a database revision check. Read only affected data, not the whole workspace.                                                                                                                                                                                         |
+| Transport           | HTTP `/rpc` with CBOR parameters and token authentication. No JSON-RPC parameters, no per-request password authentication (section 9).                                                                                                                                                                                                     |
+| Rollups             | Store one-hop rollup attachments at write time, so a record's history is an indexed page rather than a per-source fan-out at read time (section 5).                                                                                                                                                                                        |
+| Interfaces          | Preserve existing REST/MCP/SDK behavior and the web app. Add one bounded traversal operation after core parity.                                                                                                                                                                                                                            |
+| Intelligence        | External agents make model calls. Retainer performs no extraction, embeddings or model-based maintenance. Agent Memory is outside this migration.                                                                                                                                                                                          |
 
 There is no production customer-data migration requirement. Seed fresh test
 workspaces through Retainer's public tools; do not build a general PostgreSQL
@@ -113,6 +113,8 @@ Workspace creation is a small resumable sequence: catalog entry `provisioning`,
 database/core definitions, runtime principal/access method, base template,
 catalog entry `active`. Only active workspaces receive normal requests. There
 is no cross-database transaction or distributed provisioning coordinator.
+Provision one workspace at a time: on Cloud, a workspace-sized schema took 11 s,
+and eight parallel provisions dropped their connections (section 12).
 
 Retainer API keys and browser sessions keep their existing external behavior.
 The server checks key revocation on every request and derives the actor from
@@ -315,10 +317,18 @@ data writes and revision increment around it, and a failure rolls all of it back
 (section 12). An additive change with bounded physical work goes through the
 normal write protocol as one administrative transaction, with no
 `schema_update` mode. Such changes include a new field, object table or relation
-table, and an index on a table with no data. That transaction verifies and
-advances the revision, applies the definitions, publishes metadata and
-increments the schema version. Agents adding fields during ingestion therefore
-do not pause the workspace.
+table. That transaction verifies and advances the revision, applies the
+definitions, publishes metadata and increments the schema version. Agents adding
+fields during ingestion therefore do not pause the workspace.
+
+Indexes are the exception. On Cloud (Earth), a unique index defined inside an
+explicit transaction accepted duplicates, while the same index defined on its
+own was enforced (section 12). So define every index as its own statement,
+outside a transaction, before the publishing transaction. A new table and its
+indexes are not yet in published metadata, so nothing writes to them and no
+pause is needed. Then verify each index before publishing: `INFO FOR INDEX`
+reports `ready`, and for a unique index a duplicate probe inside a cancelled
+transaction is refused. Provisioning follows the same rule.
 
 For changes whose physical work depends on existing data, notably index builds
 and required/unique checks over existing records, acquire the workspace queue
@@ -532,7 +542,7 @@ than designing a universal ORM or maintaining two runtime implementations.
 
 | Phase                                       | Deliverable and exit condition                                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0. Spike                                    | Local checks on the pinned release (section 12): done. Before Phase 1: send the license question (section 2) and repeat the transport, access and rollup checks on Cloud in a fresh database.                                                                                                                                                                                                                        |
+| 0. Spike                                    | Local and Cloud checks (section 12): done. License question sent to SurrealDB on November 5, 2026; awaiting a written answer (section 2).                                                                                                                                                                                                                                                                            |
 | 1. Foundation                               | New branch, pinned Compose/CI, catalog/workspace provisioning, runtime access and signing-key rotation, process lease, API-key bootstrap/revocation, CBOR transport, transaction/receipt module. Boot and authenticate without PostgreSQL. Prove cross-workspace denial, duplicate retry handling and a refused second process. Record write latency and queue wait for a 200-event ingestion burst as the baseline. |
 | 2. Agent-managed schema and records         | Metadata compiler/step runner, base templates/protection, built-in definition upgrades, IDs/directory, all existing field shapes, assertions/review, identifiers/uniqueness and single/collection/polymorphic native relations. An agent creates a custom object and safely writes it through MCP.                                                                                                                   |
 | 3. Evidence and lifecycle                   | Event logging/retries/links, facts/internal notes, source retraction, merge, delete and forget/suppression, including queue/receipt cleanup. Competing operations preserve the existing invariants.                                                                                                                                                                                                                  |
@@ -572,7 +582,8 @@ without a separate decision.
   separate database sessions so the local queue cannot hide commit conflicts.
 - Verify source/identifier assertions, current values and native graph agree
   after every lifecycle operation and after recomputation. Confirm direct native
-  edge/unique-claim constraints reject invalid writes.
+  edge/unique-claim constraints reject invalid writes, on every target, for
+  indexes created both at provisioning and by later schema changes.
 - Test unknown/revoked keys, spoofed actors, runtime denial of schema changes,
   wrong database contexts, cross-workspace reads/writes/traversals/search and
   internal-note visibility. Permission refusal may return no rows; verify effects,
@@ -623,9 +634,32 @@ Timings are client-side medians on one machine and are not production targets.
 | Rollup page, fan-out    | With 100,000 unrelated attachments: one statement per source took 12/259/1,390 ms for 100/1,000/5,000 sources; an `IN` list took 58/219/3,392 ms (planner chose a table scan); a closure took 82 s for 100 sources (table scan per source). The PostgreSQL lateral join took 1.1/5.1/22 ms.              | Stored rollups; plan rules (sections 5 and 8). |
 | Test provisioning       | 338 definitions (access, 22 fixed tables, 6 object tables, 10 relation tables, search indexes) took 350 ms; 8 in parallel took 1.2 s wall time; removal took 6 ms.                                                                                                                                       | None; per-file and per-test databases suffice. |
 
-Not covered by the spike: Cloud behavior, the license question, conflict rates
-under realistic load, stored-rollup write cost, erasure and version retention,
-backup and restore.
+### Cloud (Earth)
+
+The same checks ran on November 5, 2026 against the `retainer` Earth instance
+(EU residency) in a separate `retainer_spike` namespace, through short-lived
+owner tokens over HTTPS; the instance MCP query route still failed. `/version`
+reported `surrealdb-4.0.0-nightly` while management reported `4.0.0`. Rollup
+sizes were reduced, without the PostgreSQL baseline. The namespace was removed
+afterwards.
+
+| Question                 | Cloud result                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Same as local            | JSON-RPC coercion and CBOR, statement failures outside transactions, transactional `DEFINE`, typed tables and relation constraints, record-access isolation and silent refusal, search. `/sql` query-string variables arrive as `none`, which CBOR `/rpc` makes irrelevant.                                                                      |
+| Unique indexes           | Enforced when defined on their own: single-field, composite, relation `(in, out)`, over existing rows, and against 10 concurrent creates. **A unique index defined inside `BEGIN`/`COMMIT` accepted duplicates**, and one defined there over existing duplicates was created.                                                                    |
+| Write conflicts          | Per record, as locally: concurrent transactions on different records, tables or databases did not conflict. The message reads `Transaction conflict: conflict (409). This transaction can be retried`.                                                                                                                                           |
+| Request latency          | `/health` 11 ms. `RETURN 1`: 249 ms with the owner token, 160 ms with a record-access token. Write transactions: 179 ms for 1 write, 251 ms for 10, 342 ms for 50. The time is server-side, not network.                                                                                                                                         |
+| Rollup plans and timings | Same plan shapes as locally. One record's newest page took 252/262 ms at 1,000/5,000 events: flat, and equal to the request overhead. With 10,000 unrelated attachments: one statement per source took 480/882 ms for 100/500 sources; an `IN` list 419/599 ms (table scan; a 10-item list used index lookups); a closure 8.3 s for 100 sources. |
+| Provisioning             | 338 definitions in one transaction took 11.4 s; removal took 355 ms. Eight parallel provisions dropped their connections.                                                                                                                                                                                                                        |
+
+On Earth, a write needs at least two requests (plan, commit), about 0.4 s, so
+one workspace's serialized writes top out at a few per second. The time is
+spent in the service, so moving Retainer closer would not remove it. That is why
+the spec targets a self-hosted server (section 2). The index result is the one
+correctness difference; section 7's rule avoids it on every target.
+
+Not covered by the spike: conflict rates under realistic load, stored-rollup
+write cost, erasure and version retention, backup and restore.
 
 ## Sources and implementation anchors
 
