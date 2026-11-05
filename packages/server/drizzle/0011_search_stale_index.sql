@@ -1,1 +1,0 @@
-CREATE INDEX "records_search_stale_idx" ON "records" USING btree ("workspace_id","id") WHERE "records"."search" is null and "records"."merged_into_id" is null;

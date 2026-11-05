@@ -303,6 +303,17 @@ function classify(results: StatementResult[]): {
         String(r.result),
       ),
   );
+  // A commit-time conflict is reported only on the COMMIT result, after
+  // every statement before it says it was not executed.
+  const conflict = results.find(
+    (r) =>
+      r.status === 'ERR' &&
+      (isRetryableConflict(String(r.result)) ||
+        (r as { details?: { kind?: string } }).details?.kind === 'TransactionConflict'),
+  );
+  if (failures.length === 0 && conflict) {
+    return { retry: true, error: new Error(String(conflict.result)) };
+  }
   const message = String(failures[0]?.result ?? results.find((r) => r.status === 'ERR')?.result);
   const code = thrownCode(message);
   if (code === 'revision_changed') return { retry: true, error: new Error(message) };

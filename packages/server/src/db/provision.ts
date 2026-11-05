@@ -52,27 +52,35 @@ const sameSignature = (a: IndexSignature, b: IndexSignature) =>
   a.fields === b.fields && a.kind === b.kind;
 
 /** A row that satisfies a table's required fields, for duplicate probes. */
-function probeContent(table: TableDefinition, index: IndexDefinition): Record<string, unknown> {
+function probeContent(
+  table: TableDefinition,
+  index: IndexDefinition,
+  variant = 0,
+): Record<string, unknown> {
   const content: Record<string, unknown> = {};
   for (const [name, type] of table.fields) {
     if (name.includes('.')) continue;
+    const indexed = index.fields.some((f) => f === name || f === `${name}.*`);
     const required = !type.startsWith('option<');
-    if (!required && !index.fields.includes(name)) continue;
+    if (!required && !indexed) continue;
+    // Fields outside the probed index differ between the two probe rows, so
+    // only the index under test can refuse the second one.
+    const v = indexed ? 0 : variant;
     const base = type.replace(/^option<(.*?)( \| null)?>$/, '$1');
     content[name] =
       base === ACTOR_TYPE
-        ? { type: 'system', id: 'probe' }
+        ? { type: 'system', id: `probe${v}` }
         : base === 'int' || base === 'number'
-          ? 0
+          ? v
           : base === 'bool'
             ? false
             : base === 'datetime'
-              ? new Date(0)
+              ? new Date(v * 1000)
               : base.startsWith('array')
                 ? []
                 : base === 'any'
                   ? null
-                  : '__retainer_probe__';
+                  : `__retainer_probe_${v}__`;
   }
   return content;
 }
@@ -127,6 +135,7 @@ async function probeUnique(
       ca: endpointContent(relation.from),
       cb: endpointContent(relation.to),
       c: table ? probeContent(table, index) : {},
+      c2: table ? probeContent(table, index, 1) : {},
     });
     // The duplicate shares only the indexed endpoint: a second target for
     // an index on `in`, a second source for one on `out`.
@@ -141,15 +150,16 @@ async function probeUnique(
       onlyOut ? 'CREATE $a2 CONTENT $ca;' : '',
       onlyIn ? 'CREATE $b2 CONTENT $cb;' : '',
       `RELATE $a->${ident(index.table)}->$b CONTENT $c;`,
-      `RELATE ${onlyOut ? '$a2' : '$a'}->${ident(index.table)}->${onlyIn ? '$b2' : '$b'} CONTENT $c;`,
+      `RELATE ${onlyOut ? '$a2' : '$a'}->${ident(index.table)}->${onlyIn ? '$b2' : '$b'} CONTENT $c2;`,
       'CANCEL;',
     ].join('\n');
   } else {
     if (!table) throw new Error(`no table definition for ${index.table}`);
     vars.c = probeContent(table, index);
+    vars.c2 = probeContent(table, index, 1);
     vars.a = new RecordId(index.table, '__retainer_probe_a__');
     vars.b = new RecordId(index.table, '__retainer_probe_b__');
-    text = 'BEGIN;\nCREATE $a CONTENT $c;\nCREATE $b CONTENT $c;\nCANCEL;';
+    text = 'BEGIN;\nCREATE $a CONTENT $c;\nCREATE $b CONTENT $c2;\nCANCEL;';
   }
   const results = await db.raw(text, vars);
   const refused = results.some(

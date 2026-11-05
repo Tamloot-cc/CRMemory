@@ -661,6 +661,49 @@ correctness difference; section 7's rule avoids it on every target.
 Not covered by the spike: conflict rates under realistic load, stored-rollup
 write cost, erasure and version retention, backup and restore.
 
+## 13. Implementation notes and deviations
+
+Recorded while implementing on `codex/surrealdb-v1`. Each is a choice the
+sections above left open, or a place where the code differs from them.
+
+| Area | What the branch does | Why |
+| --- | --- | --- |
+| Business schema changes | Every approved business change commits as one administrative transaction: new object and relation tables, their fields and their indexes are defined first, alone and verified (section 7's index rule), then the metadata, the `DEFINE FIELD` changes, the follow-ups (claims, rollups, search, views) and `schema_version` commit together. `schema_update` mode is used only for fixed-table upgrades. | Uniqueness lives in `unique_claims`, and new indexes only ever cover new, empty tables, so no business change needs a data-dependent index build inside the pause. The existing-record checks run in the plan, against the revision the commit verifies. |
+| Receipts | A receipt stores the plan's result, which for record writes is minimal (`{ id, created, fields }`); the full record is presented from a fresh read after the commit. A replay therefore shows the record as it is now, with the original per-field statuses. `log_event`, `remember`, merges and deletions store their whole result. | Keeps receipts from becoming copies of CRM content (section 7) without a second sanitizing step for most writes. |
+| Erasure of receipts | `operations.refs` lists the public IDs a result mentions, element-indexed; `forget` sets `status = 'erased'` and clears `result` on every receipt that mentions an erased record, event or fact. Replays and `get_operation` then answer `result_erased` / `erased`. | Indexed lookup instead of scanning result text. |
+| Relation claims lookup | `field_assertions.refs` holds the record IDs a relation value points at (`[]` for other fields), with a `refs.*` element index. Merge and forget find every claim pointing at a record, current or historical, by that index. | The value column is `any`; an element index on a derived array is the indexed way to find them. Empty arrays add no index entries (measured: a 2,000-row table with `[]` refs and two matches reads two rows). |
+| Uniqueness claims | `unique_claims` (one row per held unique value, unique on `(field_id, value)`) is separate from `record_identifiers` (lookup rows for matching and merge suggestions). | A lookup identifier is not always a reservation (e.g. secondary emails of a non-unique field), and section 7's duplicate probe runs only on the claims table. |
+| Event core | `event_identity` holds `occurred_at`, channel and external ID per event, unique on `(channel, external_id)`; `occurred_at` is also projected onto the event's object-table row and `event_attachments` rows so history pages are one index scan. Erasure clears channel and external ID (NONE never collides). | Point lookups for dedupe and source checks; stored attachments for history (section 5). |
+| Routing keys | The catalog's `workspaces.access_keys` mirrors which signing keys each workspace database accepts; routing picks the newest accepted key and answers `workspace_upgrading` when none matches yet. | Lets a process route without opening every workspace database during a rotation. |
+| Erasure sweeps | `forget` gathers everything in the plan and commits one transaction. Primary rows (directory, object row, event identity, claims it removes) are deleted by ID with exact effect checks; derived rows (assertions, identifiers, links, attachments, rollups, edges, search documents, fact sources) are swept by indexed `DELETE … WHERE` with a `min 0` check, after every plan step. | Earlier steps (recomputation, attachment moves) may already have removed some derived rows in the same batch; a sweep keeps "nothing derived survives" without double-counting. |
+| Direct writes in maintenance | The consolidator and receipt cleanup are operations under the write protocol (no receipt), so they queue behind the workspace's writes. First boot needs no lock: the process lease and the catalog's unique slug serialize it. | One write path, as section 6 requires. |
+| Similar-name suggestions | Candidates: up to 20 trigram (`@OR@`) matches per changed record's label; kept when the Jaro-Winkler similarity of the folded labels is at least 0.9. The directory's `updated_at` (indexed) drives the "changed since the last run" scan. | Section 8's design; pg_trgm's 0.6 threshold has no equivalent on this scale. "Dana Cohen"/"Dana Coheen" pass; "Dana Cohen"/"Ron Peretz" do not. |
+| Operation IDs | Every `/v1` response that ran a write carries `Retainer-Operation-Id`; `unknown_outcome` errors carry it in `details`. `get_operation` is `GET /v1/operations/:id` or `GET /v1/operations?kind=&idempotencyKey=`, SDK `getOperation`, MCP `get_operation`; an expired receipt reads as `not_observed`. | Bodies keep their existing shapes. |
+| `traverse_records` | Field steps read the relation table by its `in` or `out` index, ordered by the other endpoint; `in` with an owning field's name finds the records whose field points at the current ones, and an inverse name with `out` follows its owning field backwards. Link steps read `event_attachments` by `target` (newest first) or by `event`, and check the kind after reading, so discarded rows still count against the 500-edge budget. A window that would exceed the budget is cut and the result says `truncated: "edge_budget"`; more than 50 complete paths say `"path_limit"`. Paths never revisit a record. | Section 8's caps, with every expansion an indexed window per frontier record. |
+| Signing keys | `retainer signing-key generate [--id]` prints a new `RETAINER_SIGNING_KEY` value and works without a configuration. | Operators need a way to create the first key. |
+| Key rotation and stale processes | The configuration is the source of truth: each boot defines access methods for its accepted keys and removes the others, in the catalog and (on first use) in each workspace. A process booted later with an old configuration therefore rotates back. The lease prevents two at once; a process left with only a removed key loses its catalog session, so its lease heartbeat fails and it stops. | Rotation without a separate registry of keys. |
+| Commit conflicts | A conflict detected at `COMMIT` is reported only on the `COMMIT` result, after every earlier statement reads "not executed"; the protocol checks every result for a retryable conflict before classifying the failure. | Found by the two-process tests (section 11). |
+| Unique-index probes | The two probe rows share values only in the probed index's fields; every other field differs, so another unique index on the table cannot refuse the duplicate first. | A re-run of catalog provisioning failed its `workspaces.slug` probe on `workspaces.database`. |
+| Reserved word | `value` as the first projection of a `SELECT` parses as `SELECT VALUE`; queries put another column first. | Pinned-release parser behavior. |
+
+### Phase 1 baseline: 200-event burst
+
+November 5, 2026, local pinned SurrealDB (SurrealKV, one node), one workspace,
+200 concurrent `log_event` calls each matching two participants, from
+`packages/server/test/surreal/baseline.test.ts`:
+
+| Measure | Result |
+| --- | --- |
+| Wall time | 8.0 s for 200 events (about 25 writes per second) |
+| Queue hold per write (plan + commit) | p50 40 ms, p95 48 ms |
+| Queue wait | p50 4.1 s, p95 7.7 s |
+| Caller latency | p50 4.1 s, p95 7.7 s |
+| Revision conflicts / `workspace_busy` | 0 / 0 |
+
+The hold time is the throughput limit, as section 6 expects. A burst much
+larger than 200 into one workspace reaches the 10 s queue limit and gets
+retryable `workspace_busy`; that is the first number to improve.
+
 ## Sources and implementation anchors
 
 - [Current architecture and write rules](../ARCHITECTURE.md), especially sections
