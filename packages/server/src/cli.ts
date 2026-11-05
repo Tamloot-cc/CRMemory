@@ -20,7 +20,7 @@ const connect = () => {
   return backend;
 };
 const [group] = process.argv.slice(2).filter((a) => !a.startsWith('-'));
-if (group === 'workspace' || group === 'key') await ensureCatalog(connect());
+if (group === 'workspace' || group === 'key' || group === 'search') await ensureCatalog(connect());
 process.exitCode = await runCli(process.argv.slice(2), {
   backend: connect,
   out: (line) => console.log(line),

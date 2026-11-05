@@ -11,7 +11,7 @@ import { ident } from './surreal.js';
  */
 
 export const CATALOG_REVISION = 1;
-export const WORKSPACE_REVISION = 1;
+export const WORKSPACE_REVISION = 2;
 
 export const ACTOR_TYPE = '{ type: string, id: string, name: option<string> }';
 const OPT = (type: string) => (type === 'any' ? 'any' : `option<${type} | null>`);
@@ -626,8 +626,9 @@ export const WORKSPACE_INDEXES: IndexDefinition[] = [
     table: 'search_documents',
     fields: ['grams'],
     fulltext: 'rt_trigram',
-  }, // Read-side keyset streams (section 8): a record's assertions and an
-  // event's claims, newest first.
+  },
+  // Read-side keyset streams (section 8): a record's assertions and an
+  // event's claims, newest first. Added in fixed-table revision 2.
   {
     name: 'field_assertions_record_time_idx',
     table: 'field_assertions',

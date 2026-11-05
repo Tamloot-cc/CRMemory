@@ -1021,6 +1021,8 @@ export async function releaseAndRecompute(
 export async function closeSuggestionsFor(
   context: WriteContext,
   recordIds: readonly string[],
+  /** Suggestions this operation already decided, such as the one a merge accepts. */
+  except: readonly string[] = [],
 ): Promise<void> {
   if (recordIds.length === 0) return;
   const [a, b] = (await context.op.db.query(
@@ -1030,6 +1032,7 @@ export async function closeSuggestionsFor(
   )) as [{ id: RecordId }[], { id: RecordId }[]];
   const ids = [...new Set([...a, ...b].map((r) => publicId(r.id)))];
   for (const id of ids) {
+    if (except.includes(id)) continue;
     context.op.batch.update('merge_suggestions', id, {
       status: 'dismissed',
       decided_by: context.actor,

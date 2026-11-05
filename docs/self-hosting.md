@@ -185,6 +185,11 @@ workspace's own object already uses a new built-in name, the log says so;
 rename that object and restart to add the built-in one. A request for a
 workspace the server has not reached yet upgrades that workspace first.
 
+If release notes say search changed, or search results look stale, rebuild the
+search documents with `retainer search rebuild` (every workspace) or
+`retainer search rebuild --workspace <slug>`. It writes in small batches under
+the normal write rules, so the server can keep running.
+
 Run one version at a time. The process lease already stops a second
 server from starting while the first runs, so stop the old container before
 the new one starts; with the single `retainer` container, `up` does this.

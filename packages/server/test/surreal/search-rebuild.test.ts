@@ -1,6 +1,7 @@
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { remember } from '../../src/memory/service.js';
+import { runCli } from '../../src/operator/commands.js';
 import { rebuildSearchDocuments } from '../../src/records/rebuild-search.js';
 import { type Caller, createRecord, deleteRecord } from '../../src/records/service.js';
 import { searchFor } from '../../src/retrieval/service.js';
@@ -44,5 +45,24 @@ describe('rebuildSearchDocuments', () => {
       id: gone.id,
     });
     expect(stale).toEqual([]);
+  });
+});
+
+describe('retainer search rebuild', () => {
+  it('rebuilds one workspace by slug and reports the count', async () => {
+    const record = await createRecord(app, as(AGENT), 'company', { name: 'Quillfeather Co' });
+    await (await app.workspaceAdmin(workspaceId)).query('DELETE search_documents;');
+    const out: string[] = [];
+    const code = await runCli(['search', 'rebuild', '--workspace', 'rebuild', '--json'], {
+      backend: () => app,
+      out: (line) => out.push(line),
+      err: (line) => out.push(line),
+    });
+    expect(code).toBe(0);
+    const [report] = JSON.parse(out.join('\n')) as { workspace: string; documents: number }[];
+    expect(report).toMatchObject({ workspace: 'rebuild' });
+    expect(report?.documents).toBeGreaterThan(0);
+    const found = await searchFor(app, as(AGENT), { query: 'quillfeather', limit: 10 });
+    expect(found.records.map((r) => r.id)).toEqual([record.id]);
   });
 });

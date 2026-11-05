@@ -368,14 +368,15 @@ export async function mergeRecords(
     "SELECT id FROM merge_suggestions WHERE record_a = $a AND record_b = $b AND status = 'pending';",
     { a: pair[0], b: pair[1] },
   );
-  if (suggestion) {
-    op.batch.update('merge_suggestions', publicId(suggestion.id), {
+  const accepted = suggestion ? publicId(suggestion.id) : undefined;
+  if (accepted) {
+    op.batch.update('merge_suggestions', accepted, {
       status: 'accepted',
       decided_by: context.actor,
       decided_at: op.now,
     });
   }
-  await closeSuggestionsFor(context, [b]);
+  await closeSuggestionsFor(context, [b], accepted ? [accepted] : []);
 
   return { id: a, mergedId: b, merged: true, recomputedRecordIds: inboundIds };
 }

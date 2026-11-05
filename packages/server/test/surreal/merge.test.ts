@@ -387,8 +387,7 @@ describe('merging records (4.2)', () => {
     expect(replay.merged).toBe(true);
   });
 
-  // Write side: mergeRecord closes the merged pair's suggestion as dismissed, not accepted.
-  it.skip('accepts the pending suggestion for the pair and hides suggestions with a merged record', async () => {
+  it('accepts the pending suggestion for the pair and hides suggestions with a merged record', async () => {
     const a = await person();
     const b = await person();
     const c = await person();

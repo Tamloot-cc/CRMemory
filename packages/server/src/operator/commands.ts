@@ -3,8 +3,9 @@ import { createApiKey, listApiKeys, parseActor, parseScopes, revokeApiKey } from
 import { generateSigningKeyEntry } from '../db/access.js';
 import type { Backend } from '../db/backend.js';
 import { AppError } from '../errors.js';
+import { rebuildSearchDocuments } from '../records/rebuild-search.js';
 import { TEMPLATE_NAMES } from '../templates/index.js';
-import { createWorkspace, listWorkspaces } from '../workspaces/workspaces.js';
+import { createWorkspace, getWorkspace, listWorkspaces } from '../workspaces/workspaces.js';
 
 export const USAGE = `Usage: retainer <command>
 
@@ -19,6 +20,9 @@ API keys
 
 Signing keys (runtime database sessions)
   retainer signing-key generate [--id <key-id>]
+
+Search
+  retainer search rebuild [--workspace <slug|id>]   Rewrite search documents (all workspaces by default)
 
 Options
   --json    Print machine-readable JSON
@@ -146,6 +150,24 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         const id = required(rest[0] ?? values.id, 'id');
         const revoked = await revokeApiKey(io.backend(), id);
         print(`Revoked key ${revoked.id}`, revoked);
+        return 0;
+      }
+      case 'search rebuild': {
+        // Batched writes under the write protocol: safe while the server runs.
+        const backend = io.backend();
+        const targets = values.workspace
+          ? [await getWorkspace(backend, values.workspace)]
+          : await listWorkspaces(backend);
+        const rebuilt: { workspace: string; documents: number }[] = [];
+        for (const workspace of targets) {
+          const documents = await rebuildSearchDocuments(backend, workspace.id);
+          rebuilt.push({ workspace: workspace.slug, documents });
+        }
+        print(
+          rebuilt.map((r) => `${r.workspace}\t${r.documents} documents`).join('\n') ||
+            'No workspaces.',
+          rebuilt,
+        );
         return 0;
       }
       default:

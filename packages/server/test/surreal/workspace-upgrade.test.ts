@@ -2,13 +2,19 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createApiKey } from '../../src/auth/keys.js';
 import { Backend } from '../../src/db/backend.js';
-import { mutate } from '../../src/db/protocol.js';
-import { markWorkspaceActive, provisionDatabase } from '../../src/db/provision.js';
+import { WORKSPACE_REVISION } from '../../src/db/definitions.js';
+import { mutate, readState } from '../../src/db/protocol.js';
+import {
+  markWorkspaceActive,
+  provisionDatabase,
+  upgradeFixedTables,
+} from '../../src/db/provision.js';
 import { forgetCompiledSchema } from '../../src/schema-engine/compiled.js';
 import { planSchemaChange, SYSTEM_ACTOR } from '../../src/schema-engine/engine.js';
 import type { SchemaOperation } from '../../src/schema-engine/operations.js';
 import { BASE_OPERATIONS } from '../../src/templates/index.js';
 import { definitionsFor, upgradeWorkspaces } from '../../src/workspaces/upgrade.js';
+import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
 import { useTestBackend } from '../helpers/backend.js';
 
@@ -282,5 +288,29 @@ describe('upgrading workspaces to the built-in definitions', () => {
       failed: [],
     });
     expect(await digestOf(workspaceId)).toBe(definitionsFor([]).digest);
+  });
+});
+
+describe('upgrading fixed tables', () => {
+  it('adds a later revision’s indexes to an existing workspace once', async () => {
+    const workspaceId = (await createWorkspace(backend, { name: 'Fixed', template: 'sales' })).id;
+    const { database } = await backend.route(workspaceId);
+    const admin = backend.adminDb(database);
+    // The workspace as revision 1 left it: without the revision 2 index.
+    await admin.query(
+      'REMOVE INDEX field_assertions_record_time_idx ON field_assertions; UPDATE workspace_state:current SET fixed_revision = 1;',
+    );
+    const before = await readState(admin);
+
+    expect(await upgradeFixedTables(backend, workspaceId, database)).toBe(true);
+    const [info] = (await admin.query('INFO FOR TABLE field_assertions;')) as [
+      { indexes: Record<string, string> },
+    ];
+    expect(Object.keys(info.indexes)).toContain('field_assertions_record_time_idx');
+    const after = await readState(admin);
+    expect(after.fixed_revision).toBe(WORKSPACE_REVISION);
+    // Advanced, so a write planned against the old tables replans.
+    expect(after.revision).toBe(before.revision + 1);
+    expect(await upgradeFixedTables(backend, workspaceId, database)).toBe(false);
   });
 });
