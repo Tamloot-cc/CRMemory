@@ -1,6 +1,7 @@
 import type { Actor, SchemaChange as SchemaChangeView, SchemaOwner } from '@retainer/shared';
 import type { Backend, Db } from '../db/backend.js';
 import { publicId } from '../db/names.js';
+import { encodeCursor } from '../db/pagination.js';
 import { mutate, type Operation, toStorable } from '../db/protocol.js';
 import type { ApiKeyScope, SchemaChangeStatus } from '../db/types.js';
 import { AppError, forbidden, notFound } from '../errors.js';
@@ -271,6 +272,39 @@ export async function listSchemaChanges(
     { status, limit },
   );
   return rows.map(toView);
+}
+
+/**
+ * A page of schema changes, newest first, keyset on (created_at, id), and
+ * how many match. Schema changes are few per workspace.
+ */
+export async function schemaChangePage(
+  db: Db,
+  status: SchemaChangeStatus | undefined,
+  limit: number,
+  cursor: [string, string] | undefined,
+): Promise<{ changes: SchemaChangeView[]; total: number; nextCursor: string | null }> {
+  const filter = status ? 'status = $status' : 'true';
+  const keyset = cursor
+    ? ' AND (created_at < $at OR (created_at = $at AND id < type::record("schema_changes", $id)))'
+    : '';
+  const [rows, counted] = (await db.query(
+    `SELECT * FROM schema_changes WHERE ${filter}${keyset} ORDER BY created_at DESC, id DESC LIMIT $limit;
+     SELECT count() FROM schema_changes WHERE ${filter} GROUP ALL;`,
+    {
+      status,
+      limit: limit + 1,
+      ...(cursor ? { at: new Date(cursor[0]), id: cursor[1] } : {}),
+    },
+  )) as [ChangeRow[], { count: number }[]];
+  const views = rows.map(toView);
+  const items = views.slice(0, limit);
+  const last = items.at(-1);
+  return {
+    changes: items,
+    total: counted[0]?.count ?? 0,
+    nextCursor: views.length > limit && last ? encodeCursor(last.createdAt, last.id) : null,
+  };
 }
 
 type ChangeRow = {

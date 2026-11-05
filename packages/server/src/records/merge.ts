@@ -313,6 +313,7 @@ export async function mergeRecords(
   // The survivor changed even when no field did (it gained B's facts), so
   // the consolidator's next run compares it again.
   op.batch.update(object.table, a, { updated_at: op.now, updated_by: context.actor });
+  op.batch.update('record_directory', a, { updated_at: op.now });
   await recomputeFields(context, object, survivor, movedFieldIds);
 
   const combined = new Map<FieldState, unknown>();

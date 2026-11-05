@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { createApiKey, listApiKeys, parseActor, parseScopes, revokeApiKey } from '../auth/keys.js';
-import type { Sql } from '../db/client.js';
+import { generateSigningKeyEntry } from '../db/access.js';
+import type { Backend } from '../db/backend.js';
 import { AppError } from '../errors.js';
 import { TEMPLATE_NAMES } from '../templates/index.js';
 import { createWorkspace, listWorkspaces } from '../workspaces/workspaces.js';
@@ -16,17 +17,20 @@ API keys
   retainer key list --workspace <slug|id>
   retainer key revoke <key-id>
 
+Signing keys (runtime database sessions)
+  retainer signing-key generate [--id <key-id>]
+
 Options
   --json    Print machine-readable JSON
   --help    Show this help
 
 Templates: ${TEMPLATE_NAMES.join(', ')}
 Actor types: user, integration, agent, system   Scopes: read, write, schema:write, admin
-The CLI connects to DATABASE_URL directly; there is no admin HTTP API.`;
+The CLI connects to RETAINER_SURREAL_URL as the system user; there is no admin HTTP API.`;
 
 export type CliIo = {
-  /** A connection as the migration role (operator operations). */
-  sql: Sql;
+  /** The backend, with the system credential (operator operations). */
+  backend: () => Backend;
   out: (line: string) => void;
   err: (line: string) => void;
 };
@@ -61,8 +65,22 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
 
   try {
     switch (`${group} ${command ?? ''}`) {
+      case 'signing-key generate': {
+        const entry = generateSigningKeyEntry(values.id);
+        const id = entry.slice(0, entry.indexOf(':'));
+        print(
+          [
+            `Generated signing key "${id}". Set it as RETAINER_SIGNING_KEY; during a rotation,`,
+            'move the old value to RETAINER_SIGNING_PREVIOUS_KEYS until every workspace is upgraded.',
+            '',
+            entry,
+          ].join('\n'),
+          { id, key: entry },
+        );
+        return 0;
+      }
       case 'workspace create': {
-        const workspace = await createWorkspace(io.sql, {
+        const workspace = await createWorkspace(io.backend(), {
           name: required(values.name, 'name'),
           ...(values.slug ? { slug: values.slug } : {}),
           ...(values.template ? { template: values.template } : {}),
@@ -76,7 +94,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return 0;
       }
       case 'workspace list': {
-        const workspaces = await listWorkspaces(io.sql);
+        const workspaces = await listWorkspaces(io.backend());
         print(
           workspaces.length === 0
             ? 'No workspaces.'
@@ -91,7 +109,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return 0;
       }
       case 'key create': {
-        const key = await createApiKey(io.sql, {
+        const key = await createApiKey(io.backend(), {
           workspace: required(values.workspace, 'workspace'),
           name: required(values.name, 'name'),
           actor: parseActor(required(values.actor, 'actor')),
@@ -112,7 +130,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return 0;
       }
       case 'key list': {
-        const keys = await listApiKeys(io.sql, required(values.workspace, 'workspace'));
+        const keys = await listApiKeys(io.backend(), required(values.workspace, 'workspace'));
         print(
           keys
             .map(
@@ -126,7 +144,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       }
       case 'key revoke': {
         const id = required(rest[0] ?? values.id, 'id');
-        const revoked = await revokeApiKey(io.sql, id);
+        const revoked = await revokeApiKey(io.backend(), id);
         print(`Revoked key ${revoked.id}`, revoked);
         return 0;
       }

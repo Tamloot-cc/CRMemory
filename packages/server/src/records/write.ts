@@ -852,6 +852,13 @@ export async function saveRecord(
     updated_by: context.actor,
     ...extra,
   });
+  // The directory's `updated_at` is what change scans (the consolidator) read.
+  const touched = (context.op.cache.get('directoryTouched') as Set<string> | undefined) ?? new Set();
+  context.op.cache.set('directoryTouched', touched);
+  if (!touched.has(record.id)) {
+    touched.add(record.id);
+    context.op.batch.update('record_directory', record.id, { updated_at: context.op.now });
+  }
   record.data = data;
   record.label = label;
   record.updated_at = context.op.now;

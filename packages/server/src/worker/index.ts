@@ -1,35 +1,34 @@
-import type { Sql } from '../db/client.js';
+import type { Backend } from '../db/backend.js';
+import { mutate } from '../db/protocol.js';
 import { log as serverLog } from '../log.js';
+import { listWorkspaces } from '../workspaces/workspaces.js';
 import { consolidateWorkspace } from './consolidate.js';
 
 /**
- * Background workers: the scheduled consolidator (4.2). Retainer never
- * calls a language model, so there is no ingest worker.
- *
- * The queue is Postgres itself: every tick, a worker asks
- * `retainer_workspaces_due` for workspaces whose last run is older than the
- * interval, and runs each under a per-workspace advisory try-lock. Several
- * workers can run side by side; a workspace another worker holds is skipped.
+ * Background work in the one server process (spec section 9): the scheduled
+ * consolidator (4.2) and receipt cleanup. Retainer never calls a language
+ * model, so there is no ingest worker. Each workspace's work is an
+ * operation under the write protocol, so it queues behind that workspace's
+ * writes and never interleaves with them.
  */
 
 export type WorkerOptions = {
-  /** A pool connected as the runtime role. */
-  sql: Sql;
+  backend: Backend;
   /** How often each workspace is consolidated. */
   intervalMinutes: number;
-  /** How often to look for due workspaces. */
+  /** How often to look for due work. */
   tickMs?: number;
   /** Where progress and failures go; the server log by default. */
   log?: Pick<typeof serverLog, 'info' | 'error'>;
 };
 
 export type Worker = {
-  /** Runs one tick now; resolves when every due workspace was tried. */
+  /** Runs one tick now; resolves when every workspace was tried. */
   tick: () => Promise<void>;
   stop: () => Promise<void>;
 };
 
-export type ConsolidateDueOptions = Pick<WorkerOptions, 'sql' | 'intervalMinutes' | 'log'> & {
+export type ConsolidateDueOptions = Pick<WorkerOptions, 'backend' | 'intervalMinutes' | 'log'> & {
   /** Checked before each workspace; returning true ends the pass early. */
   stopped?: () => boolean;
 };
@@ -37,40 +36,64 @@ export type ConsolidateDueOptions = Pick<WorkerOptions, 'sql' | 'intervalMinutes
 /** What one pass did: workspaces consolidated, and those that failed. */
 export type ConsolidatePass = { consolidated: number; failed: number };
 
+/** Receipts expire after 24 hours (section 7); at most this many go per workspace and tick. */
+const RECEIPT_CLEANUP_BATCH = 1000;
+
+/** Deletes expired receipts of one workspace. Returns how many. */
+export async function cleanupReceipts(backend: Backend, workspaceId: string): Promise<number> {
+  const { result } = await mutate(backend, workspaceId, {
+    kind: 'receipt_cleanup',
+    noReceipt: true,
+    plan: async (op) => {
+      const expired = await op.rows<{ id: unknown }>(
+        `SELECT id FROM operations WHERE expires_at < $now LIMIT ${RECEIPT_CLEANUP_BATCH};`,
+        { now: op.now },
+      );
+      if (expired.length > 0) {
+        op.batch.write(
+          `DELETE operations WHERE expires_at < ${op.batch.v(op.now)} LIMIT ${RECEIPT_CLEANUP_BATCH} RETURN BEFORE`,
+          { min: 0 },
+          'operations',
+        );
+      }
+      return expired.length;
+    },
+  });
+  return result;
+}
+
 /**
- * One pass over every due workspace. The long-running worker calls it on a
- * timer; a scheduled function (the AWS deployment) calls it once per run.
- * A workspace another pass holds, or one already run within the interval,
- * is skipped.
+ * One pass over every active workspace: those not consolidated within the
+ * interval are consolidated, and expired receipts are removed.
  */
 export async function consolidateDue(options: ConsolidateDueOptions): Promise<ConsolidatePass> {
-  const { sql } = options;
+  const { backend } = options;
   const log = options.log ?? serverLog;
-  const interval = `${options.intervalMinutes} minutes`;
   const pass: ConsolidatePass = { consolidated: 0, failed: 0 };
-  const due = await sql<{ id: string }[]>`
-    select id from retainer_workspaces_due(${interval}::interval) as id`;
-  for (const { id } of due) {
+  for (const workspace of await listWorkspaces(backend)) {
     if (options.stopped?.()) break;
     try {
-      const stats = await consolidateWorkspace(sql, id, { minInterval: interval });
+      const stats = await consolidateWorkspace(backend, workspace.id, {
+        minIntervalMs: options.intervalMinutes * 60_000,
+      });
       if (stats) pass.consolidated++;
       if (stats && (stats.supersededFacts > 0 || stats.mergeSuggestions > 0)) {
         log.info(
-          `Consolidated workspace ${id}: ${stats.supersededFacts} duplicate facts superseded, ` +
-            `${stats.mergeSuggestions} merges suggested.`,
+          `Consolidated workspace ${workspace.id}: ${stats.supersededFacts} duplicate facts ` +
+            `superseded, ${stats.mergeSuggestions} merges suggested.`,
         );
       }
+      await cleanupReceipts(backend, workspace.id);
     } catch (error) {
       pass.failed++;
-      log.error(`Consolidating workspace ${id} failed: ${(error as Error).message}`);
+      log.error(`Background work for workspace ${workspace.id} failed: ${(error as Error).message}`);
     }
   }
   return pass;
 }
 
 export async function startWorker(options: WorkerOptions): Promise<Worker> {
-  const { sql, intervalMinutes } = options;
+  const { backend, intervalMinutes } = options;
   const log = options.log ?? serverLog;
   const tickMs = options.tickMs ?? Math.min(60_000, intervalMinutes * 60_000);
   let timer: NodeJS.Timeout | undefined;
@@ -78,12 +101,13 @@ export async function startWorker(options: WorkerOptions): Promise<Worker> {
   let stopped = false;
 
   async function runTick(): Promise<void> {
-    await consolidateDue({ sql, intervalMinutes, log, stopped: () => stopped });
+    if (!backend.writable) return;
+    await consolidateDue({ backend, intervalMinutes, log, stopped: () => stopped });
   }
 
   const tick = () => {
     running = running.then(runTick).catch((error: unknown) => {
-      log.error(`Consolidator tick failed: ${(error as Error).message}`);
+      log.error(`Worker tick failed: ${(error as Error).message}`);
     });
     return running;
   };

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../errors.js';
 import { log } from '../log.js';
@@ -323,6 +324,12 @@ function classify(results: StatementResult[]): {
 }
 
 /**
+ * The operation a request ran, for its response (`Retainer-Operation-Id`):
+ * the HTTP layer opens a scope per request and reads it after the handler.
+ */
+export const operationScope = new AsyncLocalStorage<{ id?: string }>();
+
+/**
  * Runs one workspace mutation under the write protocol. Every workspace
  * mutation goes through here; no module writes around it.
  */
@@ -340,6 +347,8 @@ export async function mutate<T>(
   const db = await backend.workspace(workspaceId, routing);
   const commitDb = input.admin ? await backend.workspaceAdmin(workspaceId, routing) : db;
   const operationId = randomUUID();
+  const scope = operationScope.getStore();
+  if (scope) scope.id = operationId;
   const now = serverNow();
   const ids: string[] = [];
 
@@ -362,9 +371,11 @@ export async function mutate<T>(
           { kind: input.kind, key: input.idempotencyKey },
         );
         if (receipt && receipt.expires_at.getTime() > now.getTime()) {
+          const original = String((receipt.id as { id: string }).id ?? receipt.id);
+          if (scope) scope.id = original;
           return {
             result: receiptReplay(receipt, input.requestHash) as T,
-            operationId: String((receipt.id as { id: string }).id ?? receipt.id),
+            operationId: original,
             replayed: true,
           };
         }

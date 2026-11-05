@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
-import type { Sql } from '../../db/client.js';
+import type { Backend } from '../../db/backend.js';
 import { contextInputSchema } from '../../retrieval/context.js';
 import { searchInputSchema } from '../../retrieval/search.js';
 import { contextFor, searchFor, timelineFor } from '../../retrieval/service.js';
@@ -12,10 +12,10 @@ import { idParam, readBody, zodError } from '../request.js';
 const LIST_PARAMS = new Set(['types', 'fields', 'eventTypes']);
 
 /** Keyword search, context packs and timelines (6.1), on the same services as the MCP tools. */
-export function retrievalRoutes(app: Hono<AppEnv>, sql: Sql) {
+export function retrievalRoutes(app: Hono<AppEnv>, backend: Backend) {
   app.post('/search', requireScope('read'), async (c) => {
     const input = await readBody(c, searchInputSchema);
-    return c.json(await searchFor(sql, c.get('caller'), input));
+    return c.json(await searchFor(backend, c.get('caller'), input));
   });
 
   app.get('/records/:id/context', requireScope('read'), async (c) => {
@@ -25,7 +25,7 @@ export function retrievalRoutes(app: Hono<AppEnv>, sql: Sql) {
       raw === undefined ? {} : { tokenBudget: Number(raw) },
     );
     if (!parsed.success) throw zodError(parsed.error);
-    return c.json(await contextFor(sql, c.get('caller'), id, parsed.data));
+    return c.json(await contextFor(backend, c.get('caller'), id, parsed.data));
   });
 
   app.get('/records/:id/timeline', requireScope('read'), async (c) => {
@@ -43,6 +43,6 @@ export function retrievalRoutes(app: Hono<AppEnv>, sql: Sql) {
     }
     const parsed = timelineInputSchema.safeParse(query);
     if (!parsed.success) throw zodError(parsed.error);
-    return c.json(await timelineFor(sql, c.get('caller'), id, parsed.data));
+    return c.json(await timelineFor(backend, c.get('caller'), id, parsed.data));
   });
 }

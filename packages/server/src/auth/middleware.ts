@@ -2,7 +2,7 @@ import type { MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
 import { type AppEnv, errorResponse } from '../api/http.js';
-import type { Sql } from '../db/client.js';
+import type { Backend } from '../db/backend.js';
 import type { ApiKeyScope } from '../db/types.js';
 import { AppError } from '../errors.js';
 import { lookupKey, requireWebHeader, SESSION_COOKIE } from './session.js';
@@ -11,11 +11,10 @@ const BEARER = /^Bearer\s+(\S+)$/i;
 
 /**
  * Authenticates `Authorization: Bearer <key>` (7). The key is looked up by
- * its hash through `retainer_lookup_api_key`, the runtime role's only way
- * into api_keys. The caller's workspace, scopes and actor come from the
+ * its hash in the catalog database, which runtime sessions can only read. The caller's workspace, scopes and actor come from the
  * key, never from the request.
  */
-export function authenticate(sql: Sql, publicOrigin?: string): MiddlewareHandler<AppEnv> {
+export function authenticate(backend: Backend, publicOrigin?: string): MiddlewareHandler<AppEnv> {
   return createMiddleware<AppEnv>(async (c, next) => {
     const authorization = c.req.header('authorization');
     const match = BEARER.exec(authorization ?? '');
@@ -36,7 +35,7 @@ export function authenticate(sql: Sql, publicOrigin?: string): MiddlewareHandler
     try {
       if (authorization === undefined && !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method))
         requireWebHeader(c, publicOrigin);
-      c.set('caller', await lookupKey(sql, raw));
+      c.set('caller', await lookupKey(backend, raw));
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
       if (error.status === 401) c.header('www-authenticate', 'Bearer error="invalid_token"');

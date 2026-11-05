@@ -756,3 +756,61 @@ export function filterOperatorsFor(field: {
   }
   return [...FILTER_OPERATORS[field.type], 'isNull'];
 }
+
+/**
+ * `GET /v1/operations/:id` and `GET /v1/operations?kind=&idempotencyKey=`
+ * (`get_operation`): what became of a write. Receipts are kept 24 hours.
+ * `not_observed` is not a rollback: the original request may still commit,
+ * and repeating it with the same idempotency key stays safe.
+ */
+export type OperationReceipt = {
+  operationId: string | null;
+  kind: string | null;
+  status: 'completed' | 'erased' | 'not_observed';
+  /** The original result; null when erased or not observed. */
+  result: unknown;
+  createdAt: string | null;
+  expiresAt: string | null;
+};
+
+/** One step of `traverse_records`: a relation field or a built-in event link. */
+export type TraverseStep =
+  | {
+      /**
+       * A relation field. `out` follows it from the current records (an
+       * inverse name follows its owning field backwards); `in` finds the
+       * records whose field of this name points at the current records.
+       */
+      field: string;
+      direction?: 'out' | 'in';
+    }
+  | {
+      /**
+       * `participant` or `about`: `in` goes from records to the events they
+       * are linked to; `out` from events to their linked records.
+       */
+      link: 'participant' | 'about';
+      direction: 'out' | 'in';
+    };
+
+/** `POST /v1/records/traverse` (`traverse_records`). */
+export type TraverseInput = { starts: string[]; path: TraverseStep[] };
+
+export type TraverseRecordRef = { id: string; type: string; label: string | null };
+
+/** What supports one hop: the assertion behind an edge, or the event link. */
+export type TraverseEvidence =
+  | { field: string; direction: 'out' | 'in'; assertionId: string | null }
+  | { link: 'participant' | 'about'; direction: 'out' | 'in'; eventId: string; linkId: string | null };
+
+export type TraversePath = { records: TraverseRecordRef[]; steps: TraverseEvidence[] };
+
+export type TraverseResult = {
+  schemaVersion: number;
+  paths: TraversePath[];
+  /** Edges read from storage, including those discarded (deleted or hidden records). */
+  examinedEdges: number;
+  limits: { starts: number; steps: number; examinedEdges: number; paths: number };
+  /** Why the result may be incomplete; null when it is complete. */
+  truncated: null | 'edge_budget' | 'path_limit';
+};

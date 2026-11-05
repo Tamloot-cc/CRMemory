@@ -2,7 +2,9 @@ import { type CallToolResult, McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { errorBody, toAppError } from '../api/http.js';
 import { missingScope } from '../auth/middleware.js';
-import type { Sql } from '../db/client.js';
+import type { Backend } from '../db/backend.js';
+import { getOperation } from '../operations/service.js';
+import { traverseInputSchema } from '../records/traverse.js';
 import type { ApiKeyScope } from '../db/types.js';
 import { AppError } from '../errors.js';
 import { log } from '../log.js';
@@ -16,6 +18,7 @@ import {
   createRecord,
   findRecords,
   readRecord,
+  traverse,
   upsertInputSchema,
   upsertRecord,
   valuesSchema,
@@ -129,6 +132,25 @@ const objectName = z
   .string()
   .min(1)
   .describe('Singular API name of the object, e.g. "person", as describe_schema lists it.');
+
+const getOperationInput = z.strictObject({
+  operationId: z
+    .uuid()
+    .optional()
+    .describe('The operation ID a write returned (or reported in an unknown_outcome error).'),
+  kind: z
+    .string()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe('With idempotencyKey: the write kind, e.g. remember or merge.'),
+  idempotencyKey: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('The idempotency key the write was sent with.'),
+});
 
 const getRecordInput = z.strictObject({
   id: z.uuid().describe('The record ID. An ID merged into another record returns the survivor.'),
@@ -314,7 +336,7 @@ const getGuideInput = z.strictObject({
 const noInput = z.strictObject({});
 
 /** Builds the MCP server for one authenticated caller. */
-export function createMcpServer(sql: Sql, caller: Caller): McpServer {
+export function createMcpServer(backend: Backend, caller: Caller): McpServer {
   const server = new McpServer(
     { name: 'retainer', title: 'Retainer', version: VERSION },
     { instructions: INSTRUCTIONS },
@@ -336,7 +358,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: noInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    () => run(caller, 'read', () => describeSchema(sql, caller)),
+    () => run(caller, 'read', () => describeSchema(backend, caller)),
   );
 
   server.registerTool(
@@ -352,7 +374,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: noInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    () => run(caller, 'read', () => templatesFor(sql, caller)),
+    () => run(caller, 'read', () => templatesFor(backend, caller)),
   );
 
   server.registerTool(
@@ -367,7 +389,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: applyTemplateInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
-    ({ name }) => run(caller, 'schema:write', () => applyTemplateFor(sql, caller, name)),
+    ({ name }) => run(caller, 'schema:write', () => applyTemplateFor(backend, caller, name)),
   );
 
   server.registerTool(
@@ -422,7 +444,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: queryRecordsInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ object, ...input }) => run(caller, 'read', () => findRecords(sql, caller, object, input)),
+    ({ object, ...input }) => run(caller, 'read', () => findRecords(backend, caller, object, input)),
   );
 
   server.registerTool(
@@ -435,7 +457,49 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: getRecordInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ id }) => run(caller, 'read', () => readRecord(sql, caller, id)),
+    ({ id }) => run(caller, 'read', () => readRecord(backend, caller, id)),
+  );
+
+  server.registerTool(
+    'traverse_records',
+    {
+      title: 'Traverse records',
+      description:
+        'Walks from up to 20 start records along an explicit path of up to 3 steps and ' +
+        'returns the paths found, each hop with its evidence. A step is a relation field ' +
+        '({ field, direction }: out follows the field from the current records, an inverse ' +
+        'name included; in finds records whose field of that name points at them) or an ' +
+        'event link ({ link: participant|about, direction }: in goes from records to their ' +
+        'events, out from events to their records). Example, people who met a deal\'s ' +
+        'decision-maker: starts [deal], path [{ field: "decisionMaker" }, { link: ' +
+        '"participant", direction: "in" }, { link: "participant", direction: "out" }]. ' +
+        'At most 500 edges are read and 50 paths returned; truncated says when the result ' +
+        'is incomplete. Pick start records with query_records.',
+      inputSchema: traverseInputSchema,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    (input) => run(caller, 'read', () => traverse(backend, caller, input)),
+  );
+
+  server.registerTool(
+    'get_operation',
+    {
+      title: 'Check a write',
+      description:
+        'Says what became of a write: completed (with its original result), erased by a ' +
+        'privacy request, or not_observed. Pass the operationId from an unknown_outcome ' +
+        'error, or the kind and idempotencyKey you sent. not_observed is not a rollback: the ' +
+        'write may still commit, so retry it only with the same idempotencyKey. Receipts are ' +
+        'kept 24 hours.',
+      inputSchema: getOperationInput,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ operationId, kind, idempotencyKey }) =>
+      run(caller, 'read', () => {
+        if (operationId) return getOperation(backend, caller, { operationId });
+        if (kind && idempotencyKey) return getOperation(backend, caller, { kind, idempotencyKey });
+        throw new AppError(400, 'invalid_request', 'pass operationId, or kind and idempotencyKey');
+      }),
   );
 
   server.registerTool(
@@ -452,7 +516,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: searchInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    (input) => run(caller, 'read', () => searchFor(sql, caller, input)),
+    (input) => run(caller, 'read', () => searchFor(backend, caller, input)),
   );
 
   server.registerTool(
@@ -470,7 +534,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: getContextInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ record, ...input }) => run(caller, 'read', () => contextFor(sql, caller, record, input)),
+    ({ record, ...input }) => run(caller, 'read', () => contextFor(backend, caller, record, input)),
   );
 
   server.registerTool(
@@ -488,7 +552,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: getTimelineInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ record, ...input }) => run(caller, 'read', () => timelineFor(sql, caller, record, input)),
+    ({ record, ...input }) => run(caller, 'read', () => timelineFor(backend, caller, record, input)),
   );
 
   server.registerTool(
@@ -513,7 +577,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
     ({ object, idempotencyKey, ...input }) =>
       run(caller, 'write', () => {
         if (!input.id && !input.match) {
-          return createRecord(sql, caller, object, input.values, {
+          return createRecord(backend, caller, object, input.values, {
             ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
             ...(input.source !== undefined ? { source: input.source } : {}),
           });
@@ -526,7 +590,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
               'a write by id or match is already safe to retry',
           );
         }
-        return upsertRecord(sql, caller, object, input);
+        return upsertRecord(backend, caller, object, input);
       }),
   );
 
@@ -558,7 +622,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       inputSchema: logEventInput,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
-    (input) => run(caller, 'write', () => logEventFor(sql, caller, input)),
+    (input) => run(caller, 'write', () => logEventFor(backend, caller, input)),
   );
 
   server.registerTool(
@@ -575,7 +639,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
     ({ record, idempotencyKey, ...input }) =>
-      run(caller, 'write', () => remember(sql, caller, record, input, idempotencyKey)),
+      run(caller, 'write', () => remember(backend, caller, record, input, idempotencyKey)),
   );
 
   server.registerTool(
@@ -602,7 +666,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       run(
         caller,
         'schema:write',
-        () => requestSchemaChange(sql, caller, body),
+        () => requestSchemaChange(backend, caller, body),
         (result) => (result as { status: string }).status === 'failed',
       ),
   );

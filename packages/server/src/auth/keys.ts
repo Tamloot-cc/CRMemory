@@ -1,6 +1,8 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { type Actor, actorSchema } from '@retainer/shared';
-import type { Sql } from '../db/client.js';
+import type { Backend } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { isUuid, publicId } from '../db/names.js';
 import { API_KEY_SCOPES, type ApiKeyScope } from '../db/types.js';
 import { AppError, notFound } from '../errors.js';
 import { getWorkspace } from '../workspaces/workspaces.js';
@@ -81,23 +83,31 @@ export type CreatedApiKey = {
 };
 
 /**
- * Issues a key for one workspace. A trusted operator operation (7.1): `sql`
- * connects as the migration role, since the runtime role cannot touch
- * api_keys, so no agent credential can mint a key.
+ * Issues a key for one workspace. A trusted operator operation (7.1): keys
+ * live in the catalog database, which runtime sessions can only read, so no
+ * agent credential can mint a key.
  */
 export async function createApiKey(
-  sql: Sql,
+  backend: Backend,
   input: { workspace: string; name: string; actor: Actor; scopes: ApiKeyScope[] },
 ): Promise<CreatedApiKey> {
-  const workspace = await getWorkspace(sql, input.workspace);
+  const workspace = await getWorkspace(backend, input.workspace);
   const key = generateApiKey();
-  const [row] = await sql<{ id: string }[]>`
-    insert into api_keys (workspace_id, name, prefix, hash, scopes, actor)
-    values (${workspace.id}, ${input.name}, ${keyPrefix(key)}, ${hashApiKey(key)},
-      ${input.scopes}, ${sql.json(input.actor)})
-    returning id`;
+  const id = randomUUID();
+  await backend.adminCatalog().query('CREATE $id CONTENT $content RETURN NONE;', {
+    id: new RecordId('api_keys', id),
+    content: {
+      workspace: workspace.id,
+      name: input.name,
+      prefix: keyPrefix(key),
+      hash: hashApiKey(key),
+      scopes: input.scopes,
+      actor: input.actor,
+      created_at: new Date(),
+    },
+  });
   return {
-    id: row?.id as string,
+    id,
     workspaceId: workspace.id,
     name: input.name,
     prefix: keyPrefix(key),
@@ -108,15 +118,18 @@ export async function createApiKey(
 }
 
 export async function revokeApiKey(
-  sql: Sql,
+  backend: Backend,
   id: string,
 ): Promise<{ id: string; revokedAt: string }> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound(`key ${id}`);
-  const [row] = await sql<{ id: string; revoked_at: Date }[]>`
-    update api_keys set revoked_at = coalesce(revoked_at, now()) where id = ${id}
-    returning id, revoked_at`;
+  if (!isUuid(id)) throw notFound(`key ${id}`);
+  const [row] = await backend
+    .adminCatalog()
+    .rows<{ revoked_at: Date }>(
+      'UPDATE $id SET revoked_at = revoked_at ?? time::now() RETURN revoked_at;',
+      { id: new RecordId('api_keys', id) },
+    );
   if (!row) throw notFound(`key ${id}`);
-  return { id: row.id, revokedAt: row.revoked_at.toISOString() };
+  return { id, revokedAt: row.revoked_at.toISOString() };
 }
 
 export type ApiKeyListing = Omit<CreatedApiKey, 'key'> & {
@@ -124,22 +137,21 @@ export type ApiKeyListing = Omit<CreatedApiKey, 'key'> & {
   revokedAt: string | null;
 };
 
-export async function listApiKeys(sql: Sql, workspace: string): Promise<ApiKeyListing[]> {
-  const { id } = await getWorkspace(sql, workspace);
-  const rows = await sql<
-    {
-      id: string;
-      name: string;
-      prefix: string;
-      scopes: ApiKeyScope[];
-      actor: Actor;
-      created_at: Date;
-      revoked_at: Date | null;
-    }[]
-  >`select id, name, prefix, scopes, actor, created_at, revoked_at from api_keys
-    where workspace_id = ${id} order by created_at, id`;
+export async function listApiKeys(backend: Backend, workspace: string): Promise<ApiKeyListing[]> {
+  const { id } = await getWorkspace(backend, workspace);
+  const rows = await backend.adminCatalog().rows<{
+    id: RecordId;
+    name: string;
+    prefix: string;
+    scopes: ApiKeyScope[];
+    actor: Actor;
+    created_at: Date;
+    revoked_at?: Date | null;
+  }>('SELECT * FROM api_keys WHERE workspace = $workspace ORDER BY created_at, id;', {
+    workspace: id,
+  });
   return rows.map((r) => ({
-    id: r.id,
+    id: publicId(r.id),
     workspaceId: id,
     name: r.name,
     prefix: r.prefix,

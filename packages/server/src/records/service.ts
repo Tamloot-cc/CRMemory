@@ -7,6 +7,8 @@ import type {
   ForgetResult,
   MergeResult,
   MergeSuggestionDecision,
+  TraverseInput,
+  TraverseResult,
 } from '@retainer/shared';
 import { z } from 'zod';
 import type { Backend, Db } from '../db/backend.js';
@@ -24,6 +26,7 @@ import { dismissMergeSuggestion, type MergeInput, type MergeOutcome, mergeRecord
 import { type QueryInput, queryRecords } from './query.js';
 import { getRecord, type PresentedRecord } from './read.js';
 import { directoryEntries } from './store.js';
+import { traverseRecords } from './traverse.js';
 import {
   acceptAssertion,
   type DecisionResult as DecisionOutcome,
@@ -494,6 +497,15 @@ export async function eventsAmong(context: WriteContext, ids: readonly string[])
     .filter((e) => context.schema.objectsById.get(e.object_type_id)?.isEvent)
     .map((e) => e.id)
     .sort();
+}
+
+/** `traverse_records`: bounded walks along an explicit path (section 8). */
+export async function traverse(
+  backend: Backend,
+  caller: Caller,
+  input: TraverseInput,
+): Promise<TraverseResult> {
+  return withRead(backend, caller, (db, schema) => traverseRecords(db, schema, input));
 }
 
 export async function readRecord(

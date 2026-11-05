@@ -480,6 +480,7 @@ export const WORKSPACE_INDEXES: IndexDefinition[] = [
     fields: ['object_type_id', 'created_at'],
   },
   { name: 'record_directory_merged_idx', table: 'record_directory', fields: ['merged_into'] },
+  { name: 'record_directory_updated_idx', table: 'record_directory', fields: ['updated_at'] },
   {
     name: 'field_assertions_record_idx',
     table: 'field_assertions',
@@ -564,6 +565,7 @@ export const WORKSPACE_INDEXES: IndexDefinition[] = [
     unique: true,
   },
   { name: 'facts_record_idx', table: 'facts', fields: ['record', 'valid_from'] },
+  { name: 'facts_created_idx', table: 'facts', fields: ['created_at'] },
   { name: 'fact_sources_fact_idx', table: 'fact_sources', fields: ['fact'] },
   { name: 'fact_sources_source_idx', table: 'fact_sources', fields: ['source'] },
   {

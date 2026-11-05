@@ -18,6 +18,9 @@ import type {
   MergeInput,
   MergeResult,
   MergeSuggestionDecision,
+  OperationReceipt,
+  TraverseInput,
+  TraverseResult,
   Page,
   PresentedFact,
   PresentedRecord,
@@ -350,6 +353,32 @@ export class RetainerClient {
       undefined,
       idempotencyKey,
     );
+  }
+  /**
+   * Bounded walks from start records along an explicit path
+   * (`traverse_records`): at most 20 starts, 3 steps, 500 examined edges and
+   * 50 paths; `truncated` says when the result is incomplete.
+   */
+  traverseRecords(input: TraverseInput, signal?: AbortSignal) {
+    return this.post<TraverseResult>('/v1/records/traverse', input, signal);
+  }
+  /**
+   * What became of a write (`get_operation`): by the operation ID from the
+   * `Retainer-Operation-Id` header or an `unknown_outcome` error, or by the
+   * kind and idempotency key it was sent with. `not_observed` is not a
+   * rollback: retry only with the same idempotency key.
+   */
+  getOperation(
+    query: { operationId: string } | { kind: string; idempotencyKey: string },
+    signal?: AbortSignal,
+  ) {
+    return 'operationId' in query
+      ? this.get<OperationReceipt>(
+          `/v1/operations/${encodeURIComponent(query.operationId)}`,
+          {},
+          signal,
+        )
+      : this.get<OperationReceipt>('/v1/operations', query, signal);
   }
   retractFact(id: string) {
     return this.request<{ id: string; deleted: true }>(`/v1/facts/${encodeURIComponent(id)}`, {
