@@ -55,12 +55,14 @@ Find records with search (keywords across records, events and facts) or
 query_records (exact filters on one object). Events (meetings, calls, emails,
 messages, notes and any event types the workspace adds) are records too: list
 or filter them with query_records on their type, and pass linked to get the
-events attached to one record. Before working on a person or company, read
-get_context: their current values, open tasks, facts and recent events in one
-call; get_timeline shows how they got there. Write records with upsert_record. Write the values you learned; Retainer
-keeps every claim's history and decides which value wins. A value a person set
-outranks yours, so your write may come back as pending_review: tell your user
-it is waiting for approval rather than saying it is done.
+events directly attached to one record. For history including one-hop event
+rollups, use get_context or get_timeline. Before working on a person or company,
+read get_context: their current values, open tasks, facts and recent events in one
+call; get_timeline shows how they got there. Write records with upsert_record.
+Write the values you learned; Retainer keeps every claim's history and decides
+which value wins. A value a person set outranks yours, so your write may come
+back as pending_review: tell your user it is waiting for approval rather than
+saying it is done.
 
 After a meeting, call, email thread or chat, write what you learned in order:
 1. log_event: its type (describe_schema lists the event types), channel, when
@@ -81,7 +83,9 @@ records it did not have yet.
 
 When a field you need does not exist, use propose_schema_change. Adding is
 applied at once; removing or renaming waits for a person to approve. Read
-get_guide("schema_design") once before you first add an object.
+get_guide("schema_design") once before you first add an object. Respect
+isProtected and protectedOptions; use baseObject and baseField to find built-ins
+after renames, and use their current API names in calls.
 
 Errors are JSON { error: { code, message, details } }. Messages say what was
 wrong and what is allowed, so read them and retry.`;
@@ -327,7 +331,12 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       description:
         'Returns the workspace (id, name, applied templates, initialized, schemaVersion) and ' +
         'every object with its fields: type, options, and whether it is unique, filterable or ' +
-        'required. Objects of class "event" are event types (meeting, call, email, ...): ' +
+        'required. isProtected marks objects that cannot be deleted and fields that cannot be ' +
+        'deleted or reshaped; protectedOptions lists option values that cannot be removed. ' +
+        'Renames, labels and descriptions remain allowed under the usual approval rules. ' +
+        'baseObject and baseField identify built-ins after renames: use their current API ' +
+        "names in calls. coreRole identifies an event type's protected title and summary " +
+        'fields. Objects of class "event" are event types (meeting, call, email, ...): ' +
         'log them with log_event, never create them with upsert_record. builtIns lists facts, ' +
         'written with remember. Call it first, ' +
         'and again after a schema change. If initialized is false, ' +
@@ -418,7 +427,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'nextCursor back as cursor for the next page.\n\n' +
         'For an event type, linked: { record } lists the events attached to that record: ' +
         "as a participant, about it, or through one of the event's own relation fields " +
-        '(narrow with link). Sort by occurredAt, e.g. the last calls with a company.',
+        '(narrow with link). These are direct attachments only; use get_context or ' +
+        'get_timeline to include one-hop event rollups. Sort by occurredAt, e.g. the last ' +
+        'calls directly attached to a company.',
       inputSchema: queryRecordsInput,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -463,7 +474,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'Returns what Retainer knows about one record, fitted to a token budget: its current ' +
         'field values (each with who wrote it and when it was observed), then open tasks ' +
         '(earliest due first), current facts and recent events (newest first, including ' +
-        'those rolled up from records pointing at it), each event saying how it is ' +
+        'those rolled up one hop from records pointing at it), each event saying how it is ' +
         'attached (via). Field ' +
         'values are what the CRM holds; facts are plain-language claims with their sources. ' +
         'omitted counts what did not fit; read more with search or a larger tokenBudget.',
@@ -478,7 +489,7 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
     {
       title: 'Get the timeline of a record',
       description:
-        "A record's history, newest first: events (attached to it or rolled up from records " +
+        "A record's history, newest first: events (attached to it or rolled up one hop from records " +
         'pointing at it, each with via), field_change items (each value asserted for one of ' +
         'its fields, by whom and citing which event; current says whether it is the value ' +
         'the record holds now, and one that is not may never have been) and facts (current, ' +

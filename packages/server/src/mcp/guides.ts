@@ -76,12 +76,22 @@ const DESIGN_RULES = `### Use what Retainer already has
   object (a deal's customer, a company or a person) takes targetObjects
   instead of targetObject, and has no inverseField. Write a relation on its
   owning side; the inverse (isInverse) is read-only. Avoid json.
-- rollUpEvents on a relation (update_field, applied at once, reversible)
-  shows the events of the records pointing at a record in its history too:
+- rollUpEvents on an entity's owning relation (update_field, applied at once,
+  reversible) shows directly attached events one hop from source to target,
+  never onward through a second relation. Only events roll up, not field
+  values or facts. Read this history with get_context or get_timeline;
+  query_records with linked returns direct attachments only. For example:
   a company sees the calls about its deals. Set it where a record belongs to
   its target, such as an appointment's patient. Leave it off where the
   relation is reassigned, such as a person's company: the events would move
   to the new company. Nothing in the schema proves a relation never changes.
+- Read isProtected and protectedOptions before proposing schema changes.
+  Protected objects cannot be deleted; protected fields cannot be deleted
+  or reshaped, and protected option values cannot be removed. Renames,
+  labels and descriptions are allowed under the usual approval rules.
+  Use baseObject and baseField to identify built-ins after a rename, then
+  use their current API names from describe_schema in tool calls. An event
+  type's coreRole title and summary fields are protected too.
 - Names are camelCase API names (nameSingular "deal", namePlural "deals";
   field "closeDate"); labels are what people read. Prefer a template's
   names to your own when they mean the same thing.
@@ -237,10 +247,12 @@ ${DESIGN_RULES}
 When your user asks whether the schema still fits:
 - Count how often each custom field is filled in (query_records), and
   name the ones that are almost always empty.
-- Look for custom objects that rebuild what Retainer has: an object for
-  meetings, calls or emails; a join object for who attended; a field that
-  tracks the last contact by hand. Moving them means logging the records
-  as events first, so propose it as a plan, not a single change.
+- Look for entity objects (class "entity") used to log meetings, calls or
+  emails, join objects for who attended, and fields tracking last contact
+  by hand. Custom event types (class "event") are valid: do not propose
+  replacing one merely because it represents a meeting, call or email.
+  Moving legacy entity records means logging them as events first, so
+  propose it as a plan, not a single change.
 - Look for twins of template objects and for type fields that tags could
   replace.
 Propose additions as usual. Renames and removals wait for a person with
