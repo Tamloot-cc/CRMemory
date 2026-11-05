@@ -457,6 +457,47 @@ export type EventRetraction = {
 };
 /** `DELETE /v1/events/:id`. */
 export type RetractEventResult = EventRetraction & { id: string; deleted: true };
+/**
+ * `POST /v1/events/move` (1.3): changes the type of logged events, keeping
+ * their IDs, identities, links and the claims that cite them.
+ */
+export type MoveEventsInput = {
+  /** The event type the events have now (API name). */
+  from: string;
+  /** The event type they move to (API name). */
+  to: string;
+  /** Only these events of `from` (at most 1000); without it, every live event of `from`. */
+  events?: string[];
+  /**
+   * Source field name to target field name, for fields whose names differ.
+   * The rest map by name; title and summary always map to the target's.
+   */
+  fields?: Record<string, string>;
+  /** Source fields whose values may be deleted because the target has no field for them. */
+  drop?: string[];
+  /**
+   * Target field values for moved events that have none for that field,
+   * written as if logged with the event, e.g. `{ "medium": "meeting" }`.
+   */
+  defaults?: Record<string, unknown>;
+  /** Check the move and report what it would do, changing nothing. */
+  dryRun?: boolean;
+};
+export type MoveEventsResult = {
+  /** The move's entry in the log; null for a dry run or when nothing moved. */
+  id: string | null;
+  dryRun: boolean;
+  from: string;
+  to: string;
+  /** IDs of the events moved (or that would move), in ID order. */
+  eventIds: string[];
+  /** How each source field mapped, and how many moved events had claims for it. */
+  fields: { from: string; to: string; events: number }[];
+  /** Fields listed in `drop`: the events and assertions whose values were deleted. */
+  dropped: { field: string; events: number; assertions: number }[];
+  /** Defaults written: to how many events each one was. */
+  defaults: { field: string; events: number }[];
+};
 /** `DELETE /v1/records/:id`: the records deleted and, for events, what they retracted. */
 export type DeleteRecordResult = Partial<EventRetraction> & {
   id: string;

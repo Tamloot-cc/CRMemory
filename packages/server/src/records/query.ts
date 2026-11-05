@@ -6,6 +6,7 @@ import {
   type FilterOperator,
   filterOperatorsFor,
   isCollectionRelation,
+  isRecordId,
   type PresentedRecord,
   type RecordPage,
   type RecordReference,
@@ -175,6 +176,24 @@ function conditionsOf(condition: unknown): Record<string, unknown> {
     : { eq: condition };
 }
 
+/**
+ * A built-in column's filter value, checked against the column's type before
+ * Postgres casts it, so a malformed value is a 422 naming the column rather
+ * than a failed cast. Timestamps follow the rule for `date_time` fields: ISO
+ * 8601 with a UTC offset.
+ */
+function builtInValue(name: string, type: BuiltIn['type'], value: unknown): string {
+  if (type === 'uuid') {
+    if (isRecordId(value)) return value;
+    throw invalidFilter(`invalid value for ${name}: expected a record ID (UUID)`, { field: name });
+  }
+  if (type === 'timestamptz') {
+    return valueFor({ name, type: 'date_time', settings: {} }, value) as string;
+  }
+  if (typeof value === 'string') return value;
+  throw invalidFilter(`invalid value for ${name}: expected text`, { field: name });
+}
+
 /** A condition on a built-in column: text takes eq, neq and in; the rest also compare. */
 function builtInCondition(
   tx: Tx,
@@ -190,9 +209,12 @@ function builtInCondition(
     const type = tx.unsafe(builtIn.type);
     const sqlOp = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
     if (op === 'in' && Array.isArray(value)) {
-      parts.push(tx`${column} = any(${value as string[]}::${type}[])`);
+      const values = value.map((v) => builtInValue(name, builtIn.type, v));
+      parts.push(tx`${column} = any(${values}::${type}[])`);
     } else if (sqlOp && allowed.includes(op) && typeof value === 'string') {
-      parts.push(tx`${column} ${tx.unsafe(sqlOp)} ${value}::${type}`);
+      parts.push(
+        tx`${column} ${tx.unsafe(sqlOp)} ${builtInValue(name, builtIn.type, value)}::${type}`,
+      );
     } else {
       throw invalidFilter(`${name} does not support "${op}" with that value`, {
         field: name,
@@ -250,7 +272,7 @@ function filterableNames(object: CompiledObject): string[] {
 }
 
 /** Validates a filter value with the field's own rules, naming the field on error. */
-function valueFor(field: FieldState, value: unknown): unknown {
+function valueFor(field: Pick<FieldState, 'name' | 'type' | 'settings'>, value: unknown): unknown {
   try {
     if (field.type === 'money') {
       if (typeof value !== 'number') throw new Error('expected amountMicros as a number');
@@ -283,8 +305,10 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
       const empty = emptyValue(tx, field);
       return raw ? empty : tx`not ${empty}`;
     }
-    if (!Array.isArray(raw) || raw.length === 0 || raw.some((id) => typeof id !== 'string')) {
-      throw invalidFilter(`${field.name}.${op} takes a non-empty array of record IDs`);
+    if (!Array.isArray(raw) || raw.length === 0 || !raw.every(isRecordId)) {
+      throw invalidFilter(`${field.name}.${op} takes a non-empty array of record IDs`, {
+        field: field.name,
+      });
     }
     const ids = [...new Set(raw as string[])];
     if (op === 'containsAny') {
@@ -296,8 +320,8 @@ function compileOperator(tx: Tx, field: FieldState, op: Operator, raw: unknown):
 
   if (field.type === 'relation') {
     const ids = op === 'in' ? raw : [raw];
-    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
-      throw invalidFilter(`${field.name}.${op} takes record IDs`);
+    if (!Array.isArray(ids) || !ids.every(isRecordId)) {
+      throw invalidFilter(`${field.name}.${op} takes record IDs`, { field: field.name });
     }
     return tx`exists (select 1 from record_links l
       where l.source_record_id = r.id and l.field_id = ${field.id as string}

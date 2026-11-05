@@ -10,10 +10,11 @@ import type {
   MergeSuggestionDecision,
   RecordPage,
 } from '@retainer/shared';
+import { isoDateTimeSchema } from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
-import { inWorkspace, lockForWrite, type Tx } from '../db/tx.js';
+import { inWorkspace, lockForWrite, type Tx, type WriteLocks } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';
 import { lockSource, retractEventClaims } from '../memory/events.js';
@@ -73,7 +74,8 @@ const DEADLOCK_RETRIES = 3;
  * A record write: one short workspace transaction holding the schema lock
  * in shared mode, so the schema it validated against stays current (3),
  * and the privacy lock, so it serializes with `forget` (2.1). Only
- * `forget` takes the privacy lock exclusively.
+ * `forget` takes the privacy lock exclusively, and only moving events
+ * between types takes the schema lock exclusively (1.3).
  *
  * A relation write locks its source record, then its target `FOR KEY
  * SHARE`; merges and cascading deletes lock targets before sources. The two
@@ -84,12 +86,12 @@ export async function withWrite<T>(
   sql: Sql,
   caller: Caller,
   fn: (tx: Tx, context: WriteContext) => Promise<T>,
-  privacy: 'shared' | 'exclusive' = 'shared',
+  locks: WriteLocks = {},
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await inWorkspace(sql, caller.workspaceId, async (tx) => {
-        await lockForWrite(tx, caller.workspaceId, privacy);
+        await lockForWrite(tx, caller.workspaceId, locks);
         const schema = await getSchema(tx, caller.workspaceId);
         const [workspace] = await tx<{ settings: WorkspaceSettings }[]>`
           select settings from workspaces where id = ${caller.workspaceId}`;
@@ -210,7 +212,7 @@ export const upsertInputSchema = z.strictObject({
   match: z.record(z.string(), z.unknown()).optional(),
   values: valuesSchema.default({}),
   ifMissing: z.enum(['fail', 'create']).default('fail'),
-  expectedUpdatedAt: z.iso.datetime({ offset: true }).optional(),
+  expectedUpdatedAt: isoDateTimeSchema.optional(),
   source: sourceSchema.optional(),
 });
 export type UpsertInput = z.infer<typeof upsertInputSchema>;
@@ -368,7 +370,7 @@ export async function upsertRecord(
 
 export const patchInputSchema = z.strictObject({
   values: valuesSchema,
-  expectedUpdatedAt: z.iso.datetime({ offset: true }).optional(),
+  expectedUpdatedAt: isoDateTimeSchema.optional(),
   source: sourceSchema.optional(),
 });
 
@@ -631,5 +633,7 @@ export async function dismissSuggestion(
  * in-flight writes in the workspace and blocks new ones until it commits.
  */
 export async function forget(sql: Sql, caller: Caller, id: string): Promise<ForgetResult> {
-  return withWrite(sql, caller, (tx, context) => forgetRecord(tx, context, id), 'exclusive');
+  return withWrite(sql, caller, (tx, context) => forgetRecord(tx, context, id), {
+    privacy: 'exclusive',
+  });
 }

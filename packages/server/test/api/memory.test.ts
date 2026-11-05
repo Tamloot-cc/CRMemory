@@ -632,6 +632,61 @@ describe('POST /v1/events/query (7.1)', () => {
     expect(other.body.records.map((r: { id: string }) => r.id)).not.toContain(meeting);
   });
 
+  it('refuses times Postgres cannot store as invalid requests, never 500', async () => {
+    const logged = await logCall({ occurredAt: '0000-06-01T10:00:00Z', externalId: `y0-${++n}` });
+    expect(logged.status).toBe(400);
+    expect(logged.body.error.code).toBe('invalid_request');
+    const company = await createCompany();
+    const timeline = await t.request(`/v1/records/${company}/timeline?from=0000-01-01T00:00:00Z`, {
+      key: keys.reader,
+    });
+    expect(timeline.status).toBe(400);
+  });
+
+  it('refuses malformed values for shared columns with 422 naming the field, never 500', async () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [{ id: 'not-a-uuid' }, 'id'],
+      [{ createdAt: { gt: 'yesterday' } }, 'createdAt'],
+      [{ occurredAt: { gte: 'last week' } }, 'occurredAt'],
+      [{ occurredAt: { lt: '0000-01-01T00:00:00Z' } }, 'occurredAt'],
+      [{ id: { in: ['3f1b7c1e-2c4b-4d36-9a8e-6f2f0f4f9a11', 'nope'] } }, 'id'],
+      [{ occurredAt: { in: ['2026-10-01T00:00:00Z', 'soon'] } }, 'occurredAt'],
+      [{ channel: { in: ['zoom', { not: 'text' }] } }, 'channel'],
+    ];
+    const routes = ['/v1/events/query', '/v1/objects/event/query'];
+    for (const route of routes) {
+      for (const [filter, field] of cases) {
+        const res = await t.request(route, { key: keys.reader, body: { filter } });
+        expect(res.status, `${route} ${JSON.stringify(filter)}`).toBe(422);
+        expect(res.body.error).toMatchObject({ code: 'invalid_filter', details: { field } });
+      }
+    }
+    // The per-type route on an event type, for its built-in event columns too.
+    for (const [filter, field] of cases) {
+      const res = await t.request('/v1/objects/conversation/query', {
+        key: keys.reader,
+        body: { filter },
+      });
+      expect(res.status, JSON.stringify(filter)).toBe(422);
+      expect(res.body.error).toMatchObject({ code: 'invalid_filter', details: { field } });
+    }
+    // query_records over MCP gets the same 422 body, not an internal error.
+    const mcp = await t.mcpClient(keys.reader);
+    try {
+      const result = await mcp.call('query_records', {
+        object: 'event',
+        filter: { createdAt: { gt: 'yesterday' } },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.body.error).toMatchObject({
+        code: 'invalid_filter',
+        details: { field: 'createdAt' },
+      });
+    } finally {
+      await mcp.close();
+    }
+  });
+
   it('corrects a medium with upsert, while a re-log with another medium still conflicts', async () => {
     const externalId = `medium-${++n}`;
     const body = {
@@ -953,5 +1008,127 @@ describe('GET /v1/review', () => {
         deletedRecordIds: [gone.id],
       }),
     );
+  });
+});
+
+describe('POST /v1/events/move', () => {
+  it('lets a user with admin move events, and others only check the move', async () => {
+    const own = await t.setupWorkspace(
+      { name: `Move ${++n}` },
+      {
+        admin: { actor: { type: 'user', id: 'dana' }, scopes: ['admin'] },
+        agentAdmin: { actor: { type: 'agent', id: 'ops-bot' }, scopes: ['admin'] },
+        designer: {
+          actor: { type: 'agent', id: 'inbox' },
+          scopes: ['read', 'write', 'schema:write'],
+        },
+        writer: { actor: { type: 'user', id: 'ron' }, scopes: ['read', 'write'] },
+      },
+    );
+    const created = await t.request('/v1/schema/changes', {
+      key: own.keys.admin,
+      body: {
+        operations: [
+          {
+            op: 'create_object',
+            object: {
+              class: 'event',
+              nameSingular: 'meeting',
+              namePlural: 'meetings',
+              labelSingular: 'Meeting',
+              labelPlural: 'Meetings',
+              fields: [{ name: 'agenda', label: 'Agenda', type: 'text' }],
+            },
+          },
+        ],
+      },
+    });
+    expect(created.body.status).toBe('applied');
+    const logged = await t.request('/v1/events', {
+      key: own.keys.designer,
+      body: {
+        type: 'meeting',
+        channel: 'tamloot',
+        externalId: 'rec-77',
+        occurredAt: '2026-10-08T09:00:00Z',
+        title: 'Weekly sync',
+        fields: { agenda: 'Hiring' },
+      },
+    });
+    expect(logged.status).toBe(201);
+    const id = logged.body.id as string;
+    const move = (key: string, body: Record<string, unknown>) =>
+      t.request('/v1/events/move', {
+        key,
+        body: { from: 'meeting', to: 'conversation', defaults: { medium: 'meeting' }, ...body },
+      });
+
+    // The target has no agenda: refused with the list, naming the field.
+    const refused = await move(own.keys.designer, { dryRun: true });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error).toMatchObject({
+      code: 'unmapped_fields',
+      details: { fields: [{ field: 'agenda', events: 1, assertions: 1 }] },
+    });
+
+    // A dry run needs schema:write; moving needs a user with admin.
+    const plan = await move(own.keys.designer, { drop: ['agenda'], dryRun: true });
+    expect(plan.status, JSON.stringify(plan.body)).toBe(200);
+    expect(plan.body).toMatchObject({ id: null, dryRun: true, eventIds: [id] });
+    expect((await move(own.keys.writer, { drop: ['agenda'], dryRun: true })).status).toBe(403);
+    for (const key of [own.keys.designer, own.keys.agentAdmin, own.keys.writer]) {
+      const denied = await move(key, { drop: ['agenda'] });
+      expect(denied.status).toBe(403);
+    }
+    expect((await t.request(`/v1/events/${id}`, { key: own.keys.admin })).body.object).toBe(
+      'meeting',
+    );
+
+    // Over MCP, an agent checks the move and is refused the move itself.
+    const mcp = await t.mcpClient(own.keys.designer);
+    try {
+      const checked = await mcp.call('move_events', {
+        from: 'meeting',
+        to: 'conversation',
+        drop: ['agenda'],
+        defaults: { medium: 'meeting' },
+        dryRun: true,
+      });
+      expect(checked.isError).toBe(false);
+      expect(checked.body).toMatchObject({ dryRun: true, eventIds: [id] });
+      const denied = await mcp.call('move_events', {
+        from: 'meeting',
+        to: 'conversation',
+        drop: ['agenda'],
+      });
+      expect(denied.isError).toBe(true);
+      expect(denied.body.error.code).toBe('forbidden');
+    } finally {
+      await mcp.close();
+    }
+
+    const moved = await move(own.keys.admin, { drop: ['agenda'] });
+    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+    expect(moved.body).toMatchObject({
+      id: expect.any(String),
+      dryRun: false,
+      eventIds: [id],
+      dropped: [{ field: 'agenda', events: 1, assertions: 1 }],
+      defaults: [{ field: 'medium', events: 1 }],
+    });
+    const read = await t.request(`/v1/events/${id}`, { key: own.keys.designer });
+    expect(read.body).toMatchObject({
+      id,
+      object: 'conversation',
+      fields: { title: 'Weekly sync', medium: 'meeting' },
+      event: { channel: 'tamloot', externalId: 'rec-77' },
+    });
+
+    // Bad bodies are 400s like any route's.
+    const bad = await t.request('/v1/events/move', {
+      key: own.keys.admin,
+      body: { from: 'meeting', to: 'conversation', events: ['not-a-uuid'] },
+    });
+    expect(bad.status).toBe(400);
   });
 });

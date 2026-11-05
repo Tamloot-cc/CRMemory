@@ -26,6 +26,25 @@ export class FieldValueError extends Error {
 
 const MAX_TEXT = 100_000;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * Years a date or date-time may fall in. Postgres has no year 0 and parses
+ * no expanded years (+010000), so values outside this range would fail
+ * every cast that sorts or filters them.
+ */
+const MIN_YEAR = 1;
+const MAX_YEAR = 9999;
+const inYearRange = (date: Date) =>
+  date.getUTCFullYear() >= MIN_YEAR && date.getUTCFullYear() <= MAX_YEAR;
+const YEAR_RANGE_MESSAGE = `expected a year from ${MIN_YEAR} to ${MAX_YEAR}`;
+
+/**
+ * An ISO 8601 date-time with a UTC offset, in the years Postgres can cast,
+ * for every API input that becomes a `timestamptz` (`occurredAt`, timeline
+ * bounds, `expectedUpdatedAt`).
+ */
+export const isoDateTimeSchema = z.iso
+  .datetime({ offset: true })
+  .refine((value) => inYearRange(new Date(value)), { message: YEAR_RANGE_MESSAGE });
 
 function fail(message: string, allowed?: unknown[]): never {
   throw new FieldValueError(message, allowed);
@@ -109,6 +128,7 @@ export function normalizeFieldValue(field: ValueField, value: unknown): unknown 
       if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
         fail('expected a real calendar date as YYYY-MM-DD');
       }
+      if (!inYearRange(date)) fail(YEAR_RANGE_MESSAGE);
       return value;
     }
     case 'date_time': {
@@ -118,6 +138,7 @@ export function normalizeFieldValue(field: ValueField, value: unknown): unknown 
       }
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) fail('expected an ISO 8601 date-time');
+      if (!inYearRange(date)) fail(YEAR_RANGE_MESSAGE);
       return date.toISOString();
     }
     case 'select': {

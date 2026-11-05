@@ -127,6 +127,32 @@ be filtered or sorted; the error for any other field lists the allowed ones.
 and `-word` to exclude. Each word also matches longer words that start with
 it ("Dan" finds "Dana"), exact matches rank first, and accents are ignored.
 
+## Moving events to another type
+
+`moveEvents` changes the type of logged events in place, keeping their IDs,
+`channel` and `externalId`, participants, `about` records, and the claims and
+facts that cite them. It needs a `user` key with the `admin` scope; with
+`dryRun: true` it needs only `schema:write`, reports exactly what would
+happen and changes nothing.
+
+```ts
+const plan = await retainer.moveEvents({
+  from: 'meeting',
+  to: 'conversation',
+  defaults: { medium: 'meeting' }, // for moved events with no medium
+  dryRun: true,
+});
+// plan.eventIds, plan.fields ([{ from, to, events }]), plan.defaults
+
+await retainer.moveEvents({ from: 'meeting', to: 'conversation', defaults: { medium: 'meeting' } });
+```
+
+Without `events`, every live event of `from` moves, all or nothing; pass
+`events: [id]` to move one. Fields map by name, and `fields: { agenda: 'topic' }`
+maps one named differently. If the target has no field for some values, it
+throws `unmapped_fields` with `details.fields` listing them; list a field in
+`drop` to delete its values instead.
+
 ## Review, merge and forget
 
 These need a key with a `user` actor.

@@ -1,15 +1,17 @@
 import type {
   AddedLinks,
   LogEventResult,
+  MoveEventsResult,
   PresentedRecord,
   RetractEventResult,
 } from '@retainer/shared';
 import type { Sql } from '../db/client.js';
-import { AppError, notFound } from '../errors.js';
+import { AppError, forbidden, notFound } from '../errors.js';
 import { claimIdempotencyKey, storeIdempotentResult } from '../idempotency.js';
 import { getRecord } from '../records/read.js';
 import { type Caller, eventsAmong, withRead, withWrite } from '../records/service.js';
 import { softDeleteRecord } from '../records/write.js';
+import { canApproveDestructive } from '../schema-engine/engine.js';
 import type { AddLinksInput } from './event-links.js';
 import {
   addEventLinks,
@@ -27,6 +29,7 @@ import {
   rememberRequestHash,
   retractFact,
 } from './facts.js';
+import { type MoveEventsInput, moveEvents } from './move.js';
 
 /**
  * Memory writes and reads for one caller, shared by REST and MCP so both
@@ -95,6 +98,52 @@ export async function retractEventFor(
     );
     return { id: record.id, deleted: true, ...retraction };
   });
+}
+
+/** Carries a dry run's result out of the transaction it rolls back. */
+class DryRun extends Error {
+  constructor(readonly result: MoveEventsResult) {
+    super('dry run');
+  }
+}
+
+/**
+ * Moves events between event types (1.3). It follows the approval rule of
+ * destructive schema changes and `forget` (3, 2.1): a `user` with the
+ * `admin` scope moves them, and the request is the approval; an agent's key,
+ * whatever its scope, is not a person's approval. Anyone who may propose
+ * schema changes can run it as a dry run, which takes the same path and
+ * rolls back, so the plan it reports is exactly what the move would do.
+ *
+ * It holds the schema lock exclusively, so every other write in the
+ * workspace waits for it and none runs against a type the events leave.
+ */
+export async function moveEventsFor(
+  sql: Sql,
+  caller: Caller,
+  input: MoveEventsInput,
+): Promise<MoveEventsResult> {
+  if (!input.dryRun && !canApproveDestructive(caller.actor, caller.scopes)) {
+    throw forbidden(
+      'only a user key with the admin scope can move events between types; an agent can ' +
+        'check the move with dryRun and ask a person to run it',
+    );
+  }
+  try {
+    return await withWrite(
+      sql,
+      caller,
+      async (tx, context) => {
+        const result = await moveEvents(tx, context, input);
+        if (input.dryRun) throw new DryRun(result);
+        return result;
+      },
+      { schema: 'exclusive' },
+    );
+  } catch (error) {
+    if (error instanceof DryRun) return error.result;
+    throw error;
+  }
 }
 
 /**

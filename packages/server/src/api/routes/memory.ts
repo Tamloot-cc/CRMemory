@@ -4,9 +4,11 @@ import type { Sql } from '../../db/client.js';
 import { addLinksInputSchema } from '../../memory/event-links.js';
 import { logEventInputSchema } from '../../memory/events.js';
 import { rememberInputSchema } from '../../memory/facts.js';
+import { moveEventsInputSchema } from '../../memory/move.js';
 import {
   addEventLinksFor,
   logEventFor,
+  moveEventsFor,
   readEvent,
   remember,
   removeEventLinkFor,
@@ -29,6 +31,15 @@ export function memoryRoutes(app: Hono<AppEnv>, sql: Sql) {
   app.post('/events/query', requireScope('read'), async (c) => {
     const input = await readBody(c, queryInputSchema);
     return c.json(await findEvents(sql, c.get('caller'), input));
+  });
+
+  /**
+   * Moves events to another event type (1.3). schema:write may run it as a
+   * dry run; moving needs a user with admin, checked by the service.
+   */
+  app.post('/events/move', requireScope('schema:write'), async (c) => {
+    const input = await readBody(c, moveEventsInputSchema);
+    return c.json(await moveEventsFor(sql, c.get('caller'), input));
   });
 
   app.get('/events/:id', requireScope('read'), async (c) =>

@@ -771,6 +771,39 @@ export const deletionAuditLog = pgTable(
 );
 
 /**
+ * Events moved from one event type to another (1.3): who moved which
+ * events, and how their fields mapped. IDs and field names only, never
+ * values. Only ever added to.
+ */
+export const eventMoves = pgTable(
+  'event_moves',
+  {
+    id: id(),
+    workspaceId: workspaceId(),
+    actor: jsonb('actor').$type<Actor>().notNull(),
+    fromObjectTypeId: uuid('from_object_type_id').notNull(),
+    toObjectTypeId: uuid('to_object_type_id').notNull(),
+    eventIds: uuid('event_ids').array().notNull(),
+    /** The field mapping, dropped fields and defaults, by field ID and name. */
+    fields: jsonb('fields').$type<Record<string, unknown>>().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    tenantFk(
+      'event_moves_from_object_type_fk',
+      [t.workspaceId, t.fromObjectTypeId],
+      [objectTypes.workspaceId, objectTypes.id],
+    ),
+    tenantFk(
+      'event_moves_to_object_type_fk',
+      [t.workspaceId, t.toObjectTypeId],
+      [objectTypes.workspaceId, objectTypes.id],
+    ),
+    index('event_moves_workspace_idx').on(t.workspaceId, t.createdAt),
+  ],
+);
+
+/**
  * The consolidator's last run per workspace (4.2). Workers take turns
  * through an advisory lock. `compared_until` is how far records have been
  * compared for merge suggestions, so a later run probes only newer changes.

@@ -190,6 +190,14 @@ export async function lockTargets(
   return targets;
 }
 
+/** The objects a relation field may point at, by their compiled schema entries. */
+export function relationTargets(schema: CompiledSchema, field: FieldState): CompiledObject[] {
+  return relationTargetIds(field.settings).flatMap((id) => {
+    const target = schema.objectsByUniversalId.get(id);
+    return target ? [target] : [];
+  });
+}
+
 /**
  * Relation values must point at a live record of the target object, in this
  * workspace. A merged ID is replaced by its surviving record, as for any ID
@@ -211,10 +219,7 @@ async function checkRelationTargets(
   ]);
   const errors = [];
   for (const [field, value] of relations) {
-    const allowed = relationTargetIds(field.settings).flatMap((id) => {
-      const target = context.schema.objectsByUniversalId.get(id);
-      return target ? [target] : [];
-    });
+    const allowed = relationTargets(context.schema, field);
     const resolved: string[] = [];
     for (const targetId of Array.isArray(value) ? value : [value]) {
       const target = byId.get(targetId);
@@ -437,7 +442,9 @@ async function applyWinners(
  * An older value can no longer be restored when another record has since
  * claimed it (1.2). Rather than fail, so that a retraction always takes
  * effect, that candidate waits for review (`unique_conflict`) and the next
- * one wins; accepting it later fails until the claim is released.
+ * one wins; accepting it later fails until the claim is released. With
+ * `onUniqueConflict: 'refuse'`, the claim fails the write instead
+ * (`UniqueConflictError`), for callers that must not lose a value that way.
  */
 export async function recomputeFields(
   tx: Tx,
@@ -445,6 +452,7 @@ export async function recomputeFields(
   object: CompiledObject,
   record: LockedRecord,
   fieldIds: readonly string[],
+  { onUniqueConflict = 'review' }: { onUniqueConflict?: 'review' | 'refuse' } = {},
 ): Promise<void> {
   const fields = fieldIds
     .map((id) => object.fieldsById.get(id))
@@ -476,6 +484,9 @@ export async function recomputeFields(
         if (!holder) {
           winner = candidate;
           break;
+        }
+        if (onUniqueConflict === 'refuse') {
+          throw new UniqueConflictError(field, holder.value, holder.recordId);
         }
         await tx`update field_assertions set status = 'pending_review',
             review_reason = 'unique_conflict'
