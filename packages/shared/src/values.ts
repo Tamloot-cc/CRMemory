@@ -226,3 +226,11 @@ export function validateFieldValue(field: ValueField, value: unknown): unknown {
   }
   return normalized;
 }
+
+const recordIdSchema = z.uuid();
+/**
+ * Whether a value is a record ID as the API validates one (`z.uuid()`, RFC
+ * 9562), so a client can drop a malformed ID before a request would fail.
+ */
+export const isRecordId = (value: unknown): value is string =>
+  recordIdSchema.safeParse(value).success;

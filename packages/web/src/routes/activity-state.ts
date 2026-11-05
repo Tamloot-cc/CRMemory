@@ -1,4 +1,4 @@
-import type { EventQueryInput } from '@retainer/shared';
+import { type EventQueryInput, isRecordId } from '@retainer/shared';
 import { addDays, format, isValid, parse } from 'date-fns';
 import { joined, list } from './record-timeline.js';
 import type { ViewSearch } from './state.js';
@@ -24,11 +24,10 @@ export type FeedFilters = {
 const validDay = (raw: string | undefined) =>
   raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) && isValid(parse(raw, DAY, new Date())) ? raw : undefined;
 const nonEmpty = (raw: string | undefined) => (raw?.trim() ? raw.trim() : undefined);
-/** A record ID, as the server's `linked.record` takes it; anything else is ignored. */
-const RECORD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A record ID, validated as the server's `linked.record` is; anything else is ignored. */
 const recordId = (raw: string | undefined) => {
   const id = nonEmpty(raw);
-  return id && RECORD_ID.test(id) ? id : undefined;
+  return isRecordId(id) ? id : undefined;
 };
 
 /**

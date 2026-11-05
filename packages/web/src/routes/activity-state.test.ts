@@ -38,6 +38,10 @@ describe('feed filters in the address', () => {
     });
     // A linked value that is not a record ID would fail the whole query; it is dropped.
     expect(parseFeedSearch({ linked: 'acme' })).toEqual({ types: [] });
+    // UUID-shaped is not enough: the server validates RFC 9562 versions and variants.
+    expect(parseFeedSearch({ linked: '12345678-1234-1234-1234-123456789012' })).toEqual({
+      types: [],
+    });
   });
 
   it('writes them back, clearing what is unset', () => {
