@@ -46,7 +46,7 @@ const CANDIDATE_LIMIT = 100;
  * events are deleted (facts only once no live source remains) and inbound
  * relation claims are deleted; the affected records are recomputed; the
  * events and the records are hard-deleted, with their assertions, facts,
- * links and identifiers; an erased event's identity, and that of a
+ * comments, links and identifiers; an erased event's identity, and that of a
  * surviving event whose initial values were erased, is replaced by a keyed
  * tombstone; stored idempotent responses that mention them are deleted; the
  * handles are suppressed by keyed HMAC; and an audit row records who and
@@ -162,6 +162,10 @@ export async function forgetRecord(
     where workspace_id = ${workspaceId} and record_id = any(${erased}::uuid[])`;
   const ownFacts = await tx<{ id: string }[]>`
     select id from facts where workspace_id = ${workspaceId} and record_id = any(${erased}::uuid[])`;
+  // Deleted ones too: their text is still stored until this removes it.
+  const comments = await tx<{ id: string }[]>`
+    delete from comments where workspace_id = ${workspaceId} and record_id = any(${erased}::uuid[])
+    returning id`;
 
   const cited = await tx<RemovedClaim[]>`
     delete from field_assertions
@@ -214,7 +218,12 @@ export async function forgetRecord(
 
   // Stored responses mentioning any erased row are erased too.
   const orphanedIds = new Set(orphaned.map((f) => f.id));
-  const erasedIds = [...erased, ...orphanedIds, ...ownFacts.map((f) => f.id)];
+  const erasedIds = [
+    ...erased,
+    ...orphanedIds,
+    ...ownFacts.map((f) => f.id),
+    ...comments.map((c) => c.id),
+  ];
   await tx`
     delete from idempotency_keys k
     where k.workspace_id = ${workspaceId} and k.result is not null
@@ -229,6 +238,7 @@ export async function forgetRecord(
     assertions: (counted?.assertions ?? 0) + cited.length,
     inboundRelations: inboundRelations.length + trimmed.length,
     suppressedHandles,
+    comments: comments.length,
   };
   await tx`
     insert into deletion_audit_log (workspace_id, actor_type, actor_id, counts)

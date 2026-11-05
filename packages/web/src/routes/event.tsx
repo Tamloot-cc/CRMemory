@@ -1,57 +1,42 @@
 import { isInverseRelation } from '@retainer/shared';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
 import { useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge } from '../provenance/index.js';
 import {
-  Badge,
   Button,
   Dialog,
-  Empty,
-  JsonBlock,
+  EntryText,
   Muted,
   Notice,
   Page,
   Panel,
   Property,
   PropertyList,
-  RecordLink,
-  Row,
   Stack,
-  Tabs,
 } from '../ui/index.js';
-import { DeveloperFacts, useApiName, useDeveloper } from './developer.js';
+import { DeveloperFacts, useApiName } from './developer.js';
 import { EventDetailsView } from './event-details.js';
 import { eventMedium, mediumField } from './event-list.js';
-import { AssertionCard } from './record-view.js';
-import { classLabel, eventTitle, objectByName, QueryError, useView } from './state.js';
+import { MemoryTabs, useMemoryNav } from './record-memory.js';
+import { useRecord } from './record-view.js';
+import { classLabel, eventTitle, objectByName, QueryError } from './state.js';
 
 /**
  * One event (`GET /v1/events/:id`): its type, time, channel, participants and
- * `about` records, its other fields, and the claims that cite it.
+ * `about` records, its other fields, then its comments, the claims citing it
+ * and the history of its fields.
  */
 export function EventPage() {
   const { id } = useParams({ strict: false }) as { id: string };
   const { session, schema } = useWorkspace(),
     client = useQueryClient(),
-    { search, setSearch } = useView(),
-    developer = useDeveloper(),
+    nav = useMemoryNav(),
     apiName = useApiName();
-  const tab =
-    search.tab === 'facts' || (developer && search.tab === 'json') ? search.tab : 'assertions';
-  const query = useQuery({
-    queryKey: [session.workspace.id, 'event', id],
-    queryFn: ({ signal }) => api.event(id, signal),
-  });
-  const json = tab === 'json';
-  const claimsTab = tab === 'facts' ? 'facts' : 'assertions';
-  const claims = useQuery({
-    queryKey: [session.workspace.id, 'claims', id, claimsTab, search.cursor],
-    queryFn: ({ signal }) => api.claims(id, { [`${claimsTab}Cursor`]: search.cursor, signal }),
-    enabled: !!query.data && !json,
-  });
+  // The record read: it carries the tab counts, and the sheet shares its cache.
+  const query = useRecord(id);
   const [confirm, setConfirm] = useState(false),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(''),
@@ -66,7 +51,7 @@ export function EventPage() {
       );
       setDeleted(true);
       setConfirm(false);
-      client.removeQueries({ queryKey: [session.workspace.id, 'event', id] });
+      client.removeQueries({ queryKey: [session.workspace.id, 'record', id] });
       await client.invalidateQueries({ queryKey: [session.workspace.id] });
     } catch (e) {
       setMessage((e as Error).message);
@@ -129,7 +114,7 @@ export function EventPage() {
       <DeveloperFacts record={r} object={type} />
       <Panel title="Summary">
         <Stack>
-          {e.summary ? <p>{e.summary}</p> : <Muted>No summary</Muted>}
+          {e.summary ? <EntryText>{e.summary}</EntryText> : <Muted>No summary</Muted>}
           <ActorBadge actor={r.createdBy} />
         </Stack>
       </Panel>
@@ -156,60 +141,7 @@ export function EventPage() {
           </PropertyList>
         </Panel>
       ) : null}
-      <Tabs
-        value={tab}
-        onChange={(tab) => void setSearch({ tab, cursor: undefined })}
-        items={[
-          { value: 'assertions', label: 'Field assertions' },
-          { value: 'facts', label: 'Facts citing this event' },
-          ...(developer ? [{ value: 'json', label: 'JSON' }] : []),
-        ]}
-      />
-      {json ? (
-        <JsonBlock value={r} label="Event JSON" />
-      ) : (
-        <>
-          {claims.error ? <QueryError error={claims.error} /> : null}
-          {claims.isPending ? <Notice>Loading claims…</Notice> : null}
-          <Stack>
-            {claimsTab === 'assertions'
-              ? claims.data?.assertions.map((a) => <AssertionCard key={a.id} assertion={a} />)
-              : claims.data?.facts.map((f) => (
-                  <Panel key={f.id}>
-                    <Stack>
-                      <p>{f.content}</p>
-                      {f.status ? <Badge>{f.status}</Badge> : null}
-                      <RecordLink id={f.record}>View record</RecordLink>
-                      <ActorBadge actor={f.writtenBy} />
-                      {f.sources
-                        .filter((s) => s.event === id && s.quote)
-                        .map((s) => (
-                          <blockquote key={`${s.event}:${s.quote}`}>{s.quote}</blockquote>
-                        ))}
-                    </Stack>
-                  </Panel>
-                ))}
-            {claims.data &&
-            !(claimsTab === 'assertions' ? claims.data.assertions : claims.data.facts).length ? (
-              <Empty title="No claims in this section" />
-            ) : null}
-          </Stack>
-        </>
-      )}
-      <Row>
-        {search.cursor ? (
-          <Button onClick={() => void setSearch({ cursor: undefined })}>First page</Button>
-        ) : null}
-        {!json && claims.data?.nextCursors[claimsTab] ? (
-          <Button
-            onClick={() =>
-              void setSearch({ cursor: claims.data?.nextCursors[claimsTab] ?? undefined })
-            }
-          >
-            Next page
-          </Button>
-        ) : null}
-      </Row>
+      <MemoryTabs key={r.id} record={r} nav={nav} />
       <Dialog
         open={confirm}
         onOpenChange={(open) => {

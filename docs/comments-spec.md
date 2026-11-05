@@ -1,6 +1,8 @@
 # Comments, and a narrower base schema: spec
 
-Status: **proposed** November 6, 2026.
+Status: **implemented** November 6, 2026. Open questions (7) remain open.
+What was decided beyond or differently from the text below, and why, is in
+section 10.
 
 This spec amends the [conversations and Activity spec](conversations-and-activity-spec.md)
 (D1, D7, 4.1, 5.4), the [merged schema, events and history spec](schema-events-and-history-spec.md)
@@ -335,3 +337,80 @@ object-or-event rule beside the entity/event split),
 FRONTEND.md (record page), `docs/rest-api.md`, `docs/sdk.md`,
 `docs/agents.md`, the conversations spec (D1 and D7 marked as amended by
 this spec), and the MCP instructions and guides.
+
+## 10. Implementation notes
+
+Decided while building this, where the text above or the code did not settle
+it. Each picks the safer option.
+
+**Comments**
+
+- **Deleting is soft; `forget` is hard.** 4.1 says `forget` hard-deletes. An
+  ordinary delete keeps the row with `deleted_at` and `deleted_by`, the
+  default for deletes in ARCHITECTURE.md (2.1), so a person's delete can be
+  audited. `forget` removes those rows too, and the stored idempotency
+  responses that would repeat their text, since a privacy erasure must leave no
+  copy.
+- **`Idempotency-Key` on edit and delete too**, and bound to the actor as well
+  as the body, so a reused key can't return someone else's response.
+- **An author with a read-only key can't edit.** The routes need `write`, as
+  every other write does; being the author adds a condition and removes none.
+- **`get_record` embeds comments; `GET /v1/records/:id` does not.** REST keeps
+  its shape, with `GET /v1/records/:id/comments` beside it. A write tool's
+  `record` omits them too, so a write stays one read of the record.
+- **`get_context` leaves comments out**, though 4.1's "context" could include
+  them. A context pack is what an agent may rely on and cite; comments are
+  read deliberately, with `get_record` or `list_comments`.
+- **`comment` and `comments` are reserved names**, and comments are listed
+  in the schema's built-ins beside facts, so an agent learns the concept from
+  `describe_schema` and can't shadow it with an object.
+- **No named memory guide exists**, so the rule that a comment is a pointer to
+  check and never a source is in the server instructions and `schema_design`.
+
+**Event links**
+
+- **Participants were not entity-only in the code**, though C4 reads as if they
+  were. They are now: an event as a participant is a 422 `invalid_participants`
+  (a distinct code from `invalid_link`, since the input is a different list),
+  and a handle matches entities only.
+- **`about` on the event itself is `invalid_link` too**, instead of its
+  previous code, so one code means "not a valid link target".
+- **A retry naming an existing link to an event is a no-op**, not a 422, so a
+  logging call that worked before the rule stays idempotent. Only a new link
+  is refused.
+- **The workspace upgrade logs how many `about` links to events each workspace
+  has** and changes none, in place of a one-off query.
+
+**Base template**
+
+- **An agent's `note` event type gets the reserved ID from the server.**
+  Callers can't choose universal IDs, so the engine assigns it when an event
+  type is named `note`. If a deleted row still holds that ID, the type gets a
+  random one rather than failing.
+
+**Web**
+
+- **Comments come first in the tabs**, and a record with comments opens on them;
+  otherwise an entity opens on Facts, as before. The opening tab is chosen once
+  per visit, so deleting the last comment doesn't move the person.
+- **A count of zero is hidden, and Activity and Timeline have no count**, since
+  counting them means the same fan-out as the list.
+- **`include=counts` and `claims?own=false` are new read options.** Counts come
+  with the record so tabs don't each fetch; `own=false` is how Claims shows what
+  cites an event without the values it logged itself.
+- **An event with facts stored on it also shows Facts.** 5.1 removes that tab
+  from events, but `remember` still accepts an event, and Claims lists what cites
+  an event rather than what is stored on it, so such a fact would be unreachable
+  in the app. Refusing those writes needs an API change and a data migration this
+  spec doesn't ask for. So the tab stays hidden unless the event has facts. Whether
+  `remember` should refuse events is left open.
+- **The event page reads the record route**, not `GET /v1/events/:id`, for the
+  counts and a cache shared with the sheet.
+- **Drafts are in memory for the visit**, never in browser storage: a half-written
+  remark about a person shouldn't outlive the tab on a shared machine. A draft's
+  idempotency key changes with its text, so retrying posts once and rewording is a
+  new comment.
+- **Comments read oldest first**, as a conversation does, with earlier pages
+  added above and the box below. The API pages newest first.
+- **A click outside doesn't save an edit**, unlike a field, since a comment takes
+  longer to write and clicking a tab shouldn't publish half of one.

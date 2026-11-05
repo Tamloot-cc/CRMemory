@@ -63,8 +63,8 @@ objects `person`, `company` and `task`, the fields `task.status` and
 internal-note event type (1.3). The list lives in
 `schema-engine/protection.ts`; any new server dependency on a schema
 element protects it in the same change. The core `title` and `summary`
-fields of every event type are protected the same way. The base event types
-themselves are not: an unused one can be deleted like any object.
+fields of every event type are protected the same way. The base event type
+itself is not: an unused one can be deleted like any object.
 
 - A protected object cannot be deleted. Its API names and labels can change.
 - A protected field cannot be deleted or reshaped: renames, labels and
@@ -269,15 +269,25 @@ in it what the workspace should not keep.
 An object type has a class. `entity` is the default: people, companies,
 deals, anything with a lifecycle. `event` is something that happened at a
 point in time and is logged from a source: a conversation (a meeting, call,
-email thread or chat) or a note, or a type the workspace adds, such as a
-payment or a site visit.
+email thread or chat), or a type the workspace adds, such as a payment or a
+site visit.
 Events are records: they have fields, assertions, relation fields, views and
 search like any other record, plus the built-in columns `occurredAt`,
 `channel` and `externalId` from `event_records`, which `query_records` can
 filter and sort by and a calendar view can use as its date.
 
-Every workspace has the base event types `conversation` and `note`, with
-universal IDs (3.1). A conversation's kind is its `medium` field, a
+**Object or event.** Something with a state that people change is an object:
+a task, a deal, a ticket. Something that happened, reported by a source and
+cited as evidence, is an event: a call, a payment, a form submission. A
+change to an object is its history (assertions and the timeline), never an
+event, and a person's remark about a record is a comment (below), never an
+event. The `schema_design` guide gives agents this test with examples.
+
+Every workspace has the base event type `conversation`, with a universal ID
+(3.1). `note` is no longer in the base template, but keeps its universal ID,
+so a template or agent that adds a `note` event type gets the same identity;
+a workspace from before this keeps its notes and may delete the type. A
+conversation's kind is its `medium` field, a
 nullable, filterable select with the options `meeting`, `call`, `email`
 and `message` (workspaces may add more), not its type: a field can be
 corrected after logging with `upsert_record`, while an event's type changes
@@ -289,10 +299,10 @@ what happened; it is optional, and an agent that can't tell leaves it
 empty. A workspace adds an event type only for events whose fields a
 conversation would never use: a payment (an amount, an invoice), a form
 submission, a site visit. Details such as duration, direction or a
-recording link are optional fields on `conversation`. Neither base type is
-protected. `describe_schema` marks them with `baseObject` (`conversation`,
-`note`) and the medium with `baseField: "conversationMedium"`, so clients
-find them after a rename. Creating an object with
+recording link are optional fields on `conversation`. The base type is not
+protected. `describe_schema` marks it with `baseObject` (`conversation`, or
+`note` where one exists) and the medium with
+`baseField: "conversationMedium"`, so clients find them after a rename. Creating an object with
 `class: "event"` gives it two core fields, with roles `title` and
 `summary`: searchable text, protected (1.1), and `title` is the label
 field. The rest of an event type's fields are ordinary fields. The names
@@ -338,10 +348,16 @@ callers do not get deduplication. An edited source needs a new
 `external_id`; creating it does not retract the old source's claims; a
 person deletes the old event (`DELETE /v1/events/:id`).
 
-Participants are who took part. `about` lists the records an event
-concerns, of any object, entities or other events, but not the event
-itself: the company, project or tasks of a meeting with Dana about the Acme
-pilot. The agent names `about` records explicitly. Retainer does not infer
+Participants are who took part, and `about` lists the records an event
+concerns: the company, project or tasks of a meeting with Dana about the Acme
+pilot. Both name entities only. A new `about` link to an event, or to the
+event itself, is a 422 `invalid_link`; an event as a participant is a 422
+`invalid_participants`; a participant's handle matches entities only. An
+event is something that happened among entities, and what it means for
+another event belongs in a comment or a field. Links to events from before
+this rule still read and can be removed, the workspace upgrade logs how many
+each workspace has, and retrying a call that names one already linked is a
+no-op. The agent names `about` records explicitly. Retainer does not infer
 them, for example from a participant's company, since that would move old
 meetings when a person changes jobs. A record is linked once per event:
 `about` skips a record already linked, a record added as a participant
@@ -440,14 +456,41 @@ Every fact cites an event (rule 2.1). When `remember` gets no `source`, it
 logs an internal note: the fact's text as its summary, the record as its
 one `about` link, channel `retainer` (which `log_event` rejects). Internal
 notes are records of their own hidden, protected event type with a fixed
-universal ID, not of the user-visible `note` type, so hiding them is one
+universal ID, not of a workspace's own `note` type, so hiding them is one
 check in object resolution rather than one on every path: `describe_schema`
 omits the type; query, view, search, record and write routes resolve it as
 not found; context packs and event lists never include it. Its records
 change only through `remember` and the fact and privacy lifecycle. A fact
 presents such a source as `{ event: null, internal: true }` instead of an ID
-callers cannot read. Notes a person or agent logs as `note` events are
-ordinary events; the web app writes them with channel `web` (FRONTEND.md).
+callers cannot read. Events a workspace logs as a `note` type are ordinary
+events.
+
+#### Comments
+
+A comment is plain text a person writes on any record, entity or event, to
+the people working with it: "is this the right email?", "don't contact him
+before January". It lives in its own `comments` table (`record_id`, `body`
+up to 10,000 characters, `author`, `created_at`, `updated_at`, `edited_at`,
+`deleted_at`, `deleted_by`), with row-level security like every workspace
+table. It is not an event and not an assertion, so:
+
+- **Never evidence.** Nothing can cite one. It is outside the Activity feed,
+  the events query, timelines, context packs and fact sources. A fact in a
+  comment becomes memory only when something writes it through
+  `upsert_record`, `log_event` or `remember`, and the guides tell agents so.
+- **Only people write.** The actor must be `user`, whatever the key's scopes;
+  anyone else gets 403 with a message naming what to use instead. Agents and
+  integrations read them, with `get_record` (the newest 20 and a total) and
+  `list_comments`.
+- **Who changes what.** The author edits (a `write` key is still needed, and
+  `edited_at` says so). The author, or a `user` with `admin`, deletes.
+  Deleting is soft and records `deleted_by`, like other deletes (2.1).
+- **Following the record.** A merge moves the loser's comments to the
+  survivor, under the same `FOR KEY SHARE` locks as links (4.2), so a comment
+  racing a merge lands on the survivor. They go with a deleted record, and
+  `forget` hard-deletes them, including soft-deleted text (2.1).
+- **Retries.** `Idempotency-Key` is honored on add, edit and delete, and is
+  bound to the actor as well as the body.
 
 #### Moving events between types
 
@@ -684,7 +727,9 @@ can erase those dependencies. Then, in a coordinated deletion operation:
    initial values this erases loses its `channel` and `external_id`, which
    are caller-chosen strings that may identify the person, and gets a
    tombstone when it had an external ID;
-4. hard-delete the record, its assertions, facts, links and identifiers;
+4. hard-delete the record, its assertions, facts, links, identifiers and
+   comments, including deleted comments' text, and any stored idempotency
+   response that repeats one;
 5. write a minimal audit entry (actor ID, time, counts), without copied names,
    handles, summaries, quotes or field values.
 
@@ -840,8 +885,8 @@ reported and keeps its schema; the others still run
 Every workspace is created with three base objects: `person` (name, emails,
 phones, address, job title, company), `company` (name, domain, address,
 people) and `task` (title, status, due date, assignee, person, company),
-the base event types `conversation` (with `medium`) and `note`, and the
-hidden internal-note type (1.3). Nobody builds a workspace from scratch.
+the base event type `conversation` (with `medium`), and the hidden
+internal-note type (1.3). Nobody builds a workspace from scratch.
 
 Templates add the objects and fields a kind of business needs. They ship
 as code in `packages/server/src/templates/`, with fixed `universal_id`s
@@ -1211,6 +1256,8 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `POST /v1/records/:id/merge`                      | Merge another record into this one                                                                                                      |
 | `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                                                                                  |
 | `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                                                                                    |
+| `GET` · `POST /v1/records/:id/comments`           | Comments on a record, newest first; adding needs a `user` actor (1.3)                                                                   |
+| `PATCH` · `DELETE /v1/comments/:id`               | Edit a comment (its author), or delete it (its author, or a `user` with `admin`)                                                        |
 | `DELETE /v1/facts/:id`                            | Retract a fact (soft delete)                                                                                                            |
 | `GET /v1/review`                                  | Pending assertions, suggested merges, participants matching deleted records                                                             |
 | `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                                                                                         |
@@ -1243,7 +1290,7 @@ Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
 
 `describe_schema`, `list_templates`, `apply_template`, `get_guide`,
-`query_records`, `get_record`, `search`, `get_context`, `get_timeline`, `upsert_record`,
+`query_records`, `get_record`, `list_comments`, `search`, `get_context`, `get_timeline`, `upsert_record`,
 `log_event`, `remember`, `propose_schema_change`, `move_events`. Events are listed with
 `query_records` on their type, or on `event` for every type at once, so no
 tool is needed per event type.
@@ -1321,7 +1368,7 @@ the `match` value is written to the new record.
 The response reports each field as `applied`, `pending_review` or
 `superseded` (rule 2.3), so an agent can tell its user that an update is
 waiting for approval rather than claim it is done. `record` is the record
-after the write, as `get_record` returns it.
+after the write, as `get_record` returns it, without its comments.
 
 An agent that knows only a name or a phone number searches first
 (`search` or `query_records`), then updates by `id`. With several

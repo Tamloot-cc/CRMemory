@@ -103,7 +103,7 @@ const calls = await retainer.queryRecords('conversation', {
 // Events of every type at once, newest first; filter by type, channel and time.
 const activity = await retainer.queryEvents({
   linked: { record: acme.id },
-  filter: { type: { in: ['conversation', 'note'] } },
+  filter: { type: { in: ['conversation', 'payment'] } },
   include: ['relationReferences'],
 });
 // activity.records[0].type: 'conversation'; .fields.medium: 'call'
@@ -126,6 +126,19 @@ be filtered or sorted; the error for any other field lists the allowed ones.
 `search` takes Postgres `websearch_to_tsquery` syntax: quoted phrases, `OR`,
 and `-word` to exclude. Each word also matches longer words that start with
 it ("Dan" finds "Dana"), exact matches rank first, and accents are ignored.
+
+## Comments
+
+People write comments on any record, entity or event. Only a client whose key
+has a `user` actor can add one; any other gets a 403 `RetainerApiError`. Agents
+and integrations read them. A comment is never evidence, so nothing cites one.
+
+```ts
+const comment = await retainer.addComment(acme.id, { body: 'Loop in legal early.' }, retryKey);
+const { items, total, nextCursor } = await retainer.listComments(acme.id);
+await retainer.editComment(comment.id, { body: 'Loop in legal first.' }); // its author
+await retainer.deleteComment(comment.id); // its author, or a user with admin
+```
 
 ## Moving events to another type
 

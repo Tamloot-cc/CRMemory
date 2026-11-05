@@ -155,6 +155,20 @@
       "when": 1793889542198,
       "tag": "0021_event_moves_security",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793918293705,
+      "tag": "0022_comments",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793918294300,
+      "tag": "0023_comments_security",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  BASE_EVENT_TYPE_IDS,
   type CoreRole,
   type FieldType,
   INTERNAL_NOTE_TYPE_ID,
@@ -19,6 +20,20 @@ import {
   type SchemaIssue,
   type SchemaState,
 } from './types.js';
+
+/**
+ * The universal ID a new event type named `note` takes (C5), so notes are
+ * recognized across workspaces however they were added. Callers can't pin
+ * universal IDs; this one comes from here, and only for that name and class.
+ */
+function reservedEventTypeId(definition: {
+  class?: string | undefined;
+  nameSingular: string;
+}): string | undefined {
+  return definition.class === 'event' && definition.nameSingular === 'note'
+    ? BASE_EVENT_TYPE_IDS.note
+    : undefined;
+}
 
 /**
  * A stable UUID derived from a seed (RFC 9562 version 8, from SHA-256). Used
@@ -274,7 +289,10 @@ export function applyOperations(
     switch (operation.op) {
       case 'create_object': {
         const definition = operation.object;
-        const universalId = definition.universalId ?? randomUUID();
+        const reserved = reservedEventTypeId(definition);
+        const universalId =
+          definition.universalId ??
+          (reserved && !allUniversalIds().has(reserved) ? reserved : randomUUID());
         if (allUniversalIds().has(universalId)) {
           issue(definition.nameSingular, `universal ID ${universalId} already exists`);
           break;

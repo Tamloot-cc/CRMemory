@@ -1331,7 +1331,7 @@ test('groups the sidebar into Records and Activity, and explains what event list
   const activity = page.getByRole('group', { name: 'Activity' });
   await expect(records.getByRole('link', { name: 'People', exact: true })).toBeVisible();
   await expect(records.getByRole('link', { name: 'Conversations' })).toHaveCount(0);
-  await expect(activity.getByRole('link')).toHaveText(['All activity', 'Conversations', 'Notes']);
+  await expect(activity.getByRole('link')).toHaveText(['All activity', 'Conversations']);
   // The icon rail keeps both groups.
   await page.getByRole('button', { name: 'Collapse sidebar' }).click();
   await expect(activity.getByRole('link', { name: 'All activity' })).toBeVisible();
@@ -1368,10 +1368,11 @@ test('groups the sidebar into Records and Activity, and explains what event list
   await expect(page).toHaveURL(/layout=calendar/);
   await page.goto(`${r.url}/app/o/conversation?layout=calendar&month=2026-10`);
   await expect(page.getByRole('button', { name: /Kickoff/ })).toBeVisible();
-  // The note list writes notes in place of the line.
-  await activity.getByRole('link', { name: 'Notes' }).click();
-  await expect(page.getByRole('button', { name: 'Write a note' })).toBeVisible();
-  await expect(page.getByText('Logged by agents and integrations.')).toHaveCount(0);
+  // People write comments now, not notes (C5).
+  await expect(page.getByRole('button', { name: 'Write a note' })).toHaveCount(0);
+  await page.getByRole('link', { name: 'All activity' }).click();
+  await expect(page.getByRole('heading', { name: 'All activity' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Write a note' })).toHaveCount(0);
 });
 
 test('filters all activity by type, source, date and linked record, in the address', async ({
@@ -1397,8 +1398,28 @@ test('filters all activity by type, source, date and linked record, in the addre
     title: 'Globex demo',
     about: [globex.id],
   });
+  await r.request(
+    '/schema/changes',
+    {
+      reason: 'A second event type',
+      operations: [
+        {
+          op: 'create_object',
+          object: {
+            class: 'event',
+            nameSingular: 'memo',
+            namePlural: 'memos',
+            labelSingular: 'Memo',
+            labelPlural: 'Memos',
+            fields: [],
+          },
+        },
+      ],
+    },
+    r.keys.user,
+  );
   await r.request('/events', {
-    type: 'note',
+    type: 'memo',
     channel: 'agent',
     occurredAt: '2026-10-23T10:00:00Z',
     title: 'Acme budget note',
@@ -1420,10 +1441,10 @@ test('filters all activity by type, source, date and linked record, in the addre
     await page.getByRole('option', { name: kind, exact: true }).click();
   };
   await filter('Type');
-  await page.getByRole('option', { name: 'Notes' }).click();
+  await page.getByRole('option', { name: 'Memos' }).click();
   await page.keyboard.press('Escape');
   await expect(titles).toHaveText(['Acme budget note']);
-  await expect(page).toHaveURL(/eventTypes=note/);
+  await expect(page).toHaveURL(/eventTypes=memo/);
   await page.getByRole('button', { name: 'Remove filter Type' }).click();
   await expect(titles).toHaveCount(3);
 
@@ -1442,8 +1463,9 @@ test('filters all activity by type, source, date and linked record, in the addre
 
   await filter('Linked record');
   await page.getByRole('combobox', { name: 'Linked record' }).fill('Acme');
-  // Events can be linked to as well, tagged with their type.
-  await expect(page.getByRole('option', { name: /^Acme intro.*Conversation/ })).toBeVisible();
+  // Entities only: an event is not something to be linked to (C4).
+  await expect(page.getByRole('option', { name: /^Acme\b.*Company/ })).toBeVisible();
+  await expect(page.getByRole('option', { name: /^Acme intro/ })).toHaveCount(0);
   await page.getByRole('option', { name: /^Acme\b.*Company/ }).click();
   await expect(titles).toHaveText(['Acme budget note', 'Acme intro']);
   await expect(page.getByText('Linked to')).toBeVisible();
@@ -1452,52 +1474,333 @@ test('filters all activity by type, source, date and linked record, in the addre
   await expect(titles).toHaveText(['Acme budget note', 'Acme intro']);
   await titles.first().click();
   const sheet = page.getByRole('dialog', { name: 'Acme budget note' });
-  await expect(sheet.getByText('Activity · Note')).toBeVisible();
+  await expect(sheet.getByText('Activity · Memo')).toBeVisible();
   await expect(page).toHaveURL(/record=/);
 });
 
-test('writes a note once, even when a lost response is retried, and shows it on the record', async ({
+test('comments on a company: posted once despite a lost response, edited, deleted, never evidence', async ({
   page,
   retainer: r,
 }) => {
   const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
   await signIn(page, r.url, r.keys.user);
-  await page.goto(`${r.url}/app/activity`);
-  await page.getByRole('button', { name: 'Write a note' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Write a note' });
-  await dialog.getByLabel('Title').fill('Budget approved');
-  await dialog.getByLabel('Note').fill('Finance signed off on the pilot budget.');
-  await dialog.getByRole('button', { name: /^Records/ }).click();
-  await page.getByRole('combobox', { name: 'Search records' }).fill('Acme');
-  await page.getByRole('option', { name: /^Acme\b.*Company/ }).click();
-  await page.keyboard.press('Escape');
-  await expect(dialog.getByRole('button', { name: /^Records/ })).toContainText('Acme');
-  // The first save reaches the server, but its response is lost.
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=comments`);
+  await expect(page.getByText('No comments yet')).toBeVisible();
+  const box = page.getByRole('textbox', { name: 'Add a comment' });
+  await box.fill('Their procurement moves slowly.\nLoop in legal early.');
+  // The first post reaches the server, but its response is lost.
   let lost = false;
-  await page.route('**/v1/events', async (route) => {
+  await page.route('**/v1/records/*/comments', async (route) => {
     if (lost || route.request().method() !== 'POST') return route.continue();
     lost = true;
     await route.fetch();
     await route.abort('failed');
   });
-  await dialog.getByRole('button', { name: 'Save note' }).click();
-  await expect(dialog.getByText(/The note was not saved/)).toBeVisible();
-  await dialog.getByRole('button', { name: 'Save note' }).click();
-  await expect(dialog).not.toBeVisible();
+  await page.getByRole('button', { name: 'Post comment' }).click();
+  await expect(page.getByText(/Your comment was not posted/)).toBeVisible();
+  await expect(box).toHaveValue(/Their procurement/);
+  await box.focus();
+  await page.keyboard.press('ControlOrMeta+Enter');
+  await expect(box).toHaveValue('');
   await page.unrouteAll({ behavior: 'wait' });
-  // One note, by the person, from the web.
-  const notes = await r.request('/events/query', { filter: { type: { eq: 'note' } } });
-  expect(notes.records).toHaveLength(1);
-  expect(notes.records[0].event).toMatchObject({ channel: 'web', about: [acme.id] });
-  expect(notes.records[0].createdBy).toMatchObject({ type: 'user', id: 'dana' });
-  await expect(page.getByRole('dialog', { name: 'Budget approved' })).toBeVisible();
-  // Written now, so it leads today's activity, once.
-  await expect(
-    page.getByRole('region', { name: 'Today' }).getByRole('button', { name: 'Budget approved' }),
-  ).toHaveCount(1);
-  // It is on the timeline of the record it is about.
+  const posted = await r.request(`/records/${acme.id}/comments`);
+  expect(posted.items).toHaveLength(1);
+  expect(posted.items[0].author).toMatchObject({ type: 'user', id: 'dana' });
+  const comments = page.getByRole('list', { name: 'Comments' });
+  await expect(comments.getByRole('listitem')).toHaveCount(1);
+  await expect(comments).toContainText('Their procurement moves slowly.');
+  await expect(page.getByRole('button', { name: /^Comments/ })).toContainText('1');
+
+  // A record with comments opens on them, and an edit says so.
+  await page.goto(`${r.url}/app/r/${acme.id}`);
+  await expect(page.getByRole('button', { name: /^Comments/ })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  await comments.getByRole('listitem').hover();
+  await page.getByRole('button', { name: 'Edit comment' }).click();
+  const editor = page.getByRole('textbox', { name: 'Edit comment' });
+  await editor.fill('Procurement is quick after all.');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(comments).toContainText('Procurement is quick after all.');
+  await expect(comments.getByText('edited')).toBeVisible();
+
+  // Not evidence: it is on no timeline or activity list, and in no event query.
   await page.goto(`${r.url}/app/r/${acme.id}?tab=timeline`);
-  await expect(page.getByRole('link', { name: 'Budget approved' })).toBeVisible();
+  await expect(page.getByText('Name set to')).toBeVisible();
+  await expect(page.getByText('Procurement is quick after all.')).toHaveCount(0);
+  await page.goto(`${r.url}/app/activity`);
+  await expect(page.getByRole('heading', { name: 'All activity' })).toBeVisible();
+  await expect(page.getByText('Procurement is quick after all.')).toHaveCount(0);
+
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=comments`);
+  await comments.getByRole('listitem').hover();
+  await page.getByRole('button', { name: 'Delete comment' }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete this comment?' })
+    .getByRole('button', { name: 'Delete comment' })
+    .click();
+  await expect(page.getByText('No comments yet')).toBeVisible();
+  // Deleting the last one leaves the person where they were.
+  await expect(page.getByRole('button', { name: /^Comments/ })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  expect((await r.request(`/records/${acme.id}/comments`)).items).toEqual([]);
+});
+
+test('comments on a conversation, from its page and its sheet', async ({ page, retainer: r }) => {
+  const call = await r.request('/events', {
+    type: 'conversation',
+    channel: 'zoom',
+    occurredAt: '2026-10-20T10:00:00Z',
+    title: 'Renewal call',
+  });
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/e/${call.id}`);
+  await page.getByRole('textbox', { name: 'Add a comment' }).fill('I was on this. Date is soft.');
+  await page.keyboard.press('ControlOrMeta+Enter');
+  const comments = page.getByRole('list', { name: 'Comments' });
+  await expect(comments).toContainText('I was on this. Date is soft.');
+  await page.goto(`${r.url}/app/o/conversation?record=${call.id}`);
+  const sheet = page.getByRole('dialog', { name: 'Renewal call' });
+  await expect(sheet.getByRole('list', { name: 'Comments' })).toContainText('Date is soft.');
+  await sheet.getByRole('textbox', { name: 'Add a comment' }).fill('Second thought.');
+  await sheet.getByRole('button', { name: 'Post comment' }).click();
+  await expect(sheet.getByRole('list', { name: 'Comments' }).getByRole('listitem')).toHaveCount(2);
+  await expect(sheet.getByRole('button', { name: /^Comments/ })).toContainText('2');
+});
+
+test('only people comment: an agent reads and is refused; others can only do what they may', async ({
+  page,
+  retainer: r,
+}) => {
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  const written = await r.request(
+    `/records/${acme.id}/comments`,
+    { body: 'Written by a person.' },
+    r.keys.writer,
+  );
+  await expect(
+    r.request(`/records/${acme.id}/comments`, { body: 'From an agent.' }, r.keys.agent),
+  ).rejects.toThrow(/comment/i);
+  await signIn(page, r.url, r.keys.agent);
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=comments`);
+  const comments = page.getByRole('list', { name: 'Comments' });
+  await expect(comments).toContainText('Written by a person.');
+  await expect(page.getByRole('textbox', { name: 'Add a comment' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit comment' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete comment' })).toHaveCount(0);
+  await signOut(page);
+
+  // An admin deletes what someone else wrote, but cannot put words in their mouth.
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=comments`);
+  await comments.getByRole('listitem').hover();
+  await expect(page.getByRole('button', { name: 'Edit comment' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete comment' })).toBeVisible();
+  await expect(
+    r.request(`/comments/${written.id}`, { body: 'Rewritten.' }, r.keys.user, 'PATCH'),
+  ).rejects.toThrow(/author/i);
+});
+
+test('an event page has comments, claims and history, and no memory of its own', async ({
+  page,
+  retainer: r,
+}) => {
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  const call = await r.request('/events', {
+    type: 'conversation',
+    channel: 'zoom',
+    occurredAt: '2026-10-20T10:00:00Z',
+    title: 'Renewal call',
+    about: [acme.id],
+  });
+  await r.request(
+    `/records/${acme.id}`,
+    { values: { name: 'Acme Holdings' }, source: call.id },
+    r.keys.agent,
+    'PATCH',
+  );
+  await r.request(`/records/${acme.id}/facts`, {
+    text: 'Wants a two-year term',
+    source: call.id,
+    quote: 'two years works for us',
+  });
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/e/${call.id}`);
+  const sections = page.getByRole('navigation', { name: 'Sections' });
+  await expect(sections.getByRole('button')).toHaveText([/^Comments/, /^Claims/, /^History/]);
+  await expect(page.getByText('No comments yet')).toBeVisible();
+
+  await sections.getByRole('button', { name: /^Claims/ }).click();
+  await expect(sections.getByRole('button', { name: /^Claims/ })).toContainText('2');
+  const values = page.getByRole('list', { name: 'Values citing this event' });
+  await expect(values).toContainText('Name set to');
+  await expect(values).toContainText('Acme Holdings');
+  // The event's own values cite it too, and are not claims about it.
+  await expect(values.getByRole('listitem')).toHaveCount(1);
+  const facts = page.getByRole('list', { name: 'Facts citing this event' });
+  await expect(facts).toContainText('Wants a two-year term');
+  await expect(facts).toContainText('two years works for us');
+
+  await sections.getByRole('button', { name: 'History' }).click();
+  await expect(page.getByText('Title set to')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Field changes' })).toHaveCount(0);
+
+  // The same tabs on the record page and the sheet; an entity keeps its own.
+  await page.goto(`${r.url}/app/r/${call.id}`);
+  await expect(sections.getByRole('button')).toHaveText([/^Comments/, /^Claims/, /^History/]);
+  // A fact stored on the event itself stays reachable, in a tab only it gets.
+  await r.request(`/records/${call.id}/facts`, { text: 'Recorded with consent' });
+  await page.reload();
+  await expect(sections.getByRole('button')).toHaveText([
+    /^Comments/,
+    /^Claims/,
+    /^History/,
+    /^Facts/,
+  ]);
+  await sections.getByRole('button', { name: /^Facts/ }).click();
+  await expect(page.getByRole('list', { name: 'Facts' })).toContainText('Recorded with consent');
+  await page.goto(`${r.url}/app/r/${acme.id}`);
+  await expect(sections.getByRole('button')).toHaveText([
+    /^Comments/,
+    /^Facts/,
+    'Activity',
+    'Timeline',
+    'Open tasks',
+  ]);
+});
+
+test('shows Open tasks only on types a task relation can point at', async ({
+  page,
+  retainer: r,
+}) => {
+  await r.request(
+    '/schema/changes',
+    {
+      reason: 'Something tasks cannot point at',
+      operations: [
+        {
+          op: 'create_object',
+          object: {
+            nameSingular: 'site',
+            namePlural: 'sites',
+            labelSingular: 'Site',
+            labelPlural: 'Sites',
+            labelField: 'name',
+            fields: [{ name: 'name', label: 'Name', type: 'text' }],
+          },
+        },
+      ],
+    },
+    r.keys.user,
+  );
+  const site = (await r.request('/objects/site/records', { values: { name: 'Haifa' } })).record;
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/r/${site.id}?tab=tasks`);
+  const sections = page.getByRole('navigation', { name: 'Sections' });
+  await expect(sections.getByRole('button')).toHaveText([
+    'Comments',
+    'Facts',
+    'Activity',
+    'Timeline',
+  ]);
+  await expect(page.getByText('No facts yet')).toBeVisible();
+});
+
+test('an event is about entities only: another event is refused and not offered', async ({
+  page,
+  retainer: r,
+}) => {
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  const log = (title: string) =>
+    r.request('/events', {
+      type: 'conversation',
+      channel: 'zoom',
+      occurredAt: '2026-10-20T10:00:00Z',
+      title,
+    });
+  const kickoff = await log('Acme kickoff');
+  const followUp = await log('Follow-up');
+  await expect(r.request(`/events/${followUp.id}/links`, { about: [kickoff.id] })).rejects.toThrow(
+    /invalid_link/,
+  );
+  await expect(
+    r.request('/events', {
+      type: 'conversation',
+      channel: 'zoom',
+      occurredAt: '2026-10-21T10:00:00Z',
+      title: 'Another',
+      about: [kickoff.id],
+    }),
+  ).rejects.toThrow(/invalid_link/);
+
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/e/${followUp.id}`);
+  await page.getByRole('button', { name: 'Add record…' }).click();
+  await page.getByLabel('Find a record').fill('Acme');
+  await expect(page.getByRole('button', { name: /^Acme\b/ }).first()).toBeVisible();
+  await expect(page.getByText('Acme kickoff')).toHaveCount(0);
+  await page
+    .getByRole('button', { name: /^Acme\b/ })
+    .first()
+    .click();
+  await expect
+    .poll(async () => (await r.request(`/events/${followUp.id}`)).event.about)
+    .toEqual([acme.id]);
+});
+
+test('the record sheet keeps long text inside it, and its tabs still as they change', async ({
+  page,
+  retainer: r,
+}) => {
+  const unbroken = 'Averyveryveryverylongunbrokenword'.repeat(12);
+  const acme = (
+    await r.request('/objects/company/records', { values: { name: 'Acme' } }, r.keys.user)
+  ).record;
+  await r.request(`/records/${acme.id}/comments`, { body: unbroken }, r.keys.user);
+  await r.request(`/records/${acme.id}/facts`, { text: unbroken });
+  for (let i = 0; i < 25; i++) {
+    await r.request('/events', {
+      type: 'conversation',
+      channel: 'zoom',
+      externalId: `long-${i}`,
+      occurredAt: new Date(Date.UTC(2026, 9, 1 + i, 10)).toISOString(),
+      title: `Call ${i}`,
+      summary: unbroken,
+      about: [acme.id],
+    });
+  }
+  await signIn(page, r.url, r.keys.user);
+  for (const viewport of [
+    { width: 1280, height: 800 },
+    { width: 390, height: 760 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`${r.url}/app/o/company?record=${acme.id}`);
+    const sheet = page.getByRole('dialog');
+    const nav = sheet.getByRole('navigation', { name: 'Sections' });
+    const scroller = sheet.locator('.overflow-y-auto').first();
+    const place = async () => ({
+      top: Math.round((await nav.boundingBox())?.y ?? -1),
+      overflow: await scroller.evaluate((el) => el.scrollWidth - el.clientWidth),
+    });
+    // Scrolled down a long tab, every other tab starts right under the row.
+    await nav.getByRole('button', { name: 'Activity' }).click();
+    await expect(sheet.getByRole('list', { name: 'Activity' })).toBeVisible();
+    await scroller.evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    const stuck = (await place()).top;
+    for (const tab of [/^Comments/, /^Facts/, 'Timeline', /^Open tasks/, 'Activity']) {
+      await nav.getByRole('button', { name: tab }).click();
+      await page.waitForLoadState('networkidle');
+      const now = await place();
+      expect(now.top).toBe(stuck);
+      expect(now.overflow).toBe(0);
+    }
+  }
 });
 
 test('shows API names, IDs, write paths and JSON in developer view, remembered per browser', async ({

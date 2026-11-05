@@ -59,7 +59,7 @@ export function Sheet({
               </Button>
             </DialogPrimitive.Close>
           </header>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain [--sticky-top:0px] [scrollbar-gutter:stable]">
             <div className="flex flex-col gap-6 px-5 py-5">
               <DialogPrimitive.Title className="text-lg font-semibold tracking-tight">
                 {title}

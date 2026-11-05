@@ -56,9 +56,14 @@ export const CORE_ROLES = ['title', 'summary'] as const;
 export type CoreRole = (typeof CORE_ROLES)[number];
 
 /**
- * Event types the base template adds to every workspace; none is protected.
- * A conversation's kind (meeting, call, email, message) is its `medium`
- * field, not its type, so a misclassified one costs an edit, not a re-log.
+ * Universal IDs of well-known event types. `conversation` is the only one the
+ * base template adds to every workspace; it is not protected. A conversation's
+ * kind (meeting, call, email, message) is its `medium` field, not its type, so
+ * a misclassified one costs an edit, not a re-log.
+ *
+ * `note` is reserved, not seeded (C5). Workspaces created before comments keep
+ * theirs, and a template or agent that adds a note type gets this ID, so notes
+ * are recognized across workspaces.
  */
 export const BASE_EVENT_TYPE_IDS = {
   conversation: '564ad764-a57c-4741-ad63-61604fa4cf5a',

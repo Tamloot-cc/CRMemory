@@ -633,6 +633,40 @@ export const factSources = pgTable(
   ],
 );
 
+/**
+ * What people tell each other about a record (1.3): plain text, outside the
+ * evidence model. Nothing cites a comment and no value derives from one.
+ * Follows its record through merges and `forget` (2.1).
+ */
+export const comments = pgTable(
+  'comments',
+  {
+    id: id(),
+    workspaceId: workspaceId(),
+    recordId: uuid('record_id').notNull(),
+    body: text('body').notNull(),
+    /** From the API key, never the payload. Only `user` actors write comments. */
+    author: jsonb('author').$type<Actor>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    /** Null until the body changes. */
+    editedAt: timestamp('edited_at', { withTimezone: true }),
+    deletedAt: deletedAt(),
+    /** The author, or an admin. */
+    deletedBy: jsonb('deleted_by').$type<Actor>(),
+  },
+  (t) => [
+    tenantFk('comments_record_fk', [t.workspaceId, t.recordId], [records.workspaceId, records.id]),
+    // Every comment of a record, for merges and `forget`.
+    index('comments_record_idx').on(t.recordId),
+    // A record's live comments, newest first, and its total.
+    index('comments_record_live_idx')
+      .on(t.recordId, t.createdAt, t.id)
+      .where(sql`${t.deletedAt} is null`),
+    check('comments_body_length', sql`char_length(${t.body}) between 1 and 10000`),
+  ],
+);
+
 /** Suggested merges of duplicate records; a `user` actor decides (4.2). */
 export const mergeSuggestions = pgTable(
   'merge_suggestions',

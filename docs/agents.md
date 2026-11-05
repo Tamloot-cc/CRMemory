@@ -81,17 +81,18 @@ change the tool list.
 
 | Tool                    | What it does                                                                                                                 | Scope          |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------- |
-| `describe_schema`       | The workspace's objects (entities and event types) and fields, and the built-in facts                                        | `read`         |
+| `describe_schema`       | The workspace's objects (entities and event types) and fields, and the built-in facts and comments                           | `read`         |
 | `list_templates`        | Templates and what each would add                                                                                            | `read`         |
 | `apply_template`        | Apply a template to the workspace                                                                                            | `schema:write` |
 | `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                                                            | `read`         |
 | `query_records`         | Filter, sort and page the records of one object; for an event type, or `event` for every type, the events linked to a record | `read`         |
-| `get_record`            | One record by ID; merged IDs resolve to the surviving record                                                                 | `read`         |
+| `get_record`            | One record by ID with its latest comments; merged IDs resolve to the surviving record                                        | `read`         |
+| `list_comments`         | All of a record's comments, which people write for each other; read as context, never cite                                   | `read`         |
 | `search`                | Keyword search across records, events and facts                                                                              | `read`         |
 | `get_context`           | A context pack for one record, fitted to a token budget                                                                      | `read`         |
 | `get_timeline`          | A record's history: events, values asserted for its fields and facts, newest first                                           | `read`         |
 | `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                                             | `write`        |
-| `log_event`             | Log a conversation (meeting, call, email, chat), a note or another event type, with who took part and what it is about       | `write`        |
+| `log_event`             | Log a conversation (meeting, call, email, chat) or another event type, with who took part and what it is about               | `write`        |
 | `remember`              | Store a plain-language fact about a record, citing an event                                                                  | `write`        |
 | `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve                              | `schema:write` |
 | `move_events`           | Change the type of logged events, keeping IDs, identity, links and citations; agents run it as a dry run                     | `schema:write` |
@@ -204,8 +205,18 @@ Things worth knowing:
   those attached to one record, e.g. calls with a company this quarter
   (`conversation` filtered by `medium`). With `object: "event"` it lists
   events of every type at once, filtered by `type`, `occurredAt`, `channel`
-  and `externalId`: everything logged this week, or every conversation and
-  note about a company.
+  and `externalId`: everything logged this week, or every event about a
+  company.
+- **Comments.** People write comments to each other on records; an agent
+  reads them with `get_record` and `list_comments`, and gets 403 if it tries
+  to write one. They are context, not evidence: nothing can cite one. If a
+  comment says "she moved to Berlin", check it, then record it with
+  `upsert_record`, or `remember` it citing a real source.
+- **Events name entities.** `about` and `participants` take entities only; an
+  event in `about` is a 422 `invalid_link`.
+- **Object or event.** Something with a state people change is an object;
+  something that happened, reported by a source, is an event; a change to an
+  object is its history. The `schema_design` guide has the full test.
 - **Channel and medium.** `channel` is where the event came from, the source
   system or account (`gmail`, `zoom`, `whatsapp-business`); it is part of the
   event's identity and fixed once logged. `medium` is what kind of

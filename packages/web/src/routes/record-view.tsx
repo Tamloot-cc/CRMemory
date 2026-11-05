@@ -4,7 +4,6 @@ import {
   isCollectionRelation,
   isInverseRelation,
   isPolymorphic,
-  TASK_DONE_OPTION,
   validateFieldValue,
 } from '@retainer/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,15 +14,11 @@ import { flushSync } from 'react-dom';
 import { api, canMutate, useWorkspace } from '../api/client.js';
 import { FieldPicker, pickerFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
-import { ActorBadge, AssertionSource, FactSources, SourcedValue } from '../provenance/index.js';
+import { AssertionSource, SourcedValue } from '../provenance/index.js';
 import {
   Badge,
   Button,
-  Code,
   Dialog,
-  Empty,
-  EventLink,
-  JsonBlock,
   Muted,
   Notice,
   ObjectLink,
@@ -37,25 +32,16 @@ import {
   Section,
   Sheet,
   Stack,
-  Tabs,
 } from '../ui/index.js';
-import { DeveloperFacts, useApiName, useDeveloper } from './developer.js';
-import { EventDetailsView, ViaLabel } from './event-details.js';
+import { DeveloperFacts, useApiName } from './developer.js';
+import { EventDetailsView } from './event-details.js';
 import { eventMedium, mediumField } from './event-list.js';
-import { CandidateRecord, RecordActions } from './record-actions.js';
-import { RecordTimeline, type TimelineSearch } from './record-timeline.js';
-import {
-  classLabel,
-  eventTitle,
-  objectByName,
-  objectLabel,
-  QueryError,
-  recordTitle,
-  relationsTo,
-} from './state.js';
+import { RecordActions } from './record-actions.js';
+import { type MemoryNav, type MemoryState, MemoryTabs, pointsAt } from './record-memory.js';
+import { classLabel, objectByName, QueryError, recordTitle, relationsTo } from './state.js';
 import { isWritable } from './write-model.js';
 
-export function AssertionCard({ assertion }: { assertion: AssertionView }) {
+function AssertionCard({ assertion }: { assertion: AssertionView }) {
   const { schema } = useWorkspace();
   const field = objectByName(schema, assertion.object)?.fields.find(
     (f) => f.name === assertion.field,
@@ -90,17 +76,9 @@ export function useRecord(id: string) {
   const { session } = useWorkspace();
   return useQuery({
     queryKey: [session.workspace.id, 'record', id],
-    queryFn: ({ signal }) => api.record(id, undefined, signal),
+    queryFn: ({ signal }) => api.record(id, ['provenance', 'relationReferences', 'counts'], signal),
   });
 }
-
-/**
- * A filter condition for "this relation points at `id`": `eq` on a
- * single-record field, `containsAny` on a set. A many_to_many field, owning
- * or inverse, pairs with a set on the other side too.
- */
-export const pointsAt = (field: FieldView, id: string) =>
-  isCollectionRelation(field) ? { containsAny: [id] } : { eq: id };
 
 /**
  * Polymorphic relations that may point at records of `object`, with the
@@ -115,31 +93,11 @@ export function polymorphicLinksTo(objects: ObjectView[], object: string) {
   );
 }
 
-/**
- * Where the memory tabs keep their tab, page and timeline filters: the URL
- * on the record page, local state in the sheet.
- */
-type MemoryState = { tab?: string; cursor?: string } & TimelineSearch;
-type MemoryNav = MemoryState & { set: (change: MemoryState) => void };
-// The events tab keeps `events` in the address; people read it as Activity (5.5).
-const TABS = [
-  { value: 'facts', label: 'Facts' },
-  { value: 'events', label: 'Activity' },
-  { value: 'timeline', label: 'Timeline' },
-  { value: 'tasks', label: 'Open tasks' },
-];
-/** Developer view adds the record as the REST API returned it. */
-const JSON_TAB = { value: 'json', label: 'JSON' };
-const memoryTab = (raw: string | undefined, developer: boolean) =>
-  TABS.some((t) => t.value === raw) || (developer && raw === JSON_TAB.value)
-    ? (raw as string)
-    : 'facts';
-
 /** A record opened from a list, in a sheet over it. */
 export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }) {
   const { schema } = useWorkspace();
   const record = useRecord(id);
-  // Tab and page belong to one record; opening another row starts it fresh.
+  // The tab belongs to one record; opening another row starts it fresh.
   const [memory, setMemory] = useState<{ id: string } & MemoryState>({ id });
   const nav = memory.id === id ? memory : { id };
   const r = record.data;
@@ -193,86 +151,26 @@ export function RecordView({
   nav: MemoryNav;
 }) {
   const { session, schema } = useWorkspace(),
-    client = useQueryClient(),
-    developer = useDeveloper(),
     apiName = useApiName();
-  const tab = memoryTab(nav.tab, developer),
-    cursor = nav.cursor;
   const [history, setHistory] = useState<FieldView | null>(null),
-    [historyCursor, setHistoryCursor] = useState<string>(),
-    [retract, setRetract] = useState<string | null>(null),
-    [busy, setBusy] = useState(false),
-    [message, setMessage] = useState('');
+    [historyCursor, setHistoryCursor] = useState<string>();
   const rid = r.id;
-  const facts = useQuery({
-    queryKey: [session.workspace.id, 'facts', rid, cursor],
-    queryFn: ({ signal }) => api.facts(rid, { cursor, signal }),
-    enabled: tab === 'facts',
-  });
-  const events = useQuery({
-    queryKey: [session.workspace.id, 'recordEvents', rid, cursor],
-    queryFn: ({ signal }) => api.recordEvents(rid, { cursor, signal }),
-    enabled: tab === 'events',
-  });
-  // Every record the page's events name, so no link fetches its own label.
-  const eventReferences = events.data?.references ?? {};
   const hist = useQuery({
     queryKey: [session.workspace.id, 'assertions', rid, history?.name, historyCursor],
     queryFn: ({ signal }) =>
       api.assertions(rid, { field: history?.name, cursor: historyCursor, signal }),
     enabled: !!history,
   });
-  // Found by role, not name: a workspace may rename the task object and its fields.
-  const task = schema.objects.find((o) => o.baseObject === 'task');
-  const taskStatus = task?.fields.find((f) => f.baseField === 'taskStatus');
-  const taskDue = task?.fields.find((f) => f.baseField === 'taskDueDate');
-  const links = task ? relationsTo(task.fields, r.object).filter((f) => f.isFilterable) : [];
-  const taskFilter = {
-    and: [
-      ...(taskStatus ? [{ [taskStatus.name]: { neq: TASK_DONE_OPTION } }] : []),
-      { or: links.map((f) => ({ [f.name]: pointsAt(f, rid) })) },
-    ],
-  };
-  const tasks = useQuery({
-    queryKey: [session.workspace.id, 'tasks', rid, cursor],
-    queryFn: ({ signal }) =>
-      api.queryRecords(
-        task?.nameSingular ?? 'task',
-        {
-          filter: taskFilter,
-          limit: 50,
-          cursor,
-          sort: taskDue ? [{ field: taskDue.name, direction: 'asc' }] : [],
-        },
-        signal,
-      ),
-    enabled: tab === 'tasks' && !!task && links.length > 0,
-  });
   const object = objectByName(schema, r.object),
     canWrite = canMutate(session);
   const own = object?.fields.filter((f) => !isInverseRelation(f)) ?? [];
   const inverse = object?.fields.filter(isInverseRelation) ?? [];
   const incoming = polymorphicLinksTo(schema.objects, r.object);
-  async function retractFact() {
-    if (!retract) return;
-    setBusy(true);
-    try {
-      await api.retractFact(retract);
-      setRetract(null);
-      setMessage('Fact retracted');
-      await client.invalidateQueries({ queryKey: [session.workspace.id] });
-    } catch (e) {
-      setMessage((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
   return (
     <>
       {r.id !== requestedId ? (
         <Notice>This record was merged. You’re viewing the surviving record.</Notice>
       ) : null}
-      {message ? <Notice>{message}</Notice> : null}
       <DeveloperFacts record={r} object={object} />
       {r.event ? (
         <Section title="Event">
@@ -283,9 +181,6 @@ export function RecordView({
             medium={eventMedium(object, r)}
             {...(mediumField(object) ? { mediumName: mediumField(object)?.name } : {})}
           />
-          <Row>
-            <EventLink id={r.id}>Open event and the claims citing it</EventLink>
-          </Row>
         </Section>
       ) : null}
       <Section title="Fields">
@@ -353,125 +248,7 @@ export function RecordView({
           </PropertyList>
         </Section>
       ) : null}
-      <Stack>
-        <Tabs
-          value={tab}
-          onChange={(tab) =>
-            nav.set({
-              tab,
-              cursor: undefined,
-              kind: undefined,
-              fields: undefined,
-              eventTypes: undefined,
-            })
-          }
-          items={developer ? [...TABS, JSON_TAB] : TABS}
-        />
-        {tab === 'facts' ? (
-          <Stack>
-            {facts.error ? <QueryError error={facts.error} /> : null}
-            {facts.isPending ? <Notice>Loading facts…</Notice> : null}
-            {facts.data?.facts.map((f) => (
-              <Panel key={f.id}>
-                <Stack>
-                  <p>{f.content}</p>
-                  <Row>
-                    <ActorBadge actor={f.writtenBy} />
-                    <Muted>Valid from {new Date(f.validFrom).toLocaleString()}</Muted>
-                  </Row>
-                  <FactSources sources={f.sources} />
-                  {canWrite ? <Button onClick={() => setRetract(f.id)}>Retract fact</Button> : null}
-                </Stack>
-              </Panel>
-            ))}
-            {facts.data && !facts.data.facts.length ? <Empty title="No facts yet" /> : null}
-            {facts.data?.nextCursor ? (
-              <Button onClick={() => nav.set({ cursor: facts.data?.nextCursor ?? undefined })}>
-                Next page of facts
-              </Button>
-            ) : null}
-          </Stack>
-        ) : null}
-        {tab === 'events' ? (
-          <Stack>
-            {events.error ? <QueryError error={events.error} /> : null}
-            {events.isPending ? <Notice>Loading activity…</Notice> : null}
-            {events.data?.items.map((e) => (
-              <Panel key={e.id}>
-                <Stack>
-                  <Row>
-                    <Badge>{objectLabel(schema, e.object)}</Badge>
-                    <EventLink id={e.id}>{eventTitle(e.event)}</EventLink>
-                    <Muted>{new Date(e.event.occurredAt).toLocaleString()}</Muted>
-                    <ViaLabel
-                      via={e.via}
-                      eventObject={objectByName(schema, e.object)}
-                      recordObject={object}
-                      references={eventReferences}
-                    />
-                  </Row>
-                  {e.event.summary ? <p>{e.event.summary}</p> : null}
-                  {developer ? (
-                    <Row>
-                      <Code>via {JSON.stringify(e.via)}</Code>
-                      <Code>externalId {JSON.stringify(e.event.externalId)}</Code>
-                    </Row>
-                  ) : null}
-                  <Row>
-                    {e.event.participants.matched.map((p) => (
-                      <CandidateRecord key={p.id} id={p.recordId} references={eventReferences} />
-                    ))}
-                    {e.event.participants.unmatched.map((p) => (
-                      <Badge key={p.id}>
-                        {p.handle || 'Unknown'} · {p.reason}
-                      </Badge>
-                    ))}
-                  </Row>
-                </Stack>
-              </Panel>
-            ))}
-            {events.data && !events.data.items.length ? <Empty title="No activity yet" /> : null}
-            {events.data?.nextCursor ? (
-              <Button onClick={() => nav.set({ cursor: events.data?.nextCursor ?? undefined })}>
-                Next page of activity
-              </Button>
-            ) : null}
-          </Stack>
-        ) : null}
-        {tab === 'timeline' ? (
-          <RecordTimeline
-            recordId={rid}
-            object={object}
-            search={{ kind: nav.kind, fields: nav.fields, eventTypes: nav.eventTypes }}
-            onSearchChange={(change) => nav.set(change)}
-          />
-        ) : null}
-        {tab === 'json' ? <JsonBlock value={r} label="Record JSON" /> : null}
-        {tab === 'tasks' ? (
-          <Stack>
-            {tasks.error ? <QueryError error={tasks.error} /> : null}
-            {tasks.isPending && links.length ? <Notice>Loading tasks…</Notice> : null}
-            {tasks.data?.records.map((t) => (
-              <Panel key={t.id}>
-                <Row>
-                  <RecordLink id={t.id}>{t.label || 'Untitled task'}</RecordLink>
-                  <Badge>{String(t.fields.status ?? '')}</Badge>
-                  {t.fields.dueDate ? <Muted>{String(t.fields.dueDate)}</Muted> : null}
-                </Row>
-              </Panel>
-            ))}
-            {!links.length || (tasks.data && !tasks.data.records.length) ? (
-              <Empty title="No open tasks" />
-            ) : null}
-            {tasks.data?.nextCursor ? (
-              <Button onClick={() => nav.set({ cursor: tasks.data?.nextCursor ?? undefined })}>
-                Next page of tasks
-              </Button>
-            ) : null}
-          </Stack>
-        ) : null}
-        {cursor ? <Button onClick={() => nav.set({ cursor: undefined })}>First page</Button> : null}
-      </Stack>
+      <MemoryTabs record={r} nav={nav} />
       <Dialog
         open={!!history}
         onOpenChange={(open) => {
@@ -499,18 +276,6 @@ export function RecordView({
             ) : null}
           </Row>
         </Stack>
-      </Dialog>
-      <Dialog
-        open={!!retract}
-        onOpenChange={(open) => {
-          if (!open && !busy) setRetract(null);
-        }}
-        title="Retract this fact?"
-        description="It will disappear from current memory. Its history remains stored."
-      >
-        <Button variant="destructive" disabled={busy} onClick={() => void retractFact()}>
-          Retract fact
-        </Button>
       </Dialog>
     </>
   );

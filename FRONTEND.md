@@ -3,9 +3,10 @@
 Status: web steps 1–5 are implemented and verified locally, including
 record creation, deletion, merges and suggested merges, `forget` and global
 search, plus saved views with table, board and calendar layouts (5.3b), and
-the Records and Activity split: event type lists, the activity feed, notes
-written in the app and developer view
-([conversations and activity spec](docs/conversations-and-activity-spec.md)).
+the Records and Activity split: event type lists, the activity feed,
+comments and developer view
+([conversations and activity spec](docs/conversations-and-activity-spec.md),
+[comments spec](docs/comments-spec.md)).
 Read `ARCHITECTURE.md` first; this document uses its section numbers.
 
 Retainer is used by agents through REST and MCP. The web app is for the
@@ -289,8 +290,7 @@ One route for every object. Source: `POST /v1/objects/:object/query`.
   calendar of when events happened (`?layout=calendar`) without a saved
   view. In place of the New button the top bar shows one muted line,
   "Logged by agents and integrations.", which opens a short help popover
-  naming `log_event` and `POST /v1/events`; for `note` it is the **Write a
-  note** button (5.6a). Merge is never offered; with two events selected the
+  naming `log_event` and `POST /v1/events`. Merge is never offered; with two events selected the
   selection bar says "Events can't be merged".
 - Clicking a row, or its label link, opens the record in a side sheet that
   slides in over the list (5.4 content). The open record is the `record`
@@ -389,8 +389,6 @@ are named without a read each.
   names it from the page or a single label read.
 - Clicking a row opens the event in the side sheet, as record lists do
   (`?record=`).
-- **Write a note** (5.6a) in the top bar, starting about the linked record
-  when one is filtered.
 
 ### 5.4 Record — `/app/r/:id`
 
@@ -418,7 +416,26 @@ Three areas:
 - **Relations.** Many-to-one fields render as a link to the target. Each
   inverse (one-to-many) field renders as a short list of linked records with
   a link to the filtered object list.
-- **Memory tabs.**
+- **Tabs** (`MemoryTabs`), the same on the record page, the event page and
+  the side sheet. An entity has Comments, Facts, Activity, Timeline and, only
+  when a relation field on the `task` object can point at its type, Open
+  tasks. An event has Comments, Claims and History: an event has no activity
+  of its own, and no tasks. `remember` can still store a fact on an event, so
+  one that has some also shows Facts. A record opens on Comments when it has
+  any and an entity otherwise opens on Facts; an event opens on Comments.
+  That is chosen once per visit, so deleting the last comment moves nobody.
+  Comments, Facts, Claims and Open tasks show a count from
+  `GET /v1/records/:id?include=counts` when above zero; Activity and Timeline
+  don't, since they fan out.
+  - _Comments_: `GET /v1/records/:id/comments`. Oldest first, as a
+    conversation reads, with "Load earlier comments" above and the box below.
+    Author, time, "edited", text with its line breaks. Enter adds a line and
+    ⌘/Ctrl+Enter posts. A draft is kept per person and record for the visit,
+    in memory only, with an idempotency key that changes only with the text,
+    so a retry after a lost response posts once and keeps the draft until it
+    has. The author edits in place; the author or an admin deletes, after
+    confirming. Agents and read-only keys read and see no box. Comments are
+    in no other list.
   - _Facts_: `GET /v1/records/:id/facts`. Content, `validFrom`, writer, and
     each source with its quote; a fact resting on an internal note says so,
     without a link. Retract (`DELETE /v1/facts/:id`) asks for confirmation.
@@ -427,14 +444,26 @@ Three areas:
     of its fields, or rolled up from a record pointing at this one, linked),
     summary, and participants, matched ones linked.
   - _Timeline_: `GET /v1/records/:id/timeline`, grouped by day, newest
-    first, with "Load more" on the cursor. Events as in the Activity tab;
+    first. Events as in the Activity tab;
     values asserted for a field read "<Field> set to <value>" with who set
     it and the cited event, and one that is not the current value says so,
     never as a change from an earlier value; facts with a superseded or
     ended badge. Filters: item type, fields and event types, kept in the URL
     (`kind`, `fields`, `eventTypes`); a stale cursor offers to start again.
-  - _Tasks_: open tasks linked to the record, from the standard `task`
-    object.
+  - _Open tasks_: tasks linked to the record that are not done, with status
+    and due date read through their role fields, so a rename keeps working.
+  - _Claims_ (events): `GET /v1/events/:id/claims?own=false`. Values on
+    records and facts that cite the event, not the values it logged itself.
+  - _History_ (events): the timeline's field changes only, filtered by field.
+
+  One list style across every tab: `Entry` rows in `EntryList`, an icon, a
+  title, the time at the far end, then the text and who or where it came
+  from, divided by a line. Long text wraps inside the row; facts and summaries
+  clamp with "Show more". Every list adds its next page in place with "Load
+  more". Empty tabs say what would appear, without a frame, and a first load
+  shows placeholder rows. The tab row sticks under the header while the tab
+  scrolls; the panel always fills the screen under it, so switching tabs never
+  moves the row, and a tab opened while the row is stuck starts at its top.
 
 ### 5.4a Record actions
 
@@ -488,21 +517,9 @@ retracted assertions, recomputed records and hidden facts. An event opened
 as a record (`/app/r/:id`) shows the same details and links here.
 
 Events are logged by agents and integrations, so event types have no "New"
-button. Notes are the one exception (5.6a).
-
-### 5.6a Writing a note
-
-**Write a note** (on All activity and on the `note` list, for `write` keys
-with a `user` actor, when the workspace has a `note` event type) opens a
-dialog: title, body (the summary), date (default now) and **About**, a
-multi-record picker over every entity object. Participants are not asked
-for: a note is about records, not with people. It sends `POST /v1/events`
-with type `note`, channel `web` and an `externalId` made once per dialog,
-so a retry after a lost response finds the same note instead of writing a
-second one; the signed-in person is the actor. A saved note opens in the
-side sheet and shows on the timeline of every record it is about. A person
-can already add and remove participants and `about` links, so this is the
-same permission with no new risk.
+button. People write comments on them instead (5.4). An event's **About**
+picker, and the Activity feed's **Linked record**, offer entities only; links
+to events from before that rule still show and can be removed.
 
 ### 5.7 Schema — `/app/schema`
 
@@ -564,7 +581,7 @@ changes what is displayed, never what is sent. When on:
 
 - Object and field labels show their API names beside them: list column
   headers and the list's title, the filter and sort menus, the record's
-  fields and relations, the event's details, and the create and note forms.
+  fields and relations, the event's details, and the create form.
 - Record and event pages, and the side sheet, show a Developer section: the
   object's API name and class (`entity` or `event`), the record ID with a
   copy button, and the write path: `upsert_record`,
@@ -572,7 +589,8 @@ changes what is displayed, never what is sent. When on:
   entities, `log_event` and `POST /v1/events` for events.
 - Event rows show their raw identity: on a record's Activity tab, `via` and
   `externalId`; in the activity feed, the type's API name, `channel` and
-  `externalId`.
+  `externalId`. The Comments tab names its route, and each comment its ID and
+  author actor.
 - A **JSON** tab on record and event pages shows the REST response as
   returned (`?tab=json`; without developer view the address falls back to
   the first tab).
@@ -776,8 +794,8 @@ The v1 read contracts are:
   and render an unavailable-reference state rather than inventing a label.
 - **Other growing collections.** Assertion history, record events, event
   claims and record facts provide cursor pagination and
-  `nextCursor`; their screens expose a Next page control rather than silently stopping
-  at the current server limits.
+  `nextCursor`; their screens expose a Next page or Load more control rather than silently stopping
+  at the current server limits. Comments page the same way.
 
 Relation filters by target ID already exist in the query engine (`eq` and
 `in`); use them for inverse-relation links, respecting `isFilterable`.
@@ -819,11 +837,11 @@ when switching the server to the shared helpers.
 
 Same rules as `ARCHITECTURE.md` section 12: a real database, never a mock.
 
-| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | How                                                                                                                              |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns, paging and footer totals; event list columns; feed filters in the URL, its query and day grouping; the note request; the developer view switch; saved views over the URL, board columns and calendar days; schema page descriptions                                                                                                                                                                                                                                                                                                                                                                                  | Vitest                                                                                                                           |
-| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Vitest and Testing Library                                                                                                       |
-| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; list selection with bulk delete and merge, column totals and editing in the grid; saving a board view with column totals, moving a card and a calendar record from the keyboard, and saving or resetting a view's unsaved filter; ⌘K search across objects, events and facts; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; deleting an event; read-only keys; session replacement; the Records and Activity sidebar groups and event list explanations; activity feed filters; writing a note with a retried save; developer view | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
+| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | How                                                                                                                              |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns, paging and footer totals; event list columns; feed filters in the URL, its query and day grouping; comment permissions, order and drafts; which tabs a record has and their counts; the developer view switch; saved views over the URL, board columns and calendar days; schema page descriptions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Vitest                                                                                                                           |
+| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Vitest and Testing Library                                                                                                       |
+| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; list selection with bulk delete and merge, column totals and editing in the grid; saving a board view with column totals, moving a card and a calendar record from the keyboard, and saving or resetting a view's unsaved filter; ⌘K search across objects, events and facts; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; deleting an event; read-only keys; session replacement; the Records and Activity sidebar groups and event list explanations; activity feed filters; commenting on a company and on a conversation with a retried post, editing and deleting; an agent refused; event page tabs; an `about` link to an event refused; long text and still tabs in the sheet; developer view | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
 
 Add coverage for inboxes larger than one page (including decisions between
 page loads), accurate totals and off-page review links; acceptance that leaves

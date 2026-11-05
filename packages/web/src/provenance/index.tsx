@@ -4,7 +4,17 @@ import type { ReactNode } from 'react';
 import { useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import { eventTitle, objectLabel } from '../routes/state.js';
-import { Badge, EventLink, Muted, ReviewLink, Row, Sourced, Stack, Tooltip } from '../ui/index.js';
+import {
+  Badge,
+  EntryQuote,
+  EventLink,
+  Muted,
+  ReviewLink,
+  Row,
+  Sourced,
+  Stack,
+  Tooltip,
+} from '../ui/index.js';
 export function ActorBadge({ actor }: { actor: Actor }) {
   const Icon = { agent: Bot, user: UserRound, integration: Plug, system: Cog }[actor.type];
   return (
@@ -19,11 +29,13 @@ export function ActorBadge({ actor }: { actor: Actor }) {
 export function FactSources({ sources }: { sources: FactSource[] }) {
   return sources.map((s) =>
     s.internal ? (
-      <Muted key="internal">Internal note</Muted>
+      <Muted key="internal" small>
+        Internal note
+      </Muted>
     ) : (
-      <Stack key={s.event}>
+      <Stack key={s.event} gap="small">
         <EventLink id={s.event}>Source event</EventLink>
-        {s.quote ? <blockquote>{s.quote}</blockquote> : null}
+        {s.quote ? <EntryQuote>{s.quote}</EntryQuote> : null}
       </Stack>
     ),
   );

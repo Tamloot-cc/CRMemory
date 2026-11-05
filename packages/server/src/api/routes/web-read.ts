@@ -105,11 +105,14 @@ export function webReadRoutes(app: Hono<AppEnv>, sql: Sql) {
       if (!event.event) throw notFound('event', { id: event.id });
       const id = event.id;
       const limit = limitParam(c, 50, 200);
+      // The event's own logged values cite it too; `own=false` leaves them
+      // out, for what the rest of memory rests on it.
+      const own = c.req.query('own') === 'false' ? tx`and a.record_id <> ${id}` : tx``;
       const [a, f] = await Promise.all([
         assertions(
           tx,
           schema,
-          tx`a.source_record_id = ${id}`,
+          tx`a.source_record_id = ${id} ${own}`,
           limit,
           c.req.query('assertionsCursor'),
           true,

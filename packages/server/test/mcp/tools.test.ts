@@ -26,6 +26,7 @@ const TOOLS = [
   'get_guide',
   'get_record',
   'get_timeline',
+  'list_comments',
   'list_templates',
   'log_event',
   'move_events',
@@ -366,7 +367,7 @@ describe('describe_schema, list_templates and apply_template', () => {
     });
     // Every workspace starts with the base objects and event types (6.1).
     expect(before.body.objects.map((o: { nameSingular: string }) => o.nameSingular).sort()).toEqual(
-      ['company', 'conversation', 'note', 'person', 'task'],
+      ['company', 'conversation', 'person', 'task'],
     );
 
     const list = await fresh.call('list_templates');
@@ -413,11 +414,11 @@ describe('describe_schema, list_templates and apply_template', () => {
 
   it('lists event types as objects of class "event", and facts as the one built-in', async () => {
     const res = await agent.call('describe_schema');
-    expect(res.body.builtIns.map((b: { name: string }) => b.name)).toEqual(['fact']);
+    expect(res.body.builtIns.map((b: { name: string }) => b.name)).toEqual(['fact', 'comment']);
     expect(res.body.builtIns[0].writeWith).toContain('remember');
     const objects = res.body.objects as { nameSingular: string; class: string }[];
     const events = objects.filter((o) => o.class === 'event').map((o) => o.nameSingular);
-    expect(events.sort()).toEqual(['conversation', 'note']);
+    expect(events.sort()).toEqual(['conversation']);
     expect(objects.find((o) => o.nameSingular === 'person')?.class).toBe('entity');
     // Neither interactions nor the hidden internal-note type are listed.
     expect(objects.map((o) => o.nameSingular)).not.toContain('interaction');
@@ -1025,8 +1026,26 @@ describe('events are records (6.2, 7.1)', () => {
       fields: { medium: 'call' },
       participants: [{ recordId: dana.id }],
     });
+    // A second event type, the kind a workspace adds for what a conversation can't hold.
+    const added = await agent.call('propose_schema_change', {
+      reason: 'A second event type',
+      operations: [
+        {
+          op: 'create_object',
+          object: {
+            class: 'event',
+            nameSingular: 'payment',
+            namePlural: 'payments',
+            labelSingular: 'Payment',
+            labelPlural: 'Payments',
+            fields: [],
+          },
+        },
+      ],
+    });
+    expect(added.body.status).toBe('applied');
     const note = await agent.call('log_event', {
-      type: 'note',
+      type: 'payment',
       channel: 'web',
       occurredAt: '2026-10-07T09:00:00Z',
       title: 'Dana prefers mornings',
@@ -1038,7 +1057,7 @@ describe('events are records (6.2, 7.1)', () => {
     const all = await agent.call('query_records', { object: 'event', linked: { record: dana.id } });
     expect(all.isError).toBe(false);
     expect(all.body.records.map((r: { id: string; type: string }) => [r.id, r.type])).toEqual([
-      [note.body.id, 'note'],
+      [note.body.id, 'payment'],
       [call.body.id, 'conversation'],
     ]);
     expect(all.body.records[1].fields.medium).toBe('call');
@@ -1046,7 +1065,7 @@ describe('events are records (6.2, 7.1)', () => {
     const notes = await agent.call('query_records', {
       object: 'event',
       linked: { record: dana.id },
-      filter: { type: { in: ['note'] } },
+      filter: { type: { in: ['payment'] } },
     });
     expect(notes.body.records.map((r: { id: string }) => r.id)).toEqual([note.body.id]);
     const medium = await agent.call('query_records', {
@@ -1096,11 +1115,15 @@ describe('events are records (6.2, 7.1)', () => {
     const entity = await agent.call('log_event', { ...base, type: 'person' });
     expect(entity.body.error).toMatchObject({ code: 'not_an_event_type' });
     expect(entity.body.error.details.eventTypes).toEqual(
-      expect.arrayContaining(['conversation', 'note']),
+      expect.arrayContaining(['conversation', 'payment']),
     );
     const unknown = await agent.call('log_event', { ...base, type: 'interaction' });
     expect(unknown.body.error.code).toBe('not_found');
-    const reserved = await agent.call('log_event', { ...base, type: 'note', channel: 'retainer' });
+    const reserved = await agent.call('log_event', {
+      ...base,
+      type: 'conversation',
+      channel: 'retainer',
+    });
     expect(reserved.isError).toBe(true);
     expect(JSON.stringify(reserved.body)).toContain('reserved');
   });

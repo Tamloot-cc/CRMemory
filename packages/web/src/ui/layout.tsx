@@ -123,7 +123,7 @@ export function TextButton({ onClick, children }: { onClick: () => void; childre
 /** An API name or other identifier, set in monospace. */
 export function Code({ children }: { children: ReactNode }) {
   return (
-    <code className="rounded-sm bg-muted px-1 py-px font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+    <code className="min-w-0 rounded-sm bg-muted px-1 py-px font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
       {children}
     </code>
   );

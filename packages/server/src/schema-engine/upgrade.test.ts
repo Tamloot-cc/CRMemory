@@ -72,9 +72,9 @@ describe('planUpgrade', () => {
   it('adds the event types and the internal-note type a pre-events workspace lacks', () => {
     const { operations, conflicts, upgraded } = upgrade(legacy, SEED_OPERATIONS);
     expect(conflicts).toEqual([]);
-    expect(created(operations)).toEqual(['conversation', 'note', 'internalNote']);
+    expect(created(operations)).toEqual(['conversation', 'internalNote']);
     expect(upgraded.objects.filter((o) => o.class === 'event').map((o) => o.universalId)).toEqual([
-      ...Object.values(BASE_EVENT_TYPE_IDS),
+      BASE_EVENT_TYPE_IDS.conversation,
       INTERNAL_NOTE_TYPE_ID,
     ]);
     // Core fields get the IDs a new workspace gets.
@@ -121,7 +121,7 @@ describe('planUpgrade', () => {
       upgraded.objects
         .filter((o) => o.class === 'event' && o.status === 'active')
         .map((o) => o.nameSingular),
-    ).toEqual(expect.arrayContaining(['meeting', 'call', 'conversation', 'note']));
+    ).toEqual(expect.arrayContaining(['meeting', 'call', 'conversation']));
   });
 
   it('plans nothing for a workspace that is up to date', () => {
@@ -185,7 +185,7 @@ describe('planUpgrade', () => {
     expect(conflicts).toEqual([
       { element: 'conversation', message: expect.stringContaining('already used') },
     ]);
-    expect(created(operations)).toEqual(['note', 'internalNote']);
+    expect(created(operations)).toEqual(['internalNote']);
   });
 
   it('adds a missing template field to an existing object, but not to a deleted one', () => {

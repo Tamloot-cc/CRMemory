@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { consolidateWorkspace } from '../../src/worker/consolidate.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { addNoteType } from '../helpers/note-type.js';
 
 const db = useTestDatabase();
 let t: TestApp;
@@ -23,6 +24,7 @@ beforeAll(async () => {
   );
   ({ keys } = setup);
   workspaceId = setup.workspace.id;
+  await addNoteType(db.owner, workspaceId);
   const other = await t.setupWorkspace(
     { name: 'Other', template: 'sales' },
     { user: { actor: { type: 'user', id: 'other' }, scopes: ['admin'] } },
@@ -256,6 +258,7 @@ describe('POST /v1/records/:id/forget', () => {
         assertions: 2,
         inboundRelations: 0,
         suppressedHandles: 1,
+        comments: 0,
       },
       recomputedRecordIds: [],
       reviewCandidates: { records: [], facts: [], events: [] },

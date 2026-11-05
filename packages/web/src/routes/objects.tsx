@@ -131,7 +131,6 @@ import {
   viewsKey,
 } from './views-state.js';
 import { isWritable } from './write-model.js';
-import { WriteNoteButton } from './write-note.js';
 
 const PAGE_SIZE = 50;
 const BUILT_IN_SORTS = [
@@ -167,8 +166,6 @@ function ObjectList({ name, schemaObject }: { name: string; schemaObject: Object
   const writable = canMutate(session);
   // Events are created only by logging them, and cannot be merged.
   const isEvent = object.class === 'event';
-  // Notes are the exception: people write them here (D7).
-  const isNoteList = object.baseObject === 'note' && writable;
   const [localPrefs, setLocalPrefs] = useState(() =>
     loadColumnPrefs(() => localStorage, workspace, name),
   );
@@ -447,8 +444,6 @@ function ObjectList({ name, schemaObject }: { name: string; schemaObject: Object
                 New {object.labelSingular.toLowerCase()}
               </Button>
             ) : null
-          ) : isNoteList ? (
-            <WriteNoteButton onSaved={openRow} />
           ) : (
             // Events have no New button; say why in its place (5.3).
             <LoggedByAgents />
@@ -651,11 +646,9 @@ function ObjectList({ name, schemaObject }: { name: string; schemaObject: Object
             description={
               effective.filter
                 ? 'No records match these filters.'
-                : isNoteList
-                  ? 'Write a note, or ask your agent to log one, and it will show up here.'
-                  : isEvent
-                    ? `Ask your agent to log ${object.labelPlural.toLowerCase()}, and they will show up here.`
-                    : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
+                : isEvent
+                  ? `Ask your agent to log ${object.labelPlural.toLowerCase()}, and they will show up here.`
+                  : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
             }
           />
         </Inset>

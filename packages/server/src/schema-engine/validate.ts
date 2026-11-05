@@ -34,6 +34,11 @@ export const RESERVED_OBJECT_NAMES: ReadonlyMap<string, string> = new Map([
       '(or POST /v1/records/:id/facts) instead of creating an object',
   ),
   ...reserved(
+    ['comment', 'comments'],
+    'comments are built in: people write them on any record in the web app (or with POST ' +
+      '/v1/records/:id/comments), and agents read them with get_record or list_comments',
+  ),
+  ...reserved(
     [
       'assertion',
       'assertions',

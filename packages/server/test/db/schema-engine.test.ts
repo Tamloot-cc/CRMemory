@@ -315,8 +315,8 @@ describe('event types', () => {
     const { id } = await newWorkspace();
     const schema = await inWorkspace(app, id, (tx) => getSchema(tx, id));
     const events = [...schema.objectsByName.values()].filter((o) => o.isEvent);
-    expect(events.map((o) => o.name).sort()).toEqual(['conversation', 'note']);
-    expect(schema.eventTypeIds).toHaveLength(2);
+    expect(events.map((o) => o.name).sort()).toEqual(['conversation']);
+    expect(schema.eventTypeIds).toHaveLength(1);
     expect(schema.objectsByName.get('conversation')?.fieldsByName.get('medium')).toMatchObject({
       type: 'select',
       isNullable: true,

@@ -20,6 +20,11 @@ export type UpgradeReport = {
   upgraded: string[];
   conflicts: (UpgradeConflict & { workspace: string })[];
   failed: { workspace: string; message: string }[];
+  /**
+   * Workspaces with `about` links to events, which can no longer be added
+   * (C4). They stay and still read; this says how many there are.
+   */
+  aboutEventLinks: { workspace: string; count: number }[];
 };
 
 type Definitions = { operations: SchemaOperation[]; digest: string };
@@ -63,6 +68,19 @@ type WorkspaceRow = { templates: AppliedTemplate[]; definitions_digest: string |
 
 type WorkspaceUpgrade = { changed: boolean; conflicts: UpgradeConflict[] };
 
+/** `about` links to events, from before they were refused (C4). They stay and still read. */
+async function countAboutEventLinks(sql: Sql, workspaceId: string) {
+  const [links] = await inWorkspace(
+    sql,
+    workspaceId,
+    (tx) => tx<{ count: number }[]>`
+      select count(*)::int as count from event_links l
+      join event_records e on e.record_id = l.record_id
+      where l.workspace_id = ${workspaceId} and l.link = 'about'`,
+  );
+  return links?.count ?? 0;
+}
+
 /**
  * Brings one workspace up to its definitions through the schema engine's
  * trusted path, as the server's own actor. Holds the workspace's exclusive
@@ -76,7 +94,9 @@ async function upgradeWorkspace(sql: Sql, workspaceId: string): Promise<Workspac
       select templates, definitions_digest from workspaces where id = ${workspaceId}`;
     if (!row) return { changed: false, conflicts: [] };
     const definitions = definitionsFor(row.templates);
-    if (row.definitions_digest === definitions.digest) return { changed: false, conflicts: [] };
+    if (row.definitions_digest === definitions.digest) {
+      return { changed: false, conflicts: [] };
+    }
 
     const { operations, conflicts } = planUpgrade(
       await loadSchemaState(tx, workspaceId),
@@ -116,16 +136,25 @@ async function upgradeWorkspace(sql: Sql, workspaceId: string): Promise<Workspac
  * and reported, and keeps its schema; the others still run.
  */
 export async function upgradeWorkspaces(sql: Sql): Promise<UpgradeReport> {
-  const report: UpgradeReport = { upgraded: [], conflicts: [], failed: [] };
+  const report: UpgradeReport = { upgraded: [], conflicts: [], failed: [], aboutEventLinks: [] };
   const rows = await sql<(WorkspaceRow & { id: string; slug: string })[]>`
     select id, slug, templates, definitions_digest from workspaces order by created_at, id`;
   for (const row of rows) {
     if (row.definitions_digest === definitionsFor(row.templates).digest) continue;
     try {
       const { changed, conflicts } = await upgradeWorkspace(sql, row.id);
+      // Outside the upgrade: every write in the workspace waits on its lock.
+      const aboutEventLinks = await countAboutEventLinks(sql, row.id);
       if (changed) {
         report.upgraded.push(row.slug);
         log.info(`Upgraded workspace ${row.slug} to the built-in definitions.`);
+      }
+      if (aboutEventLinks > 0) {
+        report.aboutEventLinks.push({ workspace: row.slug, count: aboutEventLinks });
+        log.info(
+          `Workspace ${row.slug} has ${aboutEventLinks} about links to events. They stay and ` +
+            'still read; new ones are refused.',
+        );
       }
       for (const conflict of conflicts) {
         report.conflicts.push({ workspace: row.slug, ...conflict });

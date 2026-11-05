@@ -77,7 +77,7 @@ export type SchemaDescription = {
 };
 /** A built-in part of every workspace's memory, as describe_schema lists it. */
 export type BuiltInView = {
-  name: 'fact';
+  name: 'fact' | 'comment';
   labelSingular: string;
   labelPlural: string;
   description: string;
@@ -138,6 +138,42 @@ export type PresentedRecord = {
   relationReferences?: Record<string, RecordReference>;
   /** Event records only: their built-in columns and links. */
   event?: EventDetails;
+  /** With `include=counts`: what the record's tabs hold, so they open with their numbers. */
+  counts?: RecordCounts;
+};
+/**
+ * How many items a record's tabs hold. `facts` and `openTasks` are for
+ * entities, `claims` for events. Activity has no count: gathering a wide
+ * rollup fan-out to count it is what the rollup query avoids (1.3).
+ */
+export type RecordCounts = {
+  comments: number;
+  facts: number;
+  openTasks: number;
+  claims: number;
+};
+/**
+ * A person's remark on a record (C1): plain text, not an event, not an
+ * assertion and never evidence. `editedAt` is null until the body changes.
+ */
+/** The longest comment, in characters. */
+export const MAX_COMMENT_LENGTH = 10_000;
+export type PresentedComment = {
+  id: string;
+  /** The record it is on: the survivor, after a merge. */
+  record: string;
+  body: string;
+  author: Actor;
+  createdAt: string;
+  updatedAt: string;
+  editedAt: string | null;
+};
+/** `GET /v1/records/:id/comments`: newest first, with the record's total. */
+export type CommentPage = {
+  record: string;
+  items: PresentedComment[];
+  total: number;
+  nextCursor: string | null;
 };
 export type WriteResponse = {
   id: string;
@@ -265,6 +301,8 @@ export type ForgetResult = {
     assertions: number;
     inboundRelations: number;
     suppressedHandles: number;
+    /** Comments on the erased records, hard-deleted with them. */
+    comments: number;
   };
   /** Records whose values were recomputed after their claims or links were removed. */
   recomputedRecordIds: string[];

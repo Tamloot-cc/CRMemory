@@ -24,6 +24,7 @@ import { contextFor, searchFor } from '../../src/retrieval/service.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { addNoteType } from '../helpers/note-type.js';
 
 const db = useTestDatabase();
 let app: Sql;
@@ -40,6 +41,7 @@ const as = (actor: Actor): Caller => ({
 beforeAll(async () => {
   app = db.connect({ role: RUNTIME_ROLE, max: 30 });
   workspaceId = (await createWorkspace(db.owner, { name: 'Links', template: 'sales' })).id;
+  await addNoteType(db.owner, workspaceId);
 });
 
 let n = 0;
@@ -272,11 +274,59 @@ describe('about records (1.3)', () => {
     expect((await log({ about: [b.id] })).about).toEqual([a.id]);
   });
 
-  it('may be about another event, but not about itself (6.2)', async () => {
+  it('refuses an event in about with invalid_link, naming the record (C4)', async () => {
+    const earlier = await log({ type: 'conversation', channel: 'zoom', title: 'Discovery call' });
+    const acme = await company();
+    const refused = {
+      status: 422,
+      code: 'invalid_link',
+      details: { errors: [expect.objectContaining({ index: 1, recordId: earlier.id })] },
+    };
+    await expect(log({ about: [acme.id, earlier.id] })).rejects.toMatchObject(refused);
+    const followUp = await log({ externalId: externalId(), about: [acme.id] });
+    await expect(
+      addEventLinksFor(app, as(AGENT), followUp.id, {
+        participants: [],
+        about: [acme.id, earlier.id],
+      }),
+    ).rejects.toMatchObject(refused);
+    // Nothing was linked by the refused calls.
+    expect((await readEvent(app, as(AGENT), followUp.id)).event?.about).toEqual([acme.id]);
+    // Itself, too.
+    await expect(
+      addEventLinksFor(app, as(AGENT), followUp.id, { participants: [], about: [followUp.id] }),
+    ).rejects.toMatchObject({
+      status: 422,
+      code: 'invalid_link',
+      details: {
+        errors: [{ index: 0, recordId: followUp.id, message: 'an event cannot be about itself' }],
+      },
+    });
+    // Any event type: a note is no more linkable than a conversation.
+    const note = await log({ type: 'note', channel: 'web', title: 'Aside' });
+    await expect(log({ about: [note.id] })).rejects.toMatchObject({ code: 'invalid_link' });
+  });
+
+  it('refuses an event as a participant, and never matches a handle to one (C4)', async () => {
+    const earlier = await log({ type: 'conversation', channel: 'zoom', title: 'Discovery call' });
+    await expect(log({ participants: [{ recordId: earlier.id }] })).rejects.toMatchObject({
+      status: 422,
+      code: 'invalid_participants',
+      details: { errors: [expect.objectContaining({ recordId: earlier.id })] },
+    });
+  });
+
+  it('keeps an about link to an event from before the rule: reads, retries, removal (C4)', async () => {
     const earlier = await log({ type: 'conversation', channel: 'zoom', title: 'Discovery call' });
     const id = externalId();
-    const followUp = await log({ externalId: id, title: 'Follow-up', about: [earlier.id] });
-    expect(followUp.about).toEqual([earlier.id]);
+    const followUp = await log({ externalId: id, title: 'Follow-up' });
+    // As a release before C4 wrote it.
+    await db.owner`
+      insert into event_links (workspace_id, event_id, position, record_id, link)
+      values (${workspaceId}, ${followUp.id}, 0, ${earlier.id}, 'about')`;
+
+    // It still reads, on both sides.
+    expect((await readEvent(app, as(AGENT), followUp.id)).event?.about).toEqual([earlier.id]);
     const linked = await findRecords(
       app,
       as(AGENT),
@@ -285,19 +335,18 @@ describe('about records (1.3)', () => {
     );
     expect(linked.records.map((r) => r.id)).toEqual([followUp.id]);
 
-    const itself = {
-      status: 422,
-      code: 'invalid_about',
-      details: {
-        errors: [{ index: 0, recordId: followUp.id, message: 'an event cannot be about itself' }],
-      },
-    };
+    // A sync that logs its original list again changes nothing.
+    const retried = await log({ externalId: id, title: 'Follow-up', about: [earlier.id] });
+    expect(retried.created).toBe(false);
+    expect(retried.about).toEqual([earlier.id]);
+    expect(retried.added?.about).toEqual([]);
+
+    // A person can remove it; it cannot then be added back.
+    await removeEventLinkFor(app, as(USER), followUp.id, { about: earlier.id });
+    expect((await readEvent(app, as(AGENT), followUp.id)).event?.about).toEqual([]);
     await expect(
-      log({ externalId: id, title: 'Follow-up', about: [followUp.id] }),
-    ).rejects.toMatchObject(itself);
-    await expect(
-      addEventLinksFor(app, as(AGENT), followUp.id, { participants: [], about: [followUp.id] }),
-    ).rejects.toMatchObject(itself);
+      log({ externalId: id, title: 'Follow-up', about: [earlier.id] }),
+    ).rejects.toMatchObject({ code: 'invalid_link' });
   });
 
   it('replaces an about link when the record is added as a participant', async () => {

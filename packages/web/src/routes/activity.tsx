@@ -54,7 +54,6 @@ import {
   useView,
 } from './state.js';
 import { clockTime } from './views-state.js';
-import { WriteNoteButton } from './write-note.js';
 
 /**
  * Everything logged in the workspace, newest first, read by day
@@ -87,24 +86,14 @@ export function ActivityPage() {
     [feed.data],
   );
   const days = useMemo(() => groupByDay(events), [events]);
-  const anyRecord = useMemo(() => eventColumnField(schema, 'about'), [schema]);
+  const anyEntity = useMemo(() => eventColumnField(schema, 'about'), [schema]);
   const openEvent = useCallback((id: string) => void setSearch({ record: id }), [setSearch]);
   const setFilters = (next: FeedFilters) =>
     void setSearch({ ...feedSearch(next), record: undefined });
   const count = filterCount(filters);
 
   return (
-    <Page
-      layout="fill"
-      eyebrow="Activity"
-      title="All activity"
-      actions={
-        <WriteNoteButton
-          about={filters.linked ? [filters.linked] : undefined}
-          onSaved={(id) => void setSearch({ record: id })}
-        />
-      }
-    >
+    <Page layout="fill" eyebrow="Activity" title="All activity">
       <Toolbar
         end={
           count > 1 ? (
@@ -144,7 +133,7 @@ export function ActivityPage() {
             onRemove={() => setFilters({ ...filters, linked: undefined })}
           />
         ) : null}
-        <FeedFilterMenu filters={filters} anyRecord={anyRecord} onChange={setFilters} />
+        <FeedFilterMenu filters={filters} anyEntity={anyEntity} onChange={setFilters} />
       </Toolbar>
       {feed.error ? (
         <Inset>
@@ -175,7 +164,7 @@ export function ActivityPage() {
                   key={e.id}
                   event={e}
                   references={references}
-                  anyRecord={anyRecord}
+                  anyEntity={anyEntity}
                   developer={developer}
                   selected={search.record === e.id}
                   onOpen={openEvent}
@@ -203,14 +192,14 @@ export function ActivityPage() {
 const ActivityItem = memo(function ActivityItem({
   event: e,
   references,
-  anyRecord,
+  anyEntity,
   developer,
   selected,
   onOpen,
 }: {
   event: EventRecord;
   references: Record<string, RecordReference>;
-  anyRecord: FieldView;
+  anyEntity: FieldView;
   developer: boolean;
   selected: boolean;
   onOpen: (id: string) => void;
@@ -241,7 +230,7 @@ const ActivityItem = memo(function ActivityItem({
             <FeedLinks label="With">
               <ParticipantsCell
                 record={e}
-                field={anyRecord}
+                field={anyEntity}
                 references={references}
                 compact={false}
               />
@@ -249,7 +238,7 @@ const ActivityItem = memo(function ActivityItem({
           ) : null}
           {e.event.about.length ? (
             <FeedLinks label="About">
-              <Display field={anyRecord} value={e.event.about} references={references} />
+              <Display field={anyEntity} value={e.event.about} references={references} />
             </FeedLinks>
           ) : null}
           {developer ? (
@@ -297,11 +286,11 @@ const STEPS: { value: Step; label: string }[] = [
 /** Adds a filter: first what to filter by, then its value. */
 function FeedFilterMenu({
   filters,
-  anyRecord,
+  anyEntity,
   onChange,
 }: {
   filters: FeedFilters;
-  anyRecord: FieldView;
+  anyEntity: FieldView;
   onChange: (next: FeedFilters) => void;
 }) {
   const { schema } = useWorkspace(),
@@ -314,12 +303,12 @@ function FeedFilterMenu({
   const types = sortObjects(schema.objects).filter((o) => o.class === 'event');
   const linkedField = useMemo<FieldView>(
     () => ({
-      ...anyRecord,
+      ...anyEntity,
       name: 'linked',
       label: 'Linked record',
-      settings: { ...anyRecord.settings, relationCardinality: 'many_to_one' },
+      settings: { ...anyEntity.settings, relationCardinality: 'many_to_one' },
     }),
-    [anyRecord],
+    [anyEntity],
   );
   function choose(next: Step) {
     setStep(next);

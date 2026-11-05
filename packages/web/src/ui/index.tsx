@@ -9,7 +9,11 @@ import {
   type InputHTMLAttributes,
   lazy,
   type ReactNode,
+  type Ref,
   useContext,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
 } from 'react';
 import { cn, isPlainClick, NavigationContext, ROW_STATE, type Tone } from './core.js';
 import { ApiName } from './layout.js';
@@ -72,11 +76,18 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
     />
   );
 }
-export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+/** `prose` is for what people write to each other; the default is for values and JSON. */
+export function Textarea({
+  prose = false,
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { prose?: boolean }) {
   return (
     <textarea
       {...props}
-      className="min-h-28 w-full rounded-md border border-input bg-background p-2.5 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
+      className={cn(
+        'w-full rounded-md border border-input bg-background p-2.5 text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring',
+        prose ? 'min-h-20 resize-y' : 'min-h-28 font-mono',
+      )}
     />
   );
 }
@@ -92,7 +103,9 @@ export function Stack({
 /** Items side by side; `nowrap` keeps them on one line, inputs taking the room. */
 export function Row({ children, nowrap = false }: { children: ReactNode; nowrap?: boolean }) {
   return (
-    <div className={cn('flex items-center', nowrap ? 'gap-1' : 'flex-wrap gap-2')}>{children}</div>
+    <div className={cn('flex min-w-0 items-center', nowrap ? 'gap-1' : 'flex-wrap gap-2')}>
+      {children}
+    </div>
   );
 }
 /** Two equal columns, for the parts of one value (first and last name). */
@@ -320,9 +333,23 @@ export function Panel({ title, children }: { title?: string; children: ReactNode
     </section>
   );
 }
-export function Empty({ title, description }: { title: string; description?: string }) {
+/** `quiet` drops the frame, for a tab that is empty inside a panel or a sheet. */
+export function Empty({
+  title,
+  description,
+  quiet = false,
+}: {
+  title: string;
+  description?: string;
+  quiet?: boolean;
+}) {
   return (
-    <div className="flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed border-border p-8 text-center">
+    <div
+      className={cn(
+        'flex flex-col items-center justify-center text-center',
+        quiet ? 'px-4 py-10' : 'min-h-48 rounded-lg border border-dashed border-border p-8',
+      )}
+    >
       <Inbox size={24} strokeWidth={1.4} className="mb-3 text-muted-foreground" />
       <h2 className="text-sm font-medium">{title}</h2>
       {description ? (
@@ -331,19 +358,45 @@ export function Empty({ title, description }: { title: string; description?: str
     </div>
   );
 }
+/**
+ * Tabs in a row that scrolls sideways when narrow, keeping the current one in
+ * view. Every label has one weight, so switching moves nothing. `sticky` keeps
+ * the row on screen while what is under it scrolls; `--sticky-top` is the height
+ * of what it sticks under (the page's header, unless a `Sheet` says otherwise).
+ */
 export function Tabs({
   items,
   value,
   onChange,
+  sticky = false,
+  ref,
 }: {
   items: { value: string; label: string; count?: number }[];
   value: string;
   onChange: (v: string) => void;
+  sticky?: boolean;
+  ref?: Ref<HTMLElement>;
 }) {
+  const row = useRef<HTMLElement>(null);
+  useImperativeHandle(ref, () => row.current as HTMLElement);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the current tab, read from the DOM, is what changed.
+  useLayoutEffect(() => {
+    const nav = row.current;
+    const current = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!nav || !current) return;
+    const left = current.offsetLeft - nav.offsetLeft;
+    const right = left + current.offsetWidth;
+    if (left < nav.scrollLeft) nav.scrollLeft = left;
+    else if (right > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = right - nav.clientWidth;
+  }, [value]);
   return (
     <nav
+      ref={row}
       aria-label="Sections"
-      className="flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]"
+      className={cn(
+        'flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]',
+        sticky && 'sticky top-[var(--sticky-top,3rem)] z-20 bg-background',
+      )}
     >
       {items.map((i) => (
         <button
@@ -352,9 +405,9 @@ export function Tabs({
           aria-current={value === i.value ? 'page' : undefined}
           onClick={() => onChange(i.value)}
           className={cn(
-            '-mb-px flex shrink-0 items-center gap-2 border-b-2 px-2.5 py-2 text-sm',
+            '-mb-px flex shrink-0 items-center gap-2 border-b-2 px-2.5 py-2 text-sm font-medium',
             value === i.value
-              ? 'border-primary font-medium'
+              ? 'border-primary'
               : 'border-transparent text-muted-foreground hover:text-foreground',
           )}
         >
@@ -375,7 +428,7 @@ export function RecordLink({
   inSheet?: boolean;
   children: ReactNode;
 }) {
-  const className = 'truncate font-medium hover:underline';
+  const className = 'min-w-0 max-w-full truncate font-medium hover:underline';
   return inSheet ? (
     <Link
       to="."
@@ -390,12 +443,25 @@ export function RecordLink({
     </Link>
   );
 }
-export function EventLink({ id, children }: { id: string; children: ReactNode }) {
+/** Links to the event page. `title` for a row's own name, styled as a record's link is. */
+export function EventLink({
+  id,
+  title = false,
+  children,
+}: {
+  id: string;
+  title?: boolean;
+  children: ReactNode;
+}) {
   return (
     <Link
       to="/e/$id"
       params={{ id }}
-      className="text-sm text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
+      className={
+        title
+          ? 'min-w-0 font-medium [overflow-wrap:anywhere] hover:underline'
+          : 'text-sm text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground'
+      }
     >
       {children}
     </Link>
@@ -607,6 +673,20 @@ export {
   type DiagramNode,
 } from './diagram-parts.js';
 export { DragArea } from './drag.js';
+export {
+  Entry,
+  EntryComposer,
+  EntryDay,
+  EntryList,
+  EntryLoading,
+  EntryName,
+  EntryQuote,
+  EntryText,
+  EntryTime,
+  LoadMore,
+  TabPanel,
+  useTabAnchor,
+} from './entry.js';
 export { FeedDay, FeedItem, FeedLinks, FeedScroll } from './feed.js';
 /** React Flow and dagre are heavy, so the canvas loads on first render; wrap it in Suspense. */
 export const Diagram = lazy(() => import('./diagram.js').then((m) => ({ default: m.Diagram })));

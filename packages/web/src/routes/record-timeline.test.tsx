@@ -154,18 +154,19 @@ const page = (items: TimelineItem[], nextCursor: string | null = null): Timeline
 });
 
 /** The timeline with its filters in local state, standing in for the URL. */
-function Harness({ initial = {} }: { initial?: TimelineSearch }) {
+function Harness({ initial = {}, history }: { initial?: TimelineSearch; history?: boolean }) {
   const [search, setSearch] = useState(initial);
   return (
     <RecordTimeline
       recordId="c1"
       object={company}
+      history={history}
       search={search}
       onSearchChange={(change) => setSearch((prev) => ({ ...prev, ...change }))}
     />
   );
 }
-function renderTimeline(initial?: TimelineSearch) {
+function renderTimeline(initial?: TimelineSearch, history?: boolean) {
   const workspace = {
     session: { workspace: { id: 'w1' } } as unknown as Session,
     schema: { objects: [company, person, conversation, note] } as unknown as SchemaDescription,
@@ -181,7 +182,7 @@ function renderTimeline(initial?: TimelineSearch) {
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
       <WorkspaceContext.Provider value={workspace}>
-        <Harness initial={initial} />
+        <Harness initial={initial} history={history} />
       </WorkspaceContext.Provider>
     </QueryClientProvider>,
   );
@@ -373,5 +374,18 @@ describe('RecordTimeline', () => {
       cursor: undefined,
       signal: expect.anything(),
     });
+  });
+
+  it('as a history, shows only field changes, without the kinds or the event itself', async () => {
+    const spy = vi.spyOn(api, 'timeline').mockResolvedValue(page([]));
+    renderTimeline({ kind: 'fact', eventTypes: 'conversation' }, true);
+    expect(await screen.findByText('No edits yet')).toBeTruthy();
+    expect(spy.mock.calls[0]?.[1]).toEqual({
+      types: ['field_change'],
+      cursor: undefined,
+      signal: expect.anything(),
+    });
+    expect(screen.queryByText('Field changes')).toBeNull();
+    expect(screen.queryByText('All event types')).toBeNull();
   });
 });

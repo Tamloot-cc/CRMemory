@@ -177,6 +177,14 @@ describe('EventDetailsView', () => {
     expect(screen.queryByRole('button', { name: 'Add participant…' })).toBeNull();
   });
 
+  it('still shows an about link to an event from before C4, and lets it be removed', async () => {
+    const remove = vi.spyOn(api, 'removeAbout').mockResolvedValue({} as never);
+    renderIn(<EventDetailsView id="e1" event={{ ...event, about: ['e9'] }} editable />);
+    expect(screen.queryByText('Not about any record')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Remove about record' }));
+    expect(remove).toHaveBeenCalledWith('e1', 'e9');
+  });
+
   it('removes a participant by its link ID', async () => {
     const remove = vi.spyOn(api, 'removeParticipant').mockResolvedValue({} as never);
     renderIn(<EventDetailsView id="e1" event={event} editable />);
@@ -198,7 +206,7 @@ describe('EventDetailsView', () => {
 });
 
 describe('AddAbout', () => {
-  it('offers events as well as records, never the event itself', async () => {
+  it('offers entities only, never an event (C4)', async () => {
     vi.spyOn(api, 'search').mockResolvedValue({
       records: [{ id: 'c1', object: 'company', label: 'Acme', match: 'text' }],
       facts: [],
@@ -225,9 +233,9 @@ describe('AddAbout', () => {
     renderIn(<AddAbout busy={false} exclude={['e0']} onAdd={onAdd} />);
     await userEvent.click(screen.getByRole('button', { name: 'Add record…' }));
     await userEvent.type(screen.getByLabelText('Find a record'), 'ki');
-    expect(await screen.findByText('Acme')).toBeTruthy();
-    await userEvent.click(await screen.findByText('Kickoff'));
-    expect(onAdd).toHaveBeenCalledWith('e1');
+    await userEvent.click(await screen.findByText('Acme'));
+    expect(onAdd).toHaveBeenCalledWith('c1');
+    expect(screen.queryByText('Kickoff')).toBeNull();
     expect(screen.queryByText('This one')).toBeNull();
   });
 });

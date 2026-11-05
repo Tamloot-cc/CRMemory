@@ -26,7 +26,6 @@ import {
 import { useApiName } from './developer.js';
 import { CandidateRecord } from './record-actions.js';
 import {
-  eventTitle,
   objectByName,
   objectLabel,
   recordTitle,
@@ -35,7 +34,7 @@ import {
   useRecordLabel,
 } from './state.js';
 
-const REASONS: Record<UnmatchedReason, string> = {
+export const REASONS: Record<UnmatchedReason, string> = {
   no_match: 'No matching record',
   phone_only: 'Phone only',
   deleted_record: 'Deleted record',
@@ -343,7 +342,7 @@ function AddParticipant({
   );
 }
 
-/** Finds a record by keyword (`POST /v1/search`) to mark the event as about it. */
+/** Finds an entity by keyword (`POST /v1/search`) to mark the event as about it. */
 export function AddAbout({
   busy,
   exclude,
@@ -370,17 +369,10 @@ export function AddAbout({
         </Button>
       </Row>
     );
-  // `about` may name any live entity or event except the event itself (1.3).
+  // `about` names entities only (C4), so events are not offered.
   const hits = (
     query && results.data
-      ? [
-          ...results.data.records.map((h) => ({
-            id: h.id,
-            title: recordTitle(h),
-            object: h.object,
-          })),
-          ...results.data.events.map((h) => ({ id: h.id, title: eventTitle(h), object: h.type })),
-        ]
+      ? results.data.records.map((h) => ({ id: h.id, title: recordTitle(h), object: h.object }))
       : []
   ).filter((h) => !exclude.includes(h.id));
   return (

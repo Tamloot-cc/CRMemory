@@ -5,7 +5,6 @@ import {
   eventListObject,
   eventMedium,
   listFilterOperators,
-  noteType,
   occurredCalendar,
   withEventValues,
 } from './event-list.js';
@@ -96,8 +95,8 @@ describe('event type lists', () => {
     ]);
     const about = list.fields.find((f) => f.name === 'about');
     expect(about?.readOnly).toBe(true);
-    // About may name any record, events included (1.3); participants are entities.
-    expect(about?.settings.targetObjects).toEqual(['company', 'person', 'conversation', 'note']);
+    // About and participants name entities only (C4).
+    expect(about?.settings.targetObjects).toEqual(['company', 'person']);
     expect(list.fields.find((f) => f.name === 'participants')?.settings.targetObjects).toEqual([
       'company',
       'person',
@@ -147,14 +146,6 @@ describe('event type lists', () => {
       kind: 'calendar',
       dateField: 'occurredAt',
     });
-    expect(noteType(schema)).toBe(note);
-    expect(noteType({ objects: [company] })).toBeUndefined();
-    // Found by base identity, not API name: a rename keeps them, a namesake isn't one.
-    const memo = { ...note, nameSingular: 'memo' } as ObjectView;
-    expect(noteType({ objects: [company, memo] })).toBe(memo);
-    expect(noteType({ objects: [{ ...conversation, nameSingular: 'note' } as ObjectView] })).toBe(
-      undefined,
-    );
     const kind = { ...medium, name: 'kind' };
     const renamed = { ...conversation, fields: [kind] } as ObjectView;
     expect(eventMedium(renamed, { fields: { kind: 'call' } })).toBe('Call');
