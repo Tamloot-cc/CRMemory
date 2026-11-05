@@ -14,3 +14,5 @@ region = "eu-central-1"
 # Lets this repository's "production" GitHub Environment ship code.
 # github_repository = "your-org/Retainer"
 # Needs the account's OIDC provider for GitHub Actions; see docs/aws.md.
+# With immutable subject claims, the sub_claim_prefix GitHub reports:
+# github_subject_prefix = "repo:your-org@123456/Retainer@7890123"

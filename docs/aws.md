@@ -155,6 +155,15 @@ only. To use it:
      --url https://token.actions.githubusercontent.com \
      --client-id-list sts.amazonaws.com
    ```
+
+   The role trusts jobs whose OIDC subject starts with
+   `repo:<owner>/<repo>`. A repository that uses immutable subject claims
+   signs `repo:<owner>@<owner-id>/<repo>@<repo-id>` instead, and assuming
+   the role fails with "Not authorized to perform
+   sts:AssumeRoleWithWebIdentity". Check with
+   `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`: if
+   `use_immutable_subject` is true, set `github_subject_prefix` to its
+   `sub_claim_prefix` and apply again.
 2. In the repository's settings, create the `production` environment.
    Under deployment branches, allow only the default branch: the role trusts
    every job in that environment.

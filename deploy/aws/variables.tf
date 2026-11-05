@@ -158,3 +158,9 @@ variable "github_repository" {
   type        = string
   default     = null
 }
+
+variable "github_subject_prefix" {
+  description = "The repository part of the OIDC subject GitHub signs for its jobs. Null means repo:<github_repository>. A repository with immutable subject claims uses repo:<owner>@<owner-id>/<repo>@<repo-id>: see docs/aws.md."
+  type        = string
+  default     = null
+}
