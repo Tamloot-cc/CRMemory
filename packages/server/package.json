@@ -27,6 +27,7 @@
     "@modelcontextprotocol/client": "^2.4.0",
     "@playwright/test": "^1.56.0",
     "@retainer/sdk": "workspace:*",
+    "postgres": "^4.0.0",
     "tsx": "^4.23.15"
   },
   "bin": {

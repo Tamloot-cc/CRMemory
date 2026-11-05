@@ -25,7 +25,7 @@ Docs-only changes don't get a PR: commit them on `main` and push.
 1. Run the `simplify` skill on the diff against `main` and apply its fixes.
    Skip any that change behavior, and say so.
 2. Run the checks locally (see `CLAUDE.md`): `pnpm lint`, `pnpm typecheck`,
-   `pnpm test` with `DATABASE_URL` set, and `pnpm test:web` if `packages/web`
+   `pnpm test` with the pinned SurrealDB running (see `.env.example`), and `pnpm test:web` if `packages/web`
    or the e2e specs changed.
 3. Branch off `main` if needed. Stage only files that belong to the work,
    and mention any stray edits you left out. Write the commit subject as a
