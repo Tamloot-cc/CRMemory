@@ -79,21 +79,23 @@ Check RETAINER_API_KEY.` `retainer-mcp --help` prints its usage and
 Tools are generic, not one per object, so a workspace's custom objects never
 change the tool list.
 
-| Tool                    | What it does                                                                                      | Scope          |
-| ----------------------- | ------------------------------------------------------------------------------------------------- | -------------- |
-| `describe_schema`       | The workspace's objects (entities and event types) and fields, and the built-in facts             | `read`         |
-| `list_templates`        | Templates and what each would add                                                                 | `read`         |
-| `apply_template`        | Apply a template to the workspace                                                                 | `schema:write` |
-| `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                                 | `read`         |
-| `query_records`         | Filter, sort and page the records of one object; for an event type, the events linked to a record | `read`         |
-| `get_record`            | One record by ID; merged IDs resolve to the surviving record                                      | `read`         |
-| `search`                | Keyword search across records, events and facts                                                   | `read`         |
-| `get_context`           | A context pack for one record, fitted to a token budget                                           | `read`         |
-| `get_timeline`          | A record's history: events, values asserted for its fields and facts, newest first                | `read`         |
-| `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                  | `write`        |
-| `log_event`             | Log a meeting, call, email, message, note or other event, with who took part and what it is about | `write`        |
-| `remember`              | Store a plain-language fact about a record, citing an event                                       | `write`        |
-| `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve   | `schema:write` |
+| Tool                    | What it does                                                                                        | Scope          |
+| ----------------------- | --------------------------------------------------------------------------------------------------- | -------------- |
+| `describe_schema`       | The workspace's objects (entities and event types) and fields, and the built-in facts               | `read`         |
+| `list_templates`        | Templates and what each would add                                                                   | `read`         |
+| `apply_template`        | Apply a template to the workspace                                                                   | `schema:write` |
+| `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                                   | `read`         |
+| `query_records`         | Filter, sort and page the records of one object; for an event type, the events linked to a record   | `read`         |
+| `get_record`            | One record by ID; merged IDs resolve to the surviving record                                        | `read`         |
+| `traverse_records`      | Walk from up to 20 records along an explicit path of relation fields and event links, with evidence | `read`         |
+| `get_operation`         | What became of a write: completed, erased or not observed, by operation ID or idempotency key       | `read`         |
+| `search`                | Keyword search across records, events and facts                                                     | `read`         |
+| `get_context`           | A context pack for one record, fitted to a token budget                                             | `read`         |
+| `get_timeline`          | A record's history: events, values asserted for its fields and facts, newest first                  | `read`         |
+| `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                    | `write`        |
+| `log_event`             | Log a meeting, call, email, message, note or other event, with who took part and what it is about   | `write`        |
+| `remember`              | Store a plain-language fact about a record, citing an event                                         | `write`        |
+| `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve     | `schema:write` |
 
 Validation errors name the field and the allowed values, so an agent can
 correct its call and retry.
@@ -185,9 +187,28 @@ Things worth knowing:
   added and listed in `added`, so an agent that left the company out can log
   the same source again with it. Nothing is removed that way; a different
   payload is a conflict (`event_conflict`), and `event_retracted` means the
-  source was deleted or erased: don't log it again. Writes are independent short
-  transactions, so an agent that stops halfway leaves consistent data and can
+  source was deleted or erased: don't log it again. Writes are independent
+  operations, so an agent that stops halfway leaves consistent data and can
   resume.
+- **Keep your idempotency key.** `remember`, and `upsert_record` when it
+  creates a record without `id` or `match`, take an `idempotencyKey`.
+  Choose it and keep it before you send the write, for example from the
+  source and what you are writing (`call-8812-legal-review`). Retrying with
+  the same key within 24 hours returns the first result instead of writing
+  twice; another key would write twice.
+- **Unknown outcomes.** An `unknown_outcome` error means Retainer could not
+  confirm whether the write was applied; it may have been. Don't assume
+  either way: call `get_operation` with the `operationId` from the error,
+  or with the `kind` (`remember`, `create_record`) and your
+  `idempotencyKey`. `completed` returns the original result; `erased`
+  means a privacy request erased it; `not_observed` means Retainer has no
+  record of it yet, which is not a rollback. Retry only with the same
+  idempotency key, which stays safe. A write by `id` or `match`, and
+  logging an event with its `externalId`, is already safe to retry.
+- **Busy workspaces.** Writes to one workspace run one at a time. An error
+  with `retryable: true` in its details (`workspace_busy`, `schema_busy`,
+  `write_conflict`, `workspace_upgrading`) can be sent again unchanged after
+  a short wait.
 - **Events over time.** `query_records` on an event type lists its events by
   `occurredAt`, `channel` or a field, and with `linked: { record }` only
   those attached to one record, e.g. calls with a company this quarter.
@@ -195,6 +216,17 @@ Things worth knowing:
   a source, such as a payment or a site visit, can be an event type:
   `propose_schema_change` with `create_object` and `class: "event"`. It gets
   a title and summary of its own; add only the fields it needs.
+- **Connections.** `traverse_records` follows an explicit path from up to
+  20 start records, at most 3 steps: relation fields (`{ field, direction }`)
+  and event links (`{ link: "participant" | "about", direction }`). For
+  example, people who met a deal's decision-maker: start at the deal, then
+  `{ field: "decisionMaker" }`, `{ link: "participant", direction: "in" }`
+  (the events that person took part in) and
+  `{ link: "participant", direction: "out" }` (who else was there). Each
+  hop comes with its evidence (an assertion or an event). It reads at most
+  500 edges and returns at most 50 paths; when `truncated` is set, the
+  result is incomplete, so narrow the starts or the path rather than claim
+  there is no connection. Pick start records with `query_records` first.
 - **Reading back.** `get_context` gives the current values (with who wrote
   each), open tasks, current facts and recent events, rolled-up ones
   included (each saying how it is attached, `via`), within

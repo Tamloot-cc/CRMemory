@@ -31,20 +31,54 @@ Errors are JSON with a stable `code`, a readable `message`, and sometimes
 { "error": { "code": "stale_write", "message": "the record changed since expectedUpdatedAt", "details": { … } } }
 ```
 
-| Status | Typical codes and meaning                                                                                                                                                                          |
-| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `invalid_request`: the body or a filter does not have the expected shape                                                                                                                           |
-| 401    | Missing, unknown or revoked key                                                                                                                                                                    |
-| 403    | The key lacks the scope, or the action needs a `user` actor                                                                                                                                        |
-| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                                                                                                                  |
-| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted                                                                                       |
-| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                                                                                                        |
-| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `invalid_aggregate` (`details.field`, `details.allowed`); `invalid_view`; `idempotency_key_reused` |
-| 503    | The database is unreachable, or `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`                                                                                                      |
+| Status | Typical codes and meaning                                                                                                                                                                                                                        |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 400    | `invalid_request`: the body or a filter does not have the expected shape                                                                                                                                                                         |
+| 401    | Missing, unknown or revoked key                                                                                                                                                                                                                  |
+| 403    | The key lacks the scope, or the action needs a `user` actor                                                                                                                                                                                      |
+| 404    | Not found in this workspace (other workspaces' IDs are reported as not found too)                                                                                                                                                                |
+| 409    | A conflict: a unique value another record holds, an erased handle, or something already decided or retracted; `write_conflict` when concurrent writes kept conflicting (retry)                                                                   |
+| 410    | `result_erased`: an idempotent retry whose original result a privacy request erased                                                                                                                                                              |
+| 412    | `stale_write`: the record changed since `expectedUpdatedAt`                                                                                                                                                                                      |
+| 422    | `invalid_values`: field values fail validation (`details.errors` lists each); `invalid_filter`; `invalid_aggregate` (`details.field`, `details.allowed`); `invalid_view`; `idempotency_key_reused`; `invalid_starts`, `invalid_path` (traversal) |
+| 503    | The database is unreachable; `not_configured`: `forget` without `RETAINER_SUPPRESSION_KEY`; `unknown_outcome` (below); or a retryable `workspace_busy`, `schema_busy`, `workspace_upgrading` or `not_accepting_writes`                           |
 
 `unique_conflict` and `suppressed` also list the field in `details.errors`,
 in the same shape as `invalid_values`, so a client can show every per-field
 error the same way.
+
+Errors that are safe to retry as they are say so with `details.retryable:
+true`, and some add `details.retryAfterMs`. Writes to one workspace run one
+at a time: `workspace_busy` means the request waited longer than the
+server's queue limit (10 s by default) behind other writes to the same
+workspace.
+
+## Operation IDs and unknown outcomes
+
+Every `/v1` response that ran a write carries a `Retainer-Operation-Id`
+header; response bodies keep their shapes. If the database does not answer
+a write's commit in time, the request fails with `503 unknown_outcome` and
+`details.operationId`. The write may still have been applied: a timeout is
+not a rollback. Check it before retrying:
+
+```sh
+curl https://retainer.example/v1/operations/<operationId> -H "Authorization: Bearer rtn_…"
+curl "https://retainer.example/v1/operations?kind=remember&idempotencyKey=call-8812-fact-1" \
+  -H "Authorization: Bearer rtn_…"
+```
+
+```json
+{ "operationId": "…", "kind": "remember", "status": "completed", "result": { … },
+  "createdAt": "2026-10-29T12:00:03Z", "expiresAt": "2026-10-30T12:00:03Z" }
+```
+
+`status` is `completed`, with the original response body as `result`;
+`erased`, when a privacy request erased what the result mentioned (`result`
+is `null`); or `not_observed`, when there is no receipt. Receipts are kept
+for 24 hours. `not_observed` does not mean the write was rolled back: it
+may still commit. Retry it only with the same `Idempotency-Key`, which is
+safe. The kinds that take an idempotency key are `create_record`,
+`remember` and `merge`.
 
 ## Pagination
 
@@ -58,9 +92,12 @@ on the last page. `GET /v1/review` pages each collection separately with
 ## Idempotency
 
 Creating a record, `remember` and merging accept an `Idempotency-Key` header
-(1–200 characters). A retry with the same key and the same body returns the
-original response; the same key with a different body fails with 422
-`idempotency_key_reused`. Logging an event is idempotent through its
+(1–200 characters). A key is scoped to the workspace and the kind of write,
+not to the API key that sent it. A retry with the same key and the same
+body within 24 hours returns the original response; the same key with a
+different body fails with 422 `idempotency_key_reused`. A retried record
+creation returns the record as it is now, with the original per-field
+statuses. Logging an event is idempotent through its
 `(channel, externalId)` instead: logging it again with the same `type`,
 `occurredAt`, title, summary and `fields` returns it with `created: false`
 (status 200 instead of 201), after adding any participants and `about`
@@ -70,46 +107,49 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 
 ## Routes
 
-| Route                                             | Scope            | Purpose                                                              |
-| ------------------------------------------------- | ---------------- | -------------------------------------------------------------------- |
-| `GET /health`                                     | none             | Server version and database status (503 when the database is down)   |
-| `GET /v1/me`                                      | any              | The caller's workspace, actor and scopes                             |
-| `GET /v1/schema`                                  | `read`           | The workspace schema                                                 |
-| `POST /v1/schema/changes`                         | `schema:write`   | Request a schema change (applied, or proposed for approval)          |
-| `GET /v1/schema/changes` · `/:id`                 | `read`           | Change history, or one change                                        |
-| `POST /v1/schema/changes/:id/approve` · `/reject` | `admin`, user    | Decide a proposed change                                             |
-| `GET /v1/templates`                               | `read`           | Templates and what each adds                                         |
-| `POST /v1/templates/:name/apply`                  | `schema:write`   | Apply a template                                                     |
-| `POST /v1/objects/:object/records`                | `write`          | Create a record                                                      |
-| `POST /v1/objects/:object/upsert`                 | `write`          | Update or create a record found by `id` or `match`, with `ifMissing` |
-| `POST /v1/objects/:object/query`                  | `read`           | Filter, sort and page records of one object                          |
-| `POST /v1/objects/:object/aggregate`              | `read`           | Count, and per-field totals over, the records a filter matches       |
-| `GET` · `POST /v1/objects/:object/views`          | `read` · `write` | List the saved views the caller can see, or save one                 |
-| `GET` · `PATCH` · `DELETE /v1/views/:id`          | `read` · `write` | Read, change or delete a saved view                                  |
-| `GET /v1/records/:id`                             | `read`           | One record; `?include=provenance,relationReferences`                 |
-| `PATCH /v1/records/:id`                           | `write`          | Update fields; optional `source` and `expectedUpdatedAt`             |
-| `GET /v1/records/:id/delete-impact`               | `read`           | What a delete would take with it through cascades, counted by object |
-| `POST /v1/records/delete-impact`                  | `read`           | The same for `{ "ids": [...] }` (at most 200) deleted together       |
-| `DELETE /v1/records/:id`                          | `write`          | Soft-delete a record; for events, also retract what cites them       |
-| `GET /v1/records/:id/assertions`                  | `read`           | Per-field history; `?field=`                                         |
-| `GET /v1/records/:id/events`                      | `read`           | The record's event history, rollups included, with `via`; `?link=`   |
-| `GET` · `POST /v1/records/:id/facts`              | `read` · `write` | List facts, or `remember` one                                        |
-| `DELETE /v1/facts/:id`                            | `write`          | Retract a fact                                                       |
-| `GET /v1/records/:id/context`                     | `read`           | Context pack; `?tokenBudget=` (default 2000, at most 16000)          |
-| `GET /v1/records/:id/timeline`                    | `read`           | Events, field values and facts, newest first; filters, cursor        |
-| `POST /v1/records/:id/merge`                      | `write`, user    | Merge `recordId` into this record                                    |
-| `POST /v1/records/:id/forget`                     | `admin`, user    | Erase a person for a privacy request; not reversible                 |
-| `POST /v1/events`                                 | `write`          | Log an event; returns matched and unmatched participants             |
-| `GET` · `DELETE /v1/events/:id`                   | `read` · `write` | Read an event, or delete it and retract what cites it                |
-| `POST /v1/events/:id/links`                       | `write`          | Add participants and `about` records; idempotent                     |
-| `DELETE /v1/events/:id/participants/:pid`         | `write`, user    | Remove one participant                                               |
-| `DELETE /v1/events/:id/about/:recordId`           | `write`, user    | Remove a record from the event's `about` list                        |
-| `GET /v1/events/:id/claims`                       | `read`           | Assertions and facts citing an event                                 |
-| `POST /v1/search`                                 | `read`           | Keyword search across records, events and facts                      |
-| `GET /v1/review`                                  | `read`           | Pending values, merge suggestions, unresolved participants           |
-| `GET /v1/assertions/:id`                          | `read`           | One assertion with its review state                                  |
-| `POST /v1/assertions/:id/accept` · `/reject`      | `write`, user    | Decide a pending value                                               |
-| `POST /v1/review/merges/:id/dismiss`              | `write`, user    | Dismiss a merge suggestion                                           |
+| Route                                             | Scope            | Purpose                                                                                          |
+| ------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
+| `GET /health`                                     | none             | Server version and database status (503 when the database is down or the process lost its lease) |
+| `GET /v1/me`                                      | any              | The caller's workspace, actor and scopes                                                         |
+| `GET /v1/schema`                                  | `read`           | The workspace schema                                                                             |
+| `POST /v1/schema/changes`                         | `schema:write`   | Request a schema change (applied, or proposed for approval)                                      |
+| `GET /v1/schema/changes` · `/:id`                 | `read`           | Change history, or one change                                                                    |
+| `POST /v1/schema/changes/:id/approve` · `/reject` | `admin`, user    | Decide a proposed change                                                                         |
+| `GET /v1/templates`                               | `read`           | Templates and what each adds                                                                     |
+| `POST /v1/templates/:name/apply`                  | `schema:write`   | Apply a template                                                                                 |
+| `POST /v1/objects/:object/records`                | `write`          | Create a record                                                                                  |
+| `POST /v1/objects/:object/upsert`                 | `write`          | Update or create a record found by `id` or `match`, with `ifMissing`                             |
+| `POST /v1/objects/:object/query`                  | `read`           | Filter, sort and page records of one object                                                      |
+| `POST /v1/objects/:object/aggregate`              | `read`           | Count, and per-field totals over, the records a filter matches                                   |
+| `GET` · `POST /v1/objects/:object/views`          | `read` · `write` | List the saved views the caller can see, or save one                                             |
+| `GET` · `PATCH` · `DELETE /v1/views/:id`          | `read` · `write` | Read, change or delete a saved view                                                              |
+| `GET /v1/records/:id`                             | `read`           | One record; `?include=provenance,relationReferences`                                             |
+| `PATCH /v1/records/:id`                           | `write`          | Update fields; optional `source` and `expectedUpdatedAt`                                         |
+| `GET /v1/records/:id/delete-impact`               | `read`           | What a delete would take with it through cascades, counted by object                             |
+| `POST /v1/records/delete-impact`                  | `read`           | The same for `{ "ids": [...] }` (at most 200) deleted together                                   |
+| `DELETE /v1/records/:id`                          | `write`          | Soft-delete a record; for events, also retract what cites them                                   |
+| `GET /v1/records/:id/assertions`                  | `read`           | Per-field history; `?field=`                                                                     |
+| `GET /v1/records/:id/events`                      | `read`           | The record's event history, rollups included, with `via`; `?link=`                               |
+| `GET` · `POST /v1/records/:id/facts`              | `read` · `write` | List facts, or `remember` one                                                                    |
+| `DELETE /v1/facts/:id`                            | `write`          | Retract a fact                                                                                   |
+| `GET /v1/records/:id/context`                     | `read`           | Context pack; `?tokenBudget=` (default 2000, at most 16000)                                      |
+| `GET /v1/records/:id/timeline`                    | `read`           | Events, field values and facts, newest first; filters, cursor                                    |
+| `POST /v1/records/:id/merge`                      | `write`, user    | Merge `recordId` into this record                                                                |
+| `POST /v1/records/:id/forget`                     | `admin`, user    | Erase a person for a privacy request; not reversible                                             |
+| `POST /v1/records/traverse`                       | `read`           | Bounded walk from start records along relation fields and event links                            |
+| `POST /v1/events`                                 | `write`          | Log an event; returns matched and unmatched participants                                         |
+| `GET` · `DELETE /v1/events/:id`                   | `read` · `write` | Read an event, or delete it and retract what cites it                                            |
+| `POST /v1/events/:id/links`                       | `write`          | Add participants and `about` records; idempotent                                                 |
+| `DELETE /v1/events/:id/participants/:pid`         | `write`, user    | Remove one participant                                                                           |
+| `DELETE /v1/events/:id/about/:recordId`           | `write`, user    | Remove a record from the event's `about` list                                                    |
+| `GET /v1/events/:id/claims`                       | `read`           | Assertions and facts citing an event                                                             |
+| `POST /v1/search`                                 | `read`           | Keyword search across records, events and facts                                                  |
+| `GET /v1/review`                                  | `read`           | Pending values, merge suggestions, unresolved participants                                       |
+| `GET /v1/assertions/:id`                          | `read`           | One assertion with its review state                                                              |
+| `POST /v1/assertions/:id/accept` · `/reject`      | `write`, user    | Decide a pending value                                                                           |
+| `POST /v1/review/merges/:id/dismiss`              | `write`, user    | Dismiss a merge suggestion                                                                       |
+| `GET /v1/operations/:id`                          | `read`           | What became of a write, by its operation ID                                                      |
+| `GET /v1/operations?kind=&idempotencyKey=`        | `read`           | The same, by its kind and idempotency key                                                        |
 
 "user" means the key's actor must be a `user`; agents get 403 even with the
 scope. Request and response shapes are exported as TypeScript types from
@@ -176,3 +216,32 @@ internal and never listed.
   "sort": [{ "field": "occurredAt", "direction": "desc" }]
 }
 ```
+
+`POST /v1/records/traverse` follows an explicit path from up to 20 start
+records and returns the paths it found, each hop with its evidence:
+
+```json
+{
+  "starts": ["<deal id>"],
+  "path": [
+    { "field": "decisionMaker" },
+    { "link": "participant", "direction": "in" },
+    { "link": "participant", "direction": "out" }
+  ]
+}
+```
+
+A step is a relation field (`{ "field", "direction" }`; `out`, the default,
+follows it from the current records, and an inverse name follows its owning
+field backwards; `in` finds the records whose field of that name points at
+them) or an event link (`{ "link": "participant" | "about", "direction" }`;
+`in` goes from records to their events, `out` from events to their
+records). At most 3 steps. The response is `{ schemaVersion, paths,
+examinedEdges, limits, truncated }`: each path lists its `records` (`id`,
+`type`, `label`) and its `steps`, with the assertion behind each edge or the
+event and link behind each event hop. At most 500 edges are read, counting
+those discarded, and 50 paths returned; `truncated` is `"edge_budget"` or
+`"path_limit"` when the result is incomplete, `null` otherwise. Start IDs
+follow merges; an unknown, deleted or hidden start is 422 `invalid_starts`,
+and an unknown field 422 `invalid_path`. Select start records with
+`POST /v1/objects/:object/query`; traversal has no filters of its own.

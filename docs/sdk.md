@@ -115,9 +115,31 @@ Operators are `eq`, `neq`, `in`, `gt`, `gte`, `lt`, `lte`, `contains` and
 `@retainer/shared`). Only fields with `isFilterable` in `retainer.schema()` can
 be filtered or sorted; the error for any other field lists the allowed ones.
 
-`search` takes Postgres `websearch_to_tsquery` syntax: quoted phrases, `OR`,
-and `-word` to exclude. Each word also matches longer words that start with
-it ("Dan" finds "Dana"), exact matches rank first, and accents are ignored.
+`search` takes keywords, all required, with quoted phrases, `OR` between two
+terms, and `-word` to exclude. Each word also matches longer words that
+start with it ("Dan" finds "Dana"), exact matches rank first, and accents
+are ignored.
+
+```ts
+// Who connects a deal's decision-maker to people we have met?
+const walk = await retainer.traverseRecords({
+  starts: [deal.id],
+  path: [
+    { field: 'decisionMaker' },
+    { link: 'participant', direction: 'in' }, // the events they took part in
+    { link: 'participant', direction: 'out' }, // the others in those events
+  ],
+});
+// walk.paths[0].records: [deal, person, event, person], each { id, type, label }
+// walk.paths[0].steps: the assertion or event link behind each hop
+// walk.truncated: null, 'edge_budget' or 'path_limit'
+```
+
+`traverseRecords` takes up to 20 start records and 3 steps, reads at most
+500 edges and returns at most 50 paths. A step is a relation field
+(`{ field, direction }`, `out` by default) or an event link
+(`{ link: 'participant' | 'about', direction }`). Pick the start records
+with `queryRecords`.
 
 ## Review, merge and forget
 
@@ -153,9 +175,39 @@ try {
 }
 ```
 
-## Idempotency and cancellation
+## Idempotency, unknown outcomes and cancellation
 
 `createRecord`, `remember` and `mergeRecords` take an optional idempotency key
-as their last argument. A retry with the same key returns the original result;
-reusing a key with a different payload fails. Read methods take an
-`AbortSignal`, as their last argument or as `signal` in their options.
+as their last argument. A retry with the same key within 24 hours returns the
+original result; reusing a key with a different payload fails. The key is
+scoped to the workspace and the kind of write (`create_record`, `remember`,
+`merge`). The SDK does not retry on its own, so keep the key until you know
+the outcome.
+
+A write whose response is lost may still have been applied. The server
+answers a commit it could not confirm with `unknown_outcome` and the
+operation ID in `details`; ask `getOperation` before retrying:
+
+```ts
+const key = `call-${call.id}-legal`;
+try {
+  await retainer.remember(dana.id, { text, source: call.id }, key);
+} catch (error) {
+  if (!(error instanceof RetainerApiError && error.code === 'unknown_outcome')) throw error;
+  const op = await retainer.getOperation({ kind: 'remember', idempotencyKey: key });
+  // op.status: 'completed' (op.result is the original response), 'erased'
+  //   (a privacy request erased it) or 'not_observed'
+  if (op.status === 'not_observed') {
+    await retainer.remember(dana.id, { text, source: call.id }, key); // same key: safe
+  }
+}
+```
+
+`not_observed` is not a rollback: the original may still commit, which is
+why the retry reuses the key. `getOperation({ operationId })` looks a write
+up by the ID from an `unknown_outcome` error or the `Retainer-Operation-Id`
+response header. Errors with `details.retryable: true`, such as
+`workspace_busy` or `write_conflict`, are safe to retry as they are.
+
+Read methods take an `AbortSignal`, as their last argument or as `signal` in
+their options.

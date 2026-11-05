@@ -4,6 +4,29 @@ All notable changes to Retainer are listed here. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 include breaking changes.
 
+## Unreleased (`codex/surrealdb-v1`)
+
+### Breaking
+
+- SurrealDB 4.0.0 replaces PostgreSQL as the only runtime storage: a catalog
+  database plus one database per workspace, typed tables per object and
+  native relation tables ([migration spec](docs/surrealdb-migration-spec.md)).
+  There is no data migration from a PostgreSQL install.
+- Configuration: `RETAINER_SURREAL_*` and `RETAINER_SIGNING_KEY` replace
+  `DATABASE_URL` and `RETAINER_DB_POOL_MAX`; `RETAINER_ROLE` accepts only
+  `all`. One process per deployment (a second one refuses to start).
+- Removed: the AWS deployment (`deploy/aws`, `docs/aws.md`, Lambda entry
+  points), Drizzle migrations and `pnpm db:generate` / `db:migrate`.
+
+### Added
+
+- `get_operation` (`GET /v1/operations/:id`, `GET /v1/operations?kind=&idempotencyKey=`,
+  SDK `getOperation`, MCP `get_operation`) and the `Retainer-Operation-Id`
+  response header; a lost response is `unknown_outcome` with its operation ID.
+- `traverse_records` (`POST /v1/records/traverse`, SDK `traverseRecords`,
+  MCP `traverse_records`): bounded walks along relation fields and event links.
+- `retainer signing-key generate`.
+
 ## 0.1.0
 
 The first release: the whole of build order steps 1 to 6 in

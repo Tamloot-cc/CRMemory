@@ -25,9 +25,12 @@ searchable. Full conversations stay with the agent.
 
 ## 1. Data model
 
-Three layers, all in one Postgres database. This document describes the
-design as of the first release (0.1.0). Section 11 records the schema
-checklist that build step 1 completed.
+Three layers, stored in SurrealDB: a catalog database for workspaces and API
+keys, and one database per workspace (7). This document describes the
+design as of the first release (0.1.0). Section 11 lists the fixed tables;
+[docs/surrealdb-migration-spec.md](docs/surrealdb-migration-spec.md)
+describes the storage design in detail (sections 4-9, with the recorded
+deviations in section 13).
 
 ### 1.1 Schema (metadata)
 
@@ -46,10 +49,10 @@ Every schema row carries:
 - `status`: `active` or `deprecated`. A proposed change lives only in
   `schema_changes` until it is approved; nothing half-exists in the live
   schema.
-- `key` (fields only): a short, permanent ID used as the JSON key in
-  `records.data`. Renaming a field changes `name`, never `key`, so a rename
-  never touches the data. Keys are never reused, even after a field is
-  deleted.
+- `key` (fields only): a short, permanent ID that names the field's column
+  in its object's table (`f_<key>`, 1.2). Renaming a field changes `name`,
+  never `key`, so a rename never touches the data. Keys are never reused,
+  even after a field is deleted.
 
 - `is_protected`: set by the schema engine, never by a client, on objects and
   fields that server code depends on (below).
@@ -87,9 +90,9 @@ API and MCP schemas are cached per `(workspace, schema_version)`.
 
 #### Field types
 
-| Type                                                     | Stored as                                                        |
+| Type                                                     | Value                                                            |
 | -------------------------------------------------------- | ---------------------------------------------------------------- |
-| `text`, `number`, `boolean`, `date`, `date_time`, `json` | Plain JSON values                                                |
+| `text`, `number`, `boolean`, `date`, `date_time`, `json` | Plain values; `date_time` is a native datetime column            |
 | `select`, `multi_select`                                 | Option value(s); options live in `fields.settings`               |
 | `money`                                                  | `{ amountMicros, currency }`                                     |
 | `emails`                                                 | `{ primary, additional[] }`                                      |
@@ -97,24 +100,29 @@ API and MCP schemas are cached per `(workspace, schema_version)`.
 | `links`                                                  | `{ primary: { url, label }, additional[] }`                      |
 | `full_name`                                              | `{ first, last }`                                                |
 | `address`                                                | `{ street1, street2, city, state, postcode, country, lat, lng }` |
-| `relation`                                               | Not in `records.data`; see `record_links`                        |
+| `relation`                                               | Not a column; a native edge table (1.2)                          |
 
 Composite shapes are defined once in `@retainer/shared`, so every object that
-has emails stores them the same way.
+has emails stores them the same way. Each non-relation field is a typed
+column of its object's table, `option<T | null>`, so a missing value (no
+eligible assertion) and an explicit `null` stay apart; `json` fields are
+`any`, the only untyped columns. Native values are converted at the API
+boundary: responses keep the JSON shapes above.
 
 #### Built-in columns on every record
 
 `id`, `created_at`, `updated_at`, `deleted_at` (soft delete), `created_by`,
-`updated_by`, `merged_into_id` (set when the record was merged into another,
-so IDs that agents kept still resolve). These are real columns on `records`,
-not schema fields.
+`updated_by`, `merged_into` (set when the record was merged into another,
+so IDs that agents kept still resolve). These are columns of every object
+table, not schema fields; `record_directory` (1.2) repeats the liveness and
+merge columns so a public ID resolves without knowing its object.
 
 #### Relations
 
 A `relation` field is defined on its owning side: `many_to_one` for one
 record (`person.company`) or `many_to_many` for a set of records
 (`deal.contacts`). The other side, if named with `inverseField`, is its
-inverse, read from the same `record_links` rows: `one_to_many` for a
+inverse, read from the same edges: `one_to_many` for a
 many-to-one field (`company.people`), `many_to_many` for a many-to-many
 one (`person.contactDeals`). The engine marks every inverse
 `settings.isInverse`, and only the owning side is written; `describe_schema`
@@ -134,8 +142,8 @@ deprecated with it, as before.
 
 Setting a link is a field assertion whose value is the target record's ID,
 or for a set the whole array of IDs, so links follow the same write rules as
-other fields; `record_links` is derived from the winning assertion, one row
-per target, like `records.data`. A set is normalized before it is compared
+other fields; the field's edges are derived from the winning assertion, one
+edge per target, like the record's columns. A set is normalized before it is compared
 or stored: duplicates dropped, ordered by ID, `[]` to clear it, `null`
 refused; a required set needs at least one member. A write replaces the
 whole set as one assertion, ranked like any other; there is no implicit
@@ -148,16 +156,17 @@ is soft-deleted: `cascade` soft-deletes the source records too; `set_null`
 (the default) keeps the edge and the assertion, and reads skip the deleted
 target. `cascade` is refused on many-to-many fields, since cascades follow
 links at any depth and deleting one contact would delete every deal listing
-it. The database cascade only covers hard deletes of edges, not the
-asserted relation values.
+it.
 
-`record_links.is_collection` marks a set's edges. A trigger sets it from the
-field, never from the writer, and refuses edges on an inverse or
-non-relation field; a unique index on `(workspace_id, source_record_id,
-field_id, target_record_id)` keeps each edge once, and a partial unique
-index on `(source_record_id, field_id) where not is_collection` holds a
-single-record field to one edge in the database itself, even for a writer
-that bypasses the application. Merges point sets at the survivor, once.
+Every owning relation field has its own native relation table,
+`r_<field universal ID>`, declared `ENFORCED` from the owning object's
+table to the tables of its allowed targets. Each edge records the assertion
+it derives from. A unique `(in, out)` index keeps each edge once, a unique
+`in` index holds a single-record field to one edge, and an `out` index
+serves inverses. So the database itself refuses a missing or wrong-type
+target, a duplicate pair, a second edge on a single-record field and a plain
+`CREATE` into the table, even from a writer that bypasses the application.
+Inverse fields have no table of their own. Merges point sets at the survivor, once.
 Hard deletion deletes single-record assertions that point at the deleted
 record and removes it from every set assertion, current or past (2.1,
 step 3), so a rebuild cannot recreate dangling links.
@@ -176,28 +185,36 @@ writes no actor-stamped rows.
 
 ### 1.2 Records
 
-| Table                | Holds                                                                                                                                                                                                                                   |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `records`            | One row per entity: `workspace_id`, `object_type_id`, `data jsonb` (keyed by field `key`), `search tsvector` and `label` (5.1), built-in columns                                                                                        |
-| `record_links`       | Relations as edges: `field_id`, `source_record_id`, `target_record_id`. Real foreign keys with cascade delete                                                                                                                           |
-| `record_identifiers` | Normalized identifiers pointing at a record: every email, phone and website domain, plus the value of every `is_unique` field. `(workspace_id, field_id, value)` is unique for `is_unique` fields (the standard `person.emails` is one) |
+| Storage                                   | Holds                                                                                                                                                 |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Object table per type (`o_<object ID>`)   | One schemafull row per record: a typed `f_<key>` column per non-relation field, `label` (5.1) and the built-in columns; event types add `occurred_at` |
+| `record_directory`                        | One row per record, keyed by its public ID: object, object table, whether it is an event, `deleted_at`, `merged_into`, `updated_at`                   |
+| Relation table per field (`r_<field ID>`) | Native edges of one owning relation field, from source to target, each with the assertion it derives from (1.1)                                       |
+| `record_identifiers`                      | Normalized lookup entries pointing at a record: every email, phone and website domain, plus the value of every `is_unique` field                      |
+| `unique_claims`                           | Only actual uniqueness reservations: one row per held unique value, unique on `(field_id, value)`                                                     |
 
-`records.data` is a **cache computed from `field_assertions`** (below). If the
-layout ever needs to change, records are rebuilt from assertions.
-`record_links` and `record_identifiers` are maintained in the same
-transaction that recomputes `records.data`.
+Table names come from immutable IDs (the object's and the field's universal
+IDs, the field's key), never from business names, so renaming Company or
+one of its fields changes metadata, not tables or columns.
+
+A record's columns and edges are a **projection computed from
+`field_assertions`** (below). If the layout ever needs to change, records
+are rebuilt from assertions. Edges, identifiers, unique claims, the
+directory entry, event attachments and the search document change in the
+same transaction that recomputes the columns.
 
 `record_identifiers` exists because composite fields (`emails`, `phones`,
-`links`) keep extra values in an array that an expression index on
-`data->>'<key>'` cannot see or enforce. It is used for participant matching,
-for uniqueness, and for finding duplicates, and its unique constraint is what
-stops two concurrent writes from creating the same person twice.
-Each identifier row stores a canonical value and an explicit uniqueness
-claim (`is_claim`); a fixed partial unique index over claims enforces `(workspace_id, field_id, value)` without
-per-field DDL. Null values create no claim. Normalization is shared by
-writes and lookup; generic unique values retain their JSON type so number
-`1` and text `"1"` do not collide. Only `text`, `number`, `date` and
-`emails` fields can be unique; the schema engine rejects the rest.
+`links`) keep extra values in an array that a column index cannot see or
+enforce. It is used for participant matching and for finding duplicates.
+A lookup entry is not always a reservation (a secondary email of a
+non-unique field, for example), so reservations live apart in
+`unique_claims`, and its unique index is what stops two concurrent writes
+from creating the same person twice. One fixed index enforces uniqueness
+for every field, with no per-field index. Null values create no claim.
+Normalization is shared by writes and lookup; a claim stores its value
+JSON-encoded, so number `1` and text `"1"` do not collide. Only `text`,
+`number`, `date` and `emails` fields can be unique; the schema engine
+rejects the rest.
 
 Only an exact identifier declared unique can automatically select a record.
 Non-unique phones, shared inboxes, domains and name similarity produce
@@ -207,52 +224,58 @@ A losing concurrent create rolls back the entire provisional record and
 retries lookup. Soft-deleted records retain uniqueness claims until purged
 with `forget` (restoring a record is not in v1), so writes cannot silently
 recreate them. A match on a
-soft-deleted record follows `merged_into_id` when set; otherwise the
+soft-deleted record follows `merged_into` when set; otherwise the
 participant stays unresolved and is listed in `GET /v1/review`, rather than
 attaching new events to a hidden record.
 
-#### Why JSONB and not a table per object
+#### Why a table per object
 
-Twenty creates a real Postgres table for every object in every workspace. We
-store all records in one table instead, because:
+Like Twenty, Retainer gives every object its own table, here inside the
+workspace's own database. Metadata stays authoritative: the schema engine
+compiles it into the tables (3), and agents never submit definitions.
 
-- Agents add fields automatically. With JSONB that is one metadata row, with
-  no DDL, locks or partial failures.
-- Self-hosted upgrades stay simple: one fixed schema with normal migrations,
-  not a migration per workspace.
-- The hosted cloud can hold many workspaces without bloating the Postgres
-  catalog.
+- **Typed storage with database constraints.** A schemafull table refuses
+  undeclared fields and wrongly typed values; an enforced relation table
+  refuses invalid edges (1.1). These hold even for a writer that bypasses
+  the application.
+- **Native graph reads.** Inverses, history and traversal (6.2) read edges
+  through their indexes instead of filtering one shared table.
+- **Agents add fields without a pause.** Definitions are transactional on
+  the pinned SurrealDB release, so a new field, object or relation table
+  commits with its metadata in one transaction. Indexes are the exception:
+  each is defined alone and verified before the change publishes (3).
 
-To keep what real tables give you:
+What it keeps from a single shared table:
 
-1. **Integrity for relations**: `record_links` has real foreign keys.
-2. **Rename safety**: JSON keys are field `key`s, not names.
-3. **Uniqueness without DDL**: `is_unique` is enforced through
-   `record_identifiers`, not a per-field unique index.
-4. **Shared indexes in v1**: equality filters use JSONB containment (`data
-   @> …`) with the existing GIN index, scoped by workspace and object.
-   `is_filterable` exposes a field to structured filters; it does not create
-   an index. Range filters and sorts scan that object's rows with typed
-   comparisons. Add expression indexes later only for measured workloads.
-5. **Escape hatch**: a field that gets very hot can be promoted to a real
-   column later.
-
-Not in the first release: typed SQL views per object and workspace
-(`crm_views.<workspace>_<object>`) for people and BI tools. They are DDL per
-workspace and per schema change, which is exactly what the JSONB design
-avoids, and on the hosted cloud they would bloat the catalog. A self-hosted
-install can add them later as an opt-in.
+1. **Rename safety**: physical names come from universal IDs and field
+   keys, not names.
+2. **Uniqueness without per-field indexes**: `is_unique` is enforced
+   through `unique_claims`.
+3. **No eager destructive changes**: deprecating a field or object keeps
+   its column or table and its assertions.
+4. **Shared indexes in v1**: object tables are indexed on `created_at`,
+   `merged_into` and, for event types, `occurred_at`. `is_filterable`
+   exposes a field to structured filters; it does not create an index.
+   Filters compile to a condition over the object's table, with every value
+   a parameter. Add field indexes later only for measured workloads.
 
 ### 1.3 Memory
 
-| Table                       | Holds                                                                                                                                                                                                                                                                                                          |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `event_records`             | One row per event record: `occurred_at`, `channel` and `external_id` (unique per workspace and channel when set, so logging the same source twice is a no-op). Immutable once logged, except that erasure clears `channel` and `external_id` (2.1). A deferred trigger requires the row for every event record |
-| `event_links`               | The records linked to an event, in the order logged. `link = 'participant'`: who took part, as a normalized `handle` (email or phone) and/or a `record_id`, a free-text `role`, and an `unmatched_reason` when no record was matched. `link = 'about'`: a record it concerns (only `record_id`)                |
-| `event_identity_tombstones` | Keyed HMACs of erased event identities, with the ID of the key that made each (2.1). No raw channel, external ID, text or record ID                                                                                                                                                                            |
-| `field_assertions`          | A claimed value for one field of one record: value, actor, source event (`source_record_id`), `is_initial`, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`)                                                    |
-| `facts`                     | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                                       |
-| `fact_sources`              | What a fact rests on: an event (`source_record_id`, with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                                    |
+| Table                       | Holds                                                                                                                                                                                                                                                                                                 |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `event_identity`            | One row per event record: `occurred_at`, `channel` and `external_id`, unique on `(channel, external_id)` when set, so logging the same source twice is a no-op. Immutable once logged, except that erasure clears `channel` and `external_id` (2.1)                                                   |
+| `event_links`               | The canonical links of an event, in the order logged. `link = 'participant'`: who took part, as a normalized `handle` (email or phone) and/or a `record`, a free-text `role`, and an `unmatched_reason` when no record was matched. `link = 'about'`: a record it concerns (only `record`)            |
+| `event_attachments`         | The resolved ways an event is attached to a record (participant, about, or one of the event's relation fields), with the event's type and `occurred_at`, indexed by target and time                                                                                                                   |
+| `rollup_attachments`        | Derived one-hop rollup entries: target record, event, event type, `occurred_at`, rollup field and source record, indexed by target and time (Rollups, below)                                                                                                                                          |
+| `event_identity_tombstones` | Keyed HMACs of erased event identities, with the ID of the key that made each (2.1). No raw channel, external ID, text or record ID                                                                                                                                                                   |
+| `field_assertions`          | A claimed value for one field of one record: value, actor, source event (`source`), `is_initial`, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`), and `refs`, the records a relation value points at |
+| `facts`                     | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                              |
+| `fact_sources`              | What a fact rests on: an event (`source`, with an optional quote the agent chose) or other facts (`premise_fact`, for inferences)                                                                                                                                                                     |
+
+`occurred_at` is also copied onto the event's row in its object table and
+onto its attachment rows, so a history page is one index scan.
+`field_assertions.refs` is indexed per element, so merge and `forget` find
+every claim pointing at a record, current or historical.
 
 `field_assertions.observed_at` and `facts.valid_from` come from the source
 (rules 2.2 and 2.6); `valid_from` has no `now()` default, so backfilled
@@ -271,7 +294,7 @@ point in time and is logged from a source: a meeting, call, email, message
 or note, or a type the workspace adds, such as a payment or a site visit.
 Events are records: they have fields, assertions, relation fields, views and
 search like any other record, plus the built-in columns `occurredAt`,
-`channel` and `externalId` from `event_records`, which `query_records` can
+`channel` and `externalId` from `event_identity`, which `query_records` can
 filter and sort by and a calendar view can use as its date.
 
 Every workspace has the base event types `meeting`, `call`, `email`,
@@ -285,7 +308,7 @@ field. The rest of an event type's fields are ordinary fields. The names
 Only logging creates events. `log_event` (`POST /v1/events`) takes `type`,
 `occurredAt`, `channel`, `externalId`, `title`, `summary`, `fields` (the
 type's other fields, by name), `participants` and `about`, and writes the
-record, its `event_records` row, its initial field values and its links in
+record, its `event_identity` row, its initial field values and its links in
 one transaction. `upsert_record` and record creation refuse event types
 (`422 use_log_event`), but can correct an existing event's fields: later
 edits are ordinary assertions with no source and the write time as
@@ -297,7 +320,7 @@ are marked `is_initial`, cite the event itself as their source, and have
 the event's `occurred_at` as `observed_at`. No other copy of the payload is
 kept, so erasure has one place to clean (2.1).
 
-Logging again with the same `(workspace_id, channel, external_id)` returns
+Logging again with the same `(channel, external_id)` in a workspace returns
 the existing event when its type, `occurred_at` instant and initial values
 are the same. A retry is compared with the initial assertions, not the
 current values, so later edits never break it. Relation values are compared
@@ -314,8 +337,10 @@ role. Adding a participant changes no field value or fact, only which
 records list the event. A different payload returns `event_conflict`; it is
 never silently ignored. Logging the identity of a deleted event, or one
 erased by `forget`, returns `event_retracted`; restoring a source is not in
-v1. Logging takes a transaction-scoped advisory lock on the identity, so
-concurrent logs of one source create one event. `channel` must distinguish
+v1. Concurrent logs of one source create one event: they are serialized by
+the write protocol (2, rule 5), and the unique `(channel, external_id)`
+index refuses a second identity even across processes, so the loser replans
+and finds the event. `channel` must distinguish
 source accounts when their external IDs can overlap. Without `external_id`,
 callers do not get deduplication. An edited source needs a new
 `external_id`; creating it does not retract the old source's claims; a
@@ -329,10 +354,10 @@ them, for example from a participant's company, since that would move old
 meetings when a person changes jobs. A record is linked once per event:
 `about` skips a record already linked, a record added as a participant
 replaces its `about` link, and a merge drops the `about` link that would
-repeat another. Adding links locks every record involved `FOR KEY SHARE`,
-as relation writes do (4.2), so a concurrent merge either commits first and
-the link goes to the survivor, or waits and then moves the new link with
-the rest.
+repeat another. Adding links and merging are both workspace writes under
+the write protocol (2, rule 5), so a concurrent merge either commits first
+and the link goes to the survivor, or commits after it and moves the new
+link with the rest.
 
 A relation field on an event type, such as a call's `deal` or a payment's
 `invoice`, also attaches the event to the record it points at. It follows
@@ -343,7 +368,11 @@ relation fields for structure the type owns.
 An event is attached directly to a record in three ways, and every list of
 a record's events says which, as `via`: `{ kind: 'participant' }`,
 `{ kind: 'about' }` or `{ kind: 'field', field }`. An event attached in
-several ways appears once, with that precedence. `query_records` on an event
+several ways appears once, with that precedence. Each resolved link and
+each edge of an event's relation field is stored as an `event_attachments`
+row, written in the transaction that changes the link or edge; an
+unresolved participant stays an `event_links` entry without one until it
+is resolved. `query_records` on an event
 type takes `linked: { record, link? }` for these events, and
 `GET /v1/records/:id/events` and context packs (6.2) list them across types,
 newest first.
@@ -357,10 +386,15 @@ the history of the records it points at through that field, with
 they came from: a company sees the calls about its deals. It works for
 single-record, `many_to_many` and polymorphic fields and needs no inverse.
 
-- It is read-time: nothing is copied, so `update_field` turns it on or off
-  at any time, as an additive change (no review), and a changed relation
-  regroups the events at once. `via` describes the current grouping, never
-  who took part back then; explicit participants and `about` are unaffected.
+- It is stored: `rollup_attachments` holds one entry per target, event,
+  field and source record. The transaction that attaches an event to a
+  source, or creates, removes or merges an edge of a rollup field, writes or
+  removes the matching entries, so a changed relation regroups the events
+  at once. `update_field` turns it on or off at any time, as an additive
+  change (no review); the same transaction rebuilds the field's entries
+  from its edges and the sources' attachments. `via` describes the current
+  grouping, never who took part back then; explicit participants and
+  `about` are unaffected.
 - One hop. What a record has only by rollup does not roll up again, and
   direction is always source to target. An event's own relation field
   attaches it (above) and does not use up the hop: a payment attached to an
@@ -373,17 +407,24 @@ single-record, `many_to_many` and polymorphic fields and needs no inverse.
   context budgets see each event once.
 - It cannot be set on an inverse field, nor on an event type's fields.
 
-A company with thousands of deals is a wide fan-out, so the query never
-gathers it: it reads the incoming edges through `record_links_target_idx`
-(workspace, target, field, covering the source), takes each live source's
-own newest page of directly attached events (through `event_links
-(workspace, record_id, link)`, the event types' relation edges and
-`event_records (record_id, occurred_at)`), and merges those, deduplicated,
-into one keyset page on (`occurred_at`, ID). An event's position among one
-source's events is never later than its position overall, so that covers
-the page and every path to its events. Context packs and
-`GET /v1/records/:id/events` share it, and an integration test checks its
-plan on a seeded fan-out.
+A company with thousands of deals is a wide fan-out, so the read never
+gathers it. A record's history is two indexed streams, its
+`event_attachments` and its `rollup_attachments`, each read newest first
+by target and `occurred_at` in bounded keyset batches, one top-level
+statement per stream. They are merged and deduplicated into one keyset page
+on (`occurred_at`, ID); another batch is read when deduplication needs it.
+Liveness, visibility and event-type filters apply as rows arrive, so a
+deleted source or a hidden type needs no rewrite of stored entries. Moving
+a source record to another target rewrites its events' entries in one
+transaction, a cost bounded by that record's events. Context packs and
+`GET /v1/records/:id/events` share this read.
+
+On the pinned SurrealDB release, an indexed `WHERE … ORDER BY … LIMIT`
+stops at the limit only when the filter value is a literal or a top-level
+parameter. The same statement inside a closure or a `FOR` loop becomes a
+table scan, and one with an `IN` list of sources never stops at the limit.
+So every read is a point lookup or
+a top-level indexed statement per value (spec section 8).
 
 The engine cannot prove a relation is stable, so the setting says nothing
 about permanence. Template defaults leave it off on affiliations, ownership
@@ -442,7 +483,7 @@ not go through the schema engine; changing one never changes a record.
 Rules:
 
 1. **Fields by key.** Stored config names fields by `fields.key`, like
-   `records.data`, so renaming a field never breaks a view. The API reads
+   the object tables' columns, so renaming a field never breaks a view. The API reads
    and writes field names and translates both ways.
 2. **Repaired by the schema change.** Board columns are the group field's
    options as they are when the view is read, so adding or relabelling an
@@ -504,7 +545,7 @@ object deletes its views with it.
 3. **Agents never silently overwrite people, and are never silently
    ignored.** If the winning assertion is a `user` or `integration` one and
    an agent asserts a different value with a newer `observed_at`, the agent's
-   value is stored as `pending_review` and does not change `records.data`.
+   value is stored as `pending_review` and does not change the record's value.
    (Otherwise "Dana moved to Globex" from last week's email would lose to a
    months-old CRM sync and vanish into `superseded`.) An older or equal agent
    value is simply `superseded`. An agent assertion below the workspace's
@@ -515,8 +556,9 @@ object deletes its views with it.
    reviewer identity.
 4. **The value is always recomputable.** For each field, the winner among
    `active` and `superseded` assertions is `active`, the rest `superseded`;
-   `records.data[key]` is the winner's value (relation winners instead produce
-   `record_links`). With no eligible assertion the key/edge is absent.
+   the field's column holds the winner's value (relation winners instead
+   produce edges). With no eligible assertion the column (`NONE`) or edge is
+   absent; a winning `null` is stored as an explicit `null`.
    `pending_review` and `rejected` assertions never count. Source retraction
    makes its derived assertions ineligible and recomputes affected fields;
    it cannot let an older `superseded` claim from that source win again.
@@ -526,15 +568,42 @@ object deletes its views with it.
    that would win again is now claimed by another record (1.2), it becomes
    `pending_review` (reason `unique_conflict`) and the next one wins, so a
    retraction always takes effect.
-5. **Writes to one record are serialized.** A write locks the record row
-   (`SELECT … FOR NO KEY UPDATE`; merges, deletes and retraction take
-   `FOR UPDATE`), inserts its assertions, recomputes only the
-   touched keys, and updates `data`, `record_links` and `record_identifiers`
-   in the same short transaction. Nothing does read-modify-write on `data`
-   outside that lock, so two agents writing the same record never lose each
-   other's values. Multi-record writes lock records in sorted
-   ID order. An optional expected `updated_at` precondition rejects stale
-   direct edits; serialization alone does not detect a stale agent's intent.
+5. **Writes to one workspace are serialized.** Every workspace mutation,
+   including review, merge, retraction, `forget`, schema changes and the
+   consolidator, is one operation under the write protocol (`mutate()` in
+   `db/protocol.ts`); nothing writes around it:
+   1. It waits in the process-local queue of its workspace. Other
+      workspaces and reads proceed. Only database work happens while the
+      queue is held. A caller that waits longer than
+      `RETAINER_WRITE_QUEUE_LIMIT_MS` (default 10 s) gets a retryable
+      `503 workspace_busy`.
+   2. It reads the workspace revision (`workspace_state`), then only what
+      the operation needs: the published schema, the records, sources and
+      identifier candidates involved. It computes the change in TypeScript,
+      recomputing only the touched fields. A domain error found while
+      planning (not found, ambiguous, failed precondition) is reported only
+      if the revision is still the one it read; otherwise it replans.
+   3. It commits one explicit transaction: check that the revision and mode
+      are unchanged, increment the revision, write the assertions and every
+      projection they touch (columns, edges, identifiers, claims, directory,
+      attachments, rollups, search) and the operation receipt (6.2). Every
+      write statement checks how many records it affected and throws on a
+      mismatch, because the database answers a refused write with an empty
+      result, not an error.
+   4. A changed revision or a database write conflict rolls the whole
+      transaction back, and the operation replans from fresh reads, at most
+      five attempts with short jittered backoff. Then it fails with a
+      retryable `409 write_conflict`. A partly observed plan is never
+      replayed.
+
+   Every writer touches the same revision, so a plan built on a stale read,
+   including an identifier's absence, never commits, and two agents
+   writing the same record never lose each other's values. The revision
+   check holds across processes too; the queue only avoids conflicts in
+   one. An optional expected `updated_at` precondition rejects stale direct
+   edits and is checked again on every attempt; serialization alone does
+   not detect a stale agent's intent. Allocated IDs and server-assigned
+   observation times stay the same across an operation's attempts.
 6. **Facts are never deleted by the system, only superseded.** Two times are
    kept apart: `valid_from` / `valid_to` say when a fact was true in the
    world; `created_at` says when it was recorded. `valid_from` is the cited
@@ -558,16 +627,17 @@ other live sources may remain; a fact with no live source is hidden on
 read. Deleting an event type deletes its records through the same
 lifecycle, in the same transaction.
 A write citing an event (including accepting a pending claim from it)
-locks it `FOR KEY SHARE` before locking any record, and deletion locks it
-`FOR UPDATE` before locking the affected records, so a claim either commits before the deletion (and is retracted
-with the rest) or sees the source deleted and fails.
+checks in its plan that the source is live, and the commit's revision check
+(2, rule 5) keeps that decision valid, so a claim either commits before the
+deletion (and is retracted with the rest) or replans after it, sees the
+source deleted and fails.
 Restoring a source is not in v1; when added, it must revalidate its derived
 claims before exposing them.
 
 `forget` (admin scope) is the hard delete for privacy requests. First collect
 the record's identifiers, participant events, dependent facts,
-assertions and inbound relation assertions, before cascades or `SET NULL`
-can erase those dependencies. Then, in a coordinated deletion operation:
+assertions and inbound relation assertions, before any of them is removed.
+Then, in one operation that commits as one transaction:
 
 1. add normalized emails and phones to a workspace suppression list using a
    keyed HMAC (a plain hash of a guessable email/phone is insufficient);
@@ -588,10 +658,10 @@ can erase those dependencies. Then, in a coordinated deletion operation:
    handles, summaries, quotes or field values.
 
 Writes coordinate with deletion: creating a record or resolving a
-participant checks suppression in the same serialization boundary as
-`forget`, so a suppressed email or phone cannot come back. Jobs carry IDs
-only, and must not resurrect deleted content. Delete idempotency responses
-and error text containing erased content too.
+participant checks suppression under the same write protocol as `forget`,
+so a suppressed email or phone cannot come back. Background work carries
+IDs only, and must not resurrect deleted content. Operation receipts and
+error text must not keep erased content either.
 
 How this is built:
 
@@ -603,9 +673,14 @@ How this is built:
   matched in. It "took part in" an event when a participant link points at
   it or carries one of those handles. A forgotten event record is erased
   as an event.
-- **Boundary.** A workspace advisory lock. Every write takes it in shared
-  mode after the schema lock; `forget` takes it exclusively, so it waits
-  for in-flight writes and blocks new ones until it commits. A record
+- **Boundary.** The write protocol (2, rule 5). `forget` gathers everything
+  in its plan and commits one transaction; a write planned before it
+  commits fails its revision check, replans and sees the suppression.
+  Primary rows (directory entry, object row, event identity, the claims it
+  removes) are deleted by ID with exact effect checks; derived rows
+  (assertions, identifiers, links, attachments, rollups, edges, search
+  documents, fact sources) are swept by indexed deletes. A failure leaves
+  nothing half-erased. A record
   write with a suppressed email or phone fails with `409 suppressed`,
   naming the field but not the value. A suppressed participant handle is
   stored as `null` with the reason `suppressed`.
@@ -622,14 +697,17 @@ How this is built:
   a keyed HMAC of the JSON encoding of `(workspace_id, channel,
   external_id)` under a domain separator of its own, so it never equals a
   handle's HMAC. It is a retained suppression token, not anonymization.
-  `log_event` checks it, under the identity's lock and the shared privacy
-  lock, before creating an event or adding retry links, and returns
+  `log_event` checks it in its plan, under the write protocol, before
+  creating an event or adding retry links, and returns
   `event_retracted` on a match. A tombstone made with a key that is no
   longer configured cannot be checked, so logging in that workspace fails
   closed with `503 not_configured` until the key is listed again. Events
   without an external ID get no tombstone and no deduplication guarantee.
-- **Idempotency.** Stored responses whose text contains an erased record,
-  event or fact ID are deleted.
+- **Receipts.** Each operation receipt lists the public IDs its result
+  mentions (`operations.refs`, indexed per element). `forget` marks every
+  receipt that mentions an erased record, event or fact `erased` and clears
+  its result, so a replay answers `410 result_erased` and `get_operation`
+  answers `erased` (6.2).
 - **Response.** IDs and counts only: records, events, facts and assertions
   deleted, inbound relations removed, handles suppressed, the records
   recomputed, and review candidates (other live records, facts and events
@@ -652,7 +730,8 @@ cost of losing what that event said about the others. Redacting only
 the person, or keeping other people's facts with a "deleted for privacy"
 source, is a possible later refinement.
 
-Workspace deletion cascades through `workspace_id` and removes everything.
+A workspace's data lives in its own database, so removing that database
+removes everything. The operator CLI has no command for it in v1.
 
 ---
 
@@ -661,9 +740,10 @@ Workspace deletion cascades through `workspace_id` and removes everything.
 One entry point for every schema change, whoever makes it (seed, upgrade,
 person or agent). Same pattern as Twenty's migration engine:
 
-1. **Load** the workspace's current schema, holding the workspace's
-   exclusive schema lock (below) so schema changes in one workspace run one
-   at a time.
+1. **Load** the workspace's current published schema, as the plan of an
+   operation under the write protocol (2, rule 5), so schema changes and
+   writes in one workspace commit one at a time against the revision they
+   read.
 2. **Apply** the requested operations in memory to get the desired schema.
 3. **Validate**: name collisions, reserved names, relation targets, option
    values, type rules.
@@ -678,8 +758,8 @@ person or agent). Same pattern as Twenty's migration engine:
    - Not supported in the first release: changing a field's type. Create a
      new field and deprecate the old one instead.
 6. **Apply or propose** (any change needs the `schema:write` scope):
-   - All additive: apply in one transaction (metadata rows and
-     `schema_version + 1`). No per-field index jobs in v1.
+   - All additive: apply at once, as one transaction (below). No per-field
+     index jobs in v1.
    - Destructive, requested by a `user` actor with `admin` scope: apply
      directly; the request is the approval.
    - Destructive, requested by anyone else (including an agent holding an
@@ -694,16 +774,38 @@ person or agent). Same pattern as Twenty's migration engine:
 Making a field unique or required first checks existing records; if any
 violate it, the change fails with the offending record IDs. Adding a
 required or unique field is subject to the same check and approval, not an
-additive shortcut. Record writers take a shared transaction-level advisory
-lock keyed on the workspace (`pg_advisory_xact_lock_shared`) before record
-locks; schema changes take the exclusive form, so a write cannot race the
-check or commit against stale schema. Advisory locks, not `FOR SHARE` on
-the workspace row: every write share-locking one hot row creates MultiXact
-churn, and schema changes also update that row (`schema_version`). Unique
-claims are populated atomically when uniqueness is enabled.
+additive shortcut. The check runs in the change's plan, against the
+revision its commit verifies, so a write cannot race the check or commit
+against stale schema. Unique claims for existing values are written in the
+same transaction that enables uniqueness.
+
+**Physical definitions.** The engine compiles published metadata into
+SurrealDB definitions (`db/physical.ts`): a schemafull table per object, a
+typed column per non-relation field and an enforced relation table per
+owning relation field (1.1, 1.2). Agents never submit definitions. An
+applied change commits in two steps:
+
+1. The new tables, their fields and their indexes are defined first. Each
+   index is its own statement, outside any transaction, and is verified
+   before anything relies on it: it reports ready, and a unique index
+   refuses a duplicate probe inside a cancelled transaction. Nothing writes
+   to these tables yet, because they are not in published metadata, so no
+   pause is needed.
+2. One administrative transaction checks and advances the revision,
+   applies the remaining field definitions, writes the metadata and the
+   follow-ups the change needs (unique claims, rollup entries, search
+   documents, rewritten views) and increments `schema_version`. Definitions
+   are transactional on the pinned release, so a failure rolls all of it
+   back.
+
+A unique index defined inside a transaction is not trusted: on SurrealDB
+Cloud one accepted duplicates. New indexes only ever cover new, empty
+tables, since uniqueness lives in `unique_claims`, so no business change
+needs to pause writes while an index builds over existing records.
 
 In v1, deleting schema metadata means deprecating it and hiding it from new
-writes, not cascading away assertions. Deleting an object also deprecates
+writes, not cascading away assertions; its columns and tables stay.
+Deleting an object also deprecates
 relations that point at it; protected objects and fields (1.1) and an
 object's label field cannot be deleted. Removing an option needs approval
 and fails while live records use it. A relation's target, cardinality and `onDelete` are fixed once
@@ -713,11 +815,12 @@ Standard objects ship as code (definitions with fixed `universal_id`s) and
 are applied through the same engine, on its trusted path, when a workspace
 is created.
 
-**Upgrading existing workspaces.** After migrations, wherever they run (the
-container's start, the AWS ops function's `migrate`), the server brings every
-workspace up to the definitions of its release: the seed (base objects, base
-event types, the internal-note type) and each template the workspace
-applied. Elements are matched by `universal_id` whatever their status, so a
+**Upgrading existing workspaces.** At start, under the process lease (4),
+the server brings every active workspace up to date, one at a time: first
+its fixed tables (11), then its signing-key access methods (7), then the
+definitions of its release: the seed (base objects, base event types, the
+internal-note type) and each template the workspace applied. A request for
+a workspace the server has not reached yet upgrades that workspace first. Elements are matched by `universal_id` whatever their status, so a
 renamed element is found and one the workspace deleted is not re-created.
 Only what the workspace never had is added: objects with their fields, and
 fields of objects it still has. Options, labels, flags and settings of
@@ -726,12 +829,16 @@ element the protection lists (1.1) name, which workspaces created before
 protection lack. An element the workspace's schema cannot take, such as a
 base type whose name its own object already uses, is skipped and logged as a
 conflict; everything else still applies. Each upgrade is one schema change by
-`system:retainer`, run under the workspace's exclusive schema lock.
-`workspaces.definitions_digest` records the definitions a workspace was last
+`system:retainer`, an operation under the write protocol, so a concurrent
+run replans and finds the workspace current.
+`workspace_state.definitions_digest` records the definitions a workspace was last
 fully upgraded to, so a run skips current workspaces without loading their
-schema and retries conflicted or failed ones. A workspace that fails is
-reported and keeps its schema; the others still run
-(`docs/workspace-upgrade-spec.md`).
+schema and retries conflicted or failed ones. A workspace whose definitions
+upgrade fails is reported and keeps its schema; the others still run
+(`docs/workspace-upgrade-spec.md`). A failed fixed-table or access-method
+upgrade is reported too, and that workspace answers retryable
+`503 workspace_upgrading` until it succeeds, because the code expects the
+new tables and keys.
 
 ### 3.1 Base objects and templates
 
@@ -775,34 +882,47 @@ changes a template adds its new objects and fields to workspaces that applied
 it when they are upgraded (3), and records the new version.
 
 The workspace records which templates it has applied, with their versions
-(`workspaces.templates`).
+(`workspace_state.templates`).
 
 ---
 
 ## 4. Runtime
 
 ```
- AI agents ── MCP ───┐
- Apps / SDK ── REST ─┤──► API server ─────────────► Postgres
- Integrations ───────┘                              schema · records ·
-                                │                     memory · job queue
-                                ▼                          ▲
-                            Workers ───────────────────────┘
-                            └─ consolidate (scheduled)
+ AI agents ── MCP ───┐       one Retainer process
+ Apps / SDK ── REST ─┤──► API · MCP · web app ──────► SurrealDB
+ Integrations ───────┘    workers                     catalog database
+                          └─ consolidate (scheduled)  one database per workspace
 ```
 
-One Docker image, started with a role: `api`, `worker`, or `all`.
-Postgres is the only dependency, with the standard `pg_trgm`, `btree_gin`
-and `unaccent` extensions for search (5.1); the job queue runs on Postgres
-too. Retainer calls no language model and needs no model API key.
+One Docker image runs one process per deployment: the REST API, the MCP
+endpoint, the web app and the background workers. SurrealDB 4.0.0
+(Community, single node, persistent SurrealKV) is the only dependency;
+`docker/compose.yml` and CI pin the tested image digest. Retainer calls no
+language model and needs no model API key. Separate API and worker
+processes, replicas and serverless deployments are not supported:
+`RETAINER_ROLE` accepts only `all`.
 
-The same code also runs as AWS Lambda functions (`deploy/aws`,
-[docs/aws.md](docs/aws.md)): `api` serves the Hono app behind API Gateway,
-`consolidate` makes one consolidator pass per scheduled run, and `ops` runs
-migrations and the operator CLI. What the container does on start
-(migrations, the first-boot key, the search rebuild) the deploy does once
-through `ops`, with the API stopped, so a cold start never migrates and no
-key is printed to the logs.
+**Process lease.** At start, the server writes a lease to the catalog: its
+holder ID, a heartbeat every 10 s and an expiry 30 s ahead. It refuses to
+start while another live lease exists, and it releases the lease at
+shutdown. A process that cannot renew its lease stops admitting writes
+(`/health` answers 503) and exits. The lease only detects a mistaken second
+process, such as an overlapping deploy; it is not coordination. Correctness
+across processes still rests on the revision check (2, rule 5).
+
+**Boot order.** The catalog's fixed tables, the lease, interrupted
+workspace provisioning, the first-boot workspace and key (7), workspace
+upgrades (3), then serving and the worker.
+
+**Transport.** One module (`db/surreal.ts`) talks to SurrealDB, over HTTP
+`/rpc` with CBOR encoding and token authentication. Every caller value is a
+CBOR parameter, never text in a statement; identifiers in statements come
+only from validated metadata, through `ident()`. JSON-RPC parameters are
+not used: they turn strings such as `INV:2026` or `2026-11-05` into record
+IDs and datetimes. The module checks the HTTP status and every statement's
+result, and classifies the conflicts the write protocol retries. A commit
+whose response is lost has an unknown outcome, not a rollback (6.2).
 
 ### 4.1 How memory gets written
 
@@ -822,7 +942,7 @@ meeting, call or email thread, an agent typically:
 
 Participants are resolved synchronously when the event is logged:
 handles are normalized (lowercased email, E.164 phone) and matched against
-unique identifiers in `record_identifiers`. Matched participants are linked;
+unique identifiers (1.2). Matched participants are linked;
 the response lists the unmatched ones so the agent can create those people
 itself or leave them. Retainer never creates records on its own. Phones are
 not unique (numbers are shared and reassigned), so a participant known only
@@ -838,9 +958,11 @@ with the candidates (1.2). `occurred_at` must carry a UTC offset and may not
 be in the future (beyond a few minutes of clock skew): it decides precedence
 (rule 2.2), so a time-zone slip would otherwise let a claim win for hours.
 
-Each write is its own short transaction, and each follows the write rules,
-so an agent that stops halfway leaves consistent data; it can resume, and
-`external_id` and idempotency keys (6.2) make retries safe.
+Each write is its own operation (2, rule 5), and each follows the write
+rules, so an agent that stops halfway leaves consistent data; it can
+resume, and `external_id` and idempotency keys (6.2) make retries safe. A
+write whose response was lost is checked with `get_operation` (6.2) before
+it is retried.
 
 ### 4.2 Consolidator (scheduled per workspace)
 
@@ -864,26 +986,31 @@ nothing reads the flag.
 
 How this is built:
 
-- **Scheduling.** The queue is Postgres. Every minute, a worker asks the
-  `SECURITY DEFINER` function `retainer_workspaces_due(interval)` which
-  workspaces last ran longer ago than `RETAINER_CONSOLIDATE_INTERVAL_MINUTES`
-  (default 60). It runs each workspace in one transaction, under a
-  per-workspace advisory try-lock, so several workers never run the same
-  workspace twice. `consolidator_runs` holds the last start, the stats, and
-  `compared_until`. A run holds the privacy lock (2.1) in shared mode.
+- **Scheduling.** The worker runs inside the server process. Every minute
+  it goes through the active workspaces, consolidates each one whose last
+  run started longer ago than `RETAINER_CONSOLIDATE_INTERVAL_MINUTES`
+  (default 60), and deletes its expired operation receipts (6.2). Each run
+  is one operation under the write protocol (2, rule 5), without a receipt,
+  so it queues behind that workspace's writes and never interleaves with
+  them or with `forget`. `consolidator_runs` holds the last start, the
+  stats, and `compared_until`.
 - **Exact duplicate facts.** Duplicates are current facts of the same live
   record with equal text after trimming, collapsing whitespace and
   lowercasing, and equal `valid_from` and `valid_to`. The oldest is the
   canonical fact. It gains each duplicate's source links; the duplicates
-  keep theirs and get `superseded_by`. The facts are locked and the groups
-  found again before writing, so a fact retracted meanwhile is skipped.
+  keep theirs and get `superseded_by`. A fact retracted while the run plans
+  fails its revision check, and the run replans without it.
 - **Merge suggestions.** Two live records of the same object are suggested
   when they share an email, phone or website domain identifier
   (`shared email`, `shared phone`, `shared domain`), or when their labels
-  have a pg_trgm similarity of at least 0.6 and are at least three
-  characters long (`similar names`). The reason never copies values. Only
+  are at least three characters long and similar (`similar names`): up to
+  20 candidates per changed record come from the trigram label index
+  (5.1), and a pair is kept when the Jaro-Winkler similarity of the folded
+  labels is at least 0.9. "Dana Cohen" and "Dana Coheen" pass; "Dana Cohen"
+  and "Ron Peretz" do not. The reason never copies values. Only
   records updated since the last run's `compared_until` (its start minus
-  five minutes) are probed, and each kind adds at most 500 new suggestions
+  five minutes, read from the directory's indexed `updated_at`) are probed,
+  and each kind adds at most 500 new suggestions
   per run; pairs that already have a row don't count toward that. A run
   that reaches the cap keeps the previous `compared_until`, so the next
   run picks up the pairs it left. A pair keeps one row, so a dismissed or accepted pair is never
@@ -900,23 +1027,19 @@ How this is built:
   success the pair's pending suggestion becomes `accepted`, and records
   previously merged into B now point at A, so every merge chain is one hop.
   Only the fields B had claims for are recomputed.
-- **Locks.** Ordinary writes lock their record `FOR NO KEY UPDATE`, and a
-  relation write locks its target `FOR KEY SHARE`, following merges. A
-  merge locks A and B `FOR UPDATE`, which waits for both. So a link to B
-  written during a merge either commits first and is rewritten, or waits
-  and then points at A. A relation write locks source then target, while
-  merges and cascading deletes lock targets first, so the two can deadlock;
-  any write Postgres aborts for a deadlock is rolled back and run again
-  (up to three times). A merge that loses a race to another merge is
-  retried too.
+- **Concurrency.** A merge, a relation write and logging are each one
+  operation under the write protocol (2, rule 5). So a link to B written
+  during a merge either commits first and is rewritten by the merge, or
+  replans after it and points at A. A merge that loses a race to another
+  merge replans and sees the result.
 - **Self-links.** No field disallows them in v1, so a relation from A to B
   becomes a link from A to A.
 
 **Merging** record B into A moves B's assertions, facts, links, identifiers
 and participant matches to A, recomputes A's values with the normal write
-rules, and soft-deletes B with `merged_into_id = A`. Reads of B return A.
-The merge is one transaction locking both same-workspace, same-object
-records in sorted ID order. Rewrite inbound relation assertions as well as
+rules, and soft-deletes B with `merged_into = A`. Reads of B return A.
+The merge is one transaction over two records of the same object. Rewrite
+inbound relation assertions (found through `field_assertions.refs`) as well as
 edges, preserving their provenance; reject self-links where disallowed.
 Resolve canonical IDs before merging, prevent cycles, and revalidate unique
 claims before committing. Otherwise a later cache rebuild undoes the merge.
@@ -933,8 +1056,8 @@ Identifiers are rebuilt from the resulting winners. Only current winners
 are combined, never the full assertion history.
 
 Not in the first release: inferring facts from other facts
-(`kind = inferred`). The schema keeps the `kind` column and premise links
-so it can be added without a migration.
+(`kind = inferred`). The fixed tables keep the `kind` column and premise
+links so it can be added without changing them.
 
 ### 4.3 No language model inside Retainer
 
@@ -953,7 +1076,7 @@ deterministic and testable.
 | `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`), its objects and fields, and `builtIns`                 |
 | `query_records`                    | Structured filter, sort and pagination over one object; for an event type, its built-in columns and `linked` (1.3) |
 | `get_record`                       | One record with its fields and links; an event also with its built-in columns, participants and `about`            |
-| `search`                           | Keyword search (Postgres full-text) across records, events and facts                                               |
+| `search`                           | Keyword search (SurrealDB full-text) across records, events and facts                                              |
 | `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent events, fitted to the budget                    |
 | `get_timeline(record, filters)`    | The record's history, newest first: events, asserted field values and facts (6.2)                                  |
 
@@ -971,79 +1094,70 @@ not summarized by a model; summarizing is the agent's job.
 
 ### 5.1 Search
 
-Search is Postgres full-text search, plus three standard extensions that
-ship with Postgres and are offered by managed services: `pg_trgm` (fuzzy
-name matching), `btree_gin` (combined indexes) and `unaccent` (accent
-folding). No embeddings, no BM25 extension.
+Search is SurrealDB full-text search with BM25 ranking, over one
+rebuildable projection, plus explicit normalized identifier lookup (1.2).
+No embeddings, no semantic search and no model.
 
 #### What is indexed
 
-| Source    | Search text                                                                                                                                     | Column and index                                     |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `records` | Values of `is_searchable` fields, plus the domain of each email and link; the label field (usually the name, an event's title) weighted highest | `search tsvector`, GIN on `(workspace_id, search)`   |
-| `records` | The label field as plain text, e.g. "Dana Levi"                                                                                                 | `label text`, trigram GIN on `(workspace_id, label)` |
-| `facts`   | `content`                                                                                                                                       | `search tsvector`, GIN on `(workspace_id, search)`   |
+`search_documents` holds one row per live, visible record (events
+included) and one per live fact. Each fact carries its `record`, and each
+event hit its linked record IDs (possibly none or several), so a hit on a
+fact or event also points to records.
 
-The server computes every `search` and `label` value in the same
-transaction that writes the row (for records, the one that recomputes
-`records.data`). They are not Postgres generated columns, because which
-record fields are searchable lives in schema metadata. Events are records,
-so they share the records index; an event's title and summary are always
-searchable (1.3). Each fact carries its `record_id` and each event hit its
-linked record IDs (possibly none or several), so a hit on a fact or event
-also points to records.
+| Column       | Holds                                                                                                                    | Full-text index    |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| `all_text`   | A record's label plus the values of its `is_searchable` fields and the domain of each email and link; a fact's `content` | `rt_prefix`, BM25  |
+| `folded`     | The same text, lowercased with accents removed                                                                           | `rt_exact`, BM25   |
+| `label_text` | The label field as plain text (usually the name, an event's title)                                                       | `rt_prefix`, BM25  |
+| `grams`      | The label again, for fuzzy candidates                                                                                    | `rt_trigram`, BM25 |
 
-Every index leads with `workspace_id` (`btree_gin`), so a common word is
-matched within one workspace inside the index instead of across every
-tenant and filtered afterwards.
+The three analyzers split text on blanks, changes of character class and
+punctuation, and fold it to lowercase without accents ("José" matches
+"jose"). No stemming and no language-specific rules: it behaves the same
+for every language.
 
-All `tsvector` columns use the `simple` configuration over text folded by
-`retainer_fold`: lowercase, accents removed ("José" is stored as "jose"),
-split on spaces and punctuation, no stemming and no language-specific rules.
-It behaves the same for every language. Queries are folded the same way, so
-"Jose" and "José" find each other. `retainer_fold` is `unaccent` with its
-dictionary named, declared `IMMUTABLE` (plain `unaccent` is only `STABLE`),
-so a query built from constants is computed once rather than once per row.
-Every vector and query is built in `records/search-sql.ts`, so no call site
-folds, or forgets to fold, on its own.
+- `rt_prefix` adds edge n-grams, so a word matches every prefix of
+  itself: "Dan" finds "Dana" and "meet" finds "meetings", for people typing
+  in the web app and for agents alike. Punctuation splits an email or a
+  host into words, so "acme" also finds "dana@acme.com".
+- `rt_exact` keeps words as typed, so hits that match the words exactly
+  rank above hits that only match a longer word.
+- `rt_trigram` splits the label into three-letter grams for fuzzy matching
+  ("Dana Levy" finds "Dana Levi") and for the consolidator's similar-name
+  suggestions (4.2).
 
-Postgres keeps an email or a host as one word ("dana@acme.com",
-"www.acme.com"), so neither starts with "acme". Emails and links therefore
-also add their bare domain ("acme.com"), and "acme" finds both.
-
-Stored search values are rebuilt when the way they are built changes. Facts
-are searched by their own column, so the migration that
-makes the change computes their new values in SQL; a test checks that it
-matches what the write path stores. Record search text depends on schema
-metadata, so that migration sets it to null instead, and every server boot
-rebuilds null values (`records/rebuild-search.ts`) with the statement that
-schema changes use, in batches, before it serves requests. One process
-rebuilds at a time; others boot without waiting, and stale records only
-fail to match until they are rebuilt. A partial index on `search is null`
-keeps the check free once nothing is stale. Merged-away records keep no
-search value and are skipped. This assumes no older server writes after the
-migration runs: it would store the old form, which nothing marks stale.
-Upgrades stop the old version first (`docs/self-hosting.md`).
+The server writes a record's or fact's document in the same transaction
+that writes the values it indexes. A schema change that changes the label
+field, a searchable flag or an option label, or deprecates a field,
+rewrites the documents of that object's live records in the same
+transaction. Events are records, so they share the records' documents; an
+event's title and summary are always searchable (1.3). Every read still
+checks liveness and visibility, so a stale document never surfaces a
+hidden record. Merged-away and deleted records keep no document.
 
 #### How a search runs
 
-1. Postgres parses the query with `websearch_to_tsquery('simple', …)`, which
-   handles quoted phrases, `OR` and `-word`. There is no custom parser. The
-   server then turns every word into a prefix (`'dan':*`) by rewriting the
-   parsed query's text, so "Dan" finds "Dana" and "meet" finds "meetings",
-   for people typing in the web app and for agents alike.
-2. The server runs one query each on entity records, events and facts.
-   Workspace and liveness filters (and, for facts, "current, not
-   superseded") apply before ranking and limit. The internal notes
-   `remember` creates are left out: their text is the fact's, so it is found
-   with the fact, or hidden with it once the fact is retracted.
-3. Each list is ranked with `ts_rank_cd`, using length normalization so long
-   texts do not outrank short, precise matches. Hits that match the words as
-   typed rank above hits that only match a longer word, since `ts_rank_cd`
-   scores a prefix match the same as an exact one.
-4. If the records query finds nothing, even by prefix, the server matches
-   `records.label` by trigram similarity, so "Dana Levy" finds "Dana Levi".
-5. Results come back grouped by type. Each hit carries its record IDs and
+1. The server parses the query itself: words are all required, `OR`
+   between two terms makes either one enough, `-word` excludes, and a
+   quoted phrase needs its words in order. The query is folded like the
+   stored text.
+2. Every word matches through the prefix index on `all_text`.
+   SurrealDB has no native phrase match, so a phrase's words match through
+   the index and the phrase is then checked against `folded` with a
+   whole-word pattern.
+3. The server runs one query each on entity records, events and facts,
+   each a top-level statement over the index. Liveness and visibility
+   filters (and, for facts, "current, not superseded") apply before the
+   limit. The internal notes `remember` creates are left out: their text is
+   the fact's, so it is found with the fact, or hidden with it once the
+   fact is retracted.
+4. Each list is ranked by its BM25 score, with the exact-word score first,
+   so words matched as typed rank above prefix-only matches.
+5. If the records query finds nothing, even by prefix, trigram candidates
+   of the label (`@OR@` over `grams`) are reranked by Jaro-Winkler
+   similarity, so "Dana Levy" finds "Dana Levi".
+6. Results come back grouped by type. Each hit carries its record IDs and
    its text as stored: a record's label, a fact's content, an event's type,
    time, title and summary. A record hit says whether it matched the text or only
    a similar label. Scores from the three lists are not comparable and are
@@ -1054,17 +1168,18 @@ word forms themselves: the `search` tool description tells them to add
 variants with `OR` ("ran OR run").
 
 `query_records` takes keywords too (`search`, within one object, as the web
-app's record pickers use it): `plainto_tsquery`, every word required, each
-matched as a prefix, accents folded.
+app's record pickers use it): every word required, each matched as a
+prefix, accents folded.
 
-#### Why not BM25
+#### Ranking
 
-`ts_rank_cd` has no inverse document frequency: a word that appears
-everywhere in a workspace counts as much as a rare one. BM25 handles that,
-but Postgres has it only through extensions (for example ParadeDB's
-`pg_search`) that many managed Postgres services do not offer, which would
-break "plain Postgres is the only dependency". Within one workspace the
-candidate set is small, and an agent reads the top results anyway.
+BM25 weighs a rare word above one that appears everywhere in a workspace.
+Scores are relative to one index and one query; they are not a confidence.
+Label and exact-identifier precedence is kept through the exact-word score
+and identifier lookup, not by matching a particular numeric score.
+Tokenization differences (what splits a word, what a prefix matches) are
+fixed with contract fixtures and documented with examples, not hidden
+behind embeddings or a model fallback.
 
 There is no `ask` endpoint: answering questions is the agent's job. It
 composes `search`, `query_records` and `get_context` with its own model.
@@ -1099,6 +1214,9 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `GET /v1/events/:id/claims`                       | Paginated assertions and facts citing an event                                                                                          |
 | `GET /v1/records/:id/context`                     | Context pack                                                                                                                            |
 | `GET /v1/records/:id/timeline`                    | The record's timeline (6.2): `types`, `fields`, `eventTypes` (comma-separated), `from`, `to`, `limit`, `cursor`                         |
+| `POST /v1/records/traverse`                       | Bounded walk from start records along relation fields and event links (6.2)                                                             |
+| `GET /v1/operations/:id`                          | What became of a write, by its operation ID (6.2)                                                                                       |
+| `GET /v1/operations?kind=&idempotencyKey=`        | The same, by the operation kind and the idempotency key the write was sent with                                                         |
 | `POST /v1/records/:id/merge`                      | Merge another record into this one                                                                                                      |
 | `POST /v1/records/:id/forget`                     | Hard delete for privacy requests (2.1)                                                                                                  |
 | `GET` · `POST /v1/records/:id/facts`              | Facts about a record                                                                                                                    |
@@ -1116,7 +1234,9 @@ composes `search`, `query_records` and `get_context` with its own model.
 Web sign-in and sign-out use `POST` and `DELETE /auth/session`, outside
 `/v1`; see section 7 for cookie and CSRF rules. `GET /health`, also outside
 `/v1` and needing no key, reports the version and database status (503
-when the database is unreachable). Record reads optionally include
+when the database is unreachable, or after the process lost its lease, 4).
+Every `/v1` response that ran a write carries a `Retainer-Operation-Id`
+header (6.2); bodies keep their shapes. Record reads optionally include
 winning provenance, pending previews and relation references. Review responses
 include totals and separate cursors for each collection (FRONTEND.md 9.1).
 
@@ -1132,9 +1252,10 @@ Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
 
 `describe_schema`, `list_templates`, `apply_template`, `get_guide`,
-`query_records`, `get_record`, `search`, `get_context`, `get_timeline`, `upsert_record`,
-`log_event`, `remember`, `propose_schema_change`. Events are listed with
-`query_records` on their type, so no tool is needed per event type.
+`query_records`, `get_record`, `traverse_records`, `get_operation`, `search`,
+`get_context`, `get_timeline`, `upsert_record`, `log_event`, `remember`,
+`propose_schema_change`. Events are listed with `query_records` on their
+type, so no tool is needed per event type.
 
 **Guides.** `get_guide(name)` returns step-by-step instructions, as
 markdown, for a task an agent does rarely. Each guide is also an MCP prompt
@@ -1217,14 +1338,109 @@ candidates, it tells them apart by company, email or recent events, or
 asks its user.
 
 Create-style writes (`remember`, record creation and merge requests) accept
-a caller idempotency key scoped by workspace and operation. Store the request
-hash and result atomically with the mutation; retries return the original
-result, and reuse with a different payload fails. Identifier matching alone
-does not make note creation or assertion history idempotent. A merge
-request is already idempotent by state (B already merged into A is a
-no-op). Keys are stored in `idempotency_keys` (workspace, operation, key,
-request hash, result, expiry); `event_records.external_id` only covers
-logging events.
+a caller idempotency key scoped by workspace and operation kind
+(`remember`, `create_record`, `merge`), so a retry after a key rotation or
+from another of the workspace's keys still deduplicates. Every public
+mutation gets an operation ID and commits an operation receipt
+(`operations`: kind, idempotency key, request hash, result, the IDs the
+result mentions, expiry) in the same transaction as its effects; a unique
+`(kind, idempotency_key)` index holds one receipt per key. A retry finds
+the receipt before planning and returns the original result; reuse with a
+different payload fails with `422 idempotency_key_reused`. Identifier
+matching alone does not make note creation or assertion history
+idempotent. A merge request is already idempotent by state (B already
+merged into A is a no-op). `event_identity.external_id` covers logging
+events.
+
+A record write's receipt keeps only `{ id, created, fields }`, and the
+record is presented from a fresh read, so a replay shows the record as it
+is now, with the original per-field statuses. `log_event`, `remember`,
+merges and deletions keep their whole result. Receipts are kept for 24
+hours; the worker deletes expired ones (4.2).
+
+#### Unknown outcomes and `get_operation`
+
+A lost response is an unknown outcome, not a rollback: the write may have
+committed. When the database does not answer a commit in time, the call
+fails with `503 unknown_outcome`, and `details.operationId` names the
+operation. Every `/v1` response that ran a write also carries that ID in
+the `Retainer-Operation-Id` header.
+
+`get_operation` (`GET /v1/operations/:id`, or
+`GET /v1/operations?kind=&idempotencyKey=`; SDK `getOperation`) says what
+became of a write, by its operation ID or by the kind and idempotency key it
+was sent with. It is a read, scoped to the key's workspace like every
+other:
+
+```
+→ get_operation { "kind": "remember", "idempotencyKey": "call-8812-fact-1" }
+← { "operationId": "op_3c9…", "kind": "remember", "status": "completed",
+    "result": { "fact": { … } },
+    "createdAt": "2026-10-29T12:00:03Z", "expiresAt": "2026-10-30T12:00:03Z" }
+```
+
+`status` is `completed` (with the original result), `erased` (a `forget`
+erased what the result mentioned; `result` is `null`, 2.1) or
+`not_observed`: no receipt, or one past its 24 hours. `not_observed` does
+not mean rolled back: the original request may still commit, so retry only
+with the same idempotency key, which stays safe. An agent therefore keeps
+its idempotency key before a write that takes one. Requests sent without a
+key are not deduplicated across client retries.
+
+Other errors that are safe to retry say so with `details.retryable: true`:
+`503 workspace_busy` (the workspace's write queue, 2), `503 schema_busy`,
+`409 write_conflict` (the protocol's retries ran out), `503
+workspace_upgrading` (3, 7) and `503 not_accepting_writes` (the server is
+shutting down).
+
+#### Traversal
+
+`traverse_records` (`POST /v1/records/traverse`, SDK `traverseRecords`)
+walks from a few start records along an explicit path and returns the
+paths it found, each hop with its evidence. It answers questions such as
+who connects a deal's decision-maker to someone we have met:
+
+```
+→ traverse_records {
+    "starts": [ "rec_d31…" ],
+    "path": [ { "field": "decisionMaker" },
+              { "link": "participant", "direction": "in" },
+              { "link": "participant", "direction": "out" } ] }
+← { "schemaVersion": 42,
+    "paths": [ { "records": [ { "id": "rec_d31…", "type": "deal", "label": "Acme pilot" },
+                             { "id": "rec_9f2…", "type": "person", "label": "Dana Levi" },
+                             { "id": "evt_51b…", "type": "meeting", "label": "Acme pilot review" },
+                             { "id": "rec_5a1…", "type": "person", "label": "Noa Shapira" } ],
+                 "steps": [ { "field": "decisionMaker", "direction": "out", "assertionId": "as_11…" },
+                            { "link": "participant", "direction": "in", "eventId": "evt_51b…", "linkId": "ip_1…" },
+                            { "link": "participant", "direction": "out", "eventId": "evt_51b…", "linkId": "ip_2…" } ] } ],
+    "examinedEdges": 7,
+    "limits": { "starts": 20, "steps": 3, "examinedEdges": 500, "paths": 50 },
+    "truncated": null }
+```
+
+- A step is a relation field, `{ field, direction }`, or a built-in event
+  link, `{ link: "participant" | "about", direction }`. For a field, `out`
+  (the default) follows it from the current records, and an inverse name
+  follows its owning field backwards; `in` finds the records whose field of
+  that name points at the current ones. For a link, `in` goes from records
+  to their events, `out` from events to their records.
+- Start IDs follow merges. An unknown, deleted or hidden start fails with
+  `422 invalid_starts`, a name that is no visible relation field with
+  `422 invalid_path`. Paths are validated against the visible schema and
+  never revisit a record.
+- Evidence is the assertion an edge derives from, or the event and link
+  ID of an event link.
+- Hard caps: 20 start records, 3 steps, 500 examined edges in total and 50
+  returned paths. Every edge read counts, including those then discarded
+  (a deleted or hidden record, a link of the other kind). Each expansion
+  reads an indexed window per frontier record, one top-level statement
+  each, never more than the budget left. When a window would exceed the
+  budget the result says `truncated: "edge_budget"`; more than 50 complete
+  paths say `"path_limit"`. A capped result does not claim completeness.
+- Ordering is deterministic. There is no traversal cursor, no recursion
+  and no filter beyond the path: select the start records with
+  `query_records`. Traversal does not change rollup depth (1.3).
 
 Several agents can share a workspace. Each uses its own API key, so every
 write is attributed to the agent that made it; between agents the latest
@@ -1356,7 +1572,7 @@ notes never appear as events; a fact resting on one says `internal: true`.
 
 Items are ordered by `at` descending, then kind (`event`, `field_change`,
 `fact`), then ID descending. Each kind is read by keyset from its own table,
-at most a page of each, and Postgres merges them, so equal times page
+at most a page of each, and the server merges them, so equal times page
 exactly; the event branch is the deduplicated rollup query (1.3), so an
 event counts once before the limit. The opaque cursor holds the whole sort
 key and a digest of the record and filters, and is refused (`invalid_cursor`)
@@ -1394,40 +1610,79 @@ Web read routes add paginated assertion history, record events, event
 claims, review totals/cursors, and optional winning provenance
 and batched relation references. Object queries accept an optional `search`
 keyword string for full-text lookup within one object; workspace-wide search
-is `POST /v1/search` (5.1). All use the same runtime role and RLS as other
+is `POST /v1/search` (5.1). All use the same runtime sessions as other
 routes. They do not change the assertion-backed write rules.
 
-- Every row has `workspace_id`. Postgres row-level security uses a
-  per-transaction `app.workspace_id` setting as a second line of defense
-  behind the application's own checks. Runtime roles must not own tables or
-  have `BYPASSRLS`; migrations use a separate role. Tenant foreign keys must
-  include `workspace_id` (or equivalent enforced checks), since independent
-  UUID foreign keys do not prevent cross-workspace references. Validate
-  field/object compatibility in addition to tenant membership.
-  `event_records`, `event_links` and `fact_sources` carry `workspace_id`, and
-  tenant tables use composite foreign keys `(workspace_id, parent_id)`
-  referencing a unique `(workspace_id, id)` on each parent.
-- API-key lookup happens before the workspace is known, so `api_keys` is
-  read through one narrow `SECURITY DEFINER` function that takes a key hash
-  and returns the workspace, scopes and actor; the runtime role has no other
-  access to that table. It rejects revoked keys, fixes its `search_path`, uses
-  qualified table names and grants execution only to the runtime role.
-- Background jobs carry their `workspace_id` and set the same setting, so
-  workers are held to the same isolation as API requests.
+- **Catalog and workspace databases.** Everything lives in one SurrealDB
+  namespace (`RETAINER_SURREAL_NAMESPACE`, default `retainer`). The
+  `catalog` database holds the workspaces with their database routes and
+  provisioning state, the hashed API keys with their scopes, actors and
+  revocation, and the process lease (4). CRM records never live there. Each
+  workspace has its own database, `ws_<workspace ID without dashes>`, with
+  every table of section 1. A workspace's route comes from the
+  authenticated key's lookup, never from anything in the request.
+- **Runtime sessions.** Requests and background work reach a database with
+  record-access JWTs that Retainer signs itself (RS256), confined to that
+  database: the token's database claim overrides any request header,
+  `USE DB` is refused, and definitions, `REMOVE` and `INFO` are refused.
+  Tokens last 15 minutes, are refreshed before they expire, and never leave
+  the server. In a workspace database every table grants the runtime
+  principal `FULL` permissions; the isolation boundary is the token's
+  database. In the catalog, the runtime session can read keys and routes
+  and maintain the lease, but not create, change or delete keys or
+  workspaces. A refused data operation returns an empty result with status
+  OK rather than an error, which is why every write checks its effect (2,
+  rule 5). The server never falls back to the system credential after a
+  runtime permission error.
+- **System credential.** `RETAINER_SURREAL_USER` and
+  `RETAINER_SURREAL_PASS` (a root user, or a namespace user with
+  `RETAINER_SURREAL_AUTH_LEVEL=namespace`) are used only for definitions,
+  provisioning and upgrades (3), the administrative transaction of a schema
+  change, and the operator CLI's workspace and key management (7.1).
+- **Signing keys.** `RETAINER_SIGNING_KEY` is `<id>:<base64 PKCS#8 PEM>`;
+  `retainer signing-key generate` prints a new one. Each workspace database
+  defines one access method per accepted key, `backend_<key id>`, and the
+  catalog mirrors which keys each workspace accepts
+  (`workspaces.access_keys`), so routing needs no visit to every database.
+  A request uses the first configured key its workspace accepts, the
+  current key first; when none matches yet it gets a retryable
+  `503 workspace_upgrading`. To rotate:
+  1. Set the new key as `RETAINER_SIGNING_KEY` and move the old one to
+     `RETAINER_SIGNING_PREVIOUS_KEYS`, then restart.
+  2. The upgrade runner (3) defines the new key's access method in every
+     workspace, at start or on the workspace's first request, and records
+     it in `workspace_state` and the catalog.
+  3. Once every workspace has been upgraded, drop the old key from
+     configuration and restart: its access methods are removed.
+
+  For a compromised key, list its ID in `RETAINER_SIGNING_REVOKED_KEY_IDS`.
+  It is no longer accepted, and each workspace's upgrade removes its access
+  method in the same step that adds the new one, rather than after every
+  workspace has moved. The current key cannot be revoked.
+- **Provisioning.** Creating a workspace is a short resumable sequence: the
+  catalog entry (`provisioning`), the database with its fixed tables,
+  access methods and `workspace_state`, the base objects and template, then
+  `active`. Only active workspaces receive requests. Every step checks what
+  already exists, and the server finishes interrupted provisioning at boot.
+- **Key lookup.** A request's key is looked up before its workspace is
+  known: the runtime catalog session finds it by its SHA-256 hash and
+  returns the workspace, scopes and actor. Revoked keys are rejected, and
+  revocation is checked on every request. Short-lived database sessions do
+  not replace that check.
 - API keys are stored hashed, belong to one workspace, and carry scopes
   (`read`, `write`, `schema:write`, `admin`; `admin` implies the other
   three) and the actor they write as.
   Key provisioning/rotation is a trusted administrative operation; agent
   credentials cannot mint a key claiming a `user` actor to bypass approval.
 - A self-hosted install starts with one default workspace and an admin key
-  printed on first boot. The hosted cloud runs the same image with many
-  workspaces. Billing, quotas and SSO live outside this repository.
+  printed on first boot. Billing, quotas and SSO live outside this
+  repository.
 
 ### 7.1 Managing workspaces and keys
 
 Workspaces and keys are managed by an operator, never by an agent: no
-workspace key can create another workspace. On a self-hosted install, the
-server image includes a CLI that talks to the database directly:
+workspace key can create another workspace. The server image includes a
+CLI that connects to SurrealDB with the system credential:
 
 ```sh
 docker compose exec retainer retainer workspace create --name "Acme Clinic" --template clinic
@@ -1436,35 +1691,33 @@ docker compose exec retainer retainer key create --workspace acme-clinic \
   --name "Front-desk agent" --actor agent:front-desk --scopes read,write,schema:write
 docker compose exec retainer retainer key list --workspace acme-clinic
 docker compose exec retainer retainer key revoke <key-id>
+docker compose exec retainer retainer signing-key generate
 ```
 
 `--template` is optional; without it, the first agent chooses one (3.1).
 `--slug` overrides the slug made from the name; `--json` prints JSON.
-`key create` prints the key once and stores only its hash. The hosted cloud
-provisions workspaces and keys through its own service, outside this
-repository, using the same database operations. There is no instance-wide
-admin HTTP API in v1.
+`key create` prints the key once and stores only its hash in the catalog.
+`signing-key generate [--id <key-id>]` prints a new `RETAINER_SIGNING_KEY`
+value and needs no configuration, so it also makes the first key (7).
+There is no instance-wide admin HTTP API in v1.
 
 ### 7.2 Per-record access (not in v1)
 
 v1 isolates workspaces only: every key sees every record in its workspace.
 Per-record audiences, principals and roles may come later. They would be
-rules stored in tables and enforced by a restrictive RLS policy
-(`AS RESTRICTIVE`, with `USING` and `WITH CHECK`) next to
-`workspace_isolation`, so Postgres applies them to every query. Application
-code would only add clearer errors and pre-checks; it is never the
-enforcement. Until then, new code keeps that path open:
+rules stored in the workspace and applied on every read and write path.
+Until then, new code keeps that path open:
 
-1. Every read and write runs as `retainer_app` under RLS. The only
-   `SECURITY DEFINER` functions are the API-key lookup and
-   `retainer_workspaces_due` (4.2), which returns workspace IDs only; no read
-   takes a shortcut around RLS, including search and context.
-2. Per-request database context is set in one place (`inWorkspace`).
+1. Every read and write runs through the workspace's runtime session (7);
+   no read takes a shortcut around it, including search, context and
+   traversal.
+2. A request's database route and session are chosen in one place
+   (`Backend.route`).
 3. A response mentions another record (conflict errors, merge candidates,
    relation labels, review items, context) only through one shared
    function, `references()`, so a visibility check can be added there
    later. The records a response is about, such as search hits or the
-   record under review, come from their own RLS-bound queries.
+   record under review, come from their own queries.
 4. Identifier claims are unique per workspace. If audiences arrive, claims
    become per audience and promoting a record becomes a merge. That cost is
    accepted.
@@ -1473,23 +1726,31 @@ enforcement. Until then, new code keeps that path open:
 
 ## 8. Repository layout
 
-| Path              | License  | Contents                                                |
-| ----------------- | -------- | ------------------------------------------------------- |
-| `packages/shared` | MIT      | Field types, composite shapes, actor, schema types      |
-| `packages/server` | AGPL-3.0 | API, MCP endpoint, workers, schema engine, database     |
-| `packages/sdk`    | MIT      | TypeScript client                                       |
-| `packages/web`    | MIT      | Optional static React app for people                    |
-| `packages/mcp`    | MIT      | stdio bridge to the hosted MCP endpoint                 |
-| `docker/`         | AGPL-3.0 | Dockerfile and Compose file                             |
-| `deploy/aws/`     | AGPL-3.0 | Terraform and scripts for Lambda, API Gateway, RDS      |
-| `docs/`           | AGPL-3.0 | Guides: self-hosting, AWS, agents, SDK, REST, releasing |
+| Path              | License  | Contents                                                     |
+| ----------------- | -------- | ------------------------------------------------------------ |
+| `packages/shared` | MIT      | Field types, composite shapes, actor, schema types           |
+| `packages/server` | AGPL-3.0 | API, MCP endpoint, workers, schema engine, SurrealDB backend |
+| `packages/sdk`    | MIT      | TypeScript client                                            |
+| `packages/web`    | MIT      | Optional static React app for people                         |
+| `packages/mcp`    | MIT      | stdio bridge to the hosted MCP endpoint                      |
+| `docker/`         | AGPL-3.0 | Dockerfile and Compose file (SurrealDB and Retainer)         |
+| `docs/`           | AGPL-3.0 | Guides: self-hosting, agents, SDK, REST, releasing; specs    |
+
+In `packages/server/src/db`: `surreal.ts` and `cbor.ts` (transport),
+`backend.ts` (routes and sessions), `access.ts` (signing keys),
+`protocol.ts` and `queue.ts` (the write protocol), `definitions.ts` (fixed
+tables), `physical.ts` (object and relation tables), `provision.ts`
+(provisioning and upgrades) and `lease.ts` (the process lease).
 
 ## 9. Stack
 
-TypeScript on Node 22, pnpm workspaces, Hono, postgres.js with plain SQL,
-Drizzle for table definitions and drizzle-kit migrations, Zod, and the
-official MCP TypeScript SDK. The job queue is Postgres itself (4.2), with
-no queue library. No LLM SDK.
+TypeScript on Node 22, pnpm workspaces, Hono, Zod, and the official MCP
+TypeScript SDK. The database is SurrealDB 4.0.0, reached through Retainer's
+own small HTTP `/rpc` client with CBOR encoding (4); there is no database
+driver, ORM or migration tool. Fixed tables are defined in code with a
+revision (11), and object and relation tables are compiled from metadata
+(3). Background work runs in the server process (4.2), with no queue
+library. No LLM SDK.
 The optional web package uses Vite, React 19, TanStack Router/Query, Tailwind
 CSS 4 and shadcn-style UI primitives. Static files are served by Hono at
 `/app` when `RETAINER_WEB_DIR` is set; the Docker image includes the build.
@@ -1522,81 +1783,49 @@ All six steps are merged. The 0.1.0 release tooling is in place
 not cut yet.
 
 Each step lands with its tests (12). Step 1 also sets up the test harness:
-fresh database per test file, a helper that starts the server, and the CI
+fresh data per test file, a helper that starts the server, and the CI
 workflow.
 
 Not planned: embeddings and semantic search, and any language model inside
 Retainer (server-side extraction, generated summaries, an `ask` endpoint).
-Search is Postgres full-text only. A BM25 backend may come later as an
-option (5.1).
+Search is SurrealDB full-text only (5.1).
 
-Left out of the first release: phone-based participant matching, typed SQL
-views, per-field index automation, field type changes, inferred facts,
+Left out of the first release: phone-based participant matching,
+per-field index automation, field type changes, inferred facts,
 automatic record merges, stale-field flags, exact historical belief
 snapshots, versioned re-logging of edited sources, partial redaction on
 `forget`, and agents connected to more than one workspace.
 
-## 11. Schema checklist for build step 1
+## 11. Fixed tables
 
-Changes to `packages/server/src/db/schema.ts` that this document required
-and the original scaffold lacked. All of them landed in build step 1
-(`drizzle/0000_init.sql` and `0001_security.sql`).
+The tables every database has, whatever its schema, are defined in code in
+`packages/server/src/db/definitions.ts`. Object and relation tables are
+not: the schema engine compiles them from metadata (3).
 
-**New tables**
+| Database  | Tables                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Catalog   | `catalog_state`, `workspaces`, `api_keys`, `process_lease`                                                                                                                                                                                                                                                                                                                                                        |
+| Workspace | `workspace_state`, `object_types`, `fields`, `schema_changes`, `record_directory`, `field_assertions`, `record_identifiers`, `unique_claims`, `event_identity`, `event_links`, `event_attachments`, `rollup_attachments`, `event_identity_tombstones`, `facts`, `fact_sources`, `merge_suggestions`, `views`, `operations`, `suppressions`, `deletion_audit_log`, `consolidator_runs`, `jobs`, `search_documents` |
 
-- [x] `record_identifiers`: normalized identifier per record, with a canonical
-  value and a uniqueness claim; a partial unique index on
-  `(workspace_id, field_id, value)` over claims (1.2)
-- [x] `merge_suggestions`: the two record IDs, reason, status (4.2)
-- [x] `idempotency_keys`: workspace, operation, key, request hash, result,
-  expiry (6.2)
-- [x] Suppression list: workspace, keyed HMAC of a normalized email or phone
-  (2.1)
-- [x] Deletion audit log: actor ID, time, counts only (2.1)
-
-**New columns**
-
-- [x] `workspaces.templates jsonb` (applied template names and versions) and
-  `workspaces.initialized_at` (3.1)
-- [x] `records.merged_into_id` (1.1, 4.2)
-- [x] `field_assertions.observed_at` (1.3, rule 2.2)
-- [x] `search tsvector` on `facts` and `interactions` (title and summary),
-  computed by the server like `records.search` (5.1)
-- [x] `records.label text`: the label field as plain text, for fuzzy name
-  lookup (5.1)
-- [x] `workspace_id` on `interaction_participants` and `fact_sources` (7)
-
-**Agent-written memory (4.1, 4.3)**
-
-- [x] `interactions`: replace `content`, `content_format`, `ingest_status`
-  and `ingest_error` with `summary text`
-- [x] Drop the `record_cards` table
-
-**Changed constraints and defaults**
-
-- [x] Unique index on `record_links (source_record_id, field_id)`, so a
-  many-to-one field has at most one edge per record (1.1)
-- [x] `facts.valid_from`: no `now()` default; set from the source (1.3,
-  rule 2.6)
-- [x] Remove `proposed` from live `object_types` / `fields` status and from
-  `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
-- [x] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
-  `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
-
-**Extensions and search indexes**
-
-- [x] The migration runner creates `pg_trgm`, `btree_gin` and `unaccent` (5.1)
-- [x] Replace `records_search_gin` with a GIN index on
-  `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
-- [x] Trigram GIN index on `records (workspace_id, label)` (5.1)
-
-**Security**
-
-- [x] Row-level security policies on every tenant table, keyed on the
-  per-transaction `app.workspace_id` setting (7)
-- [x] Separate migration and runtime roles; the runtime role does not own
-  tables and has no `BYPASSRLS` (7)
-- [x] The `SECURITY DEFINER` function for API-key lookup (7)
+- Every table is schemafull: an undeclared field is refused, not dropped.
+  Optional columns are `option<T | null>`, so missing and `null` stay
+  apart.
+- `workspace_state:current` is the one row every writer touches: the
+  revision, the published `schema_version`, the mode, the fixed-table
+  revision, the definitions digest (3), the accepted signing keys (7), the
+  settings and the applied templates.
+- The definitions carry a revision (`CATALOG_REVISION`,
+  `WORKSPACE_REVISION`); bump it when they change. The catalog's fixed
+  tables are brought up to date on every start; each workspace records its
+  `fixed_revision`, and the upgrade runner (3) compares actual and desired
+  definitions, applies the difference and advances the workspace's
+  revision, so a write planned against the old tables fails its commit
+  check.
+- Tables and fields are defined in one transaction. Every index is defined
+  as its own statement, outside a transaction, then verified: it reports
+  ready, and a unique index refuses a duplicate probe.
+- The search analyzers (`rt_prefix`, `rt_exact`, `rt_trigram`, 5.1) are
+  defined with the workspace's fixed tables.
 
 ## 12. Testing
 
@@ -1604,37 +1833,54 @@ Every build step lands with its tests. Nothing is "done" until the layers
 below that apply to it pass locally and in CI. Retainer has no language
 model inside it, so every layer except 5 is deterministic.
 
-| Layer                   | What it proves                                                                                                                                                               | How                                                                                                 | Runs                   |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
-| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                 | Vitest, no database                                                                                 | Every PR               |
-| 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget` | Vitest against real Postgres; each test file gets a fresh database                                  | Every PR               |
-| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                           | The Hono app called in-process against a real database                                              | Every PR               |
-| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an event and cite it, review a conflict, search, get context               | The MCP client, directly and through the stdio bridge, and REST, against the app and real Postgres  | Every PR (from step 2) |
-| 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation         | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
+| Layer                   | What it proves                                                                                                                                                                                                                       | How                                                                                                 | Runs                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- | ---------------------- |
+| 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                                                                         | Vitest, no database                                                                                 | Every PR               |
+| 2. Database integration | Rules only the database can prove: concurrent creates with one email make one record, revision conflicts and retries, effect checks, unique claims and relation constraints, isolation between workspace databases, merges, `forget` | Vitest against real SurrealDB; each test file gets a fresh namespace                                | Every PR               |
+| 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                                                                                   | The Hono app called in-process against a real database                                              | Every PR               |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an event and cite it, review a conflict, search, get context                                                                       | The MCP client, directly and through the stdio bridge, and REST, against the app and real SurrealDB | Every PR (from step 2) |
+| 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation                                                                 | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
 
-Browser tests use Playwright against the built app and real Postgres, with a
-fresh database cloned from a migrated template per test. Run `pnpm build`
-then `pnpm test:web`; CI runs these after the existing test layers.
+`packages/server/test/surreal/` holds the backend suites: `foundation`
+(provisioning, serialized writes and revision retries), `records` (records,
+events, facts, retraction, merge and `forget`), `operations`
+(`get_operation` and `traverse_records`), `gates` (isolation between
+workspaces, the process lease, signing-key rotation, competing writes from
+two processes, query plans) and `baseline` (a 200-event ingestion burst
+that records write latency and queue wait without asserting a timing).
+
+Browser tests use Playwright against the built app and real SurrealDB, with
+a fresh namespace per test. Run `pnpm build` then `pnpm test:web`
+(`RETAINER_SURREAL_URL` required); CI runs these after the existing test
+layers.
 
 ### Rules
 
-- **Fresh database per test file.** Migrations run once into a template
-  database; each test file clones it (`CREATE DATABASE … TEMPLATE …`) and
-  drops it after. Files never share rows, so they run in parallel without
-  flaking. Browser tests clone one per test.
-- **Real Postgres, never a mock,** for anything that touches the database.
-  Locking, row-level security and unique constraints are the point of
-  layers 2 and 3.
+- **Fresh namespace per test file.** `useTestBackend()` creates a namespace
+  of its own, with its own catalog and workspace databases, and removes it
+  after. Files never share rows, so they run in parallel without flaking.
+  One run's signing keys are generated once and shared.
+- **Real SurrealDB, never a mock,** for anything that touches the
+  database. The revision check, effect checks, unique indexes, relation
+  constraints and record-access isolation are the point of layers 2 and 3.
+  A refused operation can return no rows, so tests check effects, not only
+  transport success.
 - **Concurrency is tested, not assumed.** Every rule in 2 that says
   "serialized", "atomic" or "idempotent" gets a test that runs the
-  competing operations at the same time.
+  competing operations at the same time, including from a second backend
+  (`backend.another()`), so the process-local queue cannot hide a conflict
+  the revision check must catch.
+- **Plans are tested.** A read that must use an index gets a test that
+  asserts its `EXPLAIN` operator, so a planner change or a rewritten query
+  cannot silently fall back to a table scan.
 - **Scenarios follow the docs.** Each scenario in layer 4 matches a flow
   described here, so a change to the design shows up as a failing scenario.
 
 ### CI
 
 A GitHub Actions workflow runs on every PR and on `main`: lint, build,
-typecheck, layers 1–4, then the browser tests, with Postgres as a service
-container. Pushing a `v*` tag runs the release workflow, which reruns CI
-before publishing (docs/releasing.md). Retainer calls no model, so CI needs
-no API keys.
+typecheck, layers 1–4, then the browser tests, against SurrealDB 4.0.0 at
+the pinned image digest, started as a container with persistent SurrealKV.
+Pushing a `v*` tag runs the release workflow, which reruns CI before
+publishing (docs/releasing.md). Retainer calls no model, so CI needs no API
+keys or cloud credentials.
