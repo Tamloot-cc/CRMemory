@@ -34,7 +34,7 @@ let n = 0;
 const logEvent = async (body: Record<string, unknown>) => {
   const res = await t.request('/v1/events', {
     key: keys.agent,
-    body: { type: 'call', channel: 'phone', occurredAt: '2026-10-01T09:00:00Z', ...body },
+    body: { type: 'conversation', channel: 'phone', occurredAt: '2026-10-01T09:00:00Z', ...body },
   });
   expect(res.status).toBe(201);
   return res.body.id as string;
@@ -66,7 +66,7 @@ describe('POST /v1/records/:id/merge', () => {
       [note, { kind: 'about' }],
     ]);
     // `linked` takes the merged ID as its survivor.
-    const linked = await t.request('/v1/objects/call/query', {
+    const linked = await t.request('/v1/objects/conversation/query', {
       key: keys.reader,
       body: { linked: { record: b } },
     });
@@ -189,8 +189,8 @@ describe('POST /v1/records/:id/forget', () => {
       title: 'Pricing call',
       participants: [{ handle: 'rina@erased.test' }, { recordId: colleague }],
     });
-    const aboutOnly = await logEvent({ type: 'meeting', title: 'Board prep', about: [id] });
-    const mention = await logEvent({ type: 'email', title: 'Intro to Rina Erased' });
+    const aboutOnly = await logEvent({ type: 'conversation', title: 'Board prep', about: [id] });
+    const mention = await logEvent({ type: 'conversation', title: 'Intro to Rina Erased' });
     const cited = await t.request(`/v1/records/${colleague}`, {
       key: keys.agent,
       method: 'PATCH',
@@ -231,7 +231,7 @@ describe('POST /v1/records/:id/forget', () => {
     const relog = await t.request('/v1/events', {
       key: keys.agent,
       body: {
-        type: 'call',
+        type: 'conversation',
         channel: 'phone',
         externalId: 'erase-call-1',
         occurredAt: '2026-10-01T09:00:00Z',

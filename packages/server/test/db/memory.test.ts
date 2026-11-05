@@ -72,7 +72,7 @@ const person = (values: Record<string, unknown> = {}, actor = AGENT, source?: st
 
 const log = (input: Partial<LogEventInput> = {}, actor = AGENT, ws = workspaceId) =>
   logEventFor(app, as(actor, ws), {
-    type: 'call',
+    type: 'conversation',
     channel: 'zoom',
     occurredAt: '2026-10-29T14:00:00+02:00',
     fields: {},
@@ -120,7 +120,7 @@ describe('log_event: participant matching (4.1)', () => {
     });
     expect(result).toEqual({
       id: expect.any(String),
-      type: 'call',
+      type: 'conversation',
       created: true,
       participants: {
         matched: [
@@ -313,7 +313,10 @@ describe('log_event: participant matching (4.1)', () => {
       await expect(log({ type })).rejects.toMatchObject({ status: 404 });
     }
     // The plural API name works too.
-    expect(await log({ type: 'calls' })).toMatchObject({ type: 'call', created: true });
+    expect(await log({ type: 'conversations' })).toMatchObject({
+      type: 'conversation',
+      created: true,
+    });
   });
 });
 
@@ -366,7 +369,7 @@ describe('log_event: external IDs (1.3, 6.2)', () => {
     });
     // Identity spans event types: another type under the same identity conflicts.
     await expect(
-      log({ externalId: id, type: 'meeting', summary: 'Agreed on pricing' }),
+      log({ externalId: id, type: 'note', summary: 'Agreed on pricing' }),
     ).rejects.toMatchObject({ status: 409, code: 'event_conflict', details: { id: first.id } });
   });
 
@@ -572,10 +575,10 @@ describe('log_event: custom fields and retries (6.2)', () => {
 describe('events are records (6.2)', () => {
   it('refuses to create an event through a record write', async () => {
     await expect(
-      createRecord(app, as(AGENT), 'call', { title: 'Created as a record' }),
+      createRecord(app, as(AGENT), 'conversation', { title: 'Created as a record' }),
     ).rejects.toMatchObject({ status: 422, code: 'use_log_event' });
     await expect(
-      upsertRecord(app, as(AGENT), 'meeting', {
+      upsertRecord(app, as(AGENT), 'conversation', {
         values: { title: 'Upserted' },
         ifMissing: 'create',
       }),
@@ -612,7 +615,7 @@ describe('reading and retracting events', () => {
   it('reads an event with its participants, and hides it once deleted', async () => {
     const dana = await person();
     const logged = await log({
-      type: 'meeting',
+      type: 'conversation',
       channel: 'calendar',
       externalId: externalId(),
       title: 'Demo',
@@ -622,7 +625,7 @@ describe('reading and retracting events', () => {
     const read = await readEvent(app, as(AGENT2), logged.id);
     expect(read).toMatchObject({
       id: logged.id,
-      object: 'meeting',
+      object: 'conversation',
       label: 'Demo',
       fields: { title: 'Demo', summary: 'Showed the data platform' },
       createdBy: AGENT,
@@ -693,8 +696,12 @@ describe('source on record writes (rules 2.1, 2.2)', () => {
   it('supersedes an older cited email against a newer cited call (rule 2.2)', async () => {
     const dana = await person();
     // The call is newer but logged first; the email arrives later and is older.
-    const call = await log({ type: 'call', occurredAt: '2026-10-28T10:00:00Z' });
-    const mail = await log({ type: 'email', channel: 'gmail', occurredAt: '2026-09-01T10:00:00Z' });
+    const call = await log({ type: 'conversation', occurredAt: '2026-10-28T10:00:00Z' });
+    const mail = await log({
+      type: 'conversation',
+      channel: 'gmail',
+      occurredAt: '2026-09-01T10:00:00Z',
+    });
 
     const fromCall = await upsertRecord(app, as(AGENT), 'person', {
       id: dana.id,
@@ -751,8 +758,12 @@ describe('source on record writes (rules 2.1, 2.2)', () => {
 describe('deleting an event (6.4, rule 2.4)', () => {
   it('recomputes field winners so the next eligible claim takes over', async () => {
     const dana = await person({ name: 'Dana Levi' });
-    const mail = await log({ type: 'email', channel: 'gmail', occurredAt: '2026-09-01T10:00:00Z' });
-    const call = await log({ type: 'call', occurredAt: '2026-10-28T10:00:00Z' });
+    const mail = await log({
+      type: 'conversation',
+      channel: 'gmail',
+      occurredAt: '2026-09-01T10:00:00Z',
+    });
+    const call = await log({ type: 'conversation', occurredAt: '2026-10-28T10:00:00Z' });
     await patchRecord(app, as(AGENT), dana.id, {
       values: { jobTitle: 'Sales Director' },
       source: mail.id,
@@ -876,7 +887,7 @@ describe('deleting an event (6.4, rule 2.4)', () => {
 
   it('removes pending assertions from the source from the review queue', async () => {
     // The person's value comes from an older meeting; the agent cites a newer call.
-    const meeting = await log({ type: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
+    const meeting = await log({ type: 'conversation', occurredAt: '2026-09-01T10:00:00Z' }, USER);
     const dana = await person({ jobTitle: 'Set by a person' }, USER, meeting.id);
     const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
     const pending = await patchRecord(app, as(AGENT), dana.id, {
@@ -952,7 +963,7 @@ describe('deleting an event (6.4, rule 2.4)', () => {
   });
 
   it('accepts a pending claim keeping its observed_at, so a later edit by a person stands', async () => {
-    const meeting = await log({ type: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
+    const meeting = await log({ type: 'conversation', occurredAt: '2026-09-01T10:00:00Z' }, USER);
     const dana = await person({ jobTitle: 'From the meeting' }, USER, meeting.id);
     const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
     await patchRecord(app, as(AGENT), dana.id, {
@@ -976,7 +987,7 @@ describe('deleting an event (6.4, rule 2.4)', () => {
 
   it('does not deadlock when a pending claim is accepted while its source is deleted', async () => {
     for (let round = 0; round < 5; round++) {
-      const meeting = await log({ type: 'meeting', occurredAt: '2026-09-01T10:00:00Z' }, USER);
+      const meeting = await log({ type: 'conversation', occurredAt: '2026-09-01T10:00:00Z' }, USER);
       const dana = await person({ jobTitle: 'Person value' }, USER, meeting.id);
       const call = await log({ occurredAt: '2026-10-30T10:00:00Z' });
       await patchRecord(app, as(AGENT), dana.id, {

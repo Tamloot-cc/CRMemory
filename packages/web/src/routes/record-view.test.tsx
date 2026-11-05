@@ -242,10 +242,10 @@ describe('RecordView events tab', () => {
       },
     ],
   } as unknown as ObjectView;
-  const meeting = {
-    nameSingular: 'meeting',
-    labelSingular: 'Meeting',
-    labelPlural: 'Meetings',
+  const conversation = {
+    nameSingular: 'conversation',
+    labelSingular: 'Conversation',
+    labelPlural: 'Conversations',
     class: 'event',
     fields: [],
   } as unknown as ObjectView;
@@ -262,7 +262,7 @@ describe('RecordView events tab', () => {
       items: [
         {
           id: 'e1',
-          object: 'meeting',
+          object: 'conversation',
           event: {
             occurredAt: '2026-10-20T10:00:00.000Z',
             channel: 'email',
@@ -294,7 +294,7 @@ describe('RecordView events tab', () => {
               actor: { type: 'agent', id: 'a1' },
               scopes: ['read'],
             } as unknown as Session,
-            schema: { objects: [company, person, meeting] } as unknown as SchemaDescription,
+            schema: { objects: [company, person, conversation] } as unknown as SchemaDescription,
           }}
         >
           <RecordView record={acme} requestedId="c1" nav={{ tab: 'events', set: vi.fn() }} />

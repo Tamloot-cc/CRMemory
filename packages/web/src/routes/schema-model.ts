@@ -129,6 +129,28 @@ export function relationEdges(objects: ObjectView[]): DiagramEdge[] {
   );
 }
 
+/** The diagram's stand-in for "any record", which an event's `about` link can name. */
+export const ANY_RECORD_NODE = '__any_record';
+/** The row each event type's card gives its `about` link. */
+export const ABOUT_ROW = 'about';
+
+/**
+ * Each event type's `about` link: one dashed line from its About row to "any
+ * record". It is built in, not a relation field, so it never names an object.
+ */
+export function aboutEdges(objects: ObjectView[]): DiagramEdge[] {
+  return objects
+    .filter((o) => o.class === 'event')
+    .map((o) => ({
+      id: `${o.nameSingular}.${ABOUT_ROW}`,
+      from: { node: o.nameSingular, row: ABOUT_ROW },
+      to: { node: ANY_RECORD_NODE },
+      toEnd: 'many' as const,
+      dashed: true,
+      description: `About: each ${o.labelSingular.toLowerCase()} can be about any number of records, of any object.`,
+    }));
+}
+
 export function parseStatus(value: string | undefined): SchemaChangeStatus | undefined {
   return SCHEMA_CHANGE_STATUSES.find((s) => s === value);
 }

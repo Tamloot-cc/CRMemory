@@ -23,6 +23,7 @@ import {
   Row,
   Stack,
 } from '../ui/index.js';
+import { useApiName } from './developer.js';
 import { CandidateRecord } from './record-actions.js';
 import {
   eventTitle,
@@ -31,6 +32,7 @@ import {
   recordTitle,
   relationsTo,
   useDebounced,
+  useRecordLabel,
 } from './state.js';
 
 const REASONS: Record<UnmatchedReason, string> = {
@@ -119,11 +121,8 @@ function RollupVia({
  * guessed until the record's object is known.
  */
 function FetchedRollupVia({ via, recordObject }: RollupProps) {
-  const { session, schema } = useWorkspace();
-  const source = useQuery({
-    queryKey: [session.workspace.id, 'record', via.record, 'label'],
-    queryFn: ({ signal }) => api.record(via.record, [], signal),
-  });
+  const { schema } = useWorkspace();
+  const source = useRecordLabel(via.record);
   const sourceObject = source.data ? objectByName(schema, source.data.object) : undefined;
   const label = sourceObject
     ? fieldLabel(sourceObject, via.field)
@@ -165,13 +164,20 @@ export function EventDetailsView({
   id,
   event,
   editable,
+  medium,
+  mediumName = 'medium',
 }: {
   id: string;
   event: EventDetails;
   editable: boolean;
+  /** The conversation's medium (meeting, call…), shown when set. */
+  medium?: string;
+  /** The medium field's API name, for Developer view; it may have been renamed. */
+  mediumName?: string;
 }) {
   const { session } = useWorkspace(),
-    client = useQueryClient();
+    client = useQueryClient(),
+    apiName = useApiName();
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   /** Runs one link change and refreshes; true when it succeeded. */
@@ -207,12 +213,21 @@ export function EventDetailsView({
     <Stack>
       {error ? <Notice error>{error}</Notice> : null}
       <PropertyList>
-        <Property label="Occurred">{new Date(event.occurredAt).toLocaleString()}</Property>
-        <Property label="Channel">{event.channel ?? <Muted>Erased for privacy</Muted>}</Property>
-        <Property label="External ID">
+        <Property label="Occurred" apiName={apiName('occurredAt')}>
+          {new Date(event.occurredAt).toLocaleString()}
+        </Property>
+        {medium ? (
+          <Property label="Medium" apiName={apiName(mediumName)}>
+            <Badge>{medium}</Badge>
+          </Property>
+        ) : null}
+        <Property label="Source" apiName={apiName('channel')}>
+          {event.channel ?? <Muted>Erased for privacy</Muted>}
+        </Property>
+        <Property label="External ID" apiName={apiName('externalId')}>
           {event.externalId ?? <Muted>{event.channel ? 'None' : 'Erased for privacy'}</Muted>}
         </Property>
-        <Property label="Participants">
+        <Property label="Participants" apiName={apiName('participants')}>
           <Stack>
             {matched.map((p) => (
               <Row key={p.id}>
@@ -248,7 +263,7 @@ export function EventDetailsView({
             ) : null}
           </Stack>
         </Property>
-        <Property label="About">
+        <Property label="About" apiName={apiName('about')}>
           <Stack>
             {event.about.map((record) => (
               <Row key={record}>

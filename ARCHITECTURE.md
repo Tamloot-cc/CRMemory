@@ -267,15 +267,32 @@ in it what the workspace should not keep.
 
 An object type has a class. `entity` is the default: people, companies,
 deals, anything with a lifecycle. `event` is something that happened at a
-point in time and is logged from a source: a meeting, call, email, message
-or note, or a type the workspace adds, such as a payment or a site visit.
+point in time and is logged from a source: a conversation (a meeting, call,
+email thread or chat) or a note, or a type the workspace adds, such as a
+payment or a site visit.
 Events are records: they have fields, assertions, relation fields, views and
 search like any other record, plus the built-in columns `occurredAt`,
 `channel` and `externalId` from `event_records`, which `query_records` can
 filter and sort by and a calendar view can use as its date.
 
-Every workspace has the base event types `meeting`, `call`, `email`,
-`message` and `note`, with universal IDs (3.1). Creating an object with
+Every workspace has the base event types `conversation` and `note`, with
+universal IDs (3.1). A conversation's kind is its `medium` field, a
+nullable, filterable select with the options `meeting`, `call`, `email`
+and `message` (workspaces may add more), not its type: a field can be
+corrected after logging with `upsert_record`, while an event's type is
+fixed, and changing it means deleting the event, which retracts what cites
+it and suppresses its identity. `channel` and `medium` answer different
+questions. `channel` is where the event came from, the source system or
+account (`gmail`, `zoom`, `tamloot`); it is part of the identity, fixed at
+logging, and must tell apart sources whose IDs could overlap. `medium` is
+what happened; it is optional, and an agent that can't tell leaves it
+empty. A workspace adds an event type only for events whose fields a
+conversation would never use: a payment (an amount, an invoice), a form
+submission, a site visit. Details such as duration, direction or a
+recording link are optional fields on `conversation`. Neither base type is
+protected. `describe_schema` marks them with `baseObject` (`conversation`,
+`note`) and the medium with `baseField: "conversationMedium"`, so clients
+find them after a rename. Creating an object with
 `class: "event"` gives it two core fields, with roles `title` and
 `summary`: searchable text, protected (1.1), and `title` is the label
 field. The rest of an event type's fields are ordinary fields. The names
@@ -348,6 +365,22 @@ type takes `linked: { record, link? }` for these events, and
 `GET /v1/records/:id/events` and context packs (6.2) list them across types,
 newest first.
 
+`query_records` with the reserved object name `event` (and
+`POST /v1/events/query`) queries events of every visible event type at
+once, newest first by default; internal notes are never included. It
+filters and sorts on what every event type shares: `occurredAt`, `channel`,
+`externalId`, `id`, `createdAt` and `updatedAt`, plus `type` (event type
+API names, with `eq`, `neq` and `in`), with `search` over the records'
+searchable text (the core title and summary, and any searchable fields of
+the type) and `linked` as above. Rollups are not included; they stay with
+`GET /v1/records/:id/events` and the timeline. A type's own fields, such as
+`medium`, are returned but not filterable there, since they differ by
+type: filter them with `query_records` on that type. Each item carries
+`type` beside the presented record and its `event` details, and pages and
+cursors work as for one object. With `include: ["relationReferences"]`,
+the references cover relation values, participants, candidates and
+`about` records.
+
 #### Rollups
 
 An owning relation field of an entity can set `rollUpEvents`. Then the
@@ -414,7 +447,7 @@ not found; context packs and event lists never include it. Its records
 change only through `remember` and the fact and privacy lifecycle. A fact
 presents such a source as `{ event: null, internal: true }` instead of an ID
 callers cannot read. Notes a person or agent logs as `note` events are
-ordinary events.
+ordinary events; the web app writes them with channel `web` (FRONTEND.md).
 
 ### 1.4 Views
 
@@ -738,8 +771,8 @@ reported and keeps its schema; the others still run
 Every workspace is created with three base objects: `person` (name, emails,
 phones, address, job title, company), `company` (name, domain, address,
 people) and `task` (title, status, due date, assignee, person, company),
-the base event types `meeting`, `call`, `email`, `message` and `note`, and
-the hidden internal-note type (1.3). Nobody builds a workspace from scratch.
+the base event types `conversation` (with `medium`) and `note`, and the
+hidden internal-note type (1.3). Nobody builds a workspace from scratch.
 
 Templates add the objects and fields a kind of business needs. They ship
 as code in `packages/server/src/templates/`, with fixed `universal_id`s
@@ -810,8 +843,10 @@ The agent reads the conversation with its own model and decides what is
 worth keeping. Retainer only stores, validates and resolves. After a
 meeting, call or email thread, an agent typically:
 
-1. **Logs the event** with `log_event`: its type, channel, time, title, its
-   own short summary, the type's other fields, the source's external ID, the
+1. **Logs the event** with `log_event`: its type (`conversation`, with a
+   `medium`, unless the workspace defines a type for that kind of event),
+   channel, time, title, its own short summary, the type's other fields, the
+   source's external ID, the
    participants as handles (emails, phones) and/or record IDs, and in
    `about` the records it concerns (1.3).
 2. **Updates records** with `upsert_record`, citing the event as `source`
@@ -948,14 +983,14 @@ deterministic and testable.
 
 ## 5. Read paths
 
-| Operation                          | What it returns                                                                                                    |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`), its objects and fields, and `builtIns`                 |
-| `query_records`                    | Structured filter, sort and pagination over one object; for an event type, its built-in columns and `linked` (1.3) |
-| `get_record`                       | One record with its fields and links; an event also with its built-in columns, participants and `about`            |
-| `search`                           | Keyword search (Postgres full-text) across records, events and facts                                               |
-| `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent events, fitted to the budget                    |
-| `get_timeline(record, filters)`    | The record's history, newest first: events, asserted field values and facts (6.2)                                  |
+| Operation                          | What it returns                                                                                                                                    |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `describe_schema`                  | The workspace (ID, name, applied templates, `initialized`), its objects and fields, and `builtIns`                                                 |
+| `query_records`                    | Structured filter, sort and pagination over one object; for an event type, its built-in columns and `linked`; `event` for every type at once (1.3) |
+| `get_record`                       | One record with its fields and links; an event also with its built-in columns, participants and `about`                                            |
+| `search`                           | Keyword search (Postgres full-text) across records, events and facts                                                                               |
+| `get_context(record, tokenBudget)` | A ready-to-use pack: key fields, current facts, open tasks, recent events, fitted to the budget                                                    |
+| `get_timeline(record, filters)`    | The record's history, newest first: events, asserted field values and facts (6.2)                                                                  |
 
 `builtIns` lists facts, apart from `objects`, so a person reading the
 schema sees that the workspace keeps them and no client mistakes them for
@@ -1107,6 +1142,7 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `POST /v1/review/merges/:id/dismiss`              | Dismiss a suggested merge (4.2)                                                                                                         |
 | `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                                                                              |
 | `POST /v1/events`                                 | Log an event: 201 when created, 200 for a retry; returns matched and unmatched participants (4.1)                                       |
+| `POST /v1/events/query`                           | Query events of every event type: shared columns, `type`, `search` and `linked`, newest first (1.3)                                     |
 | `GET` · `DELETE /v1/events/:id`                   | Read an event, or delete it and retract what cites it (2.1)                                                                             |
 | `POST /v1/events/:id/links`                       | Add participants and `about` records (1.3)                                                                                              |
 | `DELETE /v1/events/:id/participants/:pid`         | Remove a participant (a person only)                                                                                                    |
@@ -1134,7 +1170,8 @@ the tool list without limit and break clients' tool caching.
 `describe_schema`, `list_templates`, `apply_template`, `get_guide`,
 `query_records`, `get_record`, `search`, `get_context`, `get_timeline`, `upsert_record`,
 `log_event`, `remember`, `propose_schema_change`. Events are listed with
-`query_records` on their type, so no tool is needed per event type.
+`query_records` on their type, or on `event` for every type at once, so no
+tool is needed per event type.
 
 **Guides.** `get_guide(name)` returns step-by-step instructions, as
 markdown, for a task an agent does rarely. Each guide is also an MCP prompt
@@ -1238,13 +1275,13 @@ them and add a type prefix for readability.
 
 ```
 → log_event {
-    "type": "call", "channel": "zoom", "externalId": "zoom-8812-3390",
+    "type": "conversation", "channel": "zoom", "externalId": "zoom-8812-3390",
     "occurredAt": "2026-10-29T14:00:00+02:00", "title": "Acme renewal call",
-    "summary": "…", "fields": {},
+    "summary": "…", "fields": { "medium": "call" },
     "participants": [ { "handle": "dana@acme.com", "role": "customer" },
                       { "handle": "ron.peretz@acme.com", "role": "customer" } ],
     "about": [ "rec_a11…" ] }
-← { "id": "evt_51b…", "type": "call", "created": true,
+← { "id": "evt_51b…", "type": "conversation", "created": true,
     "participants": {
       "matched":   [ { "id": "ip_1…", "handle": "dana@acme.com", "role": "customer", "recordId": "rec_9f2…" } ],
       "unmatched": [ { "id": "ip_2…", "handle": "ron.peretz@acme.com", "role": "customer", "reason": "no_match" } ] },
@@ -1302,7 +1339,7 @@ with `limit` (default 100, at most 500) and `cursor`.
     "facts": [ { "id": "fct_1e2…", "content": "Needs SSO before agreeing to a pilot",
                  "validFrom": "2026-10-21T09:00:00Z", "writtenBy": { "type": "agent", … },
                  "sources": [ "evt_9d0…" ] } ],
-    "recentEvents": [ { "id": "evt_9d0…", "type": "meeting", "occurredAt": "2026-10-21T09:00:00Z",
+    "recentEvents": [ { "id": "evt_9d0…", "type": "conversation", "occurredAt": "2026-10-21T09:00:00Z",
                         "title": "Globex data-platform demo", "summary": "…",
                         "via": { "kind": "participant" } } ],
     "omitted": { "openTasks": 0, "facts": 4, "recentEvents": 11 },

@@ -40,7 +40,7 @@ const person = (values: Record<string, unknown> = {}) =>
   createRecord(app, as(AGENT), 'person', { emails: email(), ...values });
 const log = (input: Partial<LogEventInput> = {}) =>
   logEventFor(app, as(AGENT), {
-    type: 'call',
+    type: 'conversation',
     channel: 'zoom',
     occurredAt: '2026-10-29T14:00:00+02:00',
     fields: {},
@@ -295,7 +295,7 @@ describe('forget and events (6.4)', () => {
       status: 409,
       code: 'event_retracted',
     });
-    await expect(log({ ...identity, type: 'meeting' })).rejects.toMatchObject({
+    await expect(log({ ...identity, type: 'conversation' })).rejects.toMatchObject({
       code: 'event_retracted',
     });
     // Another external ID, or the same one on another channel, still logs.
@@ -328,7 +328,7 @@ describe('forget and events (6.4)', () => {
     const dana = await person();
     const ron = await person();
     const meeting = await log({
-      type: 'meeting',
+      type: 'conversation',
       channel: 'calendar',
       externalId: 'about-only-1',
       title: 'Planning the account',
@@ -354,7 +354,7 @@ describe('forget and events (6.4)', () => {
     // Its identity is intact, so a retry still finds it.
     await expect(
       log({
-        type: 'meeting',
+        type: 'conversation',
         channel: 'calendar',
         externalId: 'about-only-1',
         title: 'Planning the account',
@@ -367,7 +367,7 @@ describe('forget and events (6.4)', () => {
       operations: [
         {
           op: 'create_field',
-          object: 'meeting',
+          object: 'conversation',
           field: {
             name: 'contact',
             label: 'Contact',
@@ -379,7 +379,7 @@ describe('forget and events (6.4)', () => {
     });
     const dana = await person();
     const ron = await person();
-    const identity = { type: 'meeting', channel: 'calendar', externalId: 'initial-erased-1' };
+    const identity = { type: 'conversation', channel: 'calendar', externalId: 'initial-erased-1' };
     const meeting = await log({
       ...identity,
       fields: { contact: dana.id },
@@ -440,7 +440,7 @@ describe('forget and events (6.4)', () => {
     const ws = (await createWorkspace(db.owner, { name: 'Rotation', template: 'sales' })).id;
     const logIn = (input: Partial<LogEventInput>) =>
       logEventFor(app, as(AGENT, ws), {
-        type: 'call',
+        type: 'conversation',
         channel: 'rotation',
         occurredAt: '2026-10-29T14:00:00+02:00',
         fields: {},

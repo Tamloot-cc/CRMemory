@@ -20,6 +20,11 @@ export interface DiagramNode {
   label: string;
   meta?: string;
   rows: DiagramRow[];
+  /**
+   * How the card reads: a record object (the default), an event type, or a
+   * stand-in for "any record" that links can end on.
+   */
+  variant?: 'entity' | 'event' | 'any';
 }
 
 /** An end of a link: a node, and the row it attaches to (the header when there is none). */
@@ -37,6 +42,8 @@ export interface DiagramEdge {
   toEnd?: 'many' | 'one';
   /** The link in a sentence, the line's accessible name. */
   description: string;
+  /** A dashed line: a built-in link rather than a relation field (an event's `about`). */
+  dashed?: boolean;
 }
 
 /** Crow's foot, drawn pointing along +x with its prongs at x = 12 (the node). */
@@ -49,6 +56,18 @@ export const lineStroke = (lit: boolean) => ({
   stroke: lit ? 'var(--color-primary)' : 'var(--color-muted-foreground)',
   strokeWidth: lit ? 1.6 : 1.25,
 });
+
+/** A dashed line, as the diagram draws an event's `about` link, for a legend. */
+export function DiagramDashedKey({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <svg aria-hidden width={28} height={14} viewBox="0 0 28 14" fill="none" stroke="currentColor">
+        <path d="M2 7 H26" strokeWidth={1.25} strokeDasharray="4 3" />
+      </svg>
+      {children}
+    </span>
+  );
+}
 
 /** The two line ends, drawn the way the diagram draws them, for a legend. */
 export function DiagramKey({ end, children }: { end: 'many' | 'one'; children: ReactNode }) {

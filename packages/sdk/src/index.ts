@@ -12,6 +12,8 @@ import type {
   DeleteImpact,
   DeleteRecordResult,
   EventAttachment,
+  EventPage,
+  EventQueryInput,
   ForgetResult,
   LogEventInput,
   LogEventResult,
@@ -359,6 +361,14 @@ export class RetainerClient {
   /** One live event: the record with its built-in columns and links. */
   event(id: string, signal?: AbortSignal) {
     return this.get<PresentedRecord>(`/v1/events/${encodeURIComponent(id)}`, {}, signal);
+  }
+  /**
+   * Events of every event type in one page, newest first (`POST /v1/events/query`).
+   * Filters take `type`, `occurredAt`, `channel` and `externalId`; `linked` finds
+   * the events attached to one record.
+   */
+  queryEvents(input: EventQueryInput = {}, signal?: AbortSignal) {
+    return this.post<EventPage>('/v1/events/query', input, signal);
   }
   /** Logs an event; the only way events are created. Idempotent by channel and externalId. */
   logEvent(input: LogEventInput) {

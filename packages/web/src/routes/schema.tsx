@@ -14,6 +14,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import {
   ArrowUpRight,
+  Asterisk,
   Bot,
   Building2,
   CircleCheck,
@@ -22,6 +23,7 @@ import {
   Cog,
   KeyRound,
   Lightbulb,
+  Link2,
   Lock,
   type LucideIcon,
   ShieldCheck,
@@ -39,7 +41,9 @@ import {
   CheckLabel,
   Code,
   Diagram,
+  DiagramDashedKey,
   DiagramKey,
+  type DiagramNode,
   Empty,
   EntityHeader,
   IconLabel,
@@ -70,6 +74,9 @@ import {
   Tr,
 } from '../ui/index.js';
 import {
+  ABOUT_ROW,
+  ANY_RECORD_NODE,
+  aboutEdges,
   canRollUpEvents,
   cardinality,
   describeOperation,
@@ -203,7 +210,10 @@ const BUILT_IN_ICONS: Record<BuiltInView['name'], LucideIcon> = {
 /** The built-in columns every event record has beside its fields. */
 const EVENT_COLUMN_INFO: Record<EventColumn, { label: string; description: string }> = {
   occurredAt: { label: 'Occurred at', description: 'When it happened' },
-  channel: { label: 'Channel', description: 'Where it was logged from, e.g. gmail or zoom' },
+  channel: {
+    label: 'Source',
+    description: 'The source system or account, e.g. gmail or zoom; part of its identity',
+  },
   externalId: {
     label: 'External ID',
     description: 'Its ID in that channel; logging it again adds to the same event',
@@ -231,7 +241,7 @@ function ObjectsTab() {
   const navItem = (o: ObjectView) => (
     <NavItem
       key={o.nameSingular}
-      icon={objectIcon(o.nameSingular)}
+      icon={objectIcon(o.nameSingular, o.class)}
       label={o.labelPlural}
       meta={o.fields.length}
       active={o.nameSingular === object?.nameSingular}
@@ -241,6 +251,7 @@ function ObjectsTab() {
   return (
     <>
       {!schema.workspace.templates.length ? <TemplatePicker /> : null}
+      <ClassIntro />
       {objects.length ? null : (
         <Empty
           title="No objects yet"
@@ -255,9 +266,9 @@ function ObjectsTab() {
         <SplitView
           nav={
             <>
-              {entities.length ? <NavList label="Objects">{entities.map(navItem)}</NavList> : null}
+              {entities.length ? <NavList label="Records">{entities.map(navItem)}</NavList> : null}
               {eventTypes.length ? (
-                <NavList label="Event types">{eventTypes.map(navItem)}</NavList>
+                <NavList label="Activity">{eventTypes.map(navItem)}</NavList>
               ) : null}
               {builtIns.length ? (
                 <NavList label="Built-in">
@@ -304,7 +315,7 @@ function ObjectsTab() {
 function DiagramTab() {
   const { schema } = useWorkspace(),
     { setSearch } = useView();
-  const { nodes, edges } = useMemo(() => {
+  const { nodes, edges, events } = useMemo(() => {
     const objects = sortObjects(schema.objects);
     const row = (f: FieldView, o: ObjectView) => ({
       id: f.name,
@@ -313,25 +324,58 @@ function DiagramTab() {
       detail: f.type === 'relation' ? (typeDetail(f, objects) ?? undefined) : fields[f.type].label,
       isKey: f.name === o.labelField,
     });
+    const events = objects.some((o) => o.class === 'event');
     return {
-      nodes: objects.map((o) => ({
-        id: o.nameSingular,
-        icon: objectIcon(o.nameSingular),
-        label: o.labelPlural,
-        meta: `${o.fields.length} ${o.fields.length === 1 ? 'field' : 'fields'}`,
-        // The field that names records, then the relations.
-        rows: [
-          ...o.fields.filter((f) => f.name === o.labelField),
-          ...o.fields.filter((f) => f.type === 'relation' && f.name !== o.labelField),
-        ].map((f) => row(f, o)),
-      })),
-      edges: relationEdges(objects),
+      events,
+      nodes: [
+        ...objects.map(
+          (o): DiagramNode => ({
+            id: o.nameSingular,
+            icon: objectIcon(o.nameSingular, o.class),
+            label: o.labelPlural,
+            meta: `${o.class === 'event' ? 'Event · ' : ''}${o.fields.length} ${o.fields.length === 1 ? 'field' : 'fields'}`,
+            variant: o.class,
+            // The field that names records, then the relations; an event type adds `about`.
+            rows: [
+              ...[
+                ...o.fields.filter((f) => f.name === o.labelField),
+                ...o.fields.filter((f) => f.type === 'relation' && f.name !== o.labelField),
+              ].map((f) => row(f, o)),
+              ...(o.class === 'event'
+                ? [{ id: ABOUT_ROW, icon: Link2, label: 'About', detail: 'Any records' }]
+                : []),
+            ],
+          }),
+        ),
+        // Where every event type's `about` line ends.
+        ...(events
+          ? [
+              {
+                id: ANY_RECORD_NODE,
+                icon: Asterisk,
+                label: 'Any record',
+                meta: 'about',
+                variant: 'any' as const,
+                rows: [],
+              },
+            ]
+          : []),
+      ],
+      edges: [...relationEdges(objects), ...aboutEdges(objects)],
     };
   }, [schema.objects]);
   // A polymorphic relation draws a line to each object it allows; count it once.
-  const relations = new Set(edges.map((e) => e.id.split(':')[0])).size;
+  const relations = new Set(edges.filter((e) => !e.dashed).map((e) => e.id.split(':')[0])).size;
   const open = useCallback(
-    (object: string, field?: string) => void setSearch({ tab: undefined, object, field }),
+    (object: string, field?: string) => {
+      // "Any record" and `about` are built in: there is no object or field to open.
+      if (object === ANY_RECORD_NODE) return;
+      void setSearch({
+        tab: undefined,
+        object,
+        field: field === ABOUT_ROW ? undefined : field,
+      });
+    },
     [setSearch],
   );
   if (!nodes.length)
@@ -353,6 +397,7 @@ function DiagramTab() {
           <>
             <DiagramKey end="many">Many</DiagramKey>
             <DiagramKey end="one">One</DiagramKey>
+            {events ? <DiagramDashedKey>About (any record)</DiagramDashedKey> : null}
             <span>
               {relations} {relations === 1 ? 'relation' : 'relations'}. Each card shows the field
               that names its records and its relations. Drag to move, use the controls to zoom, and
@@ -362,6 +407,34 @@ function DiagramTab() {
         }
       />
     </Suspense>
+  );
+}
+
+/**
+ * What the two classes are and how each is written, above the object list
+ * (5.8): a record is kept up to date; an event happened once.
+ */
+function ClassIntro() {
+  return (
+    <CardGrid>
+      <Panel title="Records">
+        <Muted>
+          Records are the things the workspace keeps track of: people, companies, deals. Each holds
+          fields that change over time, and every value keeps who wrote it and why. Agents write
+          them with <Code>upsert_record</Code> (<Code>POST /v1/objects/:object/upsert</Code>), and
+          people create and edit them here.
+        </Muted>
+      </Panel>
+      <Panel title="Activity">
+        <Muted>
+          Events are what happened: conversations, notes and anything else with a time. Each has a
+          source, participants and the records it is about, and is the evidence values and facts
+          cite. Agents and integrations log them with <Code>log_event</Code> (
+          <Code>POST /v1/events</Code>); logging the same source and ID again adds to the same
+          event. People write notes here.
+        </Muted>
+      </Panel>
+    </CardGrid>
   );
 }
 
@@ -435,7 +508,7 @@ function ObjectDetail({
   return (
     <>
       <EntityHeader
-        icon={objectIcon(object.nameSingular)}
+        icon={objectIcon(object.nameSingular, object.class)}
         title={object.labelPlural}
         meta={
           <>

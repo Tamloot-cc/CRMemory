@@ -1,5 +1,5 @@
-import { Check as CheckIcon, type LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { Check as CheckIcon, Copy, type LucideIcon } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
 import { cn, type Tone } from './core.js';
 
 /**
@@ -126,6 +126,58 @@ export function Code({ children }: { children: ReactNode }) {
     <code className="rounded-sm bg-muted px-1 py-px font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
       {children}
     </code>
+  );
+}
+
+/**
+ * An API name beside the label people read, shown in developer view: quiet
+ * and monospace.
+ */
+export function ApiName({ children }: { children: ReactNode }) {
+  return (
+    <code
+      data-api-name
+      className="ml-1.5 shrink-0 font-mono text-[11px] font-normal text-muted-foreground/80 [overflow-wrap:anywhere]"
+    >
+      {children}
+    </code>
+  );
+}
+
+/** A small button that copies `value` to the clipboard and says so. */
+export function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* The clipboard can be refused; the value is on screen to select. */
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => void copy()}
+      aria-label={label}
+      title={copied ? 'Copied' : label}
+      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-sm px-1 text-xs text-muted-foreground hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {copied ? <CheckIcon size={12} /> : <Copy size={12} />}
+      {copied ? 'Copied' : null}
+    </button>
+  );
+}
+
+/** A value as formatted JSON, scrolling on its own. */
+export function JsonBlock({ value, label }: { value: unknown; label: string }) {
+  return (
+    <section aria-label={label}>
+      <pre className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-muted/30 p-3 font-mono text-xs leading-relaxed">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </section>
   );
 }
 

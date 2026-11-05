@@ -29,6 +29,7 @@ import {
   useMemo,
   useState,
 } from 'react';
+import { cn } from './core.js';
 import {
   layoutDiagram,
   linkSides,
@@ -93,21 +94,54 @@ function Handles({ row }: { row?: string }) {
   );
 }
 
+/**
+ * Each card variant's classes. Event types read apart from records; "any
+ * record" is a stand-in, not an object.
+ */
+const VARIANT_CLASSES = {
+  entity: {
+    card: 'border-border',
+    header: 'bg-muted/40',
+    icon: 'rounded-md bg-primary/10 text-primary',
+  },
+  event: {
+    card: 'border-primary/35',
+    header: 'bg-primary/5',
+    icon: 'rounded-full bg-primary text-primary-foreground',
+  },
+  any: {
+    card: 'border-dashed border-muted-foreground/50 bg-muted/30 shadow-none',
+    header: '',
+    icon: 'rounded-md text-muted-foreground',
+  },
+} satisfies Record<
+  NonNullable<DiagramNode['variant']>,
+  { card: string; header: string; icon: string }
+>;
+
 function Card({ data: { node } }: NodeProps<CardNode>) {
   const { onSelectNode, onSelectRow } = useContext(ActionsContext);
+  const variant = VARIANT_CLASSES[node.variant ?? 'entity'];
   return (
     <div
       style={{ width: WIDTH }}
-      className="rounded-lg border border-border bg-card text-foreground shadow-sm transition-[border-color,box-shadow] hover:border-primary/60 hover:shadow-md"
+      className={cn(
+        'rounded-lg border bg-card text-foreground shadow-sm transition-[border-color,box-shadow] hover:border-primary/60 hover:shadow-md',
+        variant.card,
+      )}
     >
       <div className="relative" style={{ height: HEADER }}>
         <Handles />
         <button
           type="button"
           onClick={() => onSelectNode(node.id)}
-          className="flex h-full w-full items-center gap-2.5 rounded-t-lg border-b border-border bg-muted/40 px-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className={cn(
+            'flex h-full w-full items-center gap-2.5 rounded-t-lg px-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            node.rows.length ? 'border-b border-border' : 'rounded-b-lg',
+            variant.header,
+          )}
         >
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <span className={cn('flex size-6 shrink-0 items-center justify-center', variant.icon)}>
             <node.icon size={14} aria-hidden />
           </span>
           <span className="truncate text-sm font-semibold">{node.label}</span>
@@ -310,7 +344,11 @@ export function Diagram({
           markerStart: markerId('many', lit),
           markerEnd: markerId(e.toEnd ?? 'one', lit),
           interactionWidth: 14,
-          style: { ...lineStroke(lit), opacity: hover && !lit ? 0.25 : lit ? 1 : 0.7 },
+          style: {
+            ...lineStroke(lit),
+            opacity: hover && !lit ? 0.25 : lit ? 1 : 0.7,
+            ...(e.dashed ? { strokeDasharray: '5 4' } : {}),
+          },
           ariaLabel: e.description,
         },
       ];

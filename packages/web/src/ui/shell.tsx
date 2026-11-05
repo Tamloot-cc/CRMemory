@@ -1,6 +1,7 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Link } from '@tanstack/react-router';
 import {
+  Activity,
   Box,
   BriefcaseBusiness,
   Building2,
@@ -15,23 +16,25 @@ import {
   Inbox,
   LogOut,
   type LucideIcon,
-  Mail,
-  MessageSquare,
+  MessageSquareDot,
+  MessageSquareMore,
+  MessageSquareQuote,
+  MessageSquareText,
+  MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
-  Phone,
   Search,
   Shapes,
-  StickyNote,
+  SquarePen,
   UserRound,
-  UsersRound,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { cn, Kbd, NavigationContext } from './core.js';
+import { Menu, MenuAction, MenuCheck, MenuSeparator } from './menu.js';
 
 const COLLAPSED_KEY = 'retainer:sidebar:collapsed';
 
-/** Icons for the objects and event types the built-in templates define; anything else gets a box. */
+/** Icons for the objects the built-in templates define; any other object gets a box. */
 const OBJECT_ICONS: Record<string, LucideIcon> = {
   person: UserRound,
   company: Building2,
@@ -44,15 +47,26 @@ const OBJECT_ICONS: Record<string, LucideIcon> = {
   application: FileText,
   proposal: FileSignature,
   appointment: CalendarDays,
-  meeting: UsersRound,
-  call: Phone,
-  email: Mail,
-  message: MessageSquare,
-  note: StickyNote,
 };
+/**
+ * Event types draw from one family (squared speech marks), so Activity reads
+ * apart from Records at a glance; any other event type gets the plain one.
+ */
+const EVENT_ICONS: Record<string, LucideIcon> = {
+  conversation: MessagesSquare,
+  note: SquarePen,
+  meeting: MessageSquareMore,
+  call: MessageSquareDot,
+  email: MessageSquareText,
+  message: MessageSquareText,
+};
+const EVENT_ICON = MessageSquareQuote;
 
-/** The sidebar icon for an object, by its singular API name. */
-export const objectIcon = (name: string): LucideIcon => OBJECT_ICONS[name] ?? Box;
+/** The icon for an object or event type, by its singular API name and class. */
+export const objectIcon = (name: string, objectClass: 'entity' | 'event' = 'entity'): LucideIcon =>
+  objectClass === 'event' ? (EVENT_ICONS[name] ?? EVENT_ICON) : (OBJECT_ICONS[name] ?? Box);
+/** The icon for the workspace-wide activity feed. */
+export const activityIcon = Activity;
 
 const initials = (name: string) =>
   name
@@ -70,11 +84,16 @@ function readCollapsed() {
   }
 }
 
+type ShellObject = { name: string; label: string; class: 'entity' | 'event' };
 type ShellProps = {
   workspace: string;
   user: { name: string; type: string };
-  objects: { name: string; label: string }[];
+  /** Entities are listed under Records, event types under Activity. */
+  objects: ShellObject[];
   inboxCount?: number;
+  /** Developer view, switched from the account menu. */
+  developer: boolean;
+  onDeveloperChange: (on: boolean) => void;
   onSignOut: () => void;
   onSearch: () => void;
   children: ReactNode;
@@ -118,7 +137,7 @@ export function Shell({ children, ...props }: ShellProps) {
             <DialogPrimitive.Content className="fixed inset-y-0 left-0 z-50 flex w-64 max-w-[85vw] flex-col border-r border-border bg-sidebar shadow-xl md:hidden">
               <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
               <DialogPrimitive.Description className="sr-only">
-                Objects, review inbox and schema
+                Records, activity, review inbox and schema
               </DialogPrimitive.Description>
               <Sidebar
                 {...props}
@@ -143,6 +162,8 @@ function Sidebar({
   user,
   objects,
   inboxCount,
+  developer,
+  onDeveloperChange,
   onSignOut,
   onSearch,
   collapsed,
@@ -154,6 +175,21 @@ function Sidebar({
   onNavigate?: () => void;
 }) {
   const toggleLabel = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  /** A link to each object list of one class: records, or event types under Activity. */
+  const objectLinks = (objectClass: ShellObject['class']) =>
+    objects
+      .filter((o) => o.class === objectClass)
+      .map((o) => (
+        <NavLink
+          key={o.name}
+          to="/o/$object"
+          params={{ object: o.name }}
+          icon={objectIcon(o.name, objectClass)}
+          label={o.label}
+          collapsed={collapsed}
+          onNavigate={onNavigate}
+        />
+      ));
   return (
     <>
       <div
@@ -220,22 +256,19 @@ function Sidebar({
             </span>
           ) : null}
         </NavLink>
-        {collapsed ? (
-          <div className="mx-2 my-2 border-t border-border" />
-        ) : (
-          <p className="px-2 pb-1 pt-4 text-[11px] font-medium text-muted-foreground">Objects</p>
-        )}
-        {objects.map((o) => (
+        <NavGroup label="Records" collapsed={collapsed}>
+          {objectLinks('entity')}
+        </NavGroup>
+        <NavGroup label="Activity" collapsed={collapsed}>
           <NavLink
-            key={o.name}
-            to="/o/$object"
-            params={{ object: o.name }}
-            icon={objectIcon(o.name)}
-            label={o.label}
+            to="/activity"
+            icon={activityIcon}
+            label="All activity"
             collapsed={collapsed}
             onNavigate={onNavigate}
           />
-        ))}
+          {objectLinks('event')}
+        </NavGroup>
         <div className="flex-1" />
         <NavLink
           to="/schema"
@@ -251,30 +284,73 @@ function Sidebar({
           collapsed ? 'flex-col' : '',
         )}
       >
-        <span
-          aria-hidden
-          title={collapsed ? user.name : undefined}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold"
+        <Menu
+          label="Account"
+          align={collapsed ? 'start' : 'end'}
+          trigger={
+            <button
+              type="button"
+              aria-label={`Account: ${user.name}`}
+              title={collapsed ? user.name : undefined}
+              className={cn(
+                'flex min-w-0 items-center gap-2 rounded-md text-left hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                collapsed ? 'p-0.5' : 'flex-1 p-1',
+              )}
+            >
+              <span
+                aria-hidden
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold"
+              >
+                {initials(user.name)}
+              </span>
+              {collapsed ? null : (
+                <span className="min-w-0 flex-1 leading-tight">
+                  <span className="block truncate text-sm font-medium">{user.name}</span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {user.type.charAt(0).toUpperCase() + user.type.slice(1)}
+                    {developer ? ' · Developer view' : ''}
+                  </span>
+                </span>
+              )}
+            </button>
+          }
         >
-          {initials(user.name)}
-        </span>
-        {collapsed ? null : (
-          <div className="min-w-0 flex-1 leading-tight">
-            <div className="truncate text-sm font-medium">{user.name}</div>
-            <div className="truncate text-xs text-muted-foreground capitalize">{user.type}</div>
-          </div>
-        )}
-        <button
-          type="button"
-          onClick={onSignOut}
-          aria-label="Sign out"
-          title="Sign out"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-hover hover:text-foreground"
-        >
-          <LogOut size={15} />
-        </button>
+          <MenuCheck checked={developer} onChange={onDeveloperChange}>
+            Developer view
+          </MenuCheck>
+          <MenuSeparator />
+          <MenuAction onSelect={onSignOut}>
+            <LogOut size={14} />
+            Sign out
+          </MenuAction>
+        </Menu>
       </div>
     </>
+  );
+}
+
+/** A labeled group of sidebar links; in the icon rail, its name becomes a divider. */
+function NavGroup({
+  label,
+  collapsed,
+  children,
+}: {
+  label: string;
+  collapsed: boolean;
+  children: ReactNode;
+}) {
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: a fieldset groups form controls; these are links.
+    <div role="group" aria-label={label} className="flex flex-col gap-0.5">
+      {collapsed ? (
+        <div aria-hidden className="mx-2 my-2 border-t border-border" />
+      ) : (
+        <p aria-hidden className="px-2 pb-1 pt-4 text-[11px] font-medium text-muted-foreground">
+          {label}
+        </p>
+      )}
+      {children}
+    </div>
   );
 }
 
@@ -295,7 +371,7 @@ function NavLink({
   onNavigate,
   children,
 }: {
-  to: '/' | '/o/$object' | '/schema';
+  to: '/' | '/o/$object' | '/schema' | '/activity';
   params?: { object: string };
   icon: LucideIcon;
   label: string;

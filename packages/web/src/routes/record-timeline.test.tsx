@@ -82,16 +82,18 @@ const person = {
     },
   ],
 } as unknown as ObjectView;
-const meeting = {
-  nameSingular: 'meeting',
-  labelSingular: 'Meeting',
+const conversation = {
+  nameSingular: 'conversation',
+  labelSingular: 'Conversation',
   class: 'event',
+  baseObject: 'conversation',
   fields: [],
 } as unknown as ObjectView;
-const call = {
-  nameSingular: 'call',
-  labelSingular: 'Call',
+const note = {
+  nameSingular: 'note',
+  labelSingular: 'Note',
   class: 'event',
+  baseObject: 'note',
   fields: [],
 } as unknown as ObjectView;
 
@@ -101,7 +103,7 @@ const event: TimelineItem = {
   id: 'e1',
   // Close to noon UTC, so it falls on the same local day as the claim below in any time zone.
   at: '2026-11-03T12:30:00.000Z',
-  type: 'meeting',
+  type: 'conversation',
   title: 'Renewal call',
   summary: 'Agreed on a two-year term.',
   via: { kind: 'rollup', field: 'employer', record: 'p1' },
@@ -116,7 +118,7 @@ const lostClaim: TimelineItem = {
   current: false,
   actor: { type: 'agent', id: 'scout', name: 'Scout' },
   confidence: 0.6,
-  source: { id: 'e1', type: 'meeting', title: 'Renewal call', occurredAt: event.at },
+  source: { id: 'e1', type: 'conversation', title: 'Renewal call', occurredAt: event.at },
 };
 const ownerSet: TimelineItem = {
   kind: 'field_change',
@@ -166,7 +168,7 @@ function Harness({ initial = {} }: { initial?: TimelineSearch }) {
 function renderTimeline(initial?: TimelineSearch) {
   const workspace = {
     session: { workspace: { id: 'w1' } } as unknown as Session,
-    schema: { objects: [company, person, meeting, call] } as unknown as SchemaDescription,
+    schema: { objects: [company, person, conversation, note] } as unknown as SchemaDescription,
   };
   // Record labels are fetched per link; answer them without a server.
   vi.spyOn(api, 'record').mockResolvedValue({
@@ -194,25 +196,25 @@ describe('timeline filters', () => {
   it('sends no types for all, so a lone field or event-type filter narrows as the server says', () => {
     expect(timelineParams(filters(undefined))).toEqual({});
     expect(timelineParams(filters(undefined, 'stage'))).toEqual({ fields: ['stage'] });
-    expect(timelineParams(filters(undefined, '', 'meeting,call'))).toEqual({
-      eventTypes: ['meeting', 'call'],
+    expect(timelineParams(filters(undefined, '', 'conversation,note'))).toEqual({
+      eventTypes: ['conversation', 'note'],
     });
-    expect(timelineParams(filters(undefined, 'stage', 'call'))).toEqual({
+    expect(timelineParams(filters(undefined, 'stage', 'note'))).toEqual({
       fields: ['stage'],
-      eventTypes: ['call'],
+      eventTypes: ['note'],
     });
   });
 
   it('sends types whenever one kind is chosen, without filters for kinds it leaves out', () => {
-    expect(timelineParams(filters('event', 'stage', 'call'))).toEqual({
+    expect(timelineParams(filters('event', 'stage', 'note'))).toEqual({
       types: ['event'],
-      eventTypes: ['call'],
+      eventTypes: ['note'],
     });
-    expect(timelineParams(filters('field_change', 'stage,owner', 'call'))).toEqual({
+    expect(timelineParams(filters('field_change', 'stage,owner', 'note'))).toEqual({
       types: ['field_change'],
       fields: ['stage', 'owner'],
     });
-    expect(timelineParams(filters('fact', 'stage', 'call'))).toEqual({ types: ['fact'] });
+    expect(timelineParams(filters('fact', 'stage', 'note'))).toEqual({ types: ['fact'] });
   });
 
   it('reads an unknown kind as all and writes all as no parameter', () => {
@@ -226,10 +228,12 @@ describe('timeline filters', () => {
       fields: undefined,
       eventTypes: undefined,
     });
-    expect(timelineSearch({ kind: 'event', fields: [], eventTypes: ['call', 'meeting'] })).toEqual({
+    expect(
+      timelineSearch({ kind: 'event', fields: [], eventTypes: ['note', 'conversation'] }),
+    ).toEqual({
       kind: 'event',
       fields: undefined,
-      eventTypes: 'call,meeting',
+      eventTypes: 'note,conversation',
     });
   });
 
@@ -249,7 +253,7 @@ describe('RecordTimeline', () => {
     expect(timeline).toHaveBeenCalledWith('c1', { cursor: undefined, signal: expect.anything() });
 
     // Event: type, title link, summary and a rollup sentence naming the source record.
-    expect(screen.getAllByText('Meeting').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Conversation').length).toBeGreaterThan(0);
     expect(screen.getByText('Agreed on a two-year term.')).toBeTruthy();
     expect(screen.getByText('Rolled up via Employer of')).toBeTruthy();
     expect(await screen.findByRole('link', { name: 'Dana Levi' })).toBeTruthy();
@@ -298,7 +302,7 @@ describe('RecordTimeline', () => {
       .spyOn(api, 'timeline')
       .mockResolvedValueOnce(page([event], 'cursor-1'))
       .mockResolvedValueOnce(page([fact]));
-    renderTimeline({ kind: 'event', eventTypes: 'meeting' });
+    renderTimeline({ kind: 'event', eventTypes: 'conversation' });
     await screen.findByRole('link', { name: 'Renewal call' });
     await userEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(await screen.findByText('Prefers quarterly invoicing')).toBeTruthy();
@@ -306,8 +310,18 @@ describe('RecordTimeline', () => {
     expect(screen.getByRole('link', { name: 'Renewal call' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
     expect(timeline.mock.calls.map((c) => c[1])).toEqual([
-      { types: ['event'], eventTypes: ['meeting'], cursor: undefined, signal: expect.anything() },
-      { types: ['event'], eventTypes: ['meeting'], cursor: 'cursor-1', signal: expect.anything() },
+      {
+        types: ['event'],
+        eventTypes: ['conversation'],
+        cursor: undefined,
+        signal: expect.anything(),
+      },
+      {
+        types: ['event'],
+        eventTypes: ['conversation'],
+        cursor: 'cursor-1',
+        signal: expect.anything(),
+      },
     ]);
   });
 
@@ -348,10 +362,10 @@ describe('RecordTimeline', () => {
 
   it('notes what a lone filter narrows "all" to and clears filters', async () => {
     const timeline = vi.spyOn(api, 'timeline').mockResolvedValue(page([]));
-    renderTimeline({ eventTypes: 'call' });
+    renderTimeline({ eventTypes: 'note' });
     expect(await screen.findByText('Nothing matches these filters')).toBeTruthy();
     expect(screen.getByText('Showing events of the chosen types.')).toBeTruthy();
-    expect(timeline.mock.calls[0]?.[1]).toMatchObject({ eventTypes: ['call'] });
+    expect(timeline.mock.calls[0]?.[1]).toMatchObject({ eventTypes: ['note'] });
     expect(timeline.mock.calls[0]?.[1]).not.toHaveProperty('types');
     await userEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(await screen.findByText('Nothing on the timeline yet')).toBeTruthy();

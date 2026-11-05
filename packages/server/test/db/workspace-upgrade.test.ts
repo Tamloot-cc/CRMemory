@@ -60,7 +60,7 @@ const logCall = (key: string, extra: Record<string, unknown> = {}) =>
   api.request('/v1/events', {
     key,
     body: {
-      type: 'call',
+      type: 'conversation',
       channel: 'phone',
       occurredAt: '2026-11-01T09:00:00Z',
       title: 'Intro call',
@@ -95,10 +95,7 @@ describe('upgrading workspaces to the built-in definitions', () => {
       isProtected: boolean;
     }[];
     expect(objects.filter((o) => o.class === 'event').map((o) => o.nameSingular)).toEqual([
-      'meeting',
-      'call',
-      'email',
-      'message',
+      'conversation',
       'note',
     ]);
     expect(objects.filter((o) => o.isProtected).map((o) => o.nameSingular)).toEqual([
@@ -203,29 +200,34 @@ describe('upgrading workspaces to the built-in definitions', () => {
   });
 
   it("reports a name the workspace's own object uses, and adds it once that is renamed", async () => {
-    const meeting: SchemaOperation = {
+    const conversation: SchemaOperation = {
       op: 'create_object',
       object: {
-        nameSingular: 'meeting',
-        namePlural: 'meetings',
-        labelSingular: 'Meeting',
-        labelPlural: 'Meetings',
+        nameSingular: 'conversation',
+        namePlural: 'conversations',
+        labelSingular: 'Conversation',
+        labelPlural: 'Conversations',
         labelField: 'name',
         fields: [{ name: 'name', label: 'Name', type: 'text' }],
       },
     };
-    const { workspaceId, key } = await legacyWorkspace('clash', [meeting]);
+    const { workspaceId, key } = await legacyWorkspace('clash', [conversation]);
     const report = await upgradeWorkspaces(owner);
     expect(report).toEqual({
       upgraded: ['clash'],
       conflicts: [
-        { workspace: 'clash', element: 'meeting', message: expect.stringContaining('meeting') },
+        {
+          workspace: 'clash',
+          element: 'conversation',
+          message: expect.stringContaining('conversation'),
+        },
       ],
       failed: [],
     });
     expect(await digestOf(workspaceId)).toBeNull();
-    const call = await logCall(key);
-    expect(call.status).toBe(201);
+    // The rest of the upgrade still applies: notes can be logged.
+    const note = await logCall(key, { type: 'note' });
+    expect(note.status).toBe(201);
 
     const rename = await api.request('/v1/schema/changes', {
       key,
@@ -234,7 +236,7 @@ describe('upgrading workspaces to the built-in definitions', () => {
         operations: [
           {
             op: 'rename_object',
-            object: 'meeting',
+            object: 'conversation',
             nameSingular: 'visit',
             namePlural: 'visits',
           },

@@ -212,7 +212,7 @@ describe('values', () => {
     const [a, b] = [await person(), await person()];
     const log = (externalId: string, occurredAt: string) =>
       logEventFor(app, as(AGENT), {
-        type: 'call',
+        type: 'conversation',
         channel: 'zoom',
         externalId,
         occurredAt,
@@ -373,7 +373,7 @@ describe('events', () => {
     await schemaChange([
       {
         op: 'create_field',
-        object: 'meeting',
+        object: 'conversation',
         field: {
           name: 'accounts',
           label: 'Accounts',
@@ -385,7 +385,7 @@ describe('events', () => {
     const acme = await createRecord(app, as(AGENT), 'company', { name: 'Acme set' });
     const acmeDup = await createRecord(app, as(AGENT), 'company', { name: 'Acme set dup' });
     const input = {
-      type: 'meeting',
+      type: 'conversation',
       channel: 'calendar',
       externalId: `meet-${++n}`,
       occurredAt: '2026-10-05T09:00:00Z',
@@ -395,7 +395,7 @@ describe('events', () => {
     };
     const meeting = await logEventFor(app, as(AGENT), input);
     for (const record of [acme.id, acmeDup.id]) {
-      const page = await findRecords(app, as(AGENT), 'meeting', {
+      const page = await findRecords(app, as(AGENT), 'conversation', {
         linked: { record, link: 'field' },
         limit: 10,
       });

@@ -53,7 +53,7 @@ async function person(values: Record<string, unknown> = {}) {
 const company = (name = `Company ${++n}`) => createRecord(app, as(AGENT), 'company', { name });
 const log = (input: Partial<LogEventInput> = {}) =>
   logEventFor(app, as(AGENT), {
-    type: 'meeting',
+    type: 'conversation',
     channel: 'calendar',
     occurredAt: '2026-10-29T14:00:00+02:00',
     title: 'Pilot review',
@@ -124,7 +124,7 @@ describe('logging an event again adds links (1.3)', () => {
     const id = externalId();
     await log({ externalId: id, summary: 'First' });
     for (const change of [
-      { type: 'call' },
+      { type: 'note' },
       { occurredAt: '2026-10-29T15:00:00+02:00' },
       { title: 'Another title' },
       { summary: 'Second' },
@@ -218,11 +218,15 @@ describe('about records (1.3)', () => {
 
     const acmeContext = await contextFor(app, as(AGENT), acme.id, { tokenBudget: 2000 });
     expect(acmeContext.recentEvents).toEqual([
-      expect.objectContaining({ id: logged.id, type: 'meeting', via: { kind: 'about' } }),
+      expect.objectContaining({ id: logged.id, type: 'conversation', via: { kind: 'about' } }),
     ]);
     const danaContext = await contextFor(app, as(AGENT), dana.id, { tokenBudget: 2000 });
     expect(danaContext.recentEvents).toEqual([
-      expect.objectContaining({ id: logged.id, type: 'meeting', via: { kind: 'participant' } }),
+      expect.objectContaining({
+        id: logged.id,
+        type: 'conversation',
+        via: { kind: 'participant' },
+      }),
     ]);
 
     const hits = await searchFor(app, as(AGENT), { query: 'kickoff', limit: 10 });
@@ -269,14 +273,14 @@ describe('about records (1.3)', () => {
   });
 
   it('may be about another event, but not about itself (6.2)', async () => {
-    const earlier = await log({ type: 'call', channel: 'zoom', title: 'Discovery call' });
+    const earlier = await log({ type: 'conversation', channel: 'zoom', title: 'Discovery call' });
     const id = externalId();
     const followUp = await log({ externalId: id, title: 'Follow-up', about: [earlier.id] });
     expect(followUp.about).toEqual([earlier.id]);
     const linked = await findRecords(
       app,
       as(AGENT),
-      'meeting',
+      'conversation',
       queryInputSchema.parse({ linked: { record: earlier.id, link: 'about' } }),
     );
     expect(linked.records.map((r) => r.id)).toEqual([followUp.id]);
@@ -552,48 +556,49 @@ describe('querying events (7.1)', () => {
     const dana = await person();
     const acme = await company();
     const at = (day: number) => `2026-10-${String(day).padStart(2, '0')}T10:00:00Z`;
-    const call1 = await log({ channel, type: 'call', occurredAt: at(2), about: [acme.id] });
-    const meeting = await log({
+    const call1 = await log({ channel, type: 'conversation', occurredAt: at(2), about: [acme.id] });
+    const note = await log({
       channel,
-      type: 'meeting',
+      type: 'note',
       occurredAt: at(10),
       participants: [{ recordId: dana.id }],
       about: [acme.id],
     });
-    const call2 = await log({ channel, type: 'call', occurredAt: at(20) });
-    const retracted = await log({ channel, type: 'call', occurredAt: at(21) });
+    const call2 = await log({ channel, type: 'conversation', occurredAt: at(20) });
+    const retracted = await log({ channel, type: 'conversation', occurredAt: at(21) });
     await retractEventFor(app, as(USER), retracted.id);
     await remember(app, as(AGENT), acme.id, { text: 'A note, not an event' });
 
-    const calls = await query('call', { filter: { channel }, sort: newest });
+    const calls = await query('conversation', { filter: { channel }, sort: newest });
     expect(ids(calls)).toEqual([call2.id, call1.id]);
     expect(calls.records[0]?.event).toMatchObject({
       channel,
       occurredAt: new Date(at(20)).toISOString(),
     });
-    const oldest = await query('calls', {
+    const oldest = await query('conversations', {
       filter: { channel },
       sort: [{ field: 'occurredAt', direction: 'asc' }],
     });
     expect(ids(oldest)).toEqual([call1.id, call2.id]);
-    expect(ids(await query('meeting', { filter: { channel } }))).toEqual([meeting.id]);
+    expect(ids(await query('note', { filter: { channel } }))).toEqual([note.id]);
 
-    const october = await query('call', {
+    const october = await query('conversation', {
       filter: { channel, occurredAt: { gte: at(1), lt: at(20) } },
     });
     expect(ids(october)).toEqual([call1.id]);
 
-    const aboutAcme = await query('call', { linked: { record: acme.id }, sort: newest });
+    const aboutAcme = await query('conversation', { linked: { record: acme.id }, sort: newest });
     expect(ids(aboutAcme)).toEqual([call1.id]);
     expect(aboutAcme.records[0]?.event?.about).toEqual([acme.id]);
-    expect(ids(await query('meeting', { linked: { record: acme.id } }))).toEqual([meeting.id]);
-    // The note remember wrote about Acme is never listed.
-    expect(ids(await query('note', { linked: { record: acme.id } }))).toEqual([]);
+    expect(ids(await query('note', { linked: { record: acme.id } }))).toEqual([note.id]);
+    // Across types, newest first; the internal note remember wrote about Acme is never listed.
+    expect(ids(await query('event', { linked: { record: acme.id } }))).toEqual([note.id, call1.id]);
+    expect(ids(await query('events', { filter: { channel, type: 'note' } }))).toEqual([note.id]);
     await expect(query('internalNote', {})).rejects.toMatchObject({ status: 404 });
 
-    const withDana = await query('meeting', { linked: { record: dana.id, link: 'participant' } });
-    expect(ids(withDana)).toEqual([meeting.id]);
-    expect(ids(await query('meeting', { linked: { record: dana.id, link: 'about' } }))).toEqual([]);
+    const withDana = await query('note', { linked: { record: dana.id, link: 'participant' } });
+    expect(ids(withDana)).toEqual([note.id]);
+    expect(ids(await query('note', { linked: { record: dana.id, link: 'about' } }))).toEqual([]);
 
     // `linked` needs a record, and applies to event types only.
     expect(queryInputSchema.safeParse({ linked: { link: 'about' } }).success).toBe(false);
@@ -612,7 +617,7 @@ describe('querying events (7.1)', () => {
         operations: [
           {
             op: 'create_field',
-            object: 'call',
+            object: 'conversation',
             field: {
               name: 'deal',
               label: 'Deal',
@@ -624,12 +629,12 @@ describe('querying events (7.1)', () => {
       }),
     );
     const pilot = await createRecord(app, as(AGENT), 'deal', { name: 'Field pilot' });
-    const byField = await log({ type: 'call', fields: { deal: pilot.id } });
-    const both = await log({ type: 'call', fields: { deal: pilot.id }, about: [pilot.id] });
+    const byField = await log({ type: 'conversation', fields: { deal: pilot.id } });
+    const both = await log({ type: 'conversation', fields: { deal: pilot.id }, about: [pilot.id] });
 
-    const viaField = await query('call', { linked: { record: pilot.id, link: 'field' } });
+    const viaField = await query('conversation', { linked: { record: pilot.id, link: 'field' } });
     expect(ids(viaField).sort()).toEqual([byField.id, both.id].sort());
-    const viaAbout = await query('call', { linked: { record: pilot.id, link: 'about' } });
+    const viaAbout = await query('conversation', { linked: { record: pilot.id, link: 'about' } });
     expect(ids(viaAbout)).toEqual([both.id]);
 
     const context = await contextFor(app, as(AGENT), pilot.id, { tokenBudget: 2000 });
@@ -644,17 +649,17 @@ describe('querying events (7.1)', () => {
   it('pages with a cursor', async () => {
     const channel = `query-${++n}`;
     for (let day = 1; day <= 5; day++) {
-      await log({ channel, type: 'call', occurredAt: `2026-09-0${day}T10:00:00Z` });
+      await log({ channel, type: 'conversation', occurredAt: `2026-09-0${day}T10:00:00Z` });
     }
-    const first = await query('call', { filter: { channel }, sort: newest, limit: 2 });
+    const first = await query('conversation', { filter: { channel }, sort: newest, limit: 2 });
     expect(first.records).toHaveLength(2);
-    const second = await query('call', {
+    const second = await query('conversation', {
       filter: { channel },
       sort: newest,
       limit: 2,
       cursor: first.nextCursor,
     });
-    const third = await query('call', {
+    const third = await query('conversation', {
       filter: { channel },
       sort: newest,
       limit: 2,

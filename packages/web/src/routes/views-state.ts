@@ -260,11 +260,13 @@ export function movedTo(field: FieldView, value: string, day: string): string {
   return to.toISOString();
 }
 
+/** "9:30 AM": an instant's local clock time. */
+export const clockTime = (at: string | Date) =>
+  new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+
 /** "9:30 AM" for a date-time; nothing for a date. */
 export function timeOf(field: FieldView, value: unknown): string | undefined {
   if (field.type !== 'date_time' || typeof value !== 'string') return undefined;
   const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? undefined
-    : date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return Number.isNaN(date.getTime()) ? undefined : clockTime(date);
 }

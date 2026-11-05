@@ -11,11 +11,14 @@ import {
   useState,
 } from 'react';
 import { cn, isPlainClick, PLACEMENT, ROW_STATE } from './core.js';
+import { ApiName } from './layout.js';
 import { type EditorHandlers, EditorHostContext } from './property.js';
 
 export type GridColumn = {
   id: string;
   label: string;
+  /** Developer view: the API name, shown after the label. */
+  apiName?: string;
   width: number;
   sortable?: boolean;
   /** Pinned to the left edge; can't be dragged or dropped on. */
@@ -208,7 +211,10 @@ export function DataGrid({
                         title={`Sort by ${c.label}`}
                         className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-3 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                       >
-                        <span className="truncate">{c.label}</span>
+                        <span className="truncate">
+                          {c.label}
+                          {c.apiName ? <ApiName>{c.apiName}</ApiName> : null}
+                        </span>
                         {sorted === 'asc' ? (
                           <ArrowUp size={12} className="shrink-0 text-foreground" />
                         ) : sorted === 'desc' ? (
@@ -222,7 +228,10 @@ export function DataGrid({
                         )}
                       </button>
                     ) : (
-                      <span className="truncate px-3">{c.label}</span>
+                      <span className="truncate px-3">
+                        {c.label}
+                        {c.apiName ? <ApiName>{c.apiName}</ApiName> : null}
+                      </span>
                     )}
                     {onResize ? (
                       // biome-ignore lint/a11y/useSemanticElements: a focusable splitter has no native element.

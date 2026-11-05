@@ -72,22 +72,56 @@ describe('planUpgrade', () => {
   it('adds the event types and the internal-note type a pre-events workspace lacks', () => {
     const { operations, conflicts, upgraded } = upgrade(legacy, SEED_OPERATIONS);
     expect(conflicts).toEqual([]);
-    expect(created(operations)).toEqual([
-      'meeting',
-      'call',
-      'email',
-      'message',
-      'note',
-      'internalNote',
-    ]);
+    expect(created(operations)).toEqual(['conversation', 'note', 'internalNote']);
     expect(upgraded.objects.filter((o) => o.class === 'event').map((o) => o.universalId)).toEqual([
       ...Object.values(BASE_EVENT_TYPE_IDS),
       INTERNAL_NOTE_TYPE_ID,
     ]);
     // Core fields get the IDs a new workspace gets.
     const ids = (state: SchemaState) =>
-      objectOf(state, BASE_EVENT_TYPE_IDS.call)?.fields.map((f) => f.universalId);
+      objectOf(state, BASE_EVENT_TYPE_IDS.conversation)?.fields.map((f) => f.universalId);
     expect(ids(upgraded)).toEqual(ids(seeded));
+    expect(objectOf(upgraded, BASE_EVENT_TYPE_IDS.conversation)?.fields.map((f) => f.name)).toEqual(
+      ['title', 'summary', 'medium'],
+    );
+  });
+
+  it('gives a workspace seeded with the old event types a conversation, and keeps the old types', () => {
+    const meeting = (name: string, universalId: string): SchemaOperation => ({
+      op: 'create_object',
+      object: {
+        universalId,
+        class: 'event',
+        nameSingular: name,
+        namePlural: `${name}s`,
+        labelSingular: name,
+        labelPlural: `${name}s`,
+        fields: [],
+      },
+    });
+    const old = applyValid(
+      seeded,
+      [
+        { op: 'delete_object', object: 'conversation' },
+        meeting('meeting', 'f3d0b7a2-58c1-4a8e-9d2f-6b1e0c7a4d31'),
+        meeting('call', '2b9e4f61-07d3-4c5a-8e1b-93f2a6d8c045'),
+      ],
+      'system',
+    );
+    // A deleted conversation stays deleted; a workspace that never had one gets it.
+    expect(created(upgrade(old, SEED_OPERATIONS).operations)).toEqual([]);
+    const never = {
+      ...old,
+      objects: old.objects.filter((o) => o.universalId !== BASE_EVENT_TYPE_IDS.conversation),
+    };
+    const { operations, conflicts, upgraded } = upgrade(never, SEED_OPERATIONS);
+    expect(conflicts).toEqual([]);
+    expect(created(operations)).toEqual(['conversation']);
+    expect(
+      upgraded.objects
+        .filter((o) => o.class === 'event' && o.status === 'active')
+        .map((o) => o.nameSingular),
+    ).toEqual(expect.arrayContaining(['meeting', 'call', 'conversation', 'note']));
   });
 
   it('plans nothing for a workspace that is up to date', () => {
@@ -120,7 +154,7 @@ describe('planUpgrade', () => {
   it('does not re-create a base event type or template object the workspace deleted', () => {
     const withTemplate = applyValid(seeded, clinic);
     const deleted = applyValid(withTemplate, [
-      { op: 'delete_object', object: 'call' },
+      { op: 'delete_object', object: 'conversation' },
       { op: 'delete_object', object: 'appointment' },
     ]);
     expect(planUpgrade(deleted, [...SEED_OPERATIONS, ...clinic])).toEqual({
@@ -136,10 +170,10 @@ describe('planUpgrade', () => {
         {
           op: 'create_object',
           object: {
-            nameSingular: 'meeting',
-            namePlural: 'meetings',
-            labelSingular: 'Meeting',
-            labelPlural: 'Meetings',
+            nameSingular: 'conversation',
+            namePlural: 'conversations',
+            labelSingular: 'Conversation',
+            labelPlural: 'Conversations',
             labelField: 'name',
             fields: [{ name: 'name', label: 'Name', type: 'text' }],
           },
@@ -149,9 +183,9 @@ describe('planUpgrade', () => {
     );
     const { operations, conflicts } = upgrade(custom, SEED_OPERATIONS);
     expect(conflicts).toEqual([
-      { element: 'meeting', message: expect.stringContaining('already used') },
+      { element: 'conversation', message: expect.stringContaining('already used') },
     ]);
-    expect(created(operations)).toEqual(['call', 'email', 'message', 'note', 'internalNote']);
+    expect(created(operations)).toEqual(['note', 'internalNote']);
   });
 
   it('adds a missing template field to an existing object, but not to a deleted one', () => {

@@ -1,6 +1,9 @@
 import type { FieldView, ObjectView } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  ABOUT_ROW,
+  ANY_RECORD_NODE,
+  aboutEdges,
   canRollUpEvents,
   cardinality,
   describeOperation,
@@ -341,5 +344,21 @@ describe('schema page model', () => {
     expect(
       describeOperation({ op: 'future_thing' } as unknown as Parameters<typeof d>[0], objects),
     ).toBe('future thing');
+  });
+});
+
+describe('the diagram’s about lines', () => {
+  it('draw one dashed line from each event type’s About row to any record', () => {
+    const edges = aboutEdges([
+      object({ nameSingular: 'company' }),
+      object({ nameSingular: 'conversation', labelSingular: 'Conversation', class: 'event' }),
+      object({ nameSingular: 'note', labelSingular: 'Note', class: 'event' }),
+    ]);
+    expect(edges.map((e) => [e.from, e.to, e.dashed])).toEqual([
+      [{ node: 'conversation', row: ABOUT_ROW }, { node: ANY_RECORD_NODE }, true],
+      [{ node: 'note', row: ABOUT_ROW }, { node: ANY_RECORD_NODE }, true],
+    ]);
+    expect(edges[0]?.description).toMatch(/conversation can be about any number of records/);
+    expect(aboutEdges([object({ nameSingular: 'company' })])).toEqual([]);
   });
 });

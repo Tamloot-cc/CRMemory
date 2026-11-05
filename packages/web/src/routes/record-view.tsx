@@ -19,9 +19,11 @@ import { ActorBadge, AssertionSource, FactSources, SourcedValue } from '../prove
 import {
   Badge,
   Button,
+  Code,
   Dialog,
   Empty,
   EventLink,
+  JsonBlock,
   Muted,
   Notice,
   ObjectLink,
@@ -37,10 +39,13 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
+import { DeveloperFacts, useApiName, useDeveloper } from './developer.js';
 import { EventDetailsView, ViaLabel } from './event-details.js';
+import { eventMedium, mediumField } from './event-list.js';
 import { CandidateRecord, RecordActions } from './record-actions.js';
 import { RecordTimeline, type TimelineSearch } from './record-timeline.js';
 import {
+  classLabel,
   eventTitle,
   objectByName,
   objectLabel,
@@ -116,14 +121,19 @@ export function polymorphicLinksTo(objects: ObjectView[], object: string) {
  */
 type MemoryState = { tab?: string; cursor?: string } & TimelineSearch;
 type MemoryNav = MemoryState & { set: (change: MemoryState) => void };
+// The events tab keeps `events` in the address; people read it as Activity (5.5).
 const TABS = [
   { value: 'facts', label: 'Facts' },
-  { value: 'events', label: 'Events' },
+  { value: 'events', label: 'Activity' },
   { value: 'timeline', label: 'Timeline' },
   { value: 'tasks', label: 'Open tasks' },
 ];
-const memoryTab = (raw: string | undefined) =>
-  TABS.some((t) => t.value === raw) ? (raw as string) : 'facts';
+/** Developer view adds the record as the REST API returned it. */
+const JSON_TAB = { value: 'json', label: 'JSON' };
+const memoryTab = (raw: string | undefined, developer: boolean) =>
+  TABS.some((t) => t.value === raw) || (developer && raw === JSON_TAB.value)
+    ? (raw as string)
+    : 'facts';
 
 /** A record opened from a list, in a sheet over it. */
 export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }) {
@@ -137,7 +147,7 @@ export function RecordSheet({ id, onClose }: { id: string; onClose: () => void }
   return (
     <Sheet
       onClose={onClose}
-      eyebrow={object?.labelSingular}
+      eyebrow={classLabel(object)}
       title={r ? recordTitle(r) : 'Record'}
       description="Record details. Click a value to edit it."
       actions={
@@ -183,8 +193,10 @@ export function RecordView({
   nav: MemoryNav;
 }) {
   const { session, schema } = useWorkspace(),
-    client = useQueryClient();
-  const tab = memoryTab(nav.tab),
+    client = useQueryClient(),
+    developer = useDeveloper(),
+    apiName = useApiName();
+  const tab = memoryTab(nav.tab, developer),
     cursor = nav.cursor;
   const [history, setHistory] = useState<FieldView | null>(null),
     [historyCursor, setHistoryCursor] = useState<string>(),
@@ -261,9 +273,16 @@ export function RecordView({
         <Notice>This record was merged. You’re viewing the surviving record.</Notice>
       ) : null}
       {message ? <Notice>{message}</Notice> : null}
+      <DeveloperFacts record={r} object={object} />
       {r.event ? (
         <Section title="Event">
-          <EventDetailsView id={r.id} event={r.event} editable={canWrite} />
+          <EventDetailsView
+            id={r.id}
+            event={r.event}
+            editable={canWrite}
+            medium={eventMedium(object, r)}
+            {...(mediumField(object) ? { mediumName: mediumField(object)?.name } : {})}
+          />
           <Row>
             <EventLink id={r.id}>Open event and the claims citing it</EventLink>
           </Row>
@@ -276,6 +295,7 @@ export function RecordView({
               key={f.name}
               record={r}
               field={f}
+              apiName={apiName(f.name)}
               editable={canWrite && isWritable(f)}
               onHistory={() => {
                 setHistory(f);
@@ -291,7 +311,7 @@ export function RecordView({
             {inverse.map((f) => {
               const Display = fields[f.type].Display;
               return (
-                <Property key={f.name} label={f.label}>
+                <Property key={f.name} label={f.label} apiName={apiName(f.name)}>
                   <Stack>
                     <Display
                       field={f}
@@ -345,7 +365,7 @@ export function RecordView({
               eventTypes: undefined,
             })
           }
-          items={TABS}
+          items={developer ? [...TABS, JSON_TAB] : TABS}
         />
         {tab === 'facts' ? (
           <Stack>
@@ -375,7 +395,7 @@ export function RecordView({
         {tab === 'events' ? (
           <Stack>
             {events.error ? <QueryError error={events.error} /> : null}
-            {events.isPending ? <Notice>Loading events…</Notice> : null}
+            {events.isPending ? <Notice>Loading activity…</Notice> : null}
             {events.data?.items.map((e) => (
               <Panel key={e.id}>
                 <Stack>
@@ -391,6 +411,12 @@ export function RecordView({
                     />
                   </Row>
                   {e.event.summary ? <p>{e.event.summary}</p> : null}
+                  {developer ? (
+                    <Row>
+                      <Code>via {JSON.stringify(e.via)}</Code>
+                      <Code>externalId {JSON.stringify(e.event.externalId)}</Code>
+                    </Row>
+                  ) : null}
                   <Row>
                     {e.event.participants.matched.map((p) => (
                       <CandidateRecord key={p.id} id={p.recordId} references={eventReferences} />
@@ -404,10 +430,10 @@ export function RecordView({
                 </Stack>
               </Panel>
             ))}
-            {events.data && !events.data.items.length ? <Empty title="No events yet" /> : null}
+            {events.data && !events.data.items.length ? <Empty title="No activity yet" /> : null}
             {events.data?.nextCursor ? (
               <Button onClick={() => nav.set({ cursor: events.data?.nextCursor ?? undefined })}>
-                Next page of events
+                Next page of activity
               </Button>
             ) : null}
           </Stack>
@@ -420,6 +446,7 @@ export function RecordView({
             onSearchChange={(change) => nav.set(change)}
           />
         ) : null}
+        {tab === 'json' ? <JsonBlock value={r} label="Record JSON" /> : null}
         {tab === 'tasks' ? (
           <Stack>
             {tasks.error ? <QueryError error={tasks.error} /> : null}
@@ -493,11 +520,13 @@ export function RecordView({
 function FieldProperty({
   record,
   field,
+  apiName,
   editable,
   onHistory,
 }: {
   record: PresentedRecord;
   field: FieldView;
+  apiName?: string;
   editable: boolean;
   onHistory: () => void;
 }) {
@@ -514,6 +543,7 @@ function FieldProperty({
   return (
     <Property
       label={field.label}
+      apiName={apiName}
       onEdit={editable ? () => setEditing(true) : undefined}
       editor={editing ? <InlineEditor record={record} field={field} onDone={done} /> : null}
       actions={

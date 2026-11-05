@@ -98,6 +98,41 @@ export function MenuChoice({
     </MenuPrimitive.RadioItem>
   );
 }
+/** An on/off setting in a menu, drawn as a switch; choosing it toggles and keeps the menu open. */
+export function MenuCheck({
+  checked,
+  onChange,
+  children,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  children: ReactNode;
+}) {
+  return (
+    <MenuPrimitive.CheckboxItem
+      checked={checked}
+      onCheckedChange={onChange}
+      onSelect={(e) => e.preventDefault()}
+      className={ITEM}
+    >
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      <span
+        aria-hidden
+        className={cn(
+          'relative h-4 w-7 shrink-0 rounded-full transition-colors',
+          checked ? 'bg-primary' : 'bg-muted-foreground/30',
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-[left]',
+            checked ? 'left-3.5' : 'left-0.5',
+          )}
+        />
+      </span>
+    </MenuPrimitive.CheckboxItem>
+  );
+}
 export function MenuSeparator() {
   return <MenuPrimitive.Separator className="-mx-1 my-1 h-px bg-border" />;
 }

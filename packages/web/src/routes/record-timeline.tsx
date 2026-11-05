@@ -25,6 +25,7 @@ import {
 } from '../ui/index.js';
 import { ViaLabel } from './event-details.js';
 import { eventTitle, objectByName, objectLabel, QueryError } from './state.js';
+import { clockTime } from './views-state.js';
 
 /** The item-type toggle: everything, or one kind. */
 export type TimelineKind = 'all' | TimelineItemKind;
@@ -32,8 +33,10 @@ export type TimelineKind = 'all' | TimelineItemKind;
 export type TimelineSearch = { kind?: string; fields?: string; eventTypes?: string };
 export type TimelineFilters = { kind: TimelineKind; fields: string[]; eventTypes: string[] };
 
-const list = (raw: string | undefined) => (raw ? raw.split(',').filter(Boolean) : []);
-const joined = (values: string[]) => (values.length ? values.join(',') : undefined);
+/** A comma list from the address, empty parts dropped. */
+export const list = (raw: string | undefined) => (raw ? raw.split(',').filter(Boolean) : []);
+/** Values as a comma list for the address; none clears the parameter. */
+export const joined = (values: string[]) => (values.length ? values.join(',') : undefined);
 
 export function parseTimelineFilters(search: TimelineSearch): TimelineFilters {
   const kind = TIMELINE_ITEM_KINDS.find((k) => k === search.kind) ?? 'all';
@@ -246,9 +249,7 @@ export function RecordTimeline({
 
 const time = (at: string) => (
   <Muted small>
-    <time dateTime={at}>
-      {new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
-    </time>
+    <time dateTime={at}>{clockTime(at)}</time>
   </Muted>
 );
 

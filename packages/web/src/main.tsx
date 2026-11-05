@@ -9,7 +9,7 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router';
-import { type ReactNode, StrictMode, useEffect, useState } from 'react';
+import { type ReactNode, StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   AuthContext,
@@ -20,6 +20,7 @@ import {
 } from './api/client.js';
 import { SignIn } from './auth/sign-in.js';
 import { CommandPalette } from './routes/command.js';
+import { DeveloperContext, readDeveloperView, writeDeveloperView } from './routes/developer.js';
 import type { ViewSearch } from './routes/state.js';
 import { QueryError, ReportContext, sortObjects } from './routes/state.js';
 import { Button, Notice, Page, Shell } from './ui/index.js';
@@ -28,7 +29,18 @@ import './style.css';
 function Layout() {
   const { session, signOut } = useAuth();
   const [command, setCommand] = useState(false),
-    [report, setReport] = useState<ReactNode>(null);
+    [report, setReport] = useState<ReactNode>(null),
+    [developer, setDeveloper] = useState(() => readDeveloperView(() => localStorage));
+  const developerView = useMemo(
+    () => ({
+      on: developer,
+      set: (on: boolean) => {
+        setDeveloper(on);
+        writeDeveloperView(() => localStorage, on);
+      },
+    }),
+    [developer],
+  );
   const client = useQueryClient();
   const schema = useQuery({
     queryKey: [session.workspace.id, 'schema'],
@@ -83,29 +95,37 @@ function Layout() {
   const objects = sortObjects(schema.data.objects);
   return (
     <WorkspaceContext.Provider value={{ session, schema: schema.data }}>
-      <ReportContext.Provider value={setReport}>
-        <Shell
-          workspace={session.workspace.name}
-          user={{
-            name: session.actor.name || session.actor.id,
-            type: session.actor.type,
-          }}
-          inboxCount={inbox.data?.totals.pendingAssertions}
-          objects={objects.map((o) => ({ name: o.nameSingular, label: o.labelPlural }))}
-          onSignOut={signOut}
-          onSearch={() => setCommand(true)}
-        >
-          {session.actor.type !== 'user' ? (
-            <Notice>
-              This key represents a {session.actor.type}. Sign in with a personal user key to make
-              changes.
-            </Notice>
-          ) : null}
-          {report ? <Notice onDismiss={() => setReport(null)}>{report}</Notice> : null}
-          <Outlet />
-        </Shell>
-        <CommandPalette open={command} onOpenChange={setCommand} />
-      </ReportContext.Provider>
+      <DeveloperContext.Provider value={developerView}>
+        <ReportContext.Provider value={setReport}>
+          <Shell
+            workspace={session.workspace.name}
+            user={{
+              name: session.actor.name || session.actor.id,
+              type: session.actor.type,
+            }}
+            inboxCount={inbox.data?.totals.pendingAssertions}
+            objects={objects.map((o) => ({
+              name: o.nameSingular,
+              label: o.labelPlural,
+              class: o.class,
+            }))}
+            developer={developer}
+            onDeveloperChange={developerView.set}
+            onSignOut={signOut}
+            onSearch={() => setCommand(true)}
+          >
+            {session.actor.type !== 'user' ? (
+              <Notice>
+                This key represents a {session.actor.type}. Sign in with a personal user key to make
+                changes.
+              </Notice>
+            ) : null}
+            {report ? <Notice onDismiss={() => setReport(null)}>{report}</Notice> : null}
+            <Outlet />
+          </Shell>
+          <CommandPalette open={command} onOpenChange={setCommand} />
+        </ReportContext.Provider>
+      </DeveloperContext.Provider>
     </WorkspaceContext.Provider>
   );
 }
@@ -126,6 +146,11 @@ function validateSearch(raw: Record<string, unknown>): ViewSearch {
     'kind',
     'fields',
     'eventTypes',
+    'channel',
+    'from',
+    'to',
+    'linked',
+    'layout',
   ] as const)
     if (typeof raw[key] === 'string') result[key] = raw[key];
   return result;
@@ -159,6 +184,11 @@ const routeTree = rootRoute.addChildren([
     getParentRoute: () => rootRoute,
     path: '/o/$object',
     component: lazyRouteComponent(() => import('./routes/objects.js'), 'ObjectPage'),
+  }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/activity',
+    component: lazyRouteComponent(() => import('./routes/activity.js'), 'ActivityPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,

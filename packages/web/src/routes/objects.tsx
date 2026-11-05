@@ -8,7 +8,7 @@ import type {
   SavedView,
   UpdateViewInput,
 } from '@retainer/shared';
-import { aggregateOps, filterOperatorsFor } from '@retainer/shared';
+import { aggregateOps } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
 import {
@@ -16,6 +16,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   BookmarkPlus,
+  CalendarDays,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -25,6 +26,7 @@ import {
   ListFilter,
   Plus,
   Save,
+  Table2,
   Trash2,
   X,
 } from 'lucide-react';
@@ -33,6 +35,7 @@ import { api, canMutate, useWorkspace } from '../api/client.js';
 import { filterValue, pickerFor } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import {
+  ApiName,
   Button,
   CheckLabel,
   DataGrid,
@@ -68,6 +71,17 @@ import {
 import { BoardView } from './board-view.js';
 import { CalendarView } from './calendar-view.js';
 import { CreateRecordDialog } from './create-record.js';
+import { useApiName } from './developer.js';
+import {
+  DEFAULT_EVENT_SORT,
+  eventListObject,
+  isEventColumn,
+  LoggedByAgents,
+  listFilterOperators,
+  occurredCalendar,
+  ParticipantsCell,
+  withEventValues,
+} from './event-list.js';
 import {
   addClause,
   aggregateLabel,
@@ -117,6 +131,7 @@ import {
   viewsKey,
 } from './views-state.js';
 import { isWritable } from './write-model.js';
+import { WriteNoteButton } from './write-note.js';
 
 const PAGE_SIZE = 50;
 const BUILT_IN_SORTS = [
@@ -135,12 +150,15 @@ export function ObjectPage() {
       </Page>
     );
   // Remount per object so saved column preferences are read once, on mount.
-  return <ObjectList key={`${session.workspace.id}:${name}`} name={name} object={object} />;
+  return <ObjectList key={`${session.workspace.id}:${name}`} name={name} schemaObject={object} />;
 }
 
-function ObjectList({ name, object }: { name: string; object: ObjectView }) {
+function ObjectList({ name, schemaObject }: { name: string; schemaObject: ObjectView }) {
   const { session, schema } = useWorkspace();
   const { search, setSearch } = useView();
+  const apiName = useApiName();
+  // An event type lists its built-in columns and links beside its fields (5.3).
+  const object = useMemo(() => eventListObject(schemaObject, schema), [schemaObject, schema]);
   const workspace = session.workspace.id;
   const [error, setError] = useState(''),
     [creating, setCreating] = useState(false),
@@ -149,6 +167,8 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const writable = canMutate(session);
   // Events are created only by logging them, and cannot be merged.
   const isEvent = object.class === 'event';
+  // Notes are the exception: people write them here (D7).
+  const isNoteList = object.baseObject === 'note' && writable;
   const [localPrefs, setLocalPrefs] = useState(() =>
     loadColumnPrefs(() => localStorage, workspace, name),
   );
@@ -164,12 +184,22 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   });
   const saved = search.view ? views.data?.views.find((v) => v.id === search.view) : undefined;
   const missingView = !!search.view && views.isSuccess && !saved;
-  const kind = saved?.kind ?? 'table';
+  // An event list offers a calendar of when events happened without a saved view.
+  const occurred = useMemo(() => occurredCalendar(object), [object]);
+  const calendarLayout = isEvent && !search.view && search.layout === 'calendar';
+  const kind = saved?.kind ?? (calendarLayout ? 'calendar' : 'table');
   const selectView = useCallback(
     (id: string | undefined, options: { replace?: boolean } = {}) => {
       rememberView(workspace, objectName, id);
       void setSearch(
-        { view: id, filter: undefined, sort: undefined, cursor: undefined, month: undefined },
+        {
+          view: id,
+          filter: undefined,
+          sort: undefined,
+          cursor: undefined,
+          month: undefined,
+          layout: undefined,
+        },
         options,
       );
     },
@@ -190,16 +220,24 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   const effective = effectiveSearch(saved, search);
   const changed = hasChanges(saved, search);
   const view = parseListSearch(effective);
-  const { clauses, custom, sort } = view;
+  const { clauses, custom } = view;
+  // Events are read newest first unless a sort is chosen; the header shows it.
+  const implicitSort = isEvent && !view.query.sort;
+  const querySort = implicitSort ? DEFAULT_EVENT_SORT : view.query.sort;
+  const sort = view.sort ?? (implicitSort ? DEFAULT_EVENT_SORT[0] : undefined);
   const input: QueryInput = {
     limit: PAGE_SIZE,
     cursor: search.cursor,
     include: ['relationReferences'],
     ...view.query,
+    ...(querySort ? { sort: querySort } : {}),
   };
   const query = useQuery({
     queryKey: [workspace, 'records', name, input],
-    queryFn: ({ signal }) => api.queryRecords(name, input, signal),
+    queryFn: async ({ signal }) => {
+      const page = await api.queryRecords(name, input, signal);
+      return isEvent ? { ...page, records: page.records.map(withEventValues) } : page;
+    },
     enabled: !view.error && !resolving && kind === 'table',
   });
   // Built once per copy of the view, so the grid's memos hold across renders.
@@ -243,11 +281,12 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
       columns.map((f, i) => ({
         id: f.name,
         label: f.label,
+        apiName: apiName(f.name),
         width: prefs?.widths[f.name] ?? defaultColumnWidth(f, i === 0),
         sortable: isSortable(f),
         pinned: i === 0,
       })),
-    [columns, prefs],
+    [columns, prefs, apiName],
   );
   const references = query.data?.relationReferences;
   const records = query.data?.records;
@@ -260,15 +299,18 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           label,
           cells: columns.map((f, i) => {
             const Display = fields[f.type].Display;
-            const shown = (
-              <Display
-                key={f.name}
-                field={f}
-                value={r.fields[f.name]}
-                compact
-                references={references}
-              />
-            );
+            const shown =
+              f.name === 'participants' && r.event ? (
+                <ParticipantsCell key={f.name} record={r} field={f} references={references} />
+              ) : (
+                <Display
+                  key={f.name}
+                  field={f}
+                  value={r.fields[f.name]}
+                  compact
+                  references={references}
+                />
+              );
             const cell =
               i === 0 ? (
                 <RecordLink key={f.name} id={r.id} inSheet>
@@ -383,8 +425,9 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
   return (
     <Page
       layout="fill"
-      eyebrow="Objects"
+      eyebrow={isEvent ? 'Activity' : 'Records'}
       title={object.labelPlural}
+      apiName={apiName(object.nameSingular)}
       actions={
         <>
           {kind !== 'calendar' ? (
@@ -397,12 +440,19 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               onReset={() => savePrefs({ order: defaultColumnOrder(object), widths: {} })}
             />
           ) : null}
-          {writable && !isEvent ? (
-            <Button variant="primary" size="small" onClick={() => setCreating(true)}>
-              <Plus size={14} />
-              New {object.labelSingular.toLowerCase()}
-            </Button>
-          ) : null}
+          {!isEvent ? (
+            writable ? (
+              <Button variant="primary" size="small" onClick={() => setCreating(true)}>
+                <Plus size={14} />
+                New {object.labelSingular.toLowerCase()}
+              </Button>
+            ) : null
+          ) : isNoteList ? (
+            <WriteNoteButton onSaved={openRow} />
+          ) : (
+            // Events have no New button; say why in its place (5.3).
+            <LoggedByAgents />
+          )}
         </>
       }
     >
@@ -420,6 +470,8 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               <Combine size={14} />
               Merge…
             </Button>
+          ) : selectedIds.length === 2 ? (
+            <Muted small>Events can’t be merged</Muted>
           ) : null}
           <Button variant="destructive" size="small" onClick={() => setBulk('delete')}>
             <Trash2 size={14} />
@@ -450,6 +502,23 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
               ) : null}
               {saved && saved.kind !== 'table' && writable ? (
                 <ViewOptions object={object} view={saved} onChange={(c) => void changeView(c)} />
+              ) : null}
+              {isEvent && !saved ? (
+                <Segmented
+                  label="Layout"
+                  value={calendarLayout ? 'calendar' : 'table'}
+                  options={[
+                    { value: 'table', label: 'Table', icon: <Table2 size={12} /> },
+                    { value: 'calendar', label: 'Calendar', icon: <CalendarDays size={12} /> },
+                  ]}
+                  onChange={(next) =>
+                    void setSearch({
+                      layout: next === 'calendar' ? 'calendar' : undefined,
+                      cursor: undefined,
+                      month: undefined,
+                    })
+                  }
+                />
               ) : null}
               <SortMenu
                 object={object}
@@ -542,10 +611,10 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           onOpen={openRow}
           onChangeView={(c) => void changeView(c)}
         />
-      ) : saved?.kind === 'calendar' && !view.error ? (
+      ) : (saved?.kind === 'calendar' || calendarLayout) && !view.error ? (
         <CalendarView
           object={object}
-          view={saved}
+          view={saved ?? occurred}
           filter={view.query.filter}
           sort={view.query.sort}
           month={search.month}
@@ -564,7 +633,7 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
           label={object.labelPlural}
           columns={gridColumns}
           sort={sort ? { column: sort.field, direction: sort.direction } : undefined}
-          onSort={(column) => setSort(nextSort(sort, column))}
+          onSort={(column) => setSort(nextSort(view.sort, column))}
           onResize={(column, width) =>
             patchPrefs({ widths: { ...prefs?.widths, [column]: width } })
           }
@@ -582,9 +651,11 @@ function ObjectList({ name, object }: { name: string; object: ObjectView }) {
             description={
               effective.filter
                 ? 'No records match these filters.'
-                : isEvent
-                  ? `Ask your agent to log ${object.labelPlural.toLowerCase()}, and they will show up here.`
-                  : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
+                : isNoteList
+                  ? 'Write a note, or ask your agent to log one, and it will show up here.'
+                  : isEvent
+                    ? `Ask your agent to log ${object.labelPlural.toLowerCase()}, and they will show up here.`
+                    : `Ask your agent to add records${canMutate(session) ? ', or create one with the New button' : ', and they will show up here'}.`
             }
           />
         </Inset>
@@ -739,7 +810,8 @@ function FooterCell({
   result: AggregateResult | undefined;
   onChange: (op: AggregateOp | undefined) => void;
 }) {
-  const ops = aggregateOps(field);
+  // Built-in event columns aren't fields the totals route can compute.
+  const ops = isEventColumn(field.name) && field.readOnly ? [] : aggregateOps(field);
   if (!ops.length) return null;
   const value = op ? result?.values.find((v) => v.field === field.name && v.op === op) : undefined;
   return (
@@ -766,13 +838,21 @@ function FooterCell({
   );
 }
 
-/** A field's name with its type's icon. */
+/** A field's name with its type's icon, and its API name in developer view. */
 function FieldLabel({ field }: { field: FieldView }) {
-  return <IconLabel icon={fields[field.type].icon}>{field.label}</IconLabel>;
+  const apiName = useApiName()(field.name);
+  return (
+    <IconLabel icon={fields[field.type].icon}>
+      {field.label}
+      {apiName ? <ApiName>{apiName}</ApiName> : null}
+    </IconLabel>
+  );
 }
-const fieldOption = (f: FieldView) => ({
+const fieldOption = (f: FieldView, apiName?: string) => ({
   value: f.name,
   label: f.label,
+  // Search finds a field by its API name too, where it is shown.
+  ...(apiName ? { keywords: apiName } : {}),
   content: <FieldLabel field={f} />,
 });
 
@@ -789,10 +869,7 @@ function SortMenu({
   const [open, setOpen] = useState(false);
   const [direction, setDirection] = useState<'asc' | 'desc'>('asc');
   const options = [
-    ...object.fields.filter(isSortable).map(fieldOption),
-    ...(object.eventColumns?.includes('occurredAt')
-      ? [{ value: 'occurredAt', label: 'Occurred' }]
-      : []),
+    ...object.fields.filter(isSortable).map((f) => fieldOption(f)),
     ...BUILT_IN_SORTS.map((s) => ({ value: s.name, label: s.label })),
   ];
   const current = sort ? (options.find((o) => o.value === sort.field)?.label ?? sort.field) : '';
@@ -863,6 +940,7 @@ function FilterMenu({
   onApply: (clause: FilterClause) => void;
   onError: (message: string) => void;
 }) {
+  const apiName = useApiName();
   const [open, setOpen] = useState(false),
     [field, setField] = useState(''),
     [operator, setOperator] = useState('eq'),
@@ -871,7 +949,7 @@ function FilterMenu({
   function choose(name: string) {
     const f = object.fields.find((f) => f.name === name);
     setField(name);
-    const first = f ? (filterOperatorsFor(f)[0] ?? 'isNull') : 'eq';
+    const first = f ? (listFilterOperators(f)[0] ?? 'isNull') : 'eq';
     setOperator(first);
     setValue(f?.type === 'boolean' ? true : f?.type === 'number' ? 0 : initialFilterValue(first));
   }
@@ -912,7 +990,7 @@ function FilterMenu({
                 label="Filter operator"
                 fill
                 value={operator}
-                options={filterOperatorsFor(selected).map((o) => ({
+                options={listFilterOperators(selected).map((o) => ({
                   value: o,
                   label: operatorLabel(o),
                 }))}
@@ -937,7 +1015,9 @@ function FilterMenu({
         <OptionList
           label="Filter by"
           placeholder="Search fields…"
-          options={object.fields.filter((f) => f.isFilterable).map(fieldOption)}
+          options={object.fields
+            .filter((f) => f.isFilterable)
+            .map((f) => fieldOption(f, apiName(f.name)))}
           empty="No fields match"
           onPick={choose}
         />

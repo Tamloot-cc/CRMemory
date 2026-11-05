@@ -56,7 +56,7 @@ let n = 0;
 const externalId = () => `evt-${++n}`;
 const log = (input: Partial<LogEventInput> = {}, ws = workspaceId) =>
   logEventFor(app, as(AGENT, ws), {
-    type: 'call',
+    type: 'conversation',
     channel: 'zoom',
     occurredAt: '2026-10-29T14:00:00+02:00',
     title: 'Call',
@@ -74,7 +74,7 @@ beforeAll(async () => {
   await schemaChange([
     {
       op: 'create_field',
-      object: 'call',
+      object: 'conversation',
       field: {
         name: 'account',
         label: 'Account',
@@ -89,7 +89,7 @@ describe('storage invariants', () => {
   it('requires an event_records row for every event record at commit', async () => {
     const [call] = await db.owner<{ id: string }[]>`
       select id from object_types
-      where workspace_id = ${workspaceId} and name_singular = 'call'`;
+      where workspace_id = ${workspaceId} and name_singular = 'conversation'`;
     await expect(
       db.owner.begin(async (tx) => {
         await tx`
@@ -164,9 +164,10 @@ describe("attachment through an event type's relation field (6.3)", () => {
     const call = await log({ externalId: externalId(), fields: { account: acme.id } });
 
     const linked = (record: string) =>
-      findRecords(app, as(AGENT), 'call', { linked: { record, link: 'field' }, limit: 50 }).then(
-        (page) => page.records.map((r) => r.id),
-      );
+      findRecords(app, as(AGENT), 'conversation', {
+        linked: { record, link: 'field' },
+        limit: 50,
+      }).then((page) => page.records.map((r) => r.id));
     expect(await linked(acme.id)).toEqual([call.id]);
     const page = await withRead(app, as(AGENT), (tx, schema) =>
       attachedEventPage(tx, schema, workspaceId, acme.id, 10),
@@ -302,7 +303,7 @@ describe('the internal-note type (6.4)', () => {
     const gone = await company('Deleted Links Inc');
     await log({ externalId: externalId(), about: [gone.id] });
     const linked = () =>
-      findRecords(app, as(AGENT), 'call', { linked: { record: gone.id }, limit: 50 });
+      findRecords(app, as(AGENT), 'conversation', { linked: { record: gone.id }, limit: 50 });
     expect((await linked()).records).toHaveLength(1);
     await deleteRecord(app, as(USER), gone.id);
     expect((await linked()).records).toEqual([]);
@@ -311,7 +312,7 @@ describe('the internal-note type (6.4)', () => {
 
 describe('calendar views (7.1)', () => {
   it('can place event types by occurredAt, entities cannot', async () => {
-    const view = await createView(app, as(USER), 'call', {
+    const view = await createView(app, as(USER), 'conversation', {
       name: 'Calls by day',
       kind: 'calendar',
       visibility: 'workspace',
@@ -324,6 +325,47 @@ describe('calendar views (7.1)', () => {
         kind: 'calendar',
         visibility: 'workspace',
         dateField: 'occurredAt',
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("shows an event's participants and about as columns, never as filters or sorts", async () => {
+    const view = await createView(app, as(USER), 'conversation', {
+      name: 'Recent conversations',
+      kind: 'table',
+      visibility: 'workspace',
+      sort: [{ field: 'occurredAt', direction: 'desc' }],
+      columns: {
+        order: ['title', 'occurredAt', 'medium', 'participants', 'about', 'channel'],
+        widths: { participants: 240, about: 200 },
+      },
+    });
+    expect(view.columns).toMatchObject({
+      order: ['title', 'occurredAt', 'medium', 'participants', 'about', 'channel'],
+      widths: { participants: 240, about: 200 },
+    });
+    expect(view.issues ?? []).toEqual([]);
+    for (const bad of [
+      { sort: [{ field: 'participants', direction: 'asc' as const }] },
+      { filter: { about: 'x' } },
+      { columns: { order: ['title'], aggregates: { about: 'countNotEmpty' } } },
+    ]) {
+      await expect(
+        createView(app, as(USER), 'conversation', {
+          name: 'Bad',
+          kind: 'table',
+          visibility: 'workspace',
+          ...bad,
+        } as never),
+      ).rejects.toMatchObject({ status: 422 });
+    }
+    // Entities have no such columns.
+    await expect(
+      createView(app, as(USER), 'company', {
+        name: 'Bad',
+        kind: 'table',
+        visibility: 'workspace',
+        columns: { order: ['name', 'participants'] },
       }),
     ).rejects.toMatchObject({ status: 422 });
   });

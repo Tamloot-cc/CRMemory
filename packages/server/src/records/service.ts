@@ -4,9 +4,11 @@ import type {
   BulkDeleteImpact,
   DeleteImpact,
   DeleteRecordResult,
+  EventPage,
   ForgetResult,
   MergeResult,
   MergeSuggestionDecision,
+  RecordPage,
 } from '@retainer/shared';
 import { z } from 'zod';
 import type { Sql } from '../db/client.js';
@@ -16,12 +18,17 @@ import { AppError, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';
 import { lockSource, retractEventClaims } from '../memory/events.js';
 import { forgetRecord } from '../privacy/forget.js';
-import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
+import {
+  type CompiledObject,
+  type CompiledSchema,
+  getSchema,
+  objectNamed,
+} from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import { type AggregateInput, aggregateRecords } from './aggregate.js';
 import { identifiersFor, lookupValue } from './derive.js';
 import { dismissMergeSuggestion, type MergeInput, MergeRaceError, mergeRecords } from './merge.js';
-import { type QueryInput, queryRecords } from './query.js';
+import { EVENT_QUERY_OBJECT, type QueryInput, queryEvents, queryRecords } from './query.js';
 import { getRecord, type PresentedRecord } from './read.js';
 import { acceptAssertion, type DecisionResult, rejectAssertion } from './review.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
@@ -117,9 +124,7 @@ export async function withRead<T>(
  * resolves it as not found.
  */
 export function requireObject(schema: CompiledSchema, name: string): CompiledObject {
-  const object =
-    schema.objectsByName.get(name) ??
-    [...schema.objectsByName.values()].find((o) => o.state.namePlural === name);
+  const object = objectNamed(schema, name);
   if (!object) {
     throw notFound(`object "${name}"`, { objects: [...schema.objectsByName.keys()] });
   }
@@ -536,10 +541,27 @@ export async function readRecord(sql: Sql, caller: Caller, id: string): Promise<
   return withRead(sql, caller, (tx, schema) => getRecord(tx, caller.workspaceId, schema, id));
 }
 
-export async function findRecords(sql: Sql, caller: Caller, objectName: string, input: QueryInput) {
+/**
+ * Records of one object. The reserved name `event` (or `events`) queries
+ * events of every event type at once (7.1).
+ */
+export async function findRecords(
+  sql: Sql,
+  caller: Caller,
+  objectName: string,
+  input: QueryInput,
+): Promise<RecordPage | EventPage> {
+  if (objectName === EVENT_QUERY_OBJECT || objectName === `${EVENT_QUERY_OBJECT}s`) {
+    return findEvents(sql, caller, input);
+  }
   return withRead(sql, caller, (tx, schema) =>
     queryRecords(tx, caller.workspaceId, schema, requireObject(schema, objectName), input),
   );
+}
+
+/** Events of every visible event type, newest first by default (7.1). */
+export async function findEvents(sql: Sql, caller: Caller, input: QueryInput): Promise<EventPage> {
+  return withRead(sql, caller, (tx, schema) => queryEvents(tx, caller.workspaceId, schema, input));
 }
 
 export async function decideAssertion(

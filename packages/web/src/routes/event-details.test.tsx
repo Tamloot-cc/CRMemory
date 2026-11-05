@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, WorkspaceContext } from '../api/client.js';
 import { AddAbout, EventDetailsView, ViaLabel } from './event-details.js';
 
-const meeting = {
-  nameSingular: 'meeting',
+const conversation = {
+  nameSingular: 'conversation',
   class: 'event',
   fields: [{ name: 'deal', label: 'Deal' }],
 } as unknown as ObjectView;
@@ -38,7 +38,7 @@ function renderIn(
 ) {
   const workspace = {
     session: { workspace: { id: 'w1' } } as unknown as Session,
-    schema: { objects: [meeting, company, person, ...extra] } as unknown as SchemaDescription,
+    schema: { objects: [conversation, company, person, ...extra] } as unknown as SchemaDescription,
   };
   // Without a references map, record labels are fetched per link; answer them without a server.
   vi.spyOn(api, 'record').mockResolvedValue({ id: 'r', label: 'Dana Levi', ...source } as never);
@@ -63,8 +63,8 @@ describe('ViaLabel', () => {
       <>
         <ViaLabel via={{ kind: 'participant' }} />
         <ViaLabel via={{ kind: 'about' }} />
-        <ViaLabel via={{ kind: 'field', field: 'deal' }} eventObject={meeting} />
-        <ViaLabel via={{ kind: 'field', field: 'renamedAway' }} eventObject={meeting} />
+        <ViaLabel via={{ kind: 'field', field: 'deal' }} eventObject={conversation} />
+        <ViaLabel via={{ kind: 'field', field: 'renamedAway' }} eventObject={conversation} />
       </>,
     );
     expect(screen.getByText('Participant')).toBeTruthy();
@@ -203,10 +203,17 @@ describe('AddAbout', () => {
       records: [{ id: 'c1', object: 'company', label: 'Acme', match: 'text' }],
       facts: [],
       events: [
-        { id: 'e1', type: 'meeting', occurredAt: '', title: 'Kickoff', summary: null, records: [] },
+        {
+          id: 'e1',
+          type: 'conversation',
+          occurredAt: '',
+          title: 'Kickoff',
+          summary: null,
+          records: [],
+        },
         {
           id: 'e0',
-          type: 'meeting',
+          type: 'conversation',
           occurredAt: '',
           title: 'This one',
           summary: null,

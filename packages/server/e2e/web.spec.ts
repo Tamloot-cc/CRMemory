@@ -7,6 +7,11 @@ async function signIn(page: Page, url: string, key: string) {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Review inbox' })).toBeVisible();
 }
+/** Sign out from the account menu at the foot of the sidebar. */
+async function signOut(page: Page) {
+  await page.getByRole('button', { name: /^Account: / }).click();
+  await page.getByRole('menuitem', { name: 'Sign out' }).click();
+}
 test('sign in, accept and reject values, browse records, and inspect provenance', async ({
   page,
   retainer: r,
@@ -107,7 +112,7 @@ test('approves a schema proposal and refreshes the schema', async ({ page, retai
   await expect(page.getByRole('heading', { name: 'Schema', exact: true })).toBeVisible();
   // Pick an object, filter its fields and open one in the side sheet.
   await page
-    .getByRole('navigation', { name: 'Objects' })
+    .getByRole('navigation', { name: 'Records' })
     .getByRole('button', { name: /^People/ })
     .click();
   await expect(page.getByRole('heading', { name: 'People', exact: true })).toBeVisible();
@@ -166,8 +171,9 @@ test('lists facts as a built-in and event types beside objects, and shows what a
   const acme = (await r.request('/objects/company/records', { values: { name: 'Acme Pilot Co' } }))
     .record;
   const meeting = await r.request('/events', {
-    type: 'meeting',
+    type: 'conversation',
     channel: 'calendar',
+    fields: { medium: 'meeting' },
     occurredAt: '2026-10-29T12:00:00Z',
     title: 'Pilot review',
     about: [acme.id],
@@ -180,14 +186,21 @@ test('lists facts as a built-in and event types beside objects, and shows what a
     .click();
   await expect(page.getByRole('heading', { name: 'Facts', exact: true })).toBeVisible();
   await expect(page).toHaveURL(/object=fact/);
+  // Records and events are explained above the lists, with how each is written.
+  await expect(page.getByText('upsert_record', { exact: true })).toBeVisible();
+  await expect(page.getByText('log_event', { exact: true })).toBeVisible();
   await page
-    .getByRole('navigation', { name: 'Event types' })
-    .getByRole('button', { name: /^Meetings/ })
+    .getByRole('navigation', { name: 'Activity' })
+    .getByRole('button', { name: /^Conversations/ })
     .click();
-  await expect(page.getByRole('heading', { name: 'Meetings', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
   await expect(page.getByText('occurredAt', { exact: true })).toBeVisible();
   await page.goto(`${r.url}/app/e/${meeting.id}`);
   await expect(page.getByRole('heading', { name: 'Pilot review' })).toBeVisible();
+  await expect(
+    page.getByText('Conversation · Meeting · Source: calendar', { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText('Activity · Conversation')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Acme Pilot Co' })).toBeVisible();
 });
 test('draws the objects and relations and opens them from the diagram', async ({
@@ -218,7 +231,7 @@ test('deletes an event and refreshes the affected memory', async ({ page, retain
   const record = (await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }))
     .record;
   const event = await r.request('/events', {
-    type: 'meeting',
+    type: 'conversation',
     channel: 'zoom',
     occurredAt: '2026-10-20T10:00:00Z',
     title: 'Renewal call',
@@ -263,7 +276,7 @@ test('hides mutations from agent and read-only keys and isolates a replacement s
   await page.getByRole('link', { name: 'People', exact: true }).click();
   await expect(page.getByRole('link', { name: 'Private Acme person' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'New person' })).not.toBeVisible();
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await signOut(page);
   await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
   await page.getByLabel('Personal API key').fill(r.keys.other);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -349,7 +362,7 @@ test('discards a previous session response that arrives after a replacement logi
   });
   await page.getByRole('link', { name: 'People', exact: true }).click();
   await started;
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await signOut(page);
   await page.getByLabel('Personal API key').fill(r.keys.other);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('link', { name: 'People', exact: true }).click();
@@ -989,7 +1002,7 @@ test('erases a person for a privacy request after typed confirmation', async ({
     })
   ).record;
   const event = await r.request('/events', {
-    type: 'meeting',
+    type: 'conversation',
     channel: 'zoom',
     occurredAt: '2026-10-20T10:00:00Z',
     title: 'Intro call',
@@ -1035,8 +1048,9 @@ test('finds records, facts and events across objects with the command palette', 
     .record;
   await r.request('/objects/company/records', { values: { name: 'Levi Logistics' } });
   const event = await r.request('/events', {
-    type: 'call',
+    type: 'conversation',
     channel: 'phone',
+    fields: { medium: 'call' },
     occurredAt: '2026-10-20T10:00:00Z',
     title: 'Quarterly pricing review',
     participants: [{ recordId: dana.id }],
@@ -1282,11 +1296,260 @@ test('keeps a changed filter as unsaved until the view is saved or reset', async
   expect((await r.request(`/views/${view.id}`)).filter).toEqual({ jobTitle: { eq: 'CFO' } });
 
   // A reader runs the view but cannot change or save it.
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await signOut(page);
   await signIn(page, r.url, r.keys.reader);
   await page.goto(changed);
   await expect(grid.getByText('Noa Cohen')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save view' })).not.toBeVisible();
   await page.getByRole('button', { name: 'View: Executives' }).click();
   await expect(page.getByRole('menuitem', { name: 'New view…' })).not.toBeVisible();
+});
+
+test('groups the sidebar into Records and Activity, and explains what event lists lack', async ({
+  page,
+  retainer: r,
+}) => {
+  const dana = (await r.request('/objects/person/records', { values: { name: 'Dana Levi' } }))
+    .record;
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  for (const [title, day] of [
+    ['Kickoff', '2026-10-20'],
+    ['Pricing review', '2026-10-22'],
+  ])
+    await r.request('/events', {
+      type: 'conversation',
+      channel: 'gmail',
+      externalId: title,
+      occurredAt: `${day}T10:00:00Z`,
+      title,
+      fields: { medium: 'email' },
+      participants: [{ recordId: dana.id }],
+      about: [acme.id],
+    });
+  await signIn(page, r.url, r.keys.user);
+  const records = page.getByRole('group', { name: 'Records' });
+  const activity = page.getByRole('group', { name: 'Activity' });
+  await expect(records.getByRole('link', { name: 'People', exact: true })).toBeVisible();
+  await expect(records.getByRole('link', { name: 'Conversations' })).toHaveCount(0);
+  await expect(activity.getByRole('link')).toHaveText(['All activity', 'Conversations', 'Notes']);
+  // The icon rail keeps both groups.
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  await expect(activity.getByRole('link', { name: 'All activity' })).toBeVisible();
+  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+
+  await activity.getByRole('link', { name: 'Conversations' }).click();
+  const grid = page.getByRole('region', { name: 'Conversations' });
+  // Newest first, with when, medium, who, what about and where from.
+  await expect(grid.getByRole('link', { name: /^(Kickoff|Pricing review)$/ })).toHaveText([
+    'Pricing review',
+    'Kickoff',
+  ]);
+  for (const column of ['Occurred', 'Medium', 'Participants', 'About', 'Source'])
+    await expect(grid.getByRole('columnheader', { name: column })).toBeVisible();
+  await expect(grid.getByRole('columnheader', { name: 'Summary' })).toHaveCount(0);
+  await expect(grid.getByRole('link', { name: 'Dana Levi' }).first()).toBeVisible();
+  await expect(grid.getByRole('link', { name: 'Acme' }).first()).toBeVisible();
+  await expect(grid.getByText('gmail').first()).toBeVisible();
+  // No New button, and a line that says why.
+  await expect(page.getByRole('button', { name: /^New / })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Logged by agents and integrations.' }).click();
+  await expect(page.getByRole('dialog', { name: 'How events are logged' })).toContainText(
+    'POST /v1/events',
+  );
+  await page.keyboard.press('Escape');
+  // Two selected: delete, but no merge, and that is said.
+  await grid.getByRole('checkbox', { name: 'Select Kickoff' }).check();
+  await grid.getByRole('checkbox', { name: 'Select Pricing review' }).check();
+  await expect(page.getByText('Events can’t be merged')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Merge…' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Clear selection' }).click();
+  // A calendar of when they happened, with nothing to set up.
+  await page.getByRole('button', { name: 'Calendar', exact: true }).click();
+  await expect(page).toHaveURL(/layout=calendar/);
+  await page.goto(`${r.url}/app/o/conversation?layout=calendar&month=2026-10`);
+  await expect(page.getByRole('button', { name: /Kickoff/ })).toBeVisible();
+  // The note list writes notes in place of the line.
+  await activity.getByRole('link', { name: 'Notes' }).click();
+  await expect(page.getByRole('button', { name: 'Write a note' })).toBeVisible();
+  await expect(page.getByText('Logged by agents and integrations.')).toHaveCount(0);
+});
+
+test('filters all activity by type, source, date and linked record, in the address', async ({
+  page,
+  retainer: r,
+}) => {
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  const globex = (await r.request('/objects/company/records', { values: { name: 'Globex' } }))
+    .record;
+  await r.request('/events', {
+    type: 'conversation',
+    channel: 'gmail',
+    occurredAt: '2026-10-20T10:00:00Z',
+    title: 'Acme intro',
+    summary: 'First call with the Acme team about the pilot.',
+    fields: { medium: 'call' },
+    about: [acme.id],
+  });
+  await r.request('/events', {
+    type: 'conversation',
+    channel: 'zoom',
+    occurredAt: '2026-10-22T10:00:00Z',
+    title: 'Globex demo',
+    about: [globex.id],
+  });
+  await r.request('/events', {
+    type: 'note',
+    channel: 'agent',
+    occurredAt: '2026-10-23T10:00:00Z',
+    title: 'Acme budget note',
+    about: [acme.id],
+  });
+  await signIn(page, r.url, r.keys.user);
+  await page.getByRole('link', { name: 'All activity' }).click();
+  await expect(page.getByRole('heading', { name: 'All activity' })).toBeVisible();
+  const titles = page.getByRole('button', { name: /^(Acme intro|Globex demo|Acme budget note)$/ });
+  await expect(titles).toHaveText(['Acme budget note', 'Globex demo', 'Acme intro']);
+  // Grouped by day, with the medium as a chip and the about records linked.
+  await expect(page.getByRole('region', { name: /October 20/ })).toContainText('Call');
+  await expect(page.getByRole('region', { name: /October 20/ })).toContainText(
+    'First call with the Acme team',
+  );
+
+  const filter = async (kind: string) => {
+    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    await page.getByRole('option', { name: kind, exact: true }).click();
+  };
+  await filter('Type');
+  await page.getByRole('option', { name: 'Notes' }).click();
+  await page.keyboard.press('Escape');
+  await expect(titles).toHaveText(['Acme budget note']);
+  await expect(page).toHaveURL(/eventTypes=note/);
+  await page.getByRole('button', { name: 'Remove filter Type' }).click();
+  await expect(titles).toHaveCount(3);
+
+  await filter('Source');
+  await page.getByLabel('Source', { exact: true }).fill('zoom');
+  await page.getByRole('button', { name: 'Apply filter' }).click();
+  await expect(titles).toHaveText(['Globex demo']);
+  await page.getByRole('button', { name: 'Remove filter Source' }).click();
+
+  await filter('Date');
+  await page.getByRole('textbox', { name: 'From', exact: true }).fill('2026-10-21');
+  await page.getByRole('textbox', { name: 'To', exact: true }).fill('2026-10-22');
+  await page.getByRole('button', { name: 'Apply filter' }).click();
+  await expect(titles).toHaveText(['Globex demo']);
+  await page.getByRole('button', { name: 'Remove filter Date' }).click();
+
+  await filter('Linked record');
+  await page.getByRole('combobox', { name: 'Linked record' }).fill('Acme');
+  await page.getByRole('option', { name: /^Acme/ }).click();
+  await expect(titles).toHaveText(['Acme budget note', 'Acme intro']);
+  await expect(page.getByText('Linked to')).toBeVisible();
+  // The address reproduces the feed, and a row opens in the side sheet.
+  await page.reload();
+  await expect(titles).toHaveText(['Acme budget note', 'Acme intro']);
+  await titles.first().click();
+  const sheet = page.getByRole('dialog', { name: 'Acme budget note' });
+  await expect(sheet.getByText('Activity · Note')).toBeVisible();
+  await expect(page).toHaveURL(/record=/);
+});
+
+test('writes a note once, even when a lost response is retried, and shows it on the record', async ({
+  page,
+  retainer: r,
+}) => {
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/activity`);
+  await page.getByRole('button', { name: 'Write a note' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Write a note' });
+  await dialog.getByLabel('Title').fill('Budget approved');
+  await dialog.getByLabel('Note').fill('Finance signed off on the pilot budget.');
+  await dialog.getByRole('button', { name: /^Records/ }).click();
+  await page.getByRole('combobox', { name: 'Search records' }).fill('Acme');
+  await page.getByRole('option', { name: /^Acme/ }).click();
+  await page.keyboard.press('Escape');
+  await expect(dialog.getByRole('button', { name: /^Records/ })).toContainText('Acme');
+  // The first save reaches the server, but its response is lost.
+  let lost = false;
+  await page.route('**/v1/events', async (route) => {
+    if (lost || route.request().method() !== 'POST') return route.continue();
+    lost = true;
+    await route.fetch();
+    await route.abort('failed');
+  });
+  await dialog.getByRole('button', { name: 'Save note' }).click();
+  await expect(dialog.getByText(/The note was not saved/)).toBeVisible();
+  await dialog.getByRole('button', { name: 'Save note' }).click();
+  await expect(dialog).not.toBeVisible();
+  await page.unrouteAll({ behavior: 'wait' });
+  // One note, by the person, from the web.
+  const notes = await r.request('/events/query', { filter: { type: { eq: 'note' } } });
+  expect(notes.records).toHaveLength(1);
+  expect(notes.records[0].event).toMatchObject({ channel: 'web', about: [acme.id] });
+  expect(notes.records[0].createdBy).toMatchObject({ type: 'user', id: 'dana' });
+  await expect(page.getByRole('dialog', { name: 'Budget approved' })).toBeVisible();
+  // Written now, so it leads today's activity, once.
+  await expect(
+    page.getByRole('region', { name: 'Today' }).getByRole('button', { name: 'Budget approved' }),
+  ).toHaveCount(1);
+  // It is on the timeline of the record it is about.
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=timeline`);
+  await expect(page.getByRole('link', { name: 'Budget approved' })).toBeVisible();
+});
+
+test('shows API names, IDs, write paths and JSON in developer view, remembered per browser', async ({
+  page,
+  retainer: r,
+}) => {
+  const dana = (
+    await r.request('/objects/person/records', { values: { name: 'Dana Levi', jobTitle: 'CTO' } })
+  ).record;
+  const event = await r.request('/events', {
+    type: 'conversation',
+    channel: 'zoom',
+    externalId: 'zoom-42',
+    occurredAt: '2026-10-20T10:00:00Z',
+    title: 'Intro call',
+    participants: [{ recordId: dana.id }],
+  });
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/r/${dana.id}`);
+  await expect(page.getByText('Record · Person')).toBeVisible();
+  await expect(page.getByText('upsert_record')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'JSON' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: /^Account: / }).click();
+  await page.getByRole('menuitemcheckbox', { name: 'Developer view' }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('upsert_record', { exact: true })).toBeVisible();
+  await expect(page.getByText(`PATCH /v1/records/${dana.id}`)).toBeVisible();
+  await expect(page.getByText(dana.id, { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy ID' })).toBeVisible();
+  await expect(page.getByText('jobTitle', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'JSON', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Record JSON' })).toContainText(
+    `"id": "${dana.id}"`,
+  );
+  // Event rows show how they are attached and their raw identity.
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await expect(page.getByText('via {"kind":"participant"}')).toBeVisible();
+  await expect(page.getByText('externalId "zoom-42"')).toBeVisible();
+  // An event names its own write path.
+  await page.goto(`${r.url}/app/e/${event.id}`);
+  await expect(page.getByText('log_event', { exact: true })).toBeVisible();
+  await expect(page.getByText('POST /v1/events', { exact: true })).toBeVisible();
+  // Column headers show API names too, and the switch survives a reload.
+  await page.reload();
+  await page.goto(`${r.url}/app/o/person`);
+  await expect(
+    page.getByRole('columnheader', { name: /Job title/ }).getByText('jobTitle'),
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: /^Account: / }).click();
+  await page.getByRole('menuitemcheckbox', { name: 'Developer view' }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByText('jobTitle', { exact: true })).toHaveCount(0);
+  await page.goto(`${r.url}/app/r/${dana.id}`);
+  await expect(page.getByText('upsert_record')).toHaveCount(0);
 });

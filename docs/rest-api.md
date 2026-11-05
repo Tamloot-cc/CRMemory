@@ -100,6 +100,7 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 | `POST /v1/records/:id/merge`                      | `write`, user    | Merge `recordId` into this record                                    |
 | `POST /v1/records/:id/forget`                     | `admin`, user    | Erase a person for a privacy request; not reversible                 |
 | `POST /v1/events`                                 | `write`          | Log an event; returns matched and unmatched participants             |
+| `POST /v1/events/query`                           | `read`           | Filter, sort and page events of every event type at once             |
 | `GET` · `DELETE /v1/events/:id`                   | `read` · `write` | Read an event, or delete it and retract what cites it                |
 | `POST /v1/events/:id/links`                       | `write`          | Add participants and `about` records; idempotent                     |
 | `DELETE /v1/events/:id/participants/:pid`         | `write`, user    | Remove one participant                                               |
@@ -157,7 +158,11 @@ still has to drop is named in the view's `issues`. Saved views are display setti
 records, and moving a board card is a record `PATCH`.
 
 Events are records of event types (`class: "event"` in `GET /v1/schema`):
-meetings, calls, emails, messages, notes and any type the workspace adds.
+`conversation` (meetings, calls, emails and chats, told apart by its
+`medium` field), `note`, and any type the workspace adds. `channel` is
+where an event came from (the source system or account) and is part of its
+identity; `medium` is what kind of conversation it was, and can be corrected
+later like any field.
 They are logged with `POST /v1/events` and never created through
 `POST /v1/objects/:object/records` (422 `use_log_event`), but an existing
 event's fields can be corrected like any record's. Query them with
@@ -174,5 +179,26 @@ internal and never listed.
   "linked": { "record": "rec_5a1…", "link": "participant" },
   "filter": { "occurredAt": { "gte": "2026-10-01T00:00:00Z" } },
   "sort": [{ "field": "occurredAt", "direction": "desc" }]
+}
+```
+
+`POST /v1/events/query` (also `POST /v1/objects/event/query`) takes the same
+body and returns events of every event type in one page, newest first
+unless `sort` says otherwise. Its filters and sorts take only what every
+event type shares: `occurredAt`, `channel`, `externalId`, `id`, `createdAt`
+and `updatedAt`, and `type` (event type API names, with `eq`, `neq` or
+`in`). `search` matches the events' searchable text, such as their title and
+summary, and `linked` works as above; rollups are not included. A type's own
+fields, such as `medium`, come back on each event but are filterable only
+with that type's own query. Each event carries `type` beside its fields and
+`event` details, and `include: ["relationReferences"]` adds labels for
+relation values, participants and `about` records. Internal notes are
+never listed.
+
+```json
+{
+  "filter": { "type": { "in": ["conversation", "note"] }, "channel": "gmail" },
+  "linked": { "record": "rec_5a1…" },
+  "include": ["relationReferences"]
 }
 ```

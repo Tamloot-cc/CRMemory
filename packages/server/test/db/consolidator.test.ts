@@ -40,7 +40,7 @@ const email = () => `consolidate${++n}@acme.test`;
 
 async function call(ws: string, occurredAt = '2026-10-01T10:00:00Z', title?: string) {
   return logEventFor(app, caller(ws), {
-    type: 'call',
+    type: 'conversation',
     channel: 'zoom',
     occurredAt,
     ...(title !== undefined ? { title } : {}),

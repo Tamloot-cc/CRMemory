@@ -1,6 +1,8 @@
 import type { Actor } from './actor.js';
 import type { FieldType, MoneyValue } from './field-types.js';
 import type {
+  BaseEventFieldName,
+  BaseEventTypeName,
   BaseFieldName,
   BaseObjectName,
   CoreRole,
@@ -34,7 +36,7 @@ export type FieldView = Omit<FieldDefinition, 'description' | 'settings'> & {
   /** Select option values server code reads; they cannot be removed. */
   protectedOptions?: string[];
   /** Which base field this is, so clients find it after a rename. */
-  baseField?: BaseFieldName;
+  baseField?: BaseFieldName | BaseEventFieldName;
   /** An event type's core field: `title` (its label) or `summary`. */
   coreRole?: CoreRole;
   isNullable: boolean;
@@ -56,8 +58,8 @@ export type ObjectView = {
   class: ObjectClass;
   /** Event types only: built-in columns beside the fields, filterable and sortable. */
   eventColumns?: EventColumn[];
-  /** Which base object this is, so clients find it after a rename. */
-  baseObject?: BaseObjectName;
+  /** Which base object or base event type this is, so clients find it after a rename. */
+  baseObject?: BaseObjectName | BaseEventTypeName;
   fields: FieldView[];
 };
 export type SchemaDescription = {
@@ -161,6 +163,39 @@ export type QueryInput = {
 };
 export type RecordPage = {
   records: PresentedRecord[];
+  nextCursor: string | null;
+  relationReferences?: Record<string, RecordReference>;
+};
+/** The columns every event type shares, which `POST /v1/events/query` filters and sorts by. */
+export const EVENT_QUERY_COLUMNS = [
+  'type',
+  'occurredAt',
+  'channel',
+  'externalId',
+  'id',
+  'createdAt',
+  'updatedAt',
+] as const;
+export type EventQueryColumn = (typeof EVENT_QUERY_COLUMNS)[number];
+/**
+ * `POST /v1/events/query` input, and `query_records` with `object: "event"`:
+ * events of every visible event type. Filters take only the shared columns
+ * (`type` is the event type's API name, with `eq`, `neq` and `in`);
+ * `search` matches the core title and summary. Newest first by default.
+ */
+export type EventQueryInput = Omit<QueryInput, 'filter' | 'sort'> & {
+  filter?: Record<string, unknown>;
+  sort?: { field: EventQueryColumn; direction: 'asc' | 'desc' }[];
+};
+/** An event in a cross-type page: its type's API name, fields, and built-in columns and links. */
+export type EventRecord = PresentedRecord & { type: string; event: EventDetails };
+/**
+ * A page of `POST /v1/events/query`. With `include: ["relationReferences"]`,
+ * `relationReferences` labels every record the page names: relation values,
+ * participants, candidates and `about` records.
+ */
+export type EventPage = {
+  records: EventRecord[];
   nextCursor: string | null;
   relationReferences?: Record<string, RecordReference>;
 };
@@ -385,8 +420,9 @@ export type AttachedEventPage = Page<AttachedEvent> & {
 };
 /** `POST /v1/events` input (6.2). */
 export type LogEventInput = {
-  /** The event type's API name, e.g. "meeting". */
+  /** The event type's API name, e.g. "conversation". */
   type: string;
+  /** The source system or account, part of the event's identity, e.g. "gmail". */
   channel: string;
   externalId?: string;
   occurredAt: string;

@@ -79,21 +79,21 @@ Check RETAINER_API_KEY.` `retainer-mcp --help` prints its usage and
 Tools are generic, not one per object, so a workspace's custom objects never
 change the tool list.
 
-| Tool                    | What it does                                                                                      | Scope          |
-| ----------------------- | ------------------------------------------------------------------------------------------------- | -------------- |
-| `describe_schema`       | The workspace's objects (entities and event types) and fields, and the built-in facts             | `read`         |
-| `list_templates`        | Templates and what each would add                                                                 | `read`         |
-| `apply_template`        | Apply a template to the workspace                                                                 | `schema:write` |
-| `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                                 | `read`         |
-| `query_records`         | Filter, sort and page the records of one object; for an event type, the events linked to a record | `read`         |
-| `get_record`            | One record by ID; merged IDs resolve to the surviving record                                      | `read`         |
-| `search`                | Keyword search across records, events and facts                                                   | `read`         |
-| `get_context`           | A context pack for one record, fitted to a token budget                                           | `read`         |
-| `get_timeline`          | A record's history: events, values asserted for its fields and facts, newest first                | `read`         |
-| `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                  | `write`        |
-| `log_event`             | Log a meeting, call, email, message, note or other event, with who took part and what it is about | `write`        |
-| `remember`              | Store a plain-language fact about a record, citing an event                                       | `write`        |
-| `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve   | `schema:write` |
+| Tool                    | What it does                                                                                                                 | Scope          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| `describe_schema`       | The workspace's objects (entities and event types) and fields, and the built-in facts                                        | `read`         |
+| `list_templates`        | Templates and what each would add                                                                                            | `read`         |
+| `apply_template`        | Apply a template to the workspace                                                                                            | `schema:write` |
+| `get_guide`             | Step-by-step instructions for a rare task, e.g. `discover_schema`                                                            | `read`         |
+| `query_records`         | Filter, sort and page the records of one object; for an event type, or `event` for every type, the events linked to a record | `read`         |
+| `get_record`            | One record by ID; merged IDs resolve to the surviving record                                                                 | `read`         |
+| `search`                | Keyword search across records, events and facts                                                                              | `read`         |
+| `get_context`           | A context pack for one record, fitted to a token budget                                                                      | `read`         |
+| `get_timeline`          | A record's history: events, values asserted for its fields and facts, newest first                                           | `read`         |
+| `upsert_record`         | Create a record, or update one found by `id` or a unique `match`                                                             | `write`        |
+| `log_event`             | Log a conversation (meeting, call, email, chat), a note or another event type, with who took part and what it is about       | `write`        |
+| `remember`              | Store a plain-language fact about a record, citing an event                                                                  | `write`        |
+| `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve                              | `schema:write` |
 
 Validation errors name the field and the allowed values, so an agent can
 correct its call and retry.
@@ -128,8 +128,11 @@ use; a person can start that review as the MCP prompt `schema_design`.
 Retainer does not read conversations; the agent does. After a meeting, call or
 email thread, a well-behaved agent:
 
-1. **Logs the event** with `log_event`: its type (`describe_schema` lists the
-   event types), channel, time (with a UTC offset), title, its own short
+1. **Logs the event** with `log_event`: its type (`conversation` with a
+   `medium` for meetings, calls, emails and chats; another event type only
+   when the workspace defines one for that kind of event), channel (the
+   source system or account, part of the event's identity), time (with a
+   UTC offset), title, its own short
    summary, the type's other fields, the source's external ID, the
    participants as emails, phones or record IDs, and in `about` the IDs of
    the records it concerns. The response lists which participants matched a
@@ -170,15 +173,22 @@ Things worth knowing:
   company and the pilot project in `about`:
 
   ```json
-  { "type": "meeting", "channel": "calendar", "externalId": "evt-4410",
-    "occurredAt": "2026-10-29T14:00:00+02:00", "title": "Acme pilot review",
+  {
+    "type": "conversation",
+    "channel": "calendar",
+    "externalId": "evt-4410",
+    "fields": { "medium": "meeting" },
+    "occurredAt": "2026-10-29T14:00:00+02:00",
+    "title": "Acme pilot review",
     "participants": [{ "handle": "dana@acme.com", "role": "customer" }],
-    "about": ["<acme company id>", "<pilot project id>"] }
+    "about": ["<acme company id>", "<pilot project id>"]
+  }
   ```
 
   The meeting then shows in `get_context` and in `query_records` with
   `linked` for every record it is linked to. Don't list a company or project
   as a participant.
+
 - **Retries are safe.** Logging the same `(channel, externalId)` again with the
   same type, time, title, summary and fields returns the existing event with
   `created: false`. Participants and `about` records it did not have yet are
@@ -190,11 +200,23 @@ Things worth knowing:
   resume.
 - **Events over time.** `query_records` on an event type lists its events by
   `occurredAt`, `channel` or a field, and with `linked: { record }` only
-  those attached to one record, e.g. calls with a company this quarter.
-- **Your own event types.** Something else that happens and is logged from
-  a source, such as a payment or a site visit, can be an event type:
-  `propose_schema_change` with `create_object` and `class: "event"`. It gets
-  a title and summary of its own; add only the fields it needs.
+  those attached to one record, e.g. calls with a company this quarter
+  (`conversation` filtered by `medium`). With `object: "event"` it lists
+  events of every type at once, filtered by `type`, `occurredAt`, `channel`
+  and `externalId`: everything logged this week, or every conversation and
+  note about a company.
+- **Channel and medium.** `channel` is where the event came from, the source
+  system or account (`gmail`, `zoom`, `whatsapp-business`); it is part of the
+  event's identity and fixed once logged. `medium` is what kind of
+  conversation it was. Leave `medium` empty when unsure; it can be corrected
+  later with `upsert_record`, while an event's type cannot change.
+- **Your own event types.** Add an event type only for events whose fields
+  a conversation would never use: a payment (an amount, an invoice), a form
+  submission, a site visit. `propose_schema_change` with `create_object` and
+  `class: "event"`. It gets a title and summary of its own; add only the
+  fields it needs. Conversation details such as duration or a recording
+  link are fields on `conversation`, and a new kind of conversation is a
+  new `medium` option.
 - **Reading back.** `get_context` gives the current values (with who wrote
   each), open tasks, current facts and recent events, rolled-up ones
   included (each saying how it is attached, `via`), within

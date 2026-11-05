@@ -576,7 +576,8 @@ describe('event types', () => {
 
   it('derives the same core field IDs for a code-defined type every time', () => {
     const again = applyValid(base, BASE_EVENT_OPERATIONS as SchemaOperation[], 'system');
-    const ids = (state: SchemaState) => object(state, 'call')?.fields.map((f) => f.universalId);
+    const ids = (state: SchemaState) =>
+      object(state, 'conversation')?.fields.map((f) => f.universalId);
     expect(ids(again)).toEqual(ids(seeded));
   });
 
@@ -601,23 +602,23 @@ describe('event types', () => {
       "an event type's labelField is always its title",
     );
     expect(
-      issuesOf(seeded, [{ op: 'update_object', object: 'call', labelField: 'summary' }]).map(
-        (i) => i.message,
-      ),
+      issuesOf(seeded, [
+        { op: 'update_object', object: 'conversation', labelField: 'summary' },
+      ]).map((i) => i.message),
     ).toContain("an event type's labelField is always its title");
   });
 
   it('protects the core fields of every event type', () => {
     expect(
-      issuesOf(seeded, [{ op: 'delete_field', object: 'meeting', field: 'summary' }])
+      issuesOf(seeded, [{ op: 'delete_field', object: 'conversation', field: 'summary' }])
         .map((i) => i.message)
         .join(' '),
     ).toContain('protected');
     // Renaming a core field is allowed; it keeps its role.
     const renamed = applyValid(seeded, [
-      { op: 'rename_field', object: 'meeting', field: 'title', name: 'subject' },
+      { op: 'rename_field', object: 'conversation', field: 'title', name: 'subject' },
     ]);
-    expect(field(renamed, 'meeting', 'subject')?.coreRole).toBe('title');
+    expect(field(renamed, 'conversation', 'subject')?.coreRole).toBe('title');
   });
 
   it('still requires fields and a labelField on an entity', () => {
@@ -646,7 +647,7 @@ describe('event types', () => {
     for (const name of ['occurredAt', 'channel', 'externalId', 'participants', 'about', 'via']) {
       const op = {
         op: 'create_field',
-        object: 'call',
+        object: 'conversation',
         field: { name, type: 'text' },
       } as SchemaOperation;
       expect(issuesOf(seeded, [op]).length, name).toBeGreaterThan(0);
