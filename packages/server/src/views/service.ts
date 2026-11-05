@@ -10,16 +10,32 @@ import {
   type ViewColumns,
 } from '@retainer/shared';
 import { z } from 'zod';
-import type { Sql } from '../db/client.js';
-import type { StoredViewConfig } from '../db/types.js';
-import { inWorkspace, jsonValue, lockSchemaShared, type Tx } from '../db/tx.js';
+import type { Backend, Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { isUuid, publicId } from '../db/names.js';
+import { mutate, type Operation, readWorkspace, toStorable } from '../db/protocol.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { checkAggregateOp } from '../records/aggregate.js';
 import { builtInNames, compileFilter, compileSort, queryInputSchema } from '../records/query.js';
 import type { Caller } from '../records/service.js';
 import { requireObject } from '../records/service.js';
-import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
+import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
+
+/** A view's config as stored: fields by key (rule 1.4.1). */
+export type StoredViewConfig = {
+  filter?: Record<string, unknown>;
+  sort?: { field: string; direction: 'asc' | 'desc' }[];
+  columns?: {
+    order: string[];
+    widths?: Record<string, number>;
+    aggregates?: Record<string, string>;
+  };
+  groupBy?: string;
+  hiddenGroups?: (string | null)[];
+  groupAggregate?: { field: string; op: string };
+  dateField?: string;
+};
 
 // ---------------------------------------------------------------------------
 // Input shapes. Fields are named as in the schema; semantic checks follow.
@@ -211,7 +227,7 @@ function withoutRemovedOptions(
  * A key set to null is returned as undefined, clearing it.
  */
 function toStored(
-  tx: Tx,
+  schema: CompiledSchema,
   object: CompiledObject,
   input: ConfigInput,
 ): Partial<Record<keyof StoredViewConfig, unknown>> {
@@ -235,14 +251,14 @@ function toStored(
   };
 
   if (given('filter')) {
-    if (input.filter) compileFilter(tx, object, input.filter);
+    if (input.filter) compileFilter(schema, object, input.filter);
     // The filter compiled, so every name exists.
     out.filter = input.filter
       ? renameFilter(input.filter, (n, condition) => [fields.key(n, 'filter'), condition])
       : undefined;
   }
   if (given('sort')) {
-    if (input.sort?.length) compileSort(tx, object, input.sort);
+    if (input.sort?.length) compileSort(object, input.sort);
     out.sort = input.sort?.length
       ? input.sort.map((s) => ({ field: fields.key(s.field, 'sort'), direction: s.direction }))
       : undefined;
@@ -347,9 +363,13 @@ type ViewRow = {
 };
 
 /** A stored view by field name, without references to fields that are gone (rule 1.4.2). */
-export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): SavedView {
+export function presentView(
+  schema: CompiledSchema,
+  object: CompiledObject,
+  row: ViewRow,
+): SavedView {
   const fields = new FieldNames(object);
-  const config = row.config;
+  const config = row.config ?? {};
   /**
    * Whether a filter condition or sort still compiles: a field can stay
    * active but stop being filterable, or lose the option a condition names.
@@ -412,7 +432,7 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
       ?.map((s) => {
         const fieldName = fields.name(s.field, 'The sort');
         const entry = fieldName ? { field: fieldName, direction: s.direction } : undefined;
-        return entry && compiles('The sort', entry.field, () => compileSort(tx, object, [entry]))
+        return entry && compiles('The sort', entry.field, () => compileSort(object, [entry]))
           ? entry
           : undefined;
       })
@@ -440,7 +460,7 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
             );
           return condition !== undefined &&
             compiles('The filter', fieldName, () =>
-              compileFilter(tx, object, { [fieldName]: condition }),
+              compileFilter(schema, object, { [fieldName]: condition }),
             )
             ? [fieldName, condition]
             : undefined;
@@ -474,62 +494,91 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
   };
 }
 
+type StoredView = Omit<ViewRow, 'id'> & { id: RecordId };
+const viewOf = (row: StoredView): ViewRow => ({
+  ...row,
+  id: publicId(row.id),
+  config: row.config ?? {},
+});
+
 /** Views the caller may see: the workspace's, and their own private ones (rule 1.4.4). */
-function visibleTo(tx: Tx, actor: Actor) {
-  return tx`(v.visibility = 'workspace'
-    or (v.created_by ->> 'type' = ${actor.type} and v.created_by ->> 'id' = ${actor.id}))`;
+const visibleTo = (actor: Actor) => (row: ViewRow) =>
+  row.visibility === 'workspace' ||
+  (row.created_by?.type === actor.type && row.created_by?.id === actor.id);
+
+const byPosition = (a: ViewRow, b: ViewRow) =>
+  a.position - b.position ||
+  a.created_at.getTime() - b.created_at.getTime() ||
+  (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** One object's views (indexed by object and position). */
+async function viewsOf(db: Db | Operation, objectTypeId: string): Promise<ViewRow[]> {
+  const rows = await db.rows<StoredView>(
+    'SELECT * FROM views WHERE object_type_id = $object ORDER BY position;',
+    { object: objectTypeId },
+  );
+  return rows.map(viewOf).sort(byPosition);
 }
 
-/**
- * A view schema changes and reads hold the schema lock shared, so the
- * schema a view is checked against stays current until commit (3).
- */
-async function withViews<T>(
-  sql: Sql,
-  caller: Caller,
-  fn: (tx: Tx, schema: CompiledSchema) => Promise<T>,
-): Promise<T> {
-  return inWorkspace(sql, caller.workspaceId, async (tx) => {
-    await lockSchemaShared(tx, caller.workspaceId);
-    return fn(tx, await getSchema(tx, caller.workspaceId));
-  });
-}
-
-/** The view and its active object; `forUpdate` locks the row until commit. */
+/** The view and its active object, if the caller may see it. */
 async function loadView(
-  tx: Tx,
+  db: Db | Operation,
   schema: CompiledSchema,
   caller: Caller,
   id: string,
-  forUpdate = false,
 ): Promise<{ row: ViewRow; object: CompiledObject }> {
-  const [row] = await tx<ViewRow[]>`
-    select v.* from views v where v.id = ${id} and ${visibleTo(tx, caller.actor)}
-    ${forUpdate ? tx`for update` : tx``}`;
+  if (!isUuid(id)) throw notFound(`view ${id}`);
+  const [stored] = await db.rows<StoredView>('SELECT * FROM $view;', {
+    view: new RecordId('views', id),
+  });
+  const row = stored && viewOf(stored);
   const object = row && schema.objectsById.get(row.object_type_id);
-  if (!row || !object || object.state.status !== 'active') throw notFound(`view ${id}`);
+  if (!row || !visibleTo(caller.actor)(row) || !object || object.state.status !== 'active')
+    throw notFound(`view ${id}`);
   return { row, object };
 }
 
+/** Reads against the published schema. */
+function withViews<T>(
+  backend: Backend,
+  caller: Caller,
+  fn: (db: Db, schema: CompiledSchema) => Promise<T>,
+): Promise<T> {
+  return readWorkspace(backend, caller.workspaceId, async ({ db, schema }) =>
+    fn(db, await schema()),
+  );
+}
+
+/** A view write under the write protocol, against the schema it validates with. */
+async function writeView<T>(
+  backend: Backend,
+  caller: Caller,
+  kind: string,
+  fn: (op: Operation, schema: CompiledSchema) => Promise<T>,
+): Promise<T> {
+  const { result } = await mutate(backend, caller.workspaceId, {
+    kind,
+    plan: async (op) => fn(op, await op.schema()),
+  });
+  return result;
+}
+
 export async function listViews(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   objectName: string,
 ): Promise<{ views: SavedView[] }> {
-  return withViews(sql, caller, async (tx, schema) => {
+  return withViews(backend, caller, async (db, schema) => {
     const object = requireObject(schema, objectName);
-    const rows = await tx<ViewRow[]>`
-      select v.* from views v
-      where v.object_type_id = ${object.id} and ${visibleTo(tx, caller.actor)}
-      order by v.position, v.created_at, v.id`;
-    return { views: rows.map((r) => presentView(tx, object, r)) };
+    const rows = (await viewsOf(db, object.id)).filter(visibleTo(caller.actor));
+    return { views: rows.map((r) => presentView(schema, object, r)) };
   });
 }
 
-export async function readView(sql: Sql, caller: Caller, id: string): Promise<SavedView> {
-  return withViews(sql, caller, async (tx, schema) => {
-    const { row, object } = await loadView(tx, schema, caller, id);
-    return presentView(tx, object, row);
+export async function readView(backend: Backend, caller: Caller, id: string): Promise<SavedView> {
+  return withViews(backend, caller, async (db, schema) => {
+    const { row, object } = await loadView(db, schema, caller, id);
+    return presentView(schema, object, row);
   });
 }
 
@@ -538,81 +587,94 @@ export async function readView(sql: Sql, caller: Caller, id: string): Promise<Sa
 // ---------------------------------------------------------------------------
 
 export async function createView(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   objectName: string,
   input: CreateViewInput,
 ): Promise<SavedView> {
-  return withViews(sql, caller, async (tx, schema) => {
+  return writeView(backend, caller, 'create_view', async (op, schema) => {
     const object = requireObject(schema, objectName);
-    const config = merge({}, toStored(tx, object, input));
+    const config = merge({}, toStored(schema, object, input));
     requireKindField(input.kind, config);
     let { position } = input;
     if (position === undefined) {
-      const [last] = await tx<{ max: number | null }[]>`
-        select max(v.position) as max from views v
-        where v.object_type_id = ${object.id} and ${visibleTo(tx, caller.actor)}`;
-      position = (last?.max ?? 0) + 1;
+      const visible = (await viewsOf(op, object.id)).filter(visibleTo(caller.actor));
+      position = Math.max(0, ...visible.map((v) => v.position)) + 1;
     }
-    const [row] = await tx<ViewRow[]>`
-      insert into views (workspace_id, object_type_id, name, kind, visibility, position, config,
-        created_by, updated_by)
-      values (${caller.workspaceId}, ${object.id}, ${input.name}, ${input.kind}, ${input.visibility},
-        ${position}, ${tx.json(jsonValue(config))}, ${tx.json(caller.actor)},
-        ${tx.json(caller.actor)})
-      returning *`;
-    if (!row) throw new Error('view insert returned no row');
-    return presentView(tx, object, row);
+    const row: ViewRow = {
+      id: op.newId(),
+      object_type_id: object.id,
+      name: input.name,
+      kind: input.kind,
+      visibility: input.visibility,
+      position,
+      config,
+      created_by: caller.actor,
+      updated_by: caller.actor,
+      created_at: op.now,
+      updated_at: op.now,
+    };
+    const { id, ...content } = row;
+    op.batch.create('views', id, { ...content, config: toStorable(config) });
+    return presentView(schema, object, row);
   });
 }
 
 /**
- * Changes only the keys the input gives. The row is locked first, so two
- * updates of different keys at once both land (rule 1.4).
+ * Changes only the keys the input gives, against the stored row the plan
+ * read; writes are serialized per workspace, so two updates of different
+ * keys at once both land (rule 1.4).
  */
 export async function updateView(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   id: string,
   input: UpdateViewInput,
 ): Promise<SavedView> {
-  return withViews(sql, caller, async (tx, schema) => {
-    const { row, object } = await loadView(tx, schema, caller, id, true);
+  return writeView(backend, caller, 'update_view', async (op, schema) => {
+    const { row, object } = await loadView(op, schema, caller, id);
     if (input.visibility !== undefined && input.visibility !== row.visibility) {
       if (!sameActor(row.created_by, caller.actor))
         throw forbidden('only the person or agent that created a view can change who sees it');
     }
-    const config = merge(row.config, toStored(tx, object, input));
+    const config = merge(row.config, toStored(schema, object, input));
     const kind = input.kind ?? row.kind;
     // Check the kind's field when the request changes either, so a view
     // whose field was removed can still be renamed or moved.
     if (input.kind !== undefined || input.groupBy === null || input.dateField === null)
-      requireKindField(kind, presentView(tx, object, { ...row, config }));
-    const [updated] = await tx<ViewRow[]>`
-      update views set
-        name = ${input.name ?? row.name},
-        kind = ${kind},
-        visibility = ${input.visibility ?? row.visibility},
-        position = ${input.position ?? row.position},
-        config = ${tx.json(jsonValue(config))},
-        updated_by = ${tx.json(caller.actor)},
-        updated_at = now()
-      where id = ${id}
-      returning *`;
-    if (!updated) throw notFound(`view ${id}`);
-    return presentView(tx, object, updated);
+      requireKindField(kind, presentView(schema, object, { ...row, config }));
+    const updated: ViewRow = {
+      ...row,
+      name: input.name ?? row.name,
+      kind,
+      visibility: input.visibility ?? row.visibility,
+      position: input.position ?? row.position,
+      config,
+      updated_by: caller.actor,
+      updated_at: op.now,
+    };
+    op.batch.update('views', id, {
+      name: updated.name,
+      kind: updated.kind,
+      visibility: updated.visibility,
+      position: updated.position,
+      config: toStorable(config),
+      updated_by: caller.actor,
+      updated_at: op.now,
+    });
+    return presentView(schema, object, updated);
   });
 }
 
 export async function deleteView(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   id: string,
 ): Promise<{ id: string; deleted: true }> {
-  return withViews(sql, caller, async (tx, schema) => {
-    await loadView(tx, schema, caller, id, true);
-    await tx`delete from views where id = ${id}`;
-    return { id, deleted: true };
+  return writeView(backend, caller, 'delete_view', async (op, schema) => {
+    await loadView(op, schema, caller, id);
+    op.batch.delete('views', id);
+    return { id, deleted: true as const };
   });
 }
 
@@ -620,45 +682,45 @@ export async function deleteView(
  * Rewrites the stored views of these objects without what a schema change
  * made unusable: removed fields, filters and sorts that no longer compile,
  * options that are gone, and a board or calendar field that no longer fits
- * (rule 1.4.2). Runs in the schema change's transaction, against the schema
- * it leaves, so a view is repaired once rather than on every read. A view the
+ * (rule 1.4.2). Runs in the schema change's plan, against the schema it
+ * leaves, so a view is repaired once rather than on every read. A view the
  * repair can't store is left as it is; reading it still drops what it can't use.
  */
 export async function repairViews(
-  tx: Tx,
+  op: Operation,
   schema: CompiledSchema,
   objectTypeIds: string[],
   actor: Actor,
 ): Promise<void> {
-  if (objectTypeIds.length === 0) return;
-  const rows = await tx<ViewRow[]>`
-    select * from views where object_type_id = any(${objectTypeIds}::uuid[])`;
-  for (const row of rows) {
-    const object = schema.objectsById.get(row.object_type_id);
+  for (const objectTypeId of new Set(objectTypeIds)) {
+    const object = schema.objectsById.get(objectTypeId);
     if (object?.state.status !== 'active') continue;
-    const view = presentView(tx, object, row);
-    let config: StoredViewConfig;
-    try {
-      config = merge(
-        row.config,
-        toStored(tx, object, {
-          filter: view.filter,
-          sort: view.sort,
-          columns: view.columns,
-          groupBy: view.groupBy,
-          hiddenGroups: view.hiddenGroups,
-          groupAggregate: view.groupAggregate,
-          dateField: view.dateField,
-        }),
-      );
-    } catch (e) {
-      if (!(e instanceof AppError) || e.status >= 500) throw e;
-      continue;
+    for (const row of await viewsOf(op, objectTypeId)) {
+      const view = presentView(schema, object, row);
+      let config: StoredViewConfig;
+      try {
+        config = merge(
+          row.config,
+          toStored(schema, object, {
+            filter: view.filter,
+            sort: view.sort,
+            columns: view.columns,
+            groupBy: view.groupBy,
+            hiddenGroups: view.hiddenGroups,
+            groupAggregate: view.groupAggregate,
+            dateField: view.dateField,
+          }),
+        );
+      } catch (e) {
+        if (!(e instanceof AppError) || e.status >= 500) throw e;
+        continue;
+      }
+      if (JSON.stringify(config) === JSON.stringify(row.config)) continue;
+      op.batch.update('views', row.id, {
+        config: toStorable(config),
+        updated_by: actor,
+        updated_at: op.now,
+      });
     }
-    if (JSON.stringify(config) === JSON.stringify(row.config)) continue;
-    await tx`
-      update views set config = ${tx.json(jsonValue(config))}, updated_by = ${tx.json(actor)},
-        updated_at = now()
-      where id = ${row.id}`;
   }
 }

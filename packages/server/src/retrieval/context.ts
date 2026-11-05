@@ -8,18 +8,16 @@ import type {
 } from '@retainer/shared';
 import { BASE_FIELD_IDS, BASE_OBJECT_IDS, TASK_DONE_OPTION } from '@retainer/shared';
 import { z } from 'zod';
-import type { Tx } from '../db/tx.js';
-import {
-  countEventHistory,
-  eventHistory,
-  type HistoryRow,
-  liveFactSource,
-  viaOf,
-} from '../memory/events.js';
+import type { Db } from '../db/backend.js';
+import type { RecordId } from '../db/cbor.js';
+import { publicId } from '../db/names.js';
+import { liveFactSources } from '../memory/events.js';
 import { getRecord } from '../records/read.js';
 import { references } from '../records/references.js';
+import { directoryEntry, incomingEdges, outgoingEdges, rowsByIds } from '../records/store.js';
 import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import { CHARS_PER_TOKEN, estimateTokens, fitSections, jsonLength } from './budget.js';
+import { countEventHistory, eventHistory, viaOf } from './history.js';
 
 /**
  * Context packs (5, 6.2): what an agent needs about one record, assembled by
@@ -44,7 +42,7 @@ export type ContextInput = z.infer<typeof contextInputSchema>;
 const MIN_ITEM_CHARS = 45;
 
 export async function contextPack(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   recordId: string,
@@ -53,12 +51,12 @@ export async function contextPack(
   const budgetChars = input.tokenBudget * CHARS_PER_TOKEN;
   const rows = Math.floor(budgetChars / MIN_ITEM_CHARS) + 1;
   // Resolves merged IDs and refuses deleted records, like get_record.
-  const record = await getRecord(tx, workspaceId, schema, recordId);
+  const record = await getRecord(db, workspaceId, schema, recordId);
   const [fields, tasks, facts, events] = await Promise.all([
-    currentFields(tx, workspaceId, schema, record.id, record.fields),
-    openTasks(tx, workspaceId, schema, record.id, rows),
-    currentFacts(tx, workspaceId, schema, record.id, rows),
-    recentEvents(tx, workspaceId, schema, record.id, rows),
+    currentFields(db, schema, record.id, record.fields),
+    openTasks(db, workspaceId, schema, record.id, rows),
+    currentFacts(db, schema, record.id, rows),
+    recentEvents(db, workspaceId, schema, record.id, rows),
   ]);
 
   // The record's values are always included. The sections get what is left
@@ -105,15 +103,15 @@ type Section<T> = { items: T[]; total: number };
  * links that matter most.
  */
 async function currentFields(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   schema: CompiledSchema,
   recordId: string,
   values: Record<string, unknown>,
 ): Promise<Record<string, ContextField>> {
-  const winners = await tx<{ field_id: string; actor: Actor; observed_at: Date }[]>`
-    select field_id, actor, observed_at from field_assertions
-    where workspace_id = ${workspaceId} and record_id = ${recordId} and status = 'active'`;
+  const winners = await db.rows<{ field_id: string; actor: Actor; observed_at: Date }>(
+    "SELECT field_id, actor, observed_at FROM field_assertions WHERE record = $record AND status = 'active';",
+    { record: recordId },
+  );
   const byName = new Map<string, { actor: Actor; observed_at: Date }>();
   for (const winner of winners) {
     const field = schema.fieldOwners.get(winner.field_id)?.fieldsById.get(winner.field_id);
@@ -133,22 +131,12 @@ async function currentFields(
 }
 
 /**
- * IDs of active fields. A deleted relation field keeps its `record_links`
- * rows, and `get_record` hides them; links count only through active fields.
- */
-function activeFieldIds(schema: CompiledSchema): string[] {
-  return [...schema.fieldOwners]
-    .filter(([id, object]) => object.fieldsById.get(id)?.status === 'active')
-    .map(([id]) => id);
-}
-
-/**
  * Live tasks linked to the record in either direction, through an active
  * relation field, whose status is not `done`: earliest due date first,
- * undated last.
+ * undated last. Read from the record's own edges, both ways.
  */
 async function openTasks(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   recordId: string,
@@ -156,103 +144,116 @@ async function openTasks(
 ): Promise<Section<OpenTask>> {
   const task = schema.objectsByUniversalId.get(BASE_OBJECT_IDS.task);
   if (task?.state.status !== 'active') return { items: [], total: 0 };
+  const entry = await directoryEntry(db, recordId);
+  const object = entry && schema.objectsById.get(entry.object_type_id);
+  if (!object) return { items: [], total: 0 };
   const field = (universalId: string) =>
     task.activeFields.find((f) => f.universalId === universalId);
   const status = field(BASE_FIELD_IDS.taskStatus);
   const dueDate = field(BASE_FIELD_IDS.taskDueDate);
-  const statusValue = status ? tx`t.data -> ${status.key}` : tx`null::jsonb`;
-  const dueValue = dueDate ? tx`t.data -> ${dueDate.key}` : tx`null::jsonb`;
-  const notDone = status
-    ? tx`and (t.data ->> ${status.key}) is distinct from ${TASK_DONE_OPTION}`
-    : tx``;
-  const dueOrder = dueDate ? tx`(t.data ->> ${dueDate.key}) asc nulls last,` : tx``;
 
-  const rows = await tx<{ id: string; status: unknown; due_date: unknown; total: string }[]>`
-    select t.id, ${statusValue} as status, ${dueValue} as due_date,
-      count(*) over () as total
-    from records t
-    where t.workspace_id = ${workspaceId} and t.object_type_id = ${task.id}
-      and t.deleted_at is null and t.id <> ${recordId}
-      and exists (
-        select 1 from record_links l
-        where l.field_id = any(${activeFieldIds(schema)}::uuid[])
-          and ((l.source_record_id = t.id and l.target_record_id = ${recordId})
-            or (l.source_record_id = ${recordId} and l.target_record_id = t.id)))
-      ${notDone}
-    order by ${dueOrder} t.created_at, t.id
-    limit ${limit}`;
+  const self = { id: recordId, object };
+  const [outgoing, ...incoming] = await Promise.all([
+    outgoingEdges(db, [self], (f) => f.status === 'active'),
+    ...task.state.fields
+      .filter((f) => f.type === 'relation' && !f.settings.isInverse && f.status === 'active')
+      .map((f) => incomingEdges(db, f, [self])),
+  ]);
+  const ids = [...new Set([...outgoing, ...incoming.flat()].map((e) => e.other_id))].filter(
+    (id) => id !== recordId,
+  );
+  const rows = [...(await rowsByIds(db, workspaceId, schema, ids)).values()].filter(
+    (r) =>
+      r.object_type_id === task.id &&
+      !r.deleted_at &&
+      (!status || r.data[status.key] !== TASK_DONE_OPTION),
+  );
+  const due = (r: (typeof rows)[number]) => {
+    const value = dueDate ? r.data[dueDate.key] : undefined;
+    return value === undefined || value === null ? null : String(value);
+  };
+  rows.sort((a, b) => {
+    const x = due(a);
+    const y = due(b);
+    if (x !== y) return x === null ? 1 : y === null ? -1 : x < y ? -1 : 1;
+    return (
+      a.created_at.getTime() - b.created_at.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    );
+  });
+  const page = rows.slice(0, limit);
   // Tasks are other records, so their titles come through references() (7.2).
   const refs = await references(
-    tx,
+    db,
     schema,
-    rows.map((row) => row.id),
+    page.map((row) => row.id),
   );
   return {
-    items: rows.flatMap((row) => {
+    items: page.flatMap((row) => {
       const ref = refs[row.id];
       if (!ref) return [];
       return [
         {
           id: row.id,
           title: ref.label,
-          status: row.status ?? null,
-          dueDate: row.due_date ?? null,
+          status: (status ? row.data[status.key] : null) ?? null,
+          dueDate: (dueDate ? row.data[dueDate.key] : null) ?? null,
         },
       ];
     }),
-    total: Number(rows[0]?.total ?? 0),
+    total: rows.length,
   };
 }
 
 /** Current facts, newest `validFrom` first, as `GET /v1/records/:id/facts` lists them. */
 async function currentFacts(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   schema: CompiledSchema,
   recordId: string,
   limit: number,
 ): Promise<Section<ContextFact>> {
-  const rows = await tx<
-    {
-      id: string;
-      content: string;
-      valid_from: Date;
-      actor: Actor;
-      sources: { id: string; type: string }[];
-      total: string;
-    }[]
-  >`
-    select f.id, f.content, f.valid_from, f.actor,
-      coalesce((
-        select json_agg(json_build_object('id', src.id, 'type', src.object_type_id)
-          order by e.occurred_at, s.id)
-        from fact_sources s
-        join records src on src.id = s.source_record_id and src.deleted_at is null
-        join event_records e on e.record_id = src.id
-        where s.fact_id = f.id), '[]'::json) as sources,
-      count(*) over () as total
-    from facts f
-    where f.workspace_id = ${workspaceId} and f.record_id = ${recordId}
-      and f.deleted_at is null and f.superseded_by is null and f.valid_to is null
-      and exists (${liveFactSource(tx, tx`f.id`)})
-    order by f.valid_from desc, f.created_at desc, f.id
-    limit ${limit}`;
+  const stored = await db.rows<{
+    id: RecordId;
+    content: string;
+    valid_from: Date;
+    valid_to?: Date | null;
+    superseded_by?: string | null;
+    deleted_at?: Date | null;
+    created_at: Date;
+    actor: Actor;
+  }>(
+    'SELECT id, content, valid_from, valid_to, superseded_by, deleted_at, created_at, actor FROM facts WHERE record = $record;',
+    { record: recordId },
+  );
+  const current = stored.filter((f) => !f.deleted_at && !f.superseded_by && !f.valid_to);
+  const live = await liveFactSources(
+    db,
+    current.map((f) => publicId(f.id)),
+  );
+  const rows = current
+    .filter((f) => (live.get(publicId(f.id))?.length ?? 0) > 0)
+    .sort(
+      (a, b) =>
+        b.valid_from.getTime() - a.valid_from.getTime() ||
+        b.created_at.getTime() - a.created_at.getTime() ||
+        (publicId(a.id) < publicId(b.id) ? -1 : 1),
+    );
   return {
-    items: rows.map((row) => {
+    items: rows.slice(0, limit).map((row) => {
+      const sources = live.get(publicId(row.id)) ?? [];
       // An internal note has no ID a caller can read (6.4): it is marked.
-      const internal = row.sources.some((s) => schema.objectsById.get(s.type)?.hidden);
+      const internal = sources.some((s) => schema.objectsById.get(s.objectTypeId)?.hidden);
       return {
-        id: row.id,
+        id: publicId(row.id),
         content: row.content,
         validFrom: row.valid_from.toISOString(),
         writtenBy: row.actor,
-        sources: row.sources
-          .filter((s) => !schema.objectsById.get(s.type)?.hidden)
-          .map((s) => s.id),
+        sources: sources
+          .filter((s) => !schema.objectsById.get(s.objectTypeId)?.hidden)
+          .map((s) => s.source),
         ...(internal ? { internal: true as const } : {}),
       };
     }),
-    total: Number(rows[0]?.total ?? 0),
+    total: rows.length,
   };
 }
 
@@ -264,34 +265,39 @@ async function currentFacts(
  * `facts`.
  */
 async function recentEvents(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   recordId: string,
   limit: number,
 ): Promise<Section<EventItem>> {
-  const rows = await tx<
-    (HistoryRow & { id: string; object_type_id: string; data: Record<string, unknown> })[]
-  >`
-    select r.id, r.object_type_id, r.data, h.occurred_at, h.rank, h.field_id, h.via_record_id
-    from ${eventHistory(tx, schema, workspaceId, recordId, { limit })} h
-    join records r on r.id = h.event_id
-    order by h.occurred_at desc, h.event_id desc
-    limit ${limit}`;
+  const history = await eventHistory(db, schema, recordId, { limit });
+  const records = await rowsByIds(
+    db,
+    workspaceId,
+    schema,
+    history.map((h) => h.event_id),
+  );
   // Counted over the deduplicated history, so `omitted` never counts an
   // event twice (7.2).
   const total =
-    rows.length < limit ? rows.length : await countEventHistory(tx, schema, workspaceId, recordId);
+    history.length < limit
+      ? history.length
+      : await countEventHistory(db, schema, workspaceId, recordId);
   return {
-    items: rows.map((row) => {
-      const object = schema.objectsById.get(row.object_type_id);
-      return {
-        id: row.id,
-        type: object?.name ?? 'unknown',
-        occurredAt: row.occurred_at.toISOString(),
-        ...eventText(object, row.data),
-        via: viaOf(schema, row),
-      };
+    items: history.flatMap((row) => {
+      const record = records.get(row.event_id);
+      if (!record) return [];
+      const object = schema.objectsById.get(record.object_type_id);
+      return [
+        {
+          id: row.event_id,
+          type: object?.name ?? 'unknown',
+          occurredAt: row.occurred_at.toISOString(),
+          ...eventText(object, record.data),
+          via: viaOf(schema, row),
+        },
+      ];
     }),
     total,
   };

@@ -1,20 +1,30 @@
 import { createHash } from 'node:crypto';
 import {
-  type Actor,
   TIMELINE_ITEM_KINDS,
   type TimelineItem,
   type TimelineItemKind,
   type TimelinePage,
 } from '@retainer/shared';
-import type { Fragment } from 'postgres';
 import { z } from 'zod';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import type { RecordId } from '../db/cbor.js';
+import { publicId } from '../db/names.js';
+import {
+  filterChunks,
+  keysetStream,
+  mergeStreams,
+  type StreamStart,
+  take,
+} from '../db/pagination.js';
 import { AppError } from '../errors.js';
-import { eventHistory, liveFactSource, presentSource, viaOf } from '../memory/events.js';
+import { liveFactSources, presentSource } from '../memory/events.js';
 import { findLiveRecord } from '../records/read.js';
 import { references } from '../records/references.js';
+import { directoryEntries, fetchRows, rowsByIds } from '../records/store.js';
 import { type CompiledObject, type CompiledSchema, eventText } from '../schema-engine/compiled.js';
+import { assertionsByIds } from '../web/reads.js';
 import { factsPage } from '../web/review.js';
+import { historyEvents, viaOf } from './history.js';
 
 /**
  * A record's unified timeline (8): its event history, the values asserted
@@ -23,8 +33,8 @@ import { factsPage } from '../web/review.js';
  */
 
 const isoTime = z.iso.datetime({ offset: true });
-/** A timestamptz as Postgres prints it, e.g. `2026-10-29 12:00:00.123456+00`. */
-const STAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}(:\d{2})?$/;
+/** An ISO-8601 instant, as the cursor carries it. */
+const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
 const uuid = z.uuid();
 
 export const timelineInputSchema = z.strictObject({
@@ -120,22 +130,34 @@ function resolveEventTypes(schema: CompiledSchema, names: string[] | undefined):
   });
 }
 
+type Item = {
+  kind: number;
+  id: string;
+  at: Date;
+  rank: number | null;
+  field_id: string | null;
+  via_record_id: string | null;
+};
+
+const itemOrder = (a: Item, b: Item) =>
+  b.at.getTime() - a.at.getTime() || a.kind - b.kind || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+
 /**
- * One page of a record's timeline (8). Each kind is read by keyset from its
- * own table, at most a page of each, and Postgres merges them by (time
- * descending, kind order, ID descending), so equal times page exactly. The
- * event branch is the record's deduplicated event history (7.2), so an
- * event counts once before the limit. A filter for one kind (fields, event
- * types) leaves the other kinds out unless `types` names them.
+ * One page of a record's timeline (8). Each kind is its own indexed keyset
+ * stream, read in bounded batches and merged by (time descending, kind
+ * order, ID descending), so equal times page exactly. The event stream is
+ * the record's deduplicated event history (7.2), so an event counts once
+ * before the limit. A filter for one kind (fields, event types) leaves the
+ * other kinds out unless `types` names them.
  */
 export async function timelinePage(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   recordId: string,
   input: TimelineInput,
 ): Promise<TimelinePage> {
-  const record = await findLiveRecord(tx, workspaceId, schema, recordId);
+  const record = await findLiveRecord(db, workspaceId, schema, recordId);
   const object = schema.objectsById.get(record.object_type_id);
   if (!object) throw new AppError(404, 'not_found', `record ${recordId} not found`);
 
@@ -165,91 +187,142 @@ export async function timelinePage(
     .slice(0, 16);
   const position = input.cursor ? decodeCursor(input.cursor, binding) : null;
   const limit = input.limit;
+  const batch = Math.min(limit + 1, 201);
+  const until = input.from ? new Date(input.from) : undefined;
 
-  /** Keyset and time range for one branch, whose items all have one kind. */
-  const bound = (kind: TimelineItemKind) => (time: Fragment, id: Fragment) => {
-    const parts: Fragment[] = [];
-    if (input.from) parts.push(tx`${time} >= ${input.from}::timestamptz`);
-    if (input.to) parts.push(tx`${time} < ${input.to}::timestamptz`);
+  /**
+   * Where one kind's stream starts: after the cursor (at its time, items of
+   * a later kind order are all still to come, of an earlier one none), or
+   * before `to`.
+   */
+  const startOf = (kind: TimelineItemKind): StreamStart | undefined => {
     if (position) {
-      const at = tx`${position.at}::timestamptz`;
       const order = KIND_ORDER[kind];
-      parts.push(
-        order > position.kind
-          ? tx`${time} <= ${at}`
-          : order < position.kind
-            ? tx`${time} < ${at}`
-            : tx`(${time}, ${id}) < (${at}, ${position.id}::uuid)`,
-      );
+      const at = new Date(position.at);
+      return {
+        at,
+        key: order > position.kind ? '￿' : order < position.kind ? '' : position.id,
+      };
     }
-    return parts.length === 0 ? tx`true` : parts.reduce((a, b) => tx`${a} and ${b}`);
+    return input.to ? { at: new Date(input.to), key: '' } : undefined;
+  };
+  const withStart = (kind: TimelineItemKind) => {
+    const start = startOf(kind);
+    return start ? { start } : {};
   };
 
-  const branches: Fragment[] = [];
+  const streams: AsyncGenerator<Item>[] = [];
   if (kinds.has('event') && eventTypeIds.length > 0) {
-    const history = eventHistory(tx, schema, workspaceId, record.id, {
-      limit: limit + 1,
-      where: bound('event'),
-      eventTypeIds,
-    });
-    branches.push(tx`(
-      select ${KIND_ORDER.event}::int as kind, h.event_id as id, h.occurred_at as at,
-        h.rank, h.field_id, h.via_record_id
-      from ${history} h
-      order by h.occurred_at desc, h.event_id desc limit ${limit + 1})`);
+    streams.push(
+      mapItems(
+        historyEvents(db, schema, record.id, {
+          eventTypeIds,
+          batch,
+          ...withStart('event'),
+          ...(until ? { until } : {}),
+        }),
+        (h) => ({
+          kind: KIND_ORDER.event,
+          id: h.event_id,
+          at: h.occurred_at,
+          rank: h.rank,
+          field_id: h.field_id,
+          via_record_id: h.via_record_id,
+        }),
+      ),
+    );
   }
   if (kinds.has('field_change') && fieldIds.length > 0) {
-    const where = bound('field_change')(tx`a.observed_at`, tx`a.id`);
-    branches.push(tx`(
-      select ${KIND_ORDER.field_change}::int as kind, a.id, a.observed_at as at,
-        null::int as rank, null::uuid as field_id, null::uuid as via_record_id
-      from field_assertions a
-      where a.record_id = ${record.id} and a.workspace_id = ${workspaceId}
-        and a.field_id = any(${fieldIds}::uuid[])
-        and a.status in ('active', 'superseded') and ${where}
-      order by a.observed_at desc, a.id desc limit ${limit + 1})`);
+    const wanted = new Set(fieldIds);
+    type Row = { id: RecordId; field_id: string; status: string; observed_at: Date };
+    const rows = keysetStream<Row>(
+      db,
+      {
+        table: 'field_assertions',
+        where: 'record = $record',
+        vars: { record: record.id },
+        time: 'observed_at',
+        fields: 'id, field_id, status, observed_at',
+        timeOf: (r) => r.observed_at,
+        keyOf: (r) => publicId(r.id),
+        batch,
+        ...(until ? { until } : {}),
+      },
+      startOf('field_change'),
+    );
+    streams.push(
+      mapItems(
+        filterChunks(rows, batch, (chunk) =>
+          chunk.filter(
+            (r) => wanted.has(r.field_id) && (r.status === 'active' || r.status === 'superseded'),
+          ),
+        ),
+        (r) => ({
+          kind: KIND_ORDER.field_change,
+          id: publicId(r.id),
+          at: r.observed_at,
+          rank: null,
+          field_id: null,
+          via_record_id: null,
+        }),
+      ),
+    );
   }
   if (kinds.has('fact')) {
-    const where = bound('fact')(tx`f.valid_from`, tx`f.id`);
+    type Row = { id: RecordId; valid_from: Date; deleted_at?: Date | null };
+    const rows = keysetStream<Row>(
+      db,
+      {
+        table: 'facts',
+        where: 'record = $record',
+        vars: { record: record.id },
+        time: 'valid_from',
+        fields: 'id, valid_from, deleted_at',
+        timeOf: (r) => r.valid_from,
+        keyOf: (r) => publicId(r.id),
+        batch,
+        ...(until ? { until } : {}),
+      },
+      startOf('fact'),
+    );
     // Retracted facts and facts whose every source is gone are left out.
-    branches.push(tx`(
-      select ${KIND_ORDER.fact}::int as kind, f.id, f.valid_from as at,
-        null::int as rank, null::uuid as field_id, null::uuid as via_record_id
-      from facts f
-      where f.record_id = ${record.id} and f.workspace_id = ${workspaceId}
-        and f.deleted_at is null and exists (${liveFactSource(tx, tx`f.id`)}) and ${where}
-      order by f.valid_from desc, f.id desc limit ${limit + 1})`);
+    streams.push(
+      mapItems(
+        filterChunks(rows, batch, async (chunk) => {
+          const kept = chunk.filter((r) => !r.deleted_at);
+          const live = await liveFactSources(
+            db,
+            kept.map((r) => publicId(r.id)),
+          );
+          return kept.filter((r) => (live.get(publicId(r.id))?.length ?? 0) > 0);
+        }),
+        (r) => ({
+          kind: KIND_ORDER.fact,
+          id: publicId(r.id),
+          at: r.valid_from,
+          rank: null,
+          field_id: null,
+          via_record_id: null,
+        }),
+      ),
+    );
   }
-  if (branches.length === 0) return { record: record.id, items: [], nextCursor: null };
+  if (streams.length === 0) return { record: record.id, items: [], nextCursor: null };
 
-  const rows = await tx<
-    {
-      kind: number;
-      id: string;
-      at: Date;
-      stamp: string;
-      rank: number | null;
-      field_id: string | null;
-      via_record_id: string | null;
-    }[]
-  >`
-    select t.*, t.at::text as stamp
-    from (${branches.reduce((a, b) => tx`${a} union all ${b}`)}) t
-    order by t.at desc, t.kind, t.id desc
-    limit ${limit + 1}`;
+  const rows = await take(mergeStreams(streams, itemOrder), limit + 1);
   const pageRows = rows.slice(0, limit);
   const last = pageRows.at(-1);
   const nextCursor =
     rows.length > limit && last
-      ? encodeCursor({ at: last.stamp, kind: last.kind, id: last.id }, binding)
+      ? encodeCursor({ at: last.at.toISOString(), kind: last.kind, id: last.id }, binding)
       : null;
 
   const idsOf = (kind: TimelineItemKind) =>
     pageRows.filter((r) => r.kind === KIND_ORDER[kind]).map((r) => r.id);
   const [events, values, facts] = await Promise.all([
-    presentEvents(tx, schema, idsOf('event')),
-    presentValues(tx, schema, idsOf('field_change')),
-    presentFacts(tx, schema, idsOf('fact')),
+    presentEvents(db, workspaceId, schema, idsOf('event')),
+    presentValues(db, schema, idsOf('field_change')),
+    presentFacts(db, schema, idsOf('fact')),
   ]);
   const items = pageRows.flatMap((row): TimelineItem[] => {
     const at = row.at.toISOString();
@@ -276,63 +349,61 @@ export async function timelinePage(
   return { record: record.id, items, nextCursor };
 }
 
-async function presentEvents(tx: Tx, schema: CompiledSchema, ids: string[]) {
+async function* mapItems<A>(source: AsyncGenerator<A>, fn: (a: A) => Item): AsyncGenerator<Item> {
+  for await (const a of source) yield fn(a);
+}
+
+async function presentEvents(db: Db, workspaceId: string, schema: CompiledSchema, ids: string[]) {
   const result = new Map<string, { type: string; title: string | null; summary: string | null }>();
   if (ids.length === 0) return result;
-  const rows = await tx<{ id: string; object_type_id: string; data: Record<string, unknown> }[]>`
-    select id, object_type_id, data from records where id = any(${ids}::uuid[])`;
-  for (const row of rows) {
+  const rows = await rowsByIds(db, workspaceId, schema, ids);
+  for (const row of rows.values()) {
     const object = schema.objectsById.get(row.object_type_id);
     result.set(row.id, { type: object?.name ?? 'unknown', ...eventText(object, row.data) });
   }
   return result;
 }
 
-async function presentValues(tx: Tx, schema: CompiledSchema, ids: string[]) {
+async function presentValues(db: Db, schema: CompiledSchema, ids: string[]) {
   const result = new Map<string, TimelineItem>();
   if (ids.length === 0) return result;
-  const rows = await tx<
-    {
-      id: string;
-      field_id: string;
-      value: unknown;
-      status: 'active' | 'superseded';
-      actor: Actor;
-      confidence: number;
-      observed_at: Date;
-      source_record_id: string | null;
-      source_type: string | null;
-      source_data: Record<string, unknown> | null;
-      occurred_at: Date | null;
-    }[]
-  >`
-    select a.id, a.field_id, a.value, a.status, a.actor, a.confidence, a.observed_at,
-      a.source_record_id, src.object_type_id as source_type, src.data as source_data,
-      e.occurred_at
-    from field_assertions a
-    left join records src on src.id = a.source_record_id and src.deleted_at is null
-      and src.object_type_id = any(${schema.visibleObjectIds}::uuid[])
-    left join event_records e on e.record_id = src.id
-    where a.id = any(${ids}::uuid[])`;
+  const rows = await assertionsByIds(db, ids);
+  // Sources that are live and of visible types, in one read.
+  const visible = new Set(schema.visibleObjectIds);
+  const entries = [
+    ...(
+      await directoryEntries(
+        db,
+        rows.flatMap((r) => (r.source ? [r.source] : [])),
+      )
+    ).values(),
+  ].filter((e) => !e.deleted_at && visible.has(e.object_type_id));
+  const sources = await fetchRows(db, '', schema, entries);
   const fieldOf = (id: string) => schema.fieldOwners.get(id)?.fieldsById.get(id);
   const targetsOf = (row: (typeof rows)[number]) =>
     fieldOf(row.field_id)?.type === 'relation'
       ? [row.value].flat().filter((v): v is string => typeof v === 'string')
       : [];
-  const refs = await references(tx, schema, [...new Set(rows.flatMap(targetsOf))]);
+  const refs = await references(db, schema, [...new Set(rows.flatMap(targetsOf))]);
   for (const row of rows) {
     const targets = targetsOf(row);
+    const source = row.source ? sources.get(row.source) : undefined;
     result.set(row.id, {
       kind: 'field_change',
       id: row.id,
       at: row.observed_at.toISOString(),
       field: fieldOf(row.field_id)?.name ?? row.field_id,
       value: row.value,
-      status: row.status,
+      status: row.status as 'active' | 'superseded',
       current: row.status === 'active',
       actor: row.actor,
       confidence: row.confidence,
-      source: presentSource(schema, row),
+      source: presentSource(schema, {
+        source_record_id: source ? row.source : null,
+        source_type: source?.object_type_id ?? null,
+        source_data: source?.data ?? null,
+        occurred_at: source?.occurred_at ?? null,
+      }),
       ...(targets.length > 0
         ? {
             relationReferences: Object.fromEntries(
@@ -345,17 +416,10 @@ async function presentValues(tx: Tx, schema: CompiledSchema, ids: string[]) {
   return result;
 }
 
-async function presentFacts(tx: Tx, schema: CompiledSchema, ids: string[]) {
+async function presentFacts(db: Db, schema: CompiledSchema, ids: string[]) {
   const result = new Map<string, TimelineItem>();
   if (ids.length === 0) return result;
-  const { facts } = await factsPage(
-    tx,
-    schema,
-    tx`f.id = any(${ids}::uuid[])`,
-    ids.length,
-    undefined,
-    true,
-  );
+  const { facts } = await factsPage(db, schema, { factIds: ids }, ids.length, undefined, true);
   for (const f of facts) {
     if (f.status === 'retracted') continue;
     result.set(f.id, {

@@ -626,5 +626,21 @@ export const WORKSPACE_INDEXES: IndexDefinition[] = [
     table: 'search_documents',
     fields: ['grams'],
     fulltext: 'rt_trigram',
+  }, // Read-side keyset streams (section 8): a record's assertions and an
+  // event's claims, newest first.
+  {
+    name: 'field_assertions_record_time_idx',
+    table: 'field_assertions',
+    fields: ['record', 'created_at'],
+  },
+  {
+    name: 'field_assertions_record_observed_idx',
+    table: 'field_assertions',
+    fields: ['record', 'observed_at'],
+  },
+  {
+    name: 'field_assertions_source_time_idx',
+    table: 'field_assertions',
+    fields: ['source', 'created_at'],
   },
 ];

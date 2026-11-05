@@ -52,11 +52,8 @@ const as = (actor: Actor, ws = workspaceId): Caller => ({
 /** Alternates between the two processes, so concurrent writes really compete. */
 const proc = (i: number) => (i % 2 === 0 ? backend : other);
 
-// needs web/review.ts (read-side port in progress): the signature it is ported to.
 const reviewQueue = (caller: Caller, limit: number) =>
-  withRead(backend, caller, (db, schema) =>
-    reviewPage(db as never, caller.workspaceId, schema, limit, {}),
-  );
+  withRead(backend, caller, (db, schema) => reviewPage(db, caller.workspaceId, schema, limit, {}));
 
 async function schemaChange(operations: SchemaOperation[], actor: Actor = USER, ws = workspaceId) {
   return runSchemaChange(backend, {
@@ -421,8 +418,7 @@ describe('writes to one record are serialized (rule 2.5)', () => {
 });
 
 describe('precedence and review (rules 2.2, 2.3)', () => {
-  // needs web/review.ts (read-side port in progress)
-  it.skip('holds a newer agent value against a user value for review', async () => {
+  it('holds a newer agent value against a user value for review', async () => {
     const { id } = await createRecord(backend, as(USER), 'person', {
       emails: email(),
       jobTitle: 'CTO',
@@ -523,8 +519,7 @@ describe('precedence and review (rules 2.2, 2.3)', () => {
     expect((await readRecord(backend, as(AGENT), id)).fields.jobTitle).toBe('Now');
   });
 
-  // needs web/review.ts (read-side port in progress)
-  it.skip('holds agent values below the confidence threshold', async () => {
+  it('holds agent values below the confidence threshold', async () => {
     const { id } = await createRecord(backend, as(AGENT), 'person', { emails: email() });
     const { result: statuses } = await withWrite(
       backend,
@@ -548,8 +543,7 @@ describe('precedence and review (rules 2.2, 2.3)', () => {
     expect(queue.pendingAssertions.find((p) => p.recordId === id)?.reason).toBe('low_confidence');
   });
 
-  // needs web/review.ts (read-side port in progress)
-  it.skip('rejects a pending assertion without changing the record', async () => {
+  it('rejects a pending assertion without changing the record', async () => {
     const { id } = await createRecord(backend, as(USER), 'person', {
       emails: email(),
       jobTitle: 'CTO',

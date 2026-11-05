@@ -186,8 +186,7 @@ describe('schema changes', () => {
     expect(await fieldNames(workspaceId, 'person')).toContain('nickname');
   });
 
-  // needs views/service.ts (read-side port in progress): deleting a field repairs saved views.
-  it.skip('marks an approval failed when the change no longer validates', async () => {
+  it('marks an approval failed when the change no longer validates', async () => {
     const proposed = await change(workspaceId, [
       { op: 'rename_field', object: 'person', field: 'jobTitle', name: 'role' },
     ]);

@@ -251,8 +251,7 @@ describe('logging an event again adds links (1.3)', () => {
 });
 
 describe('about records (1.3)', () => {
-  // needs retrieval/* (read-side port in progress)
-  it.skip('lists the event on each record it is about, never as an attendee', async () => {
+  it('lists the event on each record it is about, never as an attendee', async () => {
     const dana = await person({ name: 'Dana About' });
     const acme = await company('Acme About');
     const pilot = await createRecord(backend, as(AGENT), 'deal', { name: 'Acme pilot' });
@@ -454,8 +453,7 @@ describe('about records (1.3)', () => {
     expect((await linksOf(attended.id)).about).toEqual([a.id]);
   });
 
-  // needs retrieval/* (read-side port in progress)
-  it.skip('links a note from remember as about its record', async () => {
+  it('links a note from remember as about its record', async () => {
     const dana = await person();
     await remember(backend, as(AGENT), dana.id, { text: 'Likes tea' });
     const [note] = await internalNotesAbout(dana.id);
@@ -640,8 +638,7 @@ describe('querying events (7.1)', () => {
     });
   });
 
-  // needs retrieval/* (read-side port in progress)
-  it.skip('attaches an event through its own relation field, after participant and about (6.3)', async () => {
+  it('attaches an event through its own relation field, after participant and about (6.3)', async () => {
     await runSchemaChange(backend, {
       workspaceId,
       actor: USER,

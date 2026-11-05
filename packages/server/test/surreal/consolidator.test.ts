@@ -27,9 +27,7 @@ const caller = (workspaceId: string, actor: Actor = AGENT): Caller => ({
 });
 
 const reviewQueue = (on: Backend, caller: Caller, limit: number) =>
-  withRead(on, caller, (db, schema) =>
-    reviewPage(db as never, caller.workspaceId, schema, limit, {}),
-  );
+  withRead(on, caller, (db, schema) => reviewPage(db, caller.workspaceId, schema, limit, {}));
 
 let n = 0;
 const newWorkspace = async () =>
@@ -228,8 +226,7 @@ describe('fact dedupe (4.2)', () => {
 });
 
 describe('merge suggestions (4.2)', () => {
-  // needs web/review.ts (read-side port in progress)
-  it.skip('suggests records sharing a phone or a domain, and similar names, once per pair', async () => {
+  it('suggests records sharing a phone or a domain, and similar names, once per pair', async () => {
     const ws = await newWorkspace();
     const dana = await createRecord(backend, caller(ws), 'person', {
       name: 'Dana Cohen',

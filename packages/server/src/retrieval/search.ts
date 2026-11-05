@@ -1,17 +1,24 @@
 import type { EventHit, FactHit, RecordHit, SearchResult } from '@retainer/shared';
 import { z } from 'zod';
-import type { Tx } from '../db/tx.js';
-import { liveFactSource } from '../memory/events.js';
-import { exactQuery, prefixQuery } from '../records/search-sql.js';
+import type { Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { publicId } from '../db/names.js';
+import { loadLinksOf } from '../memory/event-links.js';
+import { liveFactSources } from '../memory/events.js';
+import { fold } from '../records/search-docs.js';
+import { parseSearch, type SearchCondition, searchCondition } from '../records/search-sql.js';
+import { directoryEntries, fetchRows } from '../records/store.js';
 import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 
 /**
- * Keyword search across records, events and facts (5.1). Postgres
- * parses the query (`websearch_to_tsquery`: quoted phrases, `OR`, `-word`)
- * with the `simple` configuration the stored vectors use, accents folded.
- * Every word also matches as a prefix ("Dan" finds "Dana"); hits that match
- * the words exactly rank first. Each list is ranked on its own; scores are
- * not comparable across lists, so results stay grouped by type.
+ * Keyword search across records, events and facts (5.1; spec section 8),
+ * over `search_documents`. The query takes websearch syntax (quoted
+ * phrases, `OR`, `-word`); every word also matches as a prefix ("Dan" finds
+ * "Dana") and accents are ignored. Hits that match the words as typed rank
+ * first, then by BM25. Each list is ranked on its own; scores are not
+ * comparable across lists, so results stay grouped by type. Every hit is
+ * checked for liveness and visibility when read, so a stale document never
+ * surfaces a hidden record.
  */
 
 export const searchInputSchema = z.strictObject({
@@ -20,88 +27,174 @@ export const searchInputSchema = z.strictObject({
 });
 export type SearchInput = z.infer<typeof searchInputSchema>;
 
+/** Labels at least this close (Jaro-Winkler) are similar enough to suggest. */
+export const SIMILAR_LABEL_THRESHOLD = 0.8;
+
+type Hit = {
+  id: RecordId;
+  owner: string;
+  object_type_id: string;
+  label?: string | null;
+  updated_at: Date;
+  exact: number;
+  score: number;
+};
+
 /**
- * Length normalization for `ts_rank_cd`: divide by 1 + log(document
- * length), so a long text does not outrank a short, precise match.
+ * Ranked hits of one kind, read in growing windows until `want` of them
+ * survive `keep` (liveness, visibility) or the matches run out.
  */
-const RANK_NORMALIZATION = 1;
+async function rankedHits(
+  db: Db,
+  condition: SearchCondition,
+  scope: string,
+  vars: Record<string, unknown>,
+  want: number,
+  keep: (hits: Hit[]) => Promise<Hit[]>,
+): Promise<Hit[]> {
+  if (!condition.where) return [];
+  const kept: Hit[] = [];
+  for (let start = 0, size = Math.max(want * 2, 20); ; start += size, size *= 2) {
+    const hits = await db.rows<Hit>(
+      `SELECT id, owner, object_type_id, label, updated_at, ${condition.exact} AS exact,
+         ${condition.score} AS score
+       FROM search_documents WHERE ${condition.where} AND ${scope}
+       ORDER BY exact DESC, score DESC, updated_at DESC, id ASC LIMIT ${size} START ${start};`,
+      { ...condition.vars, ...vars },
+    );
+    kept.push(...(await keep(hits)));
+    if (kept.length >= want || hits.length < size) return kept.slice(0, want);
+  }
+}
 
 export async function search(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   input: SearchInput,
 ): Promise<SearchResult> {
+  const condition = searchCondition(parseSearch(input.query), 'all_text');
   const [records, facts, events] = await Promise.all([
-    searchRecords(tx, workspaceId, schema, input),
-    searchFacts(tx, workspaceId, input),
-    searchEvents(tx, workspaceId, schema, input),
+    searchRecords(db, schema, input, condition),
+    searchFacts(db, input, condition),
+    searchEvents(db, workspaceId, schema, input, condition),
   ]);
   return { records, facts, events };
 }
 
-/**
- * Hits match every word as a prefix (`prefixQuery`). Those that match the
- * words as typed rank first, since `ts_rank_cd` scores a prefix match the
- * same as an exact one; each by `ts_rank_cd`.
- */
-function rank(tx: Tx, column: 'search' | 'f.search' | 'r.search', text: string) {
-  return tx`ts_rank_cd(${tx.unsafe(column)}, ${exactQuery(tx, text)}, ${RANK_NORMALIZATION}) desc,
-    ts_rank_cd(${tx.unsafe(column)}, ${prefixQuery(tx, text)}, ${RANK_NORMALIZATION}) desc`;
+/** Hits on live records of some object types. */
+async function liveRecordHits(db: Db, hits: Hit[], types: ReadonlySet<string>) {
+  const entries = await directoryEntries(
+    db,
+    hits.map((h) => h.owner),
+  );
+  return hits.filter((h) => {
+    const entry = entries.get(h.owner);
+    return !!entry && !entry.deleted_at && types.has(entry.object_type_id);
+  });
 }
 
-type RecordRow = { id: string; object_type_id: string; label: string | null };
-
 async function searchRecords(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   schema: CompiledSchema,
   input: SearchInput,
+  condition: SearchCondition,
 ): Promise<RecordHit[]> {
-  const present = (rows: RecordRow[], match: RecordHit['match']) =>
+  const types = new Set(schema.entityTypeIds);
+  const present = (rows: Hit[], match: RecordHit['match']) =>
     rows.map((row) => ({
-      id: row.id,
+      id: row.owner,
       object: schema.objectsById.get(row.object_type_id)?.name ?? 'unknown',
-      label: row.label,
+      label: row.label ?? null,
       match,
     }));
-
-  const text = await tx<RecordRow[]>`
-    select id, object_type_id, label from records
-    where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${schema.entityTypeIds}::uuid[])
-      and search @@ ${prefixQuery(tx, input.query)}
-    order by ${rank(tx, 'search', input.query)}, updated_at desc, id
-    limit ${input.limit}`;
+  const text = await rankedHits(
+    db,
+    condition,
+    "kind = 'record' AND object_type_id IN $types",
+    { types: [...types] },
+    input.limit,
+    (hits) => liveRecordHits(db, hits, types),
+  );
   if (text.length > 0) return present(text, 'text');
 
   // Nothing matched, even as a prefix: a misspelled name ("Dana Levy") can
-  // still find its record by trigram similarity of the label.
-  const similar = await tx<RecordRow[]>`
-    select id, object_type_id, label from records
-    where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${schema.entityTypeIds}::uuid[]) and label % ${input.query}
-    order by similarity(label, ${input.query}) desc, updated_at desc, id
-    limit ${input.limit}`;
-  return present(similar, 'similar_label');
+  // still find its record by trigram candidates of the label, reranked by
+  // Jaro-Winkler similarity.
+  const q = fold(input.query);
+  if (q.replace(/\s/g, '').length < 3) return [];
+  const candidates = await db.rows<Hit & { similarity: number }>(
+    `SELECT id, owner, object_type_id, label, updated_at,
+       string::similarity::jaro_winkler(string::lowercase(grams), $q) AS similarity
+     FROM search_documents
+     WHERE grams @OR@ $q AND kind = 'record' AND object_type_id IN $types
+     ORDER BY similarity DESC, updated_at DESC, id ASC LIMIT ${Math.max(input.limit * 5, 50)};`,
+    { q, types: [...types] },
+  );
+  const similar = await liveRecordHits(
+    db,
+    candidates.filter((c) => c.similarity >= SIMILAR_LABEL_THRESHOLD),
+    types,
+  );
+  return present(similar.slice(0, input.limit), 'similar_label');
 }
 
 /** Current facts only: not retracted or superseded, on a live record, with a live source (2.1). */
-async function searchFacts(tx: Tx, workspaceId: string, input: SearchInput): Promise<FactHit[]> {
-  const rows = await tx<{ id: string; record_id: string; content: string; valid_from: Date }[]>`
-    select f.id, f.record_id, f.content, f.valid_from from facts f
-    join records r on r.id = f.record_id and r.deleted_at is null
-    where f.workspace_id = ${workspaceId} and f.search @@ ${prefixQuery(tx, input.query)}
-      and f.deleted_at is null and f.superseded_by is null and f.valid_to is null
-      and exists (${liveFactSource(tx, tx`f.id`)})
-    order by ${rank(tx, 'f.search', input.query)}, f.valid_from desc, f.id
-    limit ${input.limit}`;
-  return rows.map((row) => ({
-    id: row.id,
-    record: row.record_id,
-    content: row.content,
-    validFrom: row.valid_from.toISOString(),
-  }));
+async function searchFacts(
+  db: Db,
+  input: SearchInput,
+  condition: SearchCondition,
+): Promise<FactHit[]> {
+  const facts = new Map<string, { record: string; content: string; valid_from: Date }>();
+  const hits = await rankedHits(db, condition, "kind = 'fact'", {}, input.limit, async (rows) => {
+    const ids = rows.map((r) => publicId(r.id));
+    if (ids.length === 0) return [];
+    const [stored, live, owners] = await Promise.all([
+      db.rows<{
+        id: RecordId;
+        record: string;
+        content: string;
+        valid_from: Date;
+        valid_to?: Date | null;
+        superseded_by?: string | null;
+        deleted_at?: Date | null;
+      }>('SELECT id, record, content, valid_from, valid_to, superseded_by, deleted_at FROM $ids;', {
+        ids: ids.map((id) => new RecordId('facts', id)),
+      }),
+      liveFactSources(db, ids),
+      directoryEntries(
+        db,
+        rows.map((r) => r.owner),
+      ),
+    ]);
+    for (const f of stored) {
+      const owner = owners.get(f.record);
+      if (
+        !f.deleted_at &&
+        !f.superseded_by &&
+        !f.valid_to &&
+        owner &&
+        !owner.deleted_at &&
+        (live.get(publicId(f.id))?.length ?? 0) > 0
+      ) {
+        facts.set(publicId(f.id), f);
+      }
+    }
+    return rows.filter((r) => facts.has(publicId(r.id)));
+  });
+  return hits.map((hit) => {
+    const fact = facts.get(publicId(hit.id)) as {
+      record: string;
+      content: string;
+      valid_from: Date;
+    };
+    return {
+      id: publicId(hit.id),
+      record: fact.record,
+      content: fact.content,
+      validFrom: fact.valid_from.toISOString(),
+    };
+  });
 }
 
 /**
@@ -110,42 +203,49 @@ async function searchFacts(tx: Tx, workspaceId: string, input: SearchInput): Pro
  * found (or hidden) with the fact itself.
  */
 async function searchEvents(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   input: SearchInput,
+  condition: SearchCondition,
 ): Promise<EventHit[]> {
-  const rows = await tx<
-    {
-      id: string;
-      object_type_id: string;
-      data: Record<string, unknown>;
-      occurred_at: Date;
-      records: string[];
-    }[]
-  >`
-    select r.id, r.object_type_id, r.data, e.occurred_at,
-      array(
-        select l.record_id from event_links l
-        join records t on t.id = l.record_id and t.deleted_at is null
-          and t.object_type_id = any(${schema.visibleObjectIds}::uuid[])
-        where l.event_id = r.id
-        order by l.position) as records
-    from records r
-    join event_records e on e.record_id = r.id
-    where r.workspace_id = ${workspaceId} and r.deleted_at is null
-      and r.object_type_id = any(${schema.eventTypeIds}::uuid[])
-      and r.search @@ ${prefixQuery(tx, input.query)}
-    order by ${rank(tx, 'r.search', input.query)}, e.occurred_at desc, r.id
-    limit ${input.limit}`;
-  return rows.map((row) => {
+  const types = new Set(schema.eventTypeIds);
+  const hits = await rankedHits(
+    db,
+    condition,
+    "kind = 'record' AND object_type_id IN $types",
+    { types: [...types] },
+    input.limit,
+    (rows) => liveRecordHits(db, rows, types),
+  );
+  if (hits.length === 0) return [];
+  const ids = hits.map((h) => h.owner);
+  const entries = await directoryEntries(db, ids);
+  const [rows, links] = await Promise.all([
+    fetchRows(db, workspaceId, schema, entries.values()),
+    loadLinksOf(db, ids),
+  ]);
+  const visible = new Set(schema.visibleObjectIds);
+  const linked = await directoryEntries(
+    db,
+    [...links.values()].flat().flatMap((l) => (l.record_id ? [l.record_id] : [])),
+  );
+  return hits.flatMap((hit): EventHit[] => {
+    const row = rows.get(hit.owner);
+    if (!row?.occurred_at) return [];
     const object = schema.objectsById.get(row.object_type_id);
-    return {
-      id: row.id,
-      type: object?.name ?? 'unknown',
-      occurredAt: row.occurred_at.toISOString(),
-      ...eventText(object, row.data),
-      records: [...new Set(row.records)],
-    };
+    const records = (links.get(hit.owner) ?? []).flatMap((l) => {
+      const entry = l.record_id ? linked.get(l.record_id) : undefined;
+      return entry && !entry.deleted_at && visible.has(entry.object_type_id) ? [entry.id] : [];
+    });
+    return [
+      {
+        id: row.id,
+        type: object?.name ?? 'unknown',
+        occurredAt: row.occurred_at.toISOString(),
+        ...eventText(object, row.data),
+        records: [...new Set(records)],
+      },
+    ];
   });
 }

@@ -144,8 +144,7 @@ describe('polymorphic relations', () => {
     expect((await readRecord(backend, as(AGENT), kept.id)).fields.stakeholders).toEqual([acme.id]);
   });
 
-  // needs views/service.ts (read-side port in progress): deleting a field repairs saved views.
-  it.skip('refuses to delete one of the targets while the field exists', async () => {
+  it('refuses to delete one of the targets while the field exists', async () => {
     await schemaChange([
       {
         op: 'create_object',

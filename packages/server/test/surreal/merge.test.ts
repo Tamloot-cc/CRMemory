@@ -46,9 +46,7 @@ const pair = (x: string, y: string) => [x, y].sort() as [string, string];
 
 const expectDataMatchesAssertions = (id: string) => expectDataCache(backend, workspaceId, id);
 const reviewQueue = (on: Backend, caller: Caller, limit: number) =>
-  withRead(on, caller, (db, schema) =>
-    reviewPage(db as never, caller.workspaceId, schema, limit, {}),
-  );
+  withRead(on, caller, (db, schema) => reviewPage(db, caller.workspaceId, schema, limit, {}));
 const logCall = (title: string, participants: { recordId: string }[] = []) =>
   logEventFor(backend, as(AGENT), {
     type: 'call',
@@ -389,7 +387,7 @@ describe('merging records (4.2)', () => {
     expect(replay.merged).toBe(true);
   });
 
-  // needs web/review.ts (read-side port in progress)
+  // Write side: mergeRecord closes the merged pair's suggestion as dismissed, not accepted.
   it.skip('accepts the pending suggestion for the pair and hides suggestions with a merged record', async () => {
     const a = await person();
     const b = await person();

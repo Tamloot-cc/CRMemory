@@ -13,7 +13,6 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "dev": "pnpm --filter @retainer/server dev",
-    "db:viewer": "pnpm --silent --filter @retainer/server db:viewer",
     "retainer": "pnpm --silent --filter @retainer/server cli",
     "dev:web": "pnpm --filter @retainer/web dev",
     "test:web": "pnpm --filter @retainer/server test:web",

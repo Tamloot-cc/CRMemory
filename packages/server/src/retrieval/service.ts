@@ -1,5 +1,5 @@
 import type { ContextPack, SearchResult, TimelinePage } from '@retainer/shared';
-import type { Sql } from '../db/client.js';
+import type { Backend } from '../db/backend.js';
 import { type Caller, withRead } from '../records/service.js';
 import { type ContextInput, contextPack } from './context.js';
 import { type SearchInput, search } from './search.js';
@@ -8,31 +8,31 @@ import { type TimelineInput, timelinePage } from './timeline.js';
 /** Search and context packs for one caller, shared by REST and MCP (5, 5.1). */
 
 export async function searchFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   input: SearchInput,
 ): Promise<SearchResult> {
-  return withRead(sql, caller, (tx, schema) => search(tx, caller.workspaceId, schema, input));
+  return withRead(backend, caller, (db, schema) => search(db, caller.workspaceId, schema, input));
 }
 
 export async function contextFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   recordId: string,
   input: ContextInput,
 ): Promise<ContextPack> {
-  return withRead(sql, caller, (tx, schema) =>
-    contextPack(tx, caller.workspaceId, schema, recordId, input),
+  return withRead(backend, caller, (db, schema) =>
+    contextPack(db, caller.workspaceId, schema, recordId, input),
   );
 }
 
 export async function timelineFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   recordId: string,
   input: TimelineInput,
 ): Promise<TimelinePage> {
-  return withRead(sql, caller, (tx, schema) =>
-    timelinePage(tx, caller.workspaceId, schema, recordId, input),
+  return withRead(backend, caller, (db, schema) =>
+    timelinePage(db, caller.workspaceId, schema, recordId, input),
   );
 }
