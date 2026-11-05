@@ -325,11 +325,16 @@ async function suggestMerges(
   }
 
   // Similar labels: trigram candidates from the label index, reranked.
-  const labels = await op.rows<{ id: RecordId; label: string }>(
-    'SELECT id, label FROM $ids WHERE label != NONE;',
+  const labels = await op.rows<{ id: RecordId; label?: string | null }>(
+    'SELECT id, label FROM $ids;',
     { ids: records.map((r) => new RecordId('search_documents', r.id)) },
   );
-  const comparable = labels.filter((l) => l.label.trim().length >= MIN_LABEL_LENGTH);
+  // A record without a label (a person known only by email) has nothing to compare.
+  const comparable = labels.flatMap((l) =>
+    typeof l.label === 'string' && l.label.trim().length >= MIN_LABEL_LENGTH
+      ? [{ id: l.id, label: l.label }]
+      : [],
+  );
   const candidates = await perValue<{
     owner: string;
     label?: string | null;
