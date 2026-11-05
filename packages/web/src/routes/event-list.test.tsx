@@ -96,8 +96,12 @@ describe('event type lists', () => {
     ]);
     const about = list.fields.find((f) => f.name === 'about');
     expect(about?.readOnly).toBe(true);
-    // Participants and about can name any record, never an event.
-    expect(about?.settings.targetObjects).toEqual(['company', 'person']);
+    // About may name any record, events included (1.3); participants are entities.
+    expect(about?.settings.targetObjects).toEqual(['company', 'person', 'conversation', 'note']);
+    expect(list.fields.find((f) => f.name === 'participants')?.settings.targetObjects).toEqual([
+      'company',
+      'person',
+    ]);
     expect(eventListObject(company, schema)).toBe(company);
   });
 

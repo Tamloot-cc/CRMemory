@@ -33,6 +33,7 @@ describe('a note to log', () => {
     const note = {
       nameSingular: 'note',
       labelSingular: 'Note',
+      labelPlural: 'Notes',
       class: 'event',
       baseObject: 'note',
       fields: [

@@ -61,10 +61,14 @@ const builtIn = (
  * Participants and `about` read as relations to any record.
  */
 export function eventColumnFields(schema: Pick<SchemaDescription, 'objects'>): FieldView[] {
-  const anyRecord = {
+  const many = { relationCardinality: 'many_to_many' as const };
+  // Participants are records of people and other entities; `about` may also
+  // name another event (1.3), so its pickers offer every object.
+  const anyEntity = {
+    ...many,
     targetObjects: schema.objects.filter((o) => o.class !== 'event').map((o) => o.nameSingular),
-    relationCardinality: 'many_to_many' as const,
   };
+  const anyRecord = { ...many, targetObjects: schema.objects.map((o) => o.nameSingular) };
   return [
     builtIn('occurredAt', 'Occurred', 'When it happened', {
       type: 'date_time',
@@ -73,7 +77,7 @@ export function eventColumnFields(schema: Pick<SchemaDescription, 'objects'>): F
     }),
     builtIn('participants', 'Participants', 'Who took part: matched records and other handles', {
       type: 'relation',
-      settings: anyRecord,
+      settings: anyEntity,
       isFilterable: false,
     }),
     builtIn('about', 'About', 'Records the event concerns', {
