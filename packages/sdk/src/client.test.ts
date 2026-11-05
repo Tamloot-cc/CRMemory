@@ -97,3 +97,34 @@ it('keeps the existing health response contract for database outages', async () 
   });
   expect(await client.health()).toEqual(expected);
 });
+
+it('reads operations by ID or by kind and idempotency key, and traverses', async () => {
+  const calls: { url: string; method: string; body?: string }[] = [];
+  const client = new RetainerClient({
+    baseUrl: 'http://localhost',
+    apiKey: 'rtn_test',
+    fetch: async (url, init) => {
+      calls.push({
+        url: String(url),
+        method: init?.method ?? 'GET',
+        ...(typeof init?.body === 'string' ? { body: init.body } : {}),
+      });
+      return Response.json({ status: 'not_observed' });
+    },
+  });
+  await client.getOperation({ operationId: 'op/1' });
+  await client.getOperation({ kind: 'remember', idempotencyKey: 'k 1' });
+  await client.traverseRecords({ starts: ['r1'], path: [{ field: 'company' }] });
+  expect(calls).toEqual([
+    { url: 'http://localhost/v1/operations/op%2F1', method: 'GET' },
+    {
+      url: 'http://localhost/v1/operations?kind=remember&idempotencyKey=k+1',
+      method: 'GET',
+    },
+    {
+      url: 'http://localhost/v1/records/traverse',
+      method: 'POST',
+      body: JSON.stringify({ starts: ['r1'], path: [{ field: 'company' }] }),
+    },
+  ]);
+});
