@@ -3,7 +3,7 @@ import type { ApiKeyScope, AppliedTemplate } from '../db/schema.js';
 import { lockSchemaExclusive, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { runSchemaChange, type SchemaChangeResult, SYSTEM_ACTOR } from '../schema-engine/engine.js';
-import { BASE_EVENT_OPERATIONS, BASE_OPERATIONS, INTERNAL_OPERATIONS } from './base.js';
+import { SEED_OPERATIONS } from './base.js';
 import { getTemplate, TEMPLATE_NAMES } from './index.js';
 
 /**
@@ -17,7 +17,7 @@ export async function seedBaseObjects(tx: Tx, workspaceId: string): Promise<void
     workspaceId,
     actor: SYSTEM_ACTOR,
     scopes: [],
-    operations: [...BASE_OPERATIONS, ...BASE_EVENT_OPERATIONS, ...INTERNAL_OPERATIONS],
+    operations: SEED_OPERATIONS,
     reason: 'Base objects',
     owner: 'system',
     trusted: true,

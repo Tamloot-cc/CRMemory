@@ -711,8 +711,27 @@ created; there is no operation to change them.
 
 Standard objects ship as code (definitions with fixed `universal_id`s) and
 are applied through the same engine, on its trusted path, when a workspace
-is created. Upgrading existing workspaces to newer definitions is not built
-yet; the fixed `universal_id`s are what such an upgrade will match on.
+is created.
+
+**Upgrading existing workspaces.** After migrations, wherever they run (the
+container's start, the AWS ops function's `migrate`), the server brings every
+workspace up to the definitions of its release: the seed (base objects, base
+event types, the internal-note type) and each template the workspace
+applied. Elements are matched by `universal_id` whatever their status, so a
+renamed element is found and one the workspace deleted is not re-created.
+Only what the workspace never had is added: objects with their fields, and
+fields of objects it still has. Options, labels, flags and settings of
+existing elements are left as they are. The trusted path also protects every
+element the protection lists (1.1) name, which workspaces created before
+protection lack. An element the workspace's schema cannot take, such as a
+base type whose name its own object already uses, is skipped and logged as a
+conflict; everything else still applies. Each upgrade is one schema change by
+`system:retainer`, run under the workspace's exclusive schema lock.
+`workspaces.definitions_digest` records the definitions a workspace was last
+fully upgraded to, so a run skips current workspaces without loading their
+schema and retries conflicted or failed ones. A workspace that fails is
+reported and keeps its schema; the others still run
+(`docs/workspace-upgrade-spec.md`).
 
 ### 3.1 Base objects and templates
 
@@ -751,8 +770,9 @@ work without a template, and a template can be applied later.
 later (a consultancy that starts recruiting). If a template's object or field
 name collides with an existing custom one, applying it fails validation and
 the error lists the collisions; nothing is half-applied. Applying a template
-the workspace already has is a no-op, whatever its version; template updates
-in new releases have no upgrade path yet (3).
+the workspace already has is a no-op, whatever its version; a release that
+changes a template adds its new objects and fields to workspaces that applied
+it when they are upgraded (3), and records the new version.
 
 The workspace records which templates it has applied, with their versions
 (`workspaces.templates`).

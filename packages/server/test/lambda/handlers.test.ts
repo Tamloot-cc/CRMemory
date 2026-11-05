@@ -16,6 +16,7 @@ import { databaseUrl, useTestDatabase } from '../helpers/db.js';
 
 const db = useTestDatabase();
 const config = () => loadConfig({ DATABASE_URL: db.url, LOG_LEVEL: 'error' });
+const NOTHING_UPGRADED = { upgraded: [], conflicts: [], failed: [] };
 
 /** An API Gateway HTTP API (payload 2.0) event, as the $default route sends it. */
 function httpEvent(
@@ -221,10 +222,12 @@ describe('ops function', () => {
       expect(await ops({ command: 'migrate' })).toEqual({
         command: 'migrate',
         rebuiltSearchText: 0,
+        workspaceUpgrade: NOTHING_UPGRADED,
       });
       expect(await ops({ command: 'migrate' })).toEqual({
         command: 'migrate',
         rebuiltSearchText: 0,
+        workspaceUpgrade: NOTHING_UPGRADED,
       });
 
       const check = postgres(url, { max: 1, onnotice: false });
@@ -266,7 +269,11 @@ describe('deploy lock: one version at a time', () => {
     const migration = ops({ command: 'migrate', waitSeconds: 30 });
     expect(await settled(migration)).toBe(false);
     await pass`select pg_advisory_unlock_shared(${DEPLOY_LOCK})`;
-    await expect(migration).resolves.toEqual({ command: 'migrate', rebuiltSearchText: 0 });
+    await expect(migration).resolves.toEqual({
+      command: 'migrate',
+      rebuiltSearchText: 0,
+      workspaceUpgrade: NOTHING_UPGRADED,
+    });
   });
 
   it('makes a consolidator pass wait for a migration', async () => {

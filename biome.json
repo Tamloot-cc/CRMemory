@@ -3,6 +3,7 @@
   "files": {
     "includes": [
       "**",
+      "!**/.agents",
       "!**/.claude",
       "!deploy/aws/.build",
       "!deploy/aws/.terraform",

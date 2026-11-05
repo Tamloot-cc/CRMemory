@@ -7,8 +7,9 @@ import { diffSchemas, isDestructive } from './diff.js';
 import { loadSchemaState } from './load.js';
 import type { SchemaOperation } from './operations.js';
 import { checkExistingRecords, persistSchema, SchemaCheckError } from './persist.js';
+import { applyProtection } from './protection.js';
 import { type DiffOp, type SchemaIssue, type SchemaState, SchemaValidationError } from './types.js';
-import { validateSchema } from './validate.js';
+import { issueKey, validateSchema } from './validate.js';
 
 /** The server's own actor, for seeding and upgrades. */
 export const SYSTEM_ACTOR: Actor = { type: 'system', id: 'retainer' };
@@ -50,11 +51,28 @@ export function canApproveDestructive(actor: Actor, scopes: readonly ApiKeyScope
   return actor.type === 'user' && scopes.includes('admin');
 }
 
-/** Steps 2–5: apply in memory, validate, diff. Throws SchemaValidationError. */
-function plan(current: SchemaState, operations: SchemaOperation[], owner: SchemaOwner) {
+/**
+ * Steps 2–5: apply in memory, validate, diff. Throws SchemaValidationError.
+ * On the trusted path, the engine also protects the elements server code
+ * depends on, which older workspaces may not have protected yet.
+ */
+function plan(
+  current: SchemaState,
+  operations: SchemaOperation[],
+  owner: SchemaOwner,
+  trusted = false,
+) {
   const { state: desired, issues } = applyOperations(current, operations, { owner });
+  if (trusted) applyProtection(desired);
   // Reference issues first; validation of a half-applied state can repeat them.
-  const all = [...issues, ...validateSchema(desired)];
+  let all = [...issues, ...validateSchema(desired)];
+  if (trusted) {
+    // Code-defined schema must not be blocked by an issue the workspace
+    // already has, such as a name a later release reserved: only issues
+    // the change itself introduces count.
+    const existing = new Set(validateSchema(current).map(issueKey));
+    all = all.filter((i) => !existing.has(issueKey(i)));
+  }
   if (all.length > 0) throw new SchemaValidationError(dedupe(all));
   return { desired, ops: diffSchemas(current, desired) };
 }
@@ -62,7 +80,7 @@ function plan(current: SchemaState, operations: SchemaOperation[], owner: Schema
 function dedupe(issues: SchemaIssue[]): SchemaIssue[] {
   const seen = new Set<string>();
   return issues.filter((i) => {
-    const key = `${i.path}\n${i.message}`;
+    const key = issueKey(i);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -81,7 +99,12 @@ export async function runSchemaChange(
   const { workspaceId, actor } = request;
   await lockSchemaExclusive(tx, workspaceId);
   const current = await loadSchemaState(tx, workspaceId);
-  const { desired, ops } = plan(current, request.operations, request.owner ?? ownerFor(actor));
+  const { desired, ops } = plan(
+    current,
+    request.operations,
+    request.owner ?? ownerFor(actor),
+    request.trusted,
+  );
 
   if (ops.length === 0) {
     return {

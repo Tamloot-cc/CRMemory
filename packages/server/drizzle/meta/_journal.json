@@ -134,6 +134,13 @@
       "when": 1793826440751,
       "tag": "0018_event_history_rollups",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793835222187,
+      "tag": "0019_workspace_definitions_digest",
+      "breakpoints": true
     }
   ]
 }

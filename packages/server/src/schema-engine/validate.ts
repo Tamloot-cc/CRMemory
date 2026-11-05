@@ -108,6 +108,9 @@ export const LABEL_FIELD_TYPES: ReadonlySet<FieldType> = new Set([
   'select',
 ]);
 
+/** Two issues with the same key are the same issue. */
+export const issueKey = (issue: SchemaIssue) => `${issue.path}\n${issue.message}`;
+
 /**
  * Step 3 of the engine: checks the desired schema as a whole. Returns every
  * issue rather than the first, so a template collision lists all of them.

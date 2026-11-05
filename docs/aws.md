@@ -120,7 +120,9 @@ Cloudflare's orange cloud) would see every request.
 
 `deploy.sh` ships the package `build.sh` made. Because one version runs at
 a time (see [Upgrading](self-hosting.md#upgrading)), it stops the API and
-the consolidator, migrates, updates them and starts them again. Requests in
+the consolidator, migrates, upgrades existing workspaces to the release's
+built-in definitions (printed under `workspaceUpgrade` in the migration
+result), updates them and starts them again. Requests in
 that window, usually under a minute, get `503`. If the migration fails, the
 functions stay stopped; fix the cause and run `deploy.sh` again. Stopping a
 function only blocks new runs, so the migration first waits, up to 330

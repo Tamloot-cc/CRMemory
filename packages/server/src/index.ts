@@ -6,12 +6,13 @@ import { log, setLogLevel } from './log.js';
 import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
 import { rebuildSearchText } from './records/rebuild-search.js';
 import { startWorker } from './worker/index.js';
+import { upgradeWorkspaces } from './workspaces/upgrade.js';
 
 const config = loadConfig();
 setLogLevel(config.LOG_LEVEL);
 
 // Boot tasks run as the migration role: only it can create workspaces and keys,
-// and it rebuilds stale search text across workspaces.
+// and it rebuilds stale search text and upgrades workspaces across the database.
 const owner = createSql(config.DATABASE_URL, { max: 1 });
 try {
   const firstBoot = await bootstrap(owner);
@@ -20,6 +21,9 @@ try {
   // A migration that changes how search text is built leaves it null (5.1).
   const rebuilt = await rebuildSearchText(owner);
   if (rebuilt > 0) log.info(`Rebuilt the search text of ${rebuilt} records.`);
+  // A release that adds built-in objects, fields or protection brings older
+  // workspaces up to it (3); it logs what it did.
+  await upgradeWorkspaces(owner);
 } finally {
   await owner.end({ timeout: 5 });
 }
