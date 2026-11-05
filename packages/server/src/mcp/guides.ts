@@ -262,10 +262,14 @@ When your user asks whether the schema still fits:
   by hand. Moving legacy entity records means logging them as events first,
   so propose it as a plan, not a single change.
 - Look for event types that a conversation with a medium would cover: ones
-  whose fields a conversation would also use. Moving logged events between
-  types means deleting and re-logging them, which retracts what cites them
-  and loses deduplication against the source, so never propose it as a
-  quick cleanup; say what it would cost and let your user decide.
+  whose fields a conversation would also use. Never delete and re-log their
+  events: that retracts what cites them and blocks their source for good.
+  move_events changes their type in place, keeping IDs, identity, links and
+  citations. Run it with dryRun: true (for example meeting to conversation
+  with defaults { "medium": "meeting" }) and show your user what would move
+  and any values the target has no field for. Moving needs a person with
+  admin access, so your user runs it; once a type has no events left, its
+  deletion can be proposed like any removal.
 - Look for twins of template objects and for type fields that tags could
   replace.
 Propose additions as usual. Renames and removals wait for a person with

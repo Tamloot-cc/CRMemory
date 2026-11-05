@@ -82,6 +82,39 @@ describe('SDK against the server', () => {
     ]);
   });
 
+  it('moves events to another type, checking first', async () => {
+    await admin.proposeSchemaChange([
+      {
+        op: 'create_object',
+        object: {
+          class: 'event',
+          nameSingular: 'call',
+          namePlural: 'calls',
+          labelSingular: 'Call',
+          labelPlural: 'Calls',
+          fields: [],
+        },
+      },
+    ]);
+    const call = await agent.logEvent({
+      type: 'call',
+      channel: 'phone',
+      externalId: 'sdk-move-1',
+      occurredAt: '2026-10-03T09:00:00Z',
+      title: 'Support call',
+    });
+    const input = { from: 'call', to: 'conversation', defaults: { medium: 'call' } };
+    await expect(agent.moveEvents(input)).rejects.toMatchObject({ status: 403 });
+    const plan = await admin.moveEvents({ ...input, dryRun: true });
+    expect(plan).toMatchObject({ dryRun: true, id: null, eventIds: [call.id] });
+    const moved = await admin.moveEvents(input);
+    expect(moved).toMatchObject({ dryRun: false, eventIds: [call.id], to: 'conversation' });
+    expect(await agent.event(call.id)).toMatchObject({
+      object: 'conversation',
+      fields: { medium: 'call' },
+    });
+  });
+
   it('logs, reads, links and deletes an event, and lists its history and claims', async () => {
     const person = await agent.createRecord('person', {
       values: { name: 'Lior Katz', emails: 'lior@acme.test' },

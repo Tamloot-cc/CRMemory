@@ -253,6 +253,7 @@ install can add them later as an opt-in.
 | `field_assertions`          | A claimed value for one field of one record: value, actor, source event (`source_record_id`), `is_initial`, confidence, `observed_at` (when the claim was true at the source), `status` (`active`, `superseded`, `pending_review`, `rejected`, `retracted`)                                                    |
 | `facts`                     | Plain-language claims about a record: `content`, `kind` (`stated` or `inferred`), confidence, `valid_from` / `valid_to` (when it was true in the world), `superseded_by`                                                                                                                                       |
 | `fact_sources`              | What a fact rests on: an event (`source_record_id`, with an optional quote the agent chose) or other facts (for inferences)                                                                                                                                                                                    |
+| `event_moves`               | Each move of events to another event type: the actor, the two types, the event IDs and the field mapping, by ID and name, never values. Only ever added to                                                                                                                                                     |
 
 `field_assertions.observed_at` and `facts.valid_from` come from the source
 (rules 2.2 and 2.6); `valid_from` has no `now()` default, so backfilled
@@ -279,9 +280,8 @@ Every workspace has the base event types `conversation` and `note`, with
 universal IDs (3.1). A conversation's kind is its `medium` field, a
 nullable, filterable select with the options `meeting`, `call`, `email`
 and `message` (workspaces may add more), not its type: a field can be
-corrected after logging with `upsert_record`, while an event's type is
-fixed, and changing it means deleting the event, which retracts what cites
-it and suppresses its identity. `channel` and `medium` answer different
+corrected after logging with `upsert_record`, while an event's type changes
+only by moving it, which a person does (below). `channel` and `medium` answer different
 questions. `channel` is where the event came from, the source system or
 account (`gmail`, `zoom`, `tamloot`); it is part of the identity, fixed at
 logging, and must tell apart sources whose IDs could overlap. `medium` is
@@ -448,6 +448,71 @@ change only through `remember` and the fact and privacy lifecycle. A fact
 presents such a source as `{ event: null, internal: true }` instead of an ID
 callers cannot read. Notes a person or agent logs as `note` events are
 ordinary events; the web app writes them with channel `web` (FRONTEND.md).
+
+#### Moving events between types
+
+`POST /v1/events/move` and the `move_events` tool change the type of logged
+events: one or more named events of a type, or every live event of it, for
+example the `meeting` and `call` types a workspace used before `conversation`
+existed. Deleting and re-logging is no substitute: deletion retracts what
+cites the events and keeps their identities suppressed, so a source could
+never again be deduplicated against them.
+
+What stays: the record ID, the `event_records` row (`occurred_at`, `channel`,
+`external_id`), participants and `about` links, every assertion and fact
+citing the event, and so its place in timelines and context packs. What
+changes is `records.object_type_id` and the fields the event's own
+assertions belong to:
+
+- **Mapping.** Core `title` and `summary` map to the target's by role. Other
+  active fields map to the target field of the same name, or to the one the
+  caller names (`fields`). A field maps only to one of the same type (and, for
+  a relation, the same multiplicity), and two source fields never map to one.
+  Assertions are moved, never data: every assertion of a mapped field, of any
+  status, is re-pointed at the target field with its actor, source,
+  `observed_at` and `is_initial` unchanged. `records.data`, `record_links`,
+  `record_identifiers`, label and search are then rebuilt from them (rule
+  2.4), so ranking is exactly what it was.
+- **Values that would be lost.** If a source field with any assertions on
+  the moved events has no target field, or its active, superseded or pending
+  values do not fit the target field (an option it lacks, a relation to a
+  record it cannot point at, a value past its limits), the move is refused
+  with the list (`unmapped_fields`). The caller maps the field, or names it
+  in `drop`, which deletes its assertions on those events. Nothing is dropped
+  unless named. This was chosen over dropping by default because a value
+  that vanishes on a move cannot be recovered. Assertions of fields the
+  source type had already deleted stay as that field's history; they never
+  counted for the source type and never count for the target.
+- **Defaults.** `defaults` gives target fields the moved events have no value
+  for, such as `medium: "meeting"`. They are written as the event's initial
+  values, citing the event, observed at `occurred_at`, by the caller. The
+  old type carried that information when the source was logged, so a
+  re-log of the source as the new type with that value matches the moved
+  event (retries compare initial values, above).
+- **Refusals.** Moving between an event type and itself, an entity, or the
+  hidden internal-note type (it resolves as not found); a required target
+  field left empty on any event (`invalid_values`); a moved value of a
+  unique field another record claims (`unique_conflict`, rather than the
+  silent review rule 2.4 uses for retractions); and records pointing at the
+  events through a relation field that cannot target the new type
+  (`referenced_by_relations`), since a relation's targets never change (1.1).
+
+A move needs a `user` actor with the `admin` scope, the rule for destructive
+schema changes (3) and `forget` (2.1): the request is the approval, and an
+agent's key is not, whatever its scope. It is not a schema change, since no
+object or field changes, so it is not stored as a proposal: approving a
+stored "move every meeting" later would move events logged since, which the
+approver never saw. Instead anyone with `schema:write` can run it as a dry
+run, the same code in a transaction that is rolled back, and show a person
+exactly what it would do; the person then runs it. Each move is logged in
+`event_moves`.
+
+A move takes the workspace schema lock exclusively (3), so no write runs
+while it does: every write takes that lock in shared mode before reading
+the record or field it writes, so none can write an assertion against a field
+the events are leaving. The moved events are also locked `FOR UPDATE`, in ID
+order. Moving every event of a type is one transaction: all of them move or
+none do. Once a type has no live events, deleting it deletes nothing.
 
 ### 1.4 Views
 
@@ -730,7 +795,8 @@ required or unique field is subject to the same check and approval, not an
 additive shortcut. Record writers take a shared transaction-level advisory
 lock keyed on the workspace (`pg_advisory_xact_lock_shared`) before record
 locks; schema changes take the exclusive form, so a write cannot race the
-check or commit against stale schema. Advisory locks, not `FOR SHARE` on
+check or commit against stale schema. Moving events between types (1.3)
+takes the exclusive form too. Advisory locks, not `FOR SHARE` on
 the workspace row: every write share-locking one hot row creates MultiXact
 churn, and schema changes also update that row (`schema_version`). Unique
 claims are populated atomically when uniqueness is enabled.
@@ -997,6 +1063,11 @@ schema sees that the workspace keeps them and no client mistakes them for
 something `upsert_record` writes. Event types are objects of class `event`
 (1.3); the internal-note type is never listed.
 
+Filter values are checked against their column or field type before any
+cast: record IDs, ISO 8601 times with a UTC offset, and dates in years 0001
+to 9999, which is also the range writes accept. A malformed value is
+`422 invalid_filter` naming the field, never a failed cast.
+
 Every read hides soft-deleted parents/rows and superseded facts by default.
 An explicit history mode can list retained assertions and facts with their
 source and validity dates; exact `as_of` snapshots are deferred. Context
@@ -1143,6 +1214,7 @@ composes `search`, `query_records` and `get_context` with its own model.
 | `POST /v1/assertions/:id/accept` · `/reject`      | Decide a pending assertion                                                                                                              |
 | `POST /v1/events`                                 | Log an event: 201 when created, 200 for a retry; returns matched and unmatched participants (4.1)                                       |
 | `POST /v1/events/query`                           | Query events of every event type: shared columns, `type`, `search` and `linked`, newest first (1.3)                                     |
+| `POST /v1/events/move`                            | Move events to another event type, keeping IDs, identity, links and citations; a user with `admin`, or a dry run (1.3)                  |
 | `GET` · `DELETE /v1/events/:id`                   | Read an event, or delete it and retract what cites it (2.1)                                                                             |
 | `POST /v1/events/:id/links`                       | Add participants and `about` records (1.3)                                                                                              |
 | `DELETE /v1/events/:id/participants/:pid`         | Remove a participant (a person only)                                                                                                    |
@@ -1169,7 +1241,7 @@ the tool list without limit and break clients' tool caching.
 
 `describe_schema`, `list_templates`, `apply_template`, `get_guide`,
 `query_records`, `get_record`, `search`, `get_context`, `get_timeline`, `upsert_record`,
-`log_event`, `remember`, `propose_schema_change`. Events are listed with
+`log_event`, `remember`, `propose_schema_change`, `move_events`. Events are listed with
 `query_records` on their type, or on `event` for every type at once, so no
 tool is needed per event type.
 

@@ -54,24 +54,29 @@ export async function lockPrivacyShared(tx: Tx, workspaceId: string): Promise<vo
   await tx`select pg_advisory_xact_lock_shared(${PRIVACY_LOCK_CLASS}::int4, hashtext(${workspaceId}))`;
 }
 
+export type WriteLocks = {
+  /** Exclusive only for `forget` (2.1). */
+  privacy?: 'shared' | 'exclusive';
+  /** Exclusive only for moving events between types, which no write may interleave with (1.3). */
+  schema?: 'shared' | 'exclusive';
+};
+
 /**
- * A record write's locks in one round trip: the schema lock shared (3),
- * then the privacy lock shared, or exclusive for `forget`. Postgres
- * evaluates the select list left to right, so the order matches taking
- * them one at a time.
+ * A record write's locks in one round trip: the schema lock (3), shared
+ * unless the write rewrites what other writes resolve against, then the
+ * privacy lock, shared or exclusive for `forget`. Postgres evaluates the
+ * select list left to right, so the order matches taking them one at a time.
  */
 export async function lockForWrite(
   tx: Tx,
   workspaceId: string,
-  privacy: 'shared' | 'exclusive',
+  { privacy = 'shared', schema = 'shared' }: WriteLocks = {},
 ): Promise<void> {
-  const privacyLock =
-    privacy === 'shared'
-      ? tx`pg_advisory_xact_lock_shared(${PRIVACY_LOCK_CLASS}::int4, hashtext(${workspaceId}))`
-      : tx`pg_advisory_xact_lock(${PRIVACY_LOCK_CLASS}::int4, hashtext(${workspaceId}))`;
-  await tx`select
-    pg_advisory_xact_lock_shared(${SCHEMA_LOCK_CLASS}::int4, hashtext(${workspaceId})),
-    ${privacyLock}`;
+  const lock = (lockClass: number, mode: 'shared' | 'exclusive') =>
+    mode === 'shared'
+      ? tx`pg_advisory_xact_lock_shared(${lockClass}::int4, hashtext(${workspaceId}))`
+      : tx`pg_advisory_xact_lock(${lockClass}::int4, hashtext(${workspaceId}))`;
+  await tx`select ${lock(SCHEMA_LOCK_CLASS, schema)}, ${lock(PRIVACY_LOCK_CLASS, privacy)}`;
 }
 
 /** Advisory-lock class for one consolidator run per workspace at a time (4.2). */

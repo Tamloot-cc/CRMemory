@@ -28,6 +28,7 @@ const TOOLS = [
   'get_timeline',
   'list_templates',
   'log_event',
+  'move_events',
   'propose_schema_change',
   'query_records',
   'remember',
@@ -224,7 +225,9 @@ describe('event history and schema guidance', () => {
     const review = body.slice(body.indexOf('## Reviewing a schema in use'));
     expect(review).toContain('entity objects (class "entity")');
     expect(review).toContain('Moving legacy entity records');
-    expect(review).toContain('never propose it as a\n  quick cleanup');
+    expect(review).toContain('Never delete and re-log their');
+    expect(review).toContain('move_events changes their type in place');
+    expect(review).toContain('Run it with dryRun: true');
   });
 
   it.each(GUIDE_NAMES)(

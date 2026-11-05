@@ -94,6 +94,7 @@ change the tool list.
 | `log_event`             | Log a conversation (meeting, call, email, chat), a note or another event type, with who took part and what it is about       | `write`        |
 | `remember`              | Store a plain-language fact about a record, citing an event                                                                  | `write`        |
 | `propose_schema_change` | Add fields or objects (applied at once), or propose destructive changes for a person to approve                              | `schema:write` |
+| `move_events`           | Change the type of logged events, keeping IDs, identity, links and citations; agents run it as a dry run                     | `schema:write` |
 
 Validation errors name the field and the allowed values, so an agent can
 correct its call and retry.
@@ -209,7 +210,8 @@ Things worth knowing:
   system or account (`gmail`, `zoom`, `whatsapp-business`); it is part of the
   event's identity and fixed once logged. `medium` is what kind of
   conversation it was. Leave `medium` empty when unsure; it can be corrected
-  later with `upsert_record`, while an event's type cannot change.
+  later with `upsert_record`. An event's type changes only with
+  `move_events`, which a person runs.
 - **Your own event types.** Add an event type only for events whose fields
   a conversation would never use: a payment (an amount, an invoice), a form
   submission, a site visit. `propose_schema_change` with `create_object` and
@@ -217,6 +219,20 @@ Things worth knowing:
   fields it needs. Conversation details such as duration or a recording
   link are fields on `conversation`, and a new kind of conversation is a
   new `medium` option.
+- **Moving events to another type.** A workspace that logged meetings and
+  calls as their own types can move them to `conversation` without
+  re-logging: `move_events` with `from: "meeting"`, `to: "conversation"` and
+  `defaults: { "medium": "meeting" }`. Each event keeps its ID, `channel` and
+  `externalId`, participants, `about` records, and the values and facts that
+  cite it. Never delete and re-log instead: that retracts what cites the
+  events and blocks their source for good. Fields map by name; `fields` maps
+  ones named differently. Values the target has no field for are refused
+  with a list (`unmapped_fields`) until they are mapped or listed in `drop`,
+  which deletes them, so drop only what your user agreed to lose. Moving
+  needs a person (a `user` key with `admin`); an agent passes
+  `dryRun: true`, which reports exactly what would move and changes nothing,
+  and shows its user. A later sync logs the moved sources as `conversation`
+  with the same medium, and they match the moved events.
 - **Reading back.** `get_context` gives the current values (with who wrote
   each), open tasks, current facts and recent events, rolled-up ones
   included (each saying how it is attached, `via`), within

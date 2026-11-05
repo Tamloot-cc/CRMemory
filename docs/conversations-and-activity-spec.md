@@ -1,6 +1,8 @@
 # Conversations and the Activity UI: spec
 
-Status: **implemented** November 5, 2026. Open questions (7) remain open.
+Status: **implemented** November 5, 2026. Open question 2 (7) is resolved:
+events can be moved between types (`POST /v1/events/move`, `move_events`).
+Open questions 1, 3 and 4 remain open.
 The SDK method is `queryEvents` (the client has no namespaces), and the
 events query's `search` uses the records' search index: the core title and
 summary, plus any searchable fields of the type.
@@ -172,7 +174,8 @@ types, so an event can't be re-logged as `conversation` while its old record
 exists. Deleting the old record retracts what cites it and suppresses its
 identity for good, so a re-log needs a new `externalId` and the source can't
 be deduplicated against it again. In Live Test, one of the 89 events is cited
-by 4 facts, 6 new tasks and a project's next step. See open question 2.
+by 4 facts, 6 new tasks and a project's next step. Open question 2 resolved
+this: a move changes an event's type in place and keeps all of that.
 
 ## 5. Frontend design
 
@@ -299,16 +302,62 @@ is a small change to `main.tsx`, `ui/shell.tsx` and `routes/objects.tsx`.
    Live Test backup carry a duration. Should `conversation` ship with an optional `durationMinutes`, or
    should templates and agents add it from evidence? Recommendation: leave it
    out of the base and let the recording-source templates add it.
-2. **Moving events between types.** Should the server offer an admin-approved
-   operation that changes an event's type while keeping its record ID,
-   identity, links and citations, mapping fields by name? Without it, a
-   workspace that wants `conversation` must delete and re-log under new
-   `externalId`s. That loses the claims citing the old events, and the
-   suppressed identities mean a later resync from the source can't be
-   deduplicated against the new ones. Recommendation: build it before any
-   released workspace needs to switch, because delete and re-log is not a
-   safe fallback. For Live Test, a one-off script that changes the type in
-   place (not delete and re-log) is enough, or Live Test keeps its old types.
+2. **Moving events between types. Resolved: built.** Should the server
+   offer an admin-approved operation that changes an event's type while
+   keeping its record ID, identity, links and citations, mapping fields by
+   name? Without it, a workspace that wants `conversation` must delete and
+   re-log under new `externalId`s. That loses the claims citing the old
+   events, and the suppressed identities mean a later resync from the source
+   can't be deduplicated against the new ones.
+
+   **What was built.** `POST /v1/events/move`, the `move_events` MCP tool and
+   the SDK's `moveEvents` move one or more named events of a type, or every
+   live event of it, to another event type (ARCHITECTURE.md 1.3, "Moving
+   events between types"). The record ID, `event_records` row, participants,
+   `about` links, and the assertions and facts citing the event stay as they
+   are. The event's own assertions are re-pointed at the target type's
+   fields, by name or by an explicit `fields` mapping, and its data, links,
+   identifiers and search text are rebuilt from them. `defaults` fills target
+   fields the events have no value for, such as `medium: "meeting"`. Each
+   move is logged in `event_moves`. No web surface: see the first decision
+   below.
+
+   Decisions, each the safer of the options:
+   - **A separate admin operation, not a schema proposal.** A move needs a
+     `user` key with the `admin` scope, as approving a destructive schema
+     change or `forget` does; the request is the approval, and an agent's key
+     is not. A move changes no schema, so it does not go through the schema
+     engine or `schema_changes`. Storing it as a proposal would also be
+     unsafe: approving "move every meeting" a week later would move meetings
+     logged since, which the approver never saw. Instead, a key with
+     `schema:write` runs it as a dry run (the same code, rolled back) and
+     shows a person exactly what it would do, and the person runs it. With
+     no stored proposal, the approval flow needs no web surface.
+   - **Refuse lost values unless named.** Values for source fields the
+     target has no field for, or that don't fit the mapped field, are refused
+     with a list (`unmapped_fields`), until the caller maps the field or names
+     it in `drop`, which deletes those assertions. A dropped value cannot be
+     recovered, so it is never dropped by default.
+   - **Defaults are initial values.** A default is written as the event's own
+     initial value, citing the event, so a resync that logs the source as
+     `conversation` with the same `medium` matches the moved event instead of
+     conflicting. The old type carried that information at logging.
+   - **The schema lock, exclusively.** A move holds the workspace schema lock
+     exclusively, as schema changes do, so no write in the workspace
+     interleaves with it, and moving a whole type is one transaction.
+   - **Refuse what would break other records.** Records that point at the
+     events through a relation field whose targets exclude the new type block
+     the move (`referenced_by_relations`); relation targets never change.
+     Unique values another record claims block it too, rather than going to
+     review silently.
+
+   **Live Test.** Not migrated by this change. Its 85 `meeting` and 4 `call`
+   events can be moved by a person with an admin user key: first a dry run of
+   `{ "from": "meeting", "to": "conversation", "defaults": { "medium": "meeting" }, "dryRun": true }`
+   (and the same for `call` with `medium: "call"`), to see each field's
+   mapping and anything the target has no field for; then the same requests
+   without `dryRun`. Once both types have no live events, deleting them
+   retracts nothing.
 3. **A `direction` field.** Inbound versus outbound matters for email and
    calls. Add it only when an agent first has data for it.
 4. **Saved views for the feed.** Views are per object today. A cross-type

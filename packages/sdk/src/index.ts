@@ -20,6 +20,8 @@ import type {
   MergeInput,
   MergeResult,
   MergeSuggestionDecision,
+  MoveEventsInput,
+  MoveEventsResult,
   Page,
   PresentedFact,
   PresentedRecord,
@@ -76,7 +78,7 @@ export type UpsertInput = PatchInput & {
   match?: Record<string, unknown>;
   ifMissing?: 'fail' | 'create';
 };
-export type { LogEventInput };
+export type { LogEventInput, MoveEventsInput, MoveEventsResult };
 
 type Participant = { handle?: string; recordId?: string; role?: string };
 const isFailedChange = (body: unknown) =>
@@ -373,6 +375,15 @@ export class RetainerClient {
   /** Logs an event; the only way events are created. Idempotent by channel and externalId. */
   logEvent(input: LogEventInput) {
     return this.post<LogEventResult>('/v1/events', input);
+  }
+  /**
+   * Moves events to another event type, keeping their IDs, identities, links
+   * and the claims that cite them (`POST /v1/events/move`). Moving needs a
+   * `user` key with the `admin` scope; `dryRun: true` reports the plan with
+   * `schema:write` and changes nothing.
+   */
+  moveEvents(input: MoveEventsInput) {
+    return this.post<MoveEventsResult>('/v1/events/move', input);
   }
   /** Adds participants and `about` records to a logged event; idempotent. */
   addEventLinks(id: string, input: { participants?: Participant[]; about?: string[] }) {

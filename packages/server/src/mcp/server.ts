@@ -9,7 +9,8 @@ import { log } from '../log.js';
 import { MAX_PARTICIPANTS, participantInputSchema } from '../memory/event-links.js';
 import { logEventInputSchema } from '../memory/events.js';
 import { rememberInputSchema } from '../memory/facts.js';
-import { logEventFor, remember } from '../memory/service.js';
+import { moveEventsInputSchema } from '../memory/move.js';
+import { logEventFor, moveEventsFor, remember } from '../memory/service.js';
 import { queryInputSchema } from '../records/query.js';
 import {
   type Caller,
@@ -592,6 +593,30 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     },
     (input) => run(caller, 'write', () => logEventFor(sql, caller, input)),
+  );
+
+  server.registerTool(
+    'move_events',
+    {
+      title: 'Move events to another event type',
+      description:
+        'Changes the type of logged events, e.g. every meeting to conversation with ' +
+        'defaults { "medium": "meeting" }, keeping each event\'s id, channel and externalId, ' +
+        'participants, about records, and the values and facts that cite it. Use it instead ' +
+        'of deleting and re-logging, which retracts what cites the events and blocks their ' +
+        'source for good. Without events, every event of from moves, all or nothing.\n\n' +
+        'Fields map by name (title and summary always do); fields maps the ones named ' +
+        'differently. If the target has no field for some values, the move is refused with ' +
+        'the list (unmapped_fields): map them, or list them in drop only if your user agrees ' +
+        'to delete those values. defaults fills target fields the events have no value for, ' +
+        'and is compared like a logged value when the source is logged again.\n\n' +
+        'Moving needs a person: a user key with the admin scope. With your own key, set ' +
+        'dryRun: true (needs schema:write) to get exactly what would move, then show your ' +
+        'user and let them run it.',
+      inputSchema: moveEventsInputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    (input) => run(caller, 'schema:write', () => moveEventsFor(sql, caller, input)),
   );
 
   server.registerTool(

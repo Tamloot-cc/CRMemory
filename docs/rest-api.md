@@ -101,6 +101,7 @@ identity of a deleted or erased event is a 409 `event_retracted`.
 | `POST /v1/records/:id/forget`                     | `admin`, user    | Erase a person for a privacy request; not reversible                 |
 | `POST /v1/events`                                 | `write`          | Log an event; returns matched and unmatched participants             |
 | `POST /v1/events/query`                           | `read`           | Filter, sort and page events of every event type at once             |
+| `POST /v1/events/move`                            | `admin`, user    | Move events to another event type; `schema:write` for a dry run      |
 | `GET` · `DELETE /v1/events/:id`                   | `read` · `write` | Read an event, or delete it and retract what cites it                |
 | `POST /v1/events/:id/links`                       | `write`          | Add participants and `about` records; idempotent                     |
 | `DELETE /v1/events/:id/participants/:pid`         | `write`, user    | Remove one participant                                               |
@@ -128,6 +129,12 @@ Money totals are `{ amountMicros, currency }`, or `null` with
 With `"groupBy": "stage"` (a filterable single-select field) it also returns
 `groups: [{ "value", "total", "values" }]`, one per value the matching
 records hold, with `null` for records that have none.
+
+Every filter value is checked against its column or field before it
+reaches the database: `id` takes a record ID, `createdAt`, `updatedAt` and
+`occurredAt` an ISO 8601 time with a UTC offset, relation fields record IDs,
+and dates and times years 0001 to 9999. A malformed value, including one
+element of an `in` list, is 422 `invalid_filter` with `details.field`.
 
 A saved view is a named filter, sort and column set for one object, shown
 as a `table`, a `board` (needs `groupBy`, a single-select field) or a
@@ -202,3 +209,74 @@ never listed.
   "include": ["relationReferences"]
 }
 ```
+
+### Moving events to another type
+
+`POST /v1/events/move` changes the type of logged events, for example every
+`meeting` to `conversation`. Each event keeps its ID, its `occurredAt`,
+`channel` and `externalId`, its participants and `about` records, and every
+value and fact that cites it, so nothing is retracted and its source is still
+deduplicated against it. Deleting and re-logging, by contrast, retracts what
+cites the events and blocks their identity for good.
+
+```json
+{
+  "from": "meeting",
+  "to": "conversation",
+  "fields": { "agenda": "topic" },
+  "drop": ["recordingId"],
+  "defaults": { "medium": "meeting" },
+  "dryRun": true
+}
+```
+
+- `events` (optional, at most 1000) moves only those events, which must all
+  be live events of `from`; without it, every live event of `from` moves, in
+  one transaction: all of them or none.
+- Fields map by name; `title` and `summary` always map to the target's.
+  `fields` maps source fields named differently. A field moves only to one of
+  the same type, and its values must fit: an option the target lacks, or a
+  relation to a record the target field cannot point at, is refused.
+- Values the target has nowhere to keep are refused with 422
+  `unmapped_fields`, whose `details.fields` lists each source field, the
+  reason, and how many events and assertions hold values for it. Map it with
+  `fields`, or list it in `drop` to delete those values; nothing is dropped
+  unless named.
+- `defaults` sets target fields on the moved events that have no value for
+  them, as the event's own initial value (citing the event, observed when it
+  happened). A later log of the same source with that value then matches the
+  moved event, as a retry would. A required target field with no value on
+  some moved event is 422 `invalid_values`; give it in `defaults`.
+- Records that point at the events through a relation field that cannot
+  point at the target type make it 409 `referenced_by_relations`, listing the
+  fields; clear those values first.
+- Moving into or out of the hidden internal-note type is impossible: it
+  resolves as not found, as everywhere.
+
+Moving needs a `user` key with the `admin` scope, like approving a schema
+change: an agent's key is not a person's approval, whatever its scope. With
+`"dryRun": true` it needs `schema:write`, runs the same checks and the same
+move, rolls back, and returns what would have happened. The move holds the
+workspace's schema lock, so other writes wait for it.
+
+The response lists what happened:
+
+```json
+{
+  "id": "…",
+  "dryRun": false,
+  "from": "meeting",
+  "to": "conversation",
+  "eventIds": ["…"],
+  "fields": [
+    { "from": "title", "to": "title", "events": 85 },
+    { "from": "agenda", "to": "topic", "events": 12 }
+  ],
+  "dropped": [{ "field": "recordingId", "events": 40, "assertions": 40 }],
+  "defaults": [{ "field": "medium", "events": 85 }]
+}
+```
+
+`id` names the move's entry in the workspace's move log (who moved which
+events, with the field mapping; never values). It is `null` for a dry run, or
+when `from` had no live events.

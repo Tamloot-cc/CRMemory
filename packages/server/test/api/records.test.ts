@@ -250,6 +250,56 @@ describe('POST /v1/objects/:object/query', () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toMatchObject({ code: 'invalid_filter', details: { field: 'status' } });
   });
+
+  it('refuses malformed built-in and typed values with 422 naming the field, never 500', async () => {
+    const query = (filter: Record<string, unknown>) =>
+      t.request('/v1/objects/appointment/query', { key: keys.reader, body: { filter } });
+    const cases: [Record<string, unknown>, string][] = [
+      [{ id: 'not-a-uuid' }, 'id'],
+      [{ id: { neq: '123' } }, 'id'],
+      [{ createdAt: { gt: 'yesterday' } }, 'createdAt'],
+      [{ updatedAt: { lte: '2026-13-45T00:00:00Z' } }, 'updatedAt'],
+      // A time without a UTC offset is ambiguous, as for date_time fields.
+      [{ createdAt: { gte: '2026-10-01T00:00:00' } }, 'createdAt'],
+      // Postgres has no year 0 and parses no expanded years.
+      [{ createdAt: { gte: '0000-01-01T00:00:00Z' } }, 'createdAt'],
+      [{ createdAt: { lt: '+010000-01-01T00:00:00Z' } }, 'createdAt'],
+      [{ id: { in: ['3f1b7c1e-2c4b-4d36-9a8e-6f2f0f4f9a11', 'nope'] } }, 'id'],
+      [{ createdAt: { in: ['2026-10-01T00:00:00Z', 'tomorrow'] } }, 'createdAt'],
+      [{ id: { in: [42] } }, 'id'],
+      // Typed fields: a date the JS check accepts but Postgres cannot cast.
+      [{ startsAt: { gte: '0000-06-01T00:00:00Z' } }, 'startsAt'],
+      // Relation filters take record IDs.
+      [{ person: 'not-a-uuid' }, 'person'],
+      [{ person: { in: ['not-a-uuid'] } }, 'person'],
+    ];
+    for (const [filter, field] of cases) {
+      const res = await query(filter);
+      expect(res.status, JSON.stringify(filter)).toBe(422);
+      expect(res.body.error, JSON.stringify(filter)).toMatchObject({
+        code: 'invalid_filter',
+        details: { field },
+      });
+    }
+    // Well-formed values still work.
+    const fine = await query({
+      id: { in: ['3f1b7c1e-2c4b-4d36-9a8e-6f2f0f4f9a11'] },
+      createdAt: { gt: '2026-01-01T00:00:00+02:00' },
+    });
+    expect(fine.status, JSON.stringify(fine.body)).toBe(200);
+  });
+
+  it('refuses dates Postgres cannot store on write', async () => {
+    const res = await create('appointment', {
+      title: 'Year zero',
+      startsAt: '0000-06-01T09:00:00Z',
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatchObject({
+      code: 'invalid_values',
+      details: { errors: [{ field: 'startsAt' }] },
+    });
+  });
 });
 
 describe('review', () => {

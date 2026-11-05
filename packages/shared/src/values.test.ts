@@ -30,6 +30,17 @@ describe('public field-aware validation', () => {
     expect(() => validateFieldValue(f('full_name'), { first: '', last: '' })).toThrow('name needs');
     expect(() => validateFieldValue(f('date'), '2025-02-29')).toThrow('real calendar date');
   });
+
+  it('keeps dates within the years Postgres can cast (0001–9999)', () => {
+    expect(() => validateFieldValue(f('date'), '0000-01-01')).toThrow('year from 1 to 9999');
+    expect(validateFieldValue(f('date'), '0001-01-01')).toBe('0001-01-01');
+    expect(validateFieldValue(f('date'), '9999-12-31')).toBe('9999-12-31');
+    expect(() => validateFieldValue(f('date_time'), '0000-06-01T00:00:00Z')).toThrow('year');
+    expect(() => validateFieldValue(f('date_time'), '+010000-01-01T00:00:00Z')).toThrow('year');
+    expect(validateFieldValue(f('date_time'), '9999-12-31T23:59:59Z')).toBe(
+      '9999-12-31T23:59:59.000Z',
+    );
+  });
   it('normalizes the same way as server writes', () => {
     expect(
       validateFieldValue(f('emails'), { primary: 'Dana@ACME.com', additional: ['dana@acme.com'] }),
