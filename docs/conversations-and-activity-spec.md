@@ -1,0 +1,329 @@
+# Conversations and the Activity UI: spec
+
+Status: **proposed; not implemented**. Written November 5, 2026.
+
+This spec amends the [merged schema, events and history spec](schema-events-and-history-spec.md)
+(6.1 base event types, 7.1 direct retrieval) and [FRONTEND.md](../FRONTEND.md)
+(5.3 object list, 5.3a shell, 5.6 event, 5.7 schema). It keeps the
+entity/event split, event links, rollups and the record timeline as they are.
+It changes which event types every workspace starts with, adds one query and
+makes the split visible in the web app.
+
+## 1. Why
+
+The findings come from dogfooding the "Live Test" workspace after the event
+upgrade (schema v12–v13): 89 Tamloot recordings re-logged as events, plus one
+new meeting logged with facts and tasks.
+
+### 1.1 System design
+
+- **Four base types share one shape.** Meeting, call, email and message all
+  have exactly the core: title, summary, `occurredAt`, `channel`,
+  `externalId`, participants and `about`. Retainer's own `schema_design`
+  guide says to prefer "one multi_select of tags … over separate objects for
+  kinds of company or person that share the same fields". The base template
+  breaks that rule for events.
+- **The boundaries are fuzzy, and a wrong guess is permanent.** A recorded
+  Zoom conversation is a meeting or a call depending on who logs it. In Live
+  Test, 4 of 89 recordings became calls only because the source labeled them
+  that way. An event's type cannot change: re-logging under another type is
+  `event_conflict`, and deleting to re-log retracts every assertion and fact
+  that cites the event.
+- **Type overlaps with channel.** Channel already says where an event came
+  from (gmail, zoom, whatsapp), so type mostly repeats it. The two still
+  differ: channel `tamloot` holds both meetings and calls. Nothing documents
+  which one an agent should rely on.
+- **There is no workspace-wide view across types.** The upgrade removed
+  `query_interactions` and `POST /v1/interactions/query`. `query_records`
+  takes one object, and the timeline is per record. "Everything logged this
+  week" or "every conversation with someone at Team8" now takes one query
+  per event type.
+- **Every workspace starts with five event types.** Live Test uses one of
+  them (85 meetings, 4 calls, nothing else). The guide's "start lean" rule
+  says to add structure when the data shows it.
+
+### 1.2 Frontend
+
+- **The main sidebar hides the split.** `main.tsx` passes only `name` and
+  `label` to the shell, which lists Meetings, Calls, Emails, Messages and
+  Notes in one "Objects" list beside Companies and People.
+- **The split is visible only to admins.** The schema page lists event types
+  apart, with an "Event" badge and their built-in columns. People who work in
+  record lists never see it.
+- **Event lists hide actions without saying why.** New and Merge are missing
+  for events, so the list looks broken rather than different.
+- **The words drift.** The API says "event", the old model said
+  "interaction", and people say "activity". The UI uses all three.
+- **Developers can't see the model from the UI.** A record page doesn't show
+  its API name, class, ID or which tool writes it.
+
+## 2. Scope
+
+In scope: the base event types, one cross-type event query, the guide and
+schema text that steer agents, and the web app's navigation, event lists,
+an activity feed, wording and a developer view.
+
+Out of scope: the evidence model, event identity, links, rollups, the
+timeline, internal notes and custom event types. They stay as the merged spec
+defines them.
+
+## 3. Decisions
+
+| #   | Decision                                                                                                            | Replaces                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| D1  | The base template adds two event types: `conversation` and `note`.                                                  | meeting, call, email, message, note            |
+| D2  | `conversation` has a `medium` select (meeting, call, email, message). It is an ordinary field, editable after logging. | The event type as the medium                   |
+| D3  | Channel is the source system or account and is part of identity. Medium is what kind of conversation it was. Both are documented. | Undocumented overlap                           |
+| D4  | A new event type is for an event whose fields a conversation would never use: payment, form submission, site visit. | No rule                                        |
+| D5  | Events can be queried across all event types, workspace-wide.                                                       | One `query_records` call per type              |
+| D6  | The web app shows two areas, **Records** and **Activity**. "Event" stays the API word.                              | One flat "Objects" list; three words           |
+| D7  | People can write notes in the web app. Every other event is still logged by agents and integrations.                | "Only agents log events" for every type        |
+| D8  | A developer view shows API names, class, IDs and the write tool across the app.                                     | Schema page only                               |
+
+## 4. System design
+
+### 4.1 Base event types (D1–D4)
+
+The base template adds, beside person, company and task:
+
+- **`conversation`**: "A meeting, call, email thread or chat between
+  people." Core fields as in merged spec 6.2, plus:
+  - `medium`: select, nullable, filterable. Options `meeting`, `call`,
+    `email`, `message`. Workspaces may add options (for example `workshop`
+    or `voice_note`) with `add_option`.
+- **`note`**: "A note someone wrote down." Core fields only. This is the
+  type people write in the web app (D7). The hidden internal-note type that
+  `remember` uses is unchanged (merged spec 6.4).
+
+Neither type is protected. A workspace can delete them under normal object
+deletion rules, the same as the base types they replace.
+
+**Why `medium` is a field and not the type.** A field can be corrected after
+logging, with provenance, through `upsert_record`, and it ranks like any other
+assertion. Correcting the type would break event identity and retract
+citations. A misclassified medium then costs one edit, not a delete and
+re-log.
+
+**Channel and medium.** `describe_schema` and the guides say:
+
+- `channel` is where the record came from: the source system or account
+  (`gmail`, `zoom`, `tamloot`, `whatsapp-business`). It is part of identity,
+  is fixed at logging and must tell apart sources whose IDs could overlap.
+- `medium` is what happened: a meeting, a call, an email, a message. It is
+  optional, and an agent that can't tell leaves it empty.
+
+**When to add an event type (D4).** The `schema_design` guide gains this rule:
+add an event type only when the event has fields a conversation would never
+use. A payment has an amount and an invoice. A form submission has a form
+name and answers. A site visit has an address and an outcome. Conversation
+details such as duration, direction or a recording link are optional fields
+on `conversation`, added from evidence, not new types.
+
+`durationMinutes` is not in the base type (see 7, open question 1).
+
+### 4.2 Cross-type event query (D5)
+
+Add `POST /v1/events/query` and accept `object: "event"` in `query_records`.
+`event` is already a reserved object name, so the meaning is unambiguous.
+
+- It returns events of every visible event type, newest first by default.
+  Internal notes are never included.
+- It filters and sorts on what every event type shares: `occurredAt`,
+  `channel`, `externalId`, `type` (event type API name, `eq` and `in`), and
+  `search` over the core title and summary.
+- It takes `linked: { record, link? }` as per-type queries do, so "every
+  event attached to Team8" is one call. Rollups are not included; that stays
+  with `GET /v1/records/:id/events` and the timeline.
+- Type-specific fields such as `medium` are not filterable here, because
+  they can differ by type. Filter one type with `query_records` on that type.
+- Each item carries `type`, the core fields, built-in columns, and its
+  participants and `about` IDs. It does not include each type's custom
+  fields; read the event for those.
+- Same pagination, cursor and limits as `query_records`.
+
+The SDK gains `events.query`. The web app's Activity feed (5.2) uses this
+route.
+
+### 4.3 Agent-facing text
+
+- Server instructions and `log_event` say: "Log meetings, calls, emails and
+  chats as `conversation` with a `medium`. Use another event type only when
+  the workspace defines one for that kind of event."
+- The reserved-name reason in `schema-engine/validate.ts` for `interaction`
+  and `event` names `conversation`.
+- `discover_schema` and `schema_design` replace their meeting/call/email lists
+  with the D4 rule.
+
+### 4.4 Existing workspaces
+
+Retainer is unreleased, so the merged spec's rule holds: no compatibility
+shims or backfills. Workspace upgrade only adds, so an existing workspace
+gains `conversation` and keeps its old types until someone deletes them.
+
+Moving events between types is a separate problem. Event identity spans
+types, so an event can't be re-logged as `conversation` while its old record
+exists, and deleting the old record retracts what cites it. In Live Test,
+one of the 89 events is cited by 4 facts, 6 new tasks and a project's next
+step. See open question 2.
+
+## 5. Frontend design
+
+### 5.1 Shell (D6)
+
+The sidebar has two labeled groups:
+
+- **Records**: entity objects, standard ones first, as today.
+- **Activity**: first an **All activity** entry (5.2), then each event type.
+
+`main.tsx` passes each object's `class` to the shell. The collapsed icon
+rail keeps a divider between the groups. Event types use icons from one
+family, so the two groups are told apart at a glance.
+
+### 5.2 All activity — `/app/activity`
+
+A feed, not a grid: people read activity by time, not by column.
+
+- Source: `POST /v1/events/query` (4.2), cursor-paginated, newest first.
+- Rows are grouped by day (Today, Yesterday, then dates). Each row shows the
+  type icon, the medium as a chip when there is one, the title, two lines of
+  summary, participants, `about` records as linked chips, and the time.
+- Filters in the URL: event type, channel, date range, and one linked record
+  (a record picker). They show as removable chips, like list filters.
+- Clicking a row opens the event in the side sheet, as record lists do
+  (FRONTEND.md 5.3).
+- A **Write a note** button (D7, 5.4).
+
+Saved views stay per object in this scope. The feed keeps its filters in
+the URL only.
+
+### 5.3 Event type lists — `/app/o/:object` for event types
+
+Same grid as entities, with event defaults:
+
+- Default sort `occurredAt` descending.
+- Default columns: `occurredAt`, title, `medium` (for conversations),
+  participants, `about`, channel. Summary is available but hidden.
+- Calendar view on `occurredAt` is offered without configuration.
+- In place of the missing New button, the toolbar shows one muted line:
+  "Logged by agents and integrations." It links to a short help popover that
+  names `log_event` and `POST /v1/events`. For `note`, the line is replaced
+  by **Write a note**.
+- Merge is not offered, as today. The selection bar says "Events can't be
+  merged" when two are selected, so the missing action is explained.
+
+### 5.4 Writing a note (D7)
+
+A dialog with title, body (the summary), date (default now) and "About",
+a multi-record picker. It sends `POST /v1/events` with type `note`, channel
+`web`, a generated `externalId` reused on retry, and the user as actor.
+Participants are not asked for: a note is about records, not with people.
+
+This changes FRONTEND.md 5.6 ("only agents log events") for notes only. A
+person can already add or remove participants and `about` links, so writing
+a note is the same permission with no new risk.
+
+### 5.5 Record and event pages
+
+- The record header shows a quiet class label before the object name:
+  "Record · Company" or "Activity · Conversation".
+- The record page's Events tab is renamed **Activity**. The timeline keeps
+  its name.
+- The event page (5.6) shows medium beside type and channel, and lists
+  channel as "Source".
+
+### 5.6 Wording (D6)
+
+| The UI says       | The API says                 | Where                                       |
+| ----------------- | ---------------------------- | ------------------------------------------- |
+| Records           | entity objects               | Sidebar group, schema tab                   |
+| Activity          | events, event types          | Sidebar group, record tab, feed             |
+| Conversation      | `conversation`               | Type label                                  |
+| Medium            | `medium`                     | Field label                                 |
+| Source            | `channel`                    | Event page, list column header              |
+| Participants      | participant links            | Event page and rows                         |
+| About             | `about` links                | Event page and rows                         |
+
+"Interaction" no longer appears in the UI or the docs, except where
+ARCHITECTURE.md records history.
+
+### 5.7 Developer view (D8)
+
+A **Developer view** switch in the account menu, remembered per browser in
+`localStorage`, available to every actor. When on:
+
+- Object and field labels show their API names beside them in lists,
+  headers, filters and forms.
+- Record and event headers show the class (`entity` or `event`), the record
+  ID with a copy button, and the write path: `upsert_record` /
+  `POST /v1/objects/:object/records` for entities, `log_event` /
+  `POST /v1/events` for events.
+- Event rows show the raw `via` and `externalId`.
+- A **JSON** tab on record and event pages shows the REST response as
+  returned.
+
+It changes what is displayed, never what is sent.
+
+### 5.8 Schema page
+
+- The Objects tab opens with one paragraph per class: what a record is, what
+  an event is, and how each is written.
+- The diagram draws event types with a distinct card style. It draws `about`
+  as a dashed "any record" edge from each event type, so the link appears in
+  the model without a fake relation field.
+
+## 6. Implementation order
+
+| Phase | Work                                                                                       | Depends on |
+| ----- | ------------------------------------------------------------------------------------------ | ---------- |
+| 1     | Shell groups (5.1), class label (5.5), wording (5.6), event list defaults and explanations (5.3) | none       |
+| 2     | Developer view (5.7) and schema page text and diagram (5.8)                                | none       |
+| 3     | Base template change (4.1), guide and instruction text (4.3), reserved-name reasons        | none       |
+| 4     | Cross-type event query: REST, MCP, SDK (4.2)                                               | none       |
+| 5     | All activity feed (5.2) and writing notes (5.4)                                            | 4          |
+
+Phases 1 and 2 are web-only and fix most of what people see. Phase 1 alone
+is a small change to `main.tsx`, `ui/shell.tsx` and `routes/objects.tsx`.
+
+## 7. Open questions
+
+1. **Duration in the base type.** 87 of 88 recordings in Live Test carry a
+   duration. Should `conversation` ship with an optional `durationMinutes`, or
+   should templates and agents add it from evidence? Recommendation: leave it
+   out of the base and let the recording-source templates add it.
+2. **Moving events between types.** Should the server offer an admin-approved
+   operation that changes an event's type while keeping its record ID,
+   identity, links and citations, mapping fields by name? Without it, a
+   workspace that wants `conversation` must delete and re-log, losing claims.
+   Recommendation: build it only if a released workspace needs it. For Live
+   Test, a one-off script against the database is enough.
+3. **A `direction` field.** Inbound versus outbound matters for email and
+   calls. Add it only when an agent first has data for it.
+4. **Saved views for the feed.** Views are per object today. A cross-type
+   view needs a home in `views`; deferred until people ask for it.
+
+## 8. Acceptance
+
+- A new workspace has `conversation` and `note` as its only base event
+  types. `describe_schema` documents channel versus medium.
+- `medium` can be changed on a logged conversation with `upsert_record`, and
+  re-logging the same identity with a different `medium` still conflicts as
+  for any field value (merged spec 6.2).
+- `query_records` with `object: "event"` and `POST /v1/events/query` return
+  events of several types in one page, filter by `type`, `channel`, time and
+  `linked`, and never return internal notes. Integration tests run against
+  real Postgres with several event types and an internal note present.
+- The sidebar shows Records and Activity groups. An event type list explains
+  why it has no New button and why it can't be merged.
+- A person can write a note from the feed and from the note list. It appears
+  in the `about` records' timelines, and a retried submit creates one note.
+- With Developer view on, a record shows its API name, class, ID and write
+  path. With it off, none of these appear.
+- Playwright covers the two sidebar groups, the feed's filters, writing a
+  note and the developer switch.
+
+## 9. Documents to update
+
+ARCHITECTURE.md (base template, events query), FRONTEND.md (5.3, 5.3a, 5.4,
+5.6, 5.7, 9.1), `docs/rest-api.md` (new route), the MCP server instructions,
+the `schema_design` and `discover_schema` guides, the template definitions
+and the reserved-name reasons in `schema-engine/validate.ts`.
