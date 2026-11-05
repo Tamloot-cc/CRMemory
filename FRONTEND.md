@@ -420,7 +420,8 @@ Three areas:
   the side sheet. An entity has Comments, Facts, Activity, Timeline and, only
   when a relation field on the `task` object can point at its type, Open
   tasks. An event has Comments, Claims and History: an event has no activity
-  of its own, and no facts or tasks. A record opens on Comments when it has
+  of its own, and no tasks. `remember` can still store a fact on an event, so
+  one that has some also shows Facts. A record opens on Comments when it has
   any and an entity otherwise opens on Facts; an event opens on Comments.
   That is chosen once per visit, so deleting the last comment moves nobody.
   Comments, Facts, Claims and Open tasks show a count from

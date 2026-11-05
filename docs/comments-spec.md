@@ -398,6 +398,12 @@ it. Each picks the safer option.
 - **`include=counts` and `claims?own=false` are new read options.** Counts come
   with the record so tabs don't each fetch; `own=false` is how Claims shows what
   cites an event without the values it logged itself.
+- **An event with facts stored on it also shows Facts.** 5.1 removes that tab
+  from events, but `remember` still accepts an event, and Claims lists what cites
+  an event rather than what is stored on it, so such a fact would be unreachable
+  in the app. Refusing those writes needs an API change and a data migration this
+  spec doesn't ask for. So the tab stays hidden unless the event has facts. Whether
+  `remember` should refuse events is left open.
 - **The event page reads the record route**, not `GET /v1/events/:id`, for the
   counts and a cache shared with the sheet.
 - **Drafts are in memory for the visit**, never in browser storage: a half-written

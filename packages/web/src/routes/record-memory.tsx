@@ -87,6 +87,8 @@ const counted = (count: number | undefined) => (count ? { count } : {});
 /**
  * The tabs of a record's memory. An event's are what is written on it, what
  * cites it and how its fields changed; an event has no activity of its own (5.1).
+ * `remember` can still store a fact on an event, so an event that has some keeps
+ * a Facts tab: memory stays reachable, and the usual event doesn't show the tab.
  * Open tasks shows only when a task relation can point at this type, and the
  * events tab keeps `events` in the address, where people read it as Activity.
  */
@@ -107,6 +109,7 @@ export function memoryTabs({
         comments,
         { value: 'claims', label: 'Claims', ...counted(counts?.claims) },
         { value: 'history', label: 'History' },
+        ...(counts?.facts ? [{ value: 'facts', label: 'Facts', count: counts.facts }] : []),
       ]
     : [
         comments,

@@ -1651,6 +1651,17 @@ test('an event page has comments, claims and history, and no memory of its own',
   // The same tabs on the record page and the sheet; an entity keeps its own.
   await page.goto(`${r.url}/app/r/${call.id}`);
   await expect(sections.getByRole('button')).toHaveText([/^Comments/, /^Claims/, /^History/]);
+  // A fact stored on the event itself stays reachable, in a tab only it gets.
+  await r.request(`/records/${call.id}/facts`, { text: 'Recorded with consent' });
+  await page.reload();
+  await expect(sections.getByRole('button')).toHaveText([
+    /^Comments/,
+    /^Claims/,
+    /^History/,
+    /^Facts/,
+  ]);
+  await sections.getByRole('button', { name: /^Facts/ }).click();
+  await expect(page.getByRole('list', { name: 'Facts' })).toContainText('Recorded with consent');
   await page.goto(`${r.url}/app/r/${acme.id}`);
   await expect(sections.getByRole('button')).toHaveText([
     /^Comments/,

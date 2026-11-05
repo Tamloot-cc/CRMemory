@@ -104,6 +104,21 @@ describe('which tabs a record has', () => {
     expect(labels(memoryTabs({ ...entity, developer: true })).at(-1)).toBe('JSON');
   });
 
+  it('keeps Facts on an event only when facts are stored on it, so none become unreachable', () => {
+    const event = { ...entity, isEvent: true };
+    const counts = { comments: 0, facts: 2, openTasks: 0, claims: 0 };
+    expect(memoryTabs({ ...event, counts }).map((t) => [t.label, t.count])).toEqual([
+      ['Comments', undefined],
+      ['Claims', undefined],
+      ['History', undefined],
+      ['Facts', 2],
+    ]);
+    expect(labels(memoryTabs({ ...event, counts: { ...counts, facts: 0 } }))).not.toContain(
+      'Facts',
+    );
+    expect(defaultMemoryTab(true, counts)).toBe('comments');
+  });
+
   it('counts only what there is, and never fans out to count activity', () => {
     const tabs = memoryTabs({
       ...entity,
@@ -120,7 +135,7 @@ describe('which tabs a record has', () => {
       memoryTabs({
         ...entity,
         isEvent: true,
-        counts: { comments: 0, facts: 1, openTasks: 1, claims: 4 },
+        counts: { comments: 0, facts: 0, openTasks: 1, claims: 4 },
       }).map((t) => t.count),
     ).toEqual([undefined, 4, undefined]);
   });
