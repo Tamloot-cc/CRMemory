@@ -106,6 +106,32 @@ docker compose -f packages/server/experiments/surrealdb/compose.yml exec -T surr
   /surreal validate --stdin < packages/server/experiments/surrealdb/queries/events.surql
 ```
 
+## Migration spike
+
+`spike/` holds the local checks behind section 12 of
+[the migration spec](../../../../docs/surrealdb-migration-spec.md#12-local-spike-findings).
+They use the same Compose services and only the `retainer_spike` namespace; each
+script creates fresh databases and removes them, including after a failure.
+Every script prints its observations rather than asserting them.
+
+```sh
+docker compose -f packages/server/experiments/surrealdb/compose.yml up -d --wait
+cd packages/server/experiments/surrealdb/spike
+node latency.mjs       # Basic auth vs token, /sql vs /rpc
+node access.mjs        # record-access JWTs, permissions, silent refusal, database confinement
+node transport.mjs     # JSON-RPC type coercion vs CBOR; failures outside a transaction
+node schema.mjs        # transactional DEFINE, relation constraints, null vs none
+node search.mjs        # full-text parity with ARCHITECTURE.md 5.1
+node rollup.mjs        # rollup fan-out vs the Postgres lateral join (several minutes)
+node provisioning.mjs  # time to provision a workspace-sized database
+```
+
+`rollup.mjs` also creates and drops a `spike_*` schema in the Compose
+PostgreSQL. `SPIKE_FANOUT` (default `100,1000,5000`) and `SPIKE_NOISE` (default
+100,000 unrelated attachments) change its sizes. Its closure variant scans the
+table once per source, so it runs once, at the smallest fan-out. `cbor.mjs` is a
+minimal encoder/decoder for these checks, not a client to reuse.
+
 ## Cloud smoke fixture
 
 ```sh

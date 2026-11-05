@@ -50,6 +50,13 @@ Retainer's write rules or a comparison against the implementation branch.
 | Introduction paths  | 48.72 / 50.34 ms              | 1.58 / 1.74 ms                 |
 | Sorted invoice page | 48.25 / 51.83 ms              | 0.96 / 1.10 ms                 |
 
+**Correction (November 5, 2026):** the harness authenticated every SurrealDB
+request with Basic authentication, which costs about 48 ms per request locally;
+a trivial query with a token takes 1.4 ms. The SurrealDB column is therefore
+dominated by authentication and does not compare query work. See the
+[migration spec's spike findings](surrealdb-migration-spec.md#12-local-spike-findings)
+for token-authenticated measurements, including rollup fan-out.
+
 These are observations of these implementations over different protocols
 (SurrealDB HTTP and the PostgreSQL driver), including client overhead. They do
 not establish an engine-level performance difference. The event query in
