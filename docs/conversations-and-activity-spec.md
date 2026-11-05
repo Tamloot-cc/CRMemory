@@ -25,7 +25,7 @@ backup, plus one new meeting logged with facts and tasks, 89 events in all.
   breaks that rule for events.
 - **The boundaries are fuzzy, and a wrong guess is permanent.** A recorded
   Zoom conversation is a meeting or a call depending on who logs it. In Live
-  Test, 4 of 89 recordings became calls only because the source labeled them
+  Test, 4 of the 88 recordings became calls only because the source labeled them
   that way. An event's type cannot change: re-logging under another type is
   `event_conflict`. Deleting the event retracts every assertion and fact that
   cites it, and its identity stays suppressed for good: logging the same
