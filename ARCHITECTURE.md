@@ -369,8 +369,8 @@ newest first.
 `POST /v1/events/query`) queries events of every visible event type at
 once, newest first by default; internal notes are never included. It
 filters and sorts on what every event type shares: `occurredAt`, `channel`,
-`externalId`, `id`, `createdAt` and `updatedAt`, plus `type` (event type
-API names, with `eq`, `neq` and `in`), with `search` over the records'
+`externalId`, `id`, `createdAt` and `updatedAt`, and filters on `type`
+(event type API names, with `eq`, `neq` and `in`), with `search` over the records'
 searchable text (the core title and summary, and any searchable fields of
 the type) and `linked` as above. Rollups are not included; they stay with
 `GET /v1/records/:id/events` and the timeline. A type's own fields, such as

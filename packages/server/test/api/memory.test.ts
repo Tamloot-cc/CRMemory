@@ -606,6 +606,13 @@ describe('POST /v1/events/query (7.1)', () => {
       'payment',
     ]);
     expect((await query({ sort: [{ field: 'title' }] })).status).toBe(422);
+    // type filters but does not sort; the error lists what does.
+    const byType = await query({ sort: [{ field: 'type' }] });
+    expect(byType.status).toBe(422);
+    expect(byType.body.error.details.allowed).toEqual(
+      expect.arrayContaining(['occurredAt', 'channel', 'externalId', 'createdAt']),
+    );
+    expect(byType.body.error.details.allowed).not.toContain('type');
 
     // query_records' REST route takes the reserved name too.
     const viaObjects = await t.request('/v1/objects/event/query', {

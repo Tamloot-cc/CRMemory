@@ -166,9 +166,11 @@ export type RecordPage = {
   nextCursor: string | null;
   relationReferences?: Record<string, RecordReference>;
 };
-/** The columns every event type shares, which `POST /v1/events/query` filters and sorts by. */
+/**
+ * The columns every event type shares, which `POST /v1/events/query` filters
+ * and sorts by. `type` is a filter only, beside these.
+ */
 export const EVENT_QUERY_COLUMNS = [
-  'type',
   'occurredAt',
   'channel',
   'externalId',
@@ -180,7 +182,7 @@ export type EventQueryColumn = (typeof EVENT_QUERY_COLUMNS)[number];
 /**
  * `POST /v1/events/query` input, and `query_records` with `object: "event"`:
  * events of every visible event type. Filters take only the shared columns
- * (`type` is the event type's API name, with `eq`, `neq` and `in`);
+ * and `type` (the event type's API name, with `eq`, `neq` and `in`; not a sort);
  * `search` matches the core title and summary. Newest first by default.
  */
 export type EventQueryInput = Omit<QueryInput, 'filter' | 'sort'> & {

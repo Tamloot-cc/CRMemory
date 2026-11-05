@@ -186,8 +186,8 @@ internal and never listed.
 body and returns events of every event type in one page, newest first
 unless `sort` says otherwise. Its filters and sorts take only what every
 event type shares: `occurredAt`, `channel`, `externalId`, `id`, `createdAt`
-and `updatedAt`, and `type` (event type API names, with `eq`, `neq` or
-`in`). `search` matches the events' searchable text, such as their title and
+and `updatedAt`. Filters also take `type` (event type API names, with
+`eq`, `neq` or `in`); it is not a sort. `search` matches the events' searchable text, such as their title and
 summary, and `linked` works as above; rollups are not included. A type's own
 fields, such as `medium`, come back on each event but are filterable only
 with that type's own query. Each event carries `type` beside its fields and
