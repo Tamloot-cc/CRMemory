@@ -182,6 +182,53 @@ describe('connecting', () => {
   });
 });
 
+describe('event history and schema guidance', () => {
+  it('distinguishes direct queries from rolled-up history in agent-facing metadata', async () => {
+    const instructions = agent.getInstructions() ?? '';
+    expect(instructions).toContain('directly attached');
+    expect(instructions).toContain('one-hop event');
+    const byName = await toolsByName(agent);
+    const query = byName.get('query_records')?.description ?? '';
+    expect(query).toContain('direct attachments only');
+    expect(query).toContain('get_context');
+    expect(query).toContain('get_timeline');
+    for (const name of ['get_context', 'get_timeline']) {
+      expect(byName.get(name)?.description).toContain('one hop');
+    }
+    const schema = byName.get('describe_schema')?.description ?? '';
+    for (const marker of [
+      'isProtected',
+      'protectedOptions',
+      'baseObject',
+      'baseField',
+      'coreRole',
+    ]) {
+      expect(schema).toContain(marker);
+    }
+    expect(schema).toContain('current API');
+  });
+
+  it.each(GUIDE_NAMES)('%s explains rollup limits and protected schema markers', async (name) => {
+    const { body } = await reader.call<string>('get_guide', { name });
+    expect(body).toContain('one hop from source to target');
+    expect(body).toContain('Only events roll up, not field');
+    expect(body).toContain('query_records with linked returns direct attachments only');
+    expect(body).toContain('Protected objects cannot be deleted');
+    expect(body).toContain('protected option values cannot be removed');
+    expect(body).toContain('Use baseObject and baseField');
+    expect(body).toContain('current API names');
+  });
+
+  it('keeps valid custom event types out of the legacy entity migration advice', async () => {
+    const { body } = await reader.call<string>('get_guide', { name: 'schema_design' });
+    const review = body.slice(body.indexOf('## Reviewing a schema in use'));
+    expect(review).toContain('entity objects (class "entity")');
+    expect(review).toContain('Custom event types (class "event") are valid');
+    expect(review).toContain('do not propose');
+    expect(review).toContain('Moving legacy entity records');
+  });
+});
+
 describe('the discover_schema guide', () => {
   it('points a new workspace at the guide from the instructions', () => {
     expect(fresh.getInstructions()).toContain('get_guide("discover_schema")');
