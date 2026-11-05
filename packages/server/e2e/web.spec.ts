@@ -1442,7 +1442,9 @@ test('filters all activity by type, source, date and linked record, in the addre
 
   await filter('Linked record');
   await page.getByRole('combobox', { name: 'Linked record' }).fill('Acme');
-  await page.getByRole('option', { name: /^Acme/ }).click();
+  // Events can be linked to as well, tagged with their type.
+  await expect(page.getByRole('option', { name: /^Acme intro.*Conversation/ })).toBeVisible();
+  await page.getByRole('option', { name: /^Acme\b.*Company/ }).click();
   await expect(titles).toHaveText(['Acme budget note', 'Acme intro']);
   await expect(page.getByText('Linked to')).toBeVisible();
   // The address reproduces the feed, and a row opens in the side sheet.
@@ -1467,7 +1469,7 @@ test('writes a note once, even when a lost response is retried, and shows it on 
   await dialog.getByLabel('Note').fill('Finance signed off on the pilot budget.');
   await dialog.getByRole('button', { name: /^Records/ }).click();
   await page.getByRole('combobox', { name: 'Search records' }).fill('Acme');
-  await page.getByRole('option', { name: /^Acme/ }).click();
+  await page.getByRole('option', { name: /^Acme\b.*Company/ }).click();
   await page.keyboard.press('Escape');
   await expect(dialog.getByRole('button', { name: /^Records/ })).toContainText('Acme');
   // The first save reaches the server, but its response is lost.
