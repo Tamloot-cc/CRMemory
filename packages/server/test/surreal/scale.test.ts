@@ -89,12 +89,29 @@ async function measure<T>(read: (wrap: (db: Db) => Db) => Promise<T>) {
   return { result: result as T, reads, latencyMs: percentiles(latencies) };
 }
 
-/** Runs `tasks` with at most `width` in flight. */
+/** `workspace_busy` answers during seeding, which a client retries. */
+let busyRetries = 0;
+
+/**
+ * Runs `tasks` with at most `width` in flight, retrying `workspace_busy`
+ * as an agent would (it is retryable back-pressure, spec section 6).
+ */
 async function inBatches<T>(count: number, width: number, task: (i: number) => Promise<T>) {
+  const attempt = async (i: number): Promise<T> => {
+    for (;;) {
+      try {
+        return await task(i);
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'workspace_busy') throw error;
+        busyRetries++;
+        await new Promise((r) => setTimeout(r, 500 + Math.random() * 500));
+      }
+    }
+  };
   const out: T[] = [];
   for (let start = 0; start < count; start += width) {
     const chunk = Array.from({ length: Math.min(width, count - start) }, (_, k) => start + k);
-    out.push(...(await Promise.all(chunk.map(task))));
+    out.push(...(await Promise.all(chunk.map(attempt))));
   }
   return out;
 }
@@ -131,6 +148,7 @@ describe.skipIf(SIZES.length === 0)('scale', () => {
       // Seeding through the write path, so every derived row is real.
       const queueBefore = app.queues.stats.waitMs.length;
       const conflictsBefore = app.queues.stats.conflicts;
+      const busyBefore = busyRetries;
       const seedStarted = performance.now();
       const deals = await inBatches(sources, 200, (i) =>
         createRecord(app, caller, 'deal', { name: `Deal ${i}`, company: company.id }),
@@ -165,6 +183,7 @@ describe.skipIf(SIZES.length === 0)('scale', () => {
         waitMs: percentiles(app.queues.stats.waitMs.slice(queueBefore)),
         holdMs: percentiles(app.queues.stats.holdMs.slice(queueBefore)),
         conflicts: app.queues.stats.conflicts - conflictsBefore,
+        busyRetries: busyRetries - busyBefore,
       };
 
       const historyPage = (wrap: (db: Db) => Db, recordId: string, cursor?: string) =>

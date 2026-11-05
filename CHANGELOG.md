@@ -26,6 +26,15 @@ include breaking changes.
 - `traverse_records` (`POST /v1/records/traverse`, SDK `traverseRecords`,
   MCP `traverse_records`): bounded walks along relation fields and event links.
 - `retainer signing-key generate`.
+- `retainer search rebuild [--workspace]` rewrites search documents in batches
+  while the server runs.
+
+### Changed
+
+- Search is SurrealDB full-text (BM25 prefix and exact-word indexes, trigram
+  similarity): email and host words split at punctuation, and results are
+  no longer weighted title-over-summary.
+- Similar-name merge suggestions use Jaro-Winkler ≥ 0.9 on folded labels.
 
 ## 0.1.0
 

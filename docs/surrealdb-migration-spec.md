@@ -708,13 +708,58 @@ The hold time is the throughput limit, as section 6 expects. A burst much
 larger than 200 into one workspace reaches the 10 s queue limit and gets
 retryable `workspace_busy`; that is the first number to improve.
 
+### Scale gate: 1,000 and 10,000 events
+
+November 5, 2026, same server, from `packages/server/test/surreal/scale.test.ts`
+(`RETAINER_SCALE=1000,10000`). Each size is seeded through the write path:
+half the events are about deals whose `company` rolls up to one company (500
+and 5,000 source records), half have one person as participant. Correctness
+checks: every rolled-up event appears once, newest first, across a full
+cursor walk; the sixth page matches the walk; the history plans are index
+scans; a deal moved to another company moves its event's rollup and the
+first company's count drops by one.
+
+Rows and statements read per page of 50, through a counting wrapper on the
+read session; latency over 10 runs:
+
+| Page (50 items)                  | Rows read (1k / 10k) | Statements (1k / 10k) | p50 / p95 at 1k | p50 / p95 at 10k |
+| -------------------------------- | -------------------- | --------------------- | --------------- | ---------------- |
+| Company history, first (rollups) | 559 / 559            | 61 / 61               | 38 / 48 ms      | 42 / 51 ms       |
+| Company history, sixth page      | 560 / 560            | 63 / 63               | 43 / 48 ms      | 38 / 57 ms       |
+| Person history, first (direct)   | 360 / 360            | 61 / 61               | 31 / 44 ms      | 33 / 38 ms       |
+| Person timeline                  | 257 / 257            | 13 / 13               | 33 / 36 ms      | 22 / 42 ms       |
+| Deal list, sorted by name        | 152 / 152            | 4 / 4                 | 16 / 34 ms      | 34 / 44 ms       |
+| Context pack, company            | not counted          | not counted           | 129 / 152 ms    | 544 / 574 ms     |
+
+Pages read the same rows at both sizes, so nothing is materialized before
+the limit. A history page runs about one statement per item (presentation
+reads event details per event); that is bounded by the page, not the data.
+Record lists page by offset, so a deep list page still reads the rows before
+its offset; only first pages were measured.
+
+The context pack is not page-bounded: `omitted.recentEvents` is an exact
+count of the record's deduplicated, live history, so it reads every
+attachment of the record (its own index range, never the table). At 5,000
+rolled-up events that is about 0.5 s. Open question: report a capped count
+(a lower bound past some limit), keep a stored per-record count, or accept
+the cost.
+
+Seeding, 200 writes in flight: at 1,000 events, queue hold p50 29 ms / p95
+39 ms, wait p50 2.3 s / p95 5.6 s, no conflicts, no `workspace_busy`. At
+10,000 events (queue samples cover the last ~8,500 writes; the queue keeps
+10,000), hold p50 49 ms / p95 98 ms, wait p50 3.7 s / p95 8.6 s, no
+conflicts, and 1,278 `workspace_busy` answers, each retried by the seeding
+client. Write cost grows with the workspace (the hold time doubled), so the
+per-workspace write rate falls from about 35 to about 24 writes per second;
+this is the number to set a target for.
+
 ## Sources and implementation anchors
 
 - [Current architecture and write rules](../ARCHITECTURE.md), especially sections
   1-3, 5, 7 and 12; [merged event/schema spec](schema-events-and-history-spec.md).
 - [Existing agent interface](agents.md), [MCP implementation](../packages/server/src/mcp/server.ts),
   [assertion ranking](../packages/server/src/records/winner.ts),
-  [PostgreSQL coordination being replaced](../packages/server/src/db/tx.ts).
+  PostgreSQL coordination being replaced (`packages/server/src/db/tx.ts` on `main`).
 - [Experiment results and their limits](surrealdb-experiment-results.md).
 - [Spike scripts](../packages/server/experiments/surrealdb/spike/) behind section 12.
 - S1: [SurrealDB transactions](https://surrealdb.com/docs/learn/querying/concepts-and-guides/transactions):
