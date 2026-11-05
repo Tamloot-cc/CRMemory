@@ -4,13 +4,16 @@ Date: November 5, 2026. Status: **implementation plan; not implemented**. A
 local spike on the pinned release (section 12) has revised the transport, write
 protocol, schema evolution, rollup storage and search sections.
 
-The user has delegated the design decisions in this document. It specifies a
-complete SurrealDB backend on a branch alongside PostgreSQL `main`. It does not
-authorize replacing `main` or deploying over an existing database.
+The design decisions in this document are settled for implementation. A phase
+whose checks disprove one records the change here before continuing. The spec
+covers a complete SurrealDB backend on a branch alongside PostgreSQL `main`. It
+does not authorize replacing `main`, offering a hosted service on SurrealDB or
+deploying over an existing database.
 
-Baseline: `main` at `5b8dafc`, including PR #26's schema protection, event
-records, collection and polymorphic relations, rollups and timeline. Until the
-new backend lands, [ARCHITECTURE.md](../ARCHITECTURE.md) describes implemented
+Baseline: `main` at `e5ec9f6`, including PR #26's schema protection, event
+records, collection and polymorphic relations, rollups and timeline, and PR
+#27's upgrades of existing workspaces to new built-in definitions. Until the new
+backend lands, [ARCHITECTURE.md](../ARCHITECTURE.md) describes implemented
 behavior. [Experiment results](surrealdb-experiment-results.md) describe a
 limited prototype, not this migration's completion.
 
@@ -34,22 +37,22 @@ SurrealQL or knowledge of physical table names to use Retainer.
 
 ## 2. Decisions and deliberate limits
 
-| Area                | Decision                                                                                                                                                          |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Branch              | Start `codex/surrealdb-v1` from the PostgreSQL baseline. Keep `main` on PostgreSQL; keep the experiment branch as research.                                       |
-| Runtime storage     | SurrealDB only, including auth/catalog data, views, jobs and operation receipts. No PostgreSQL sidecar or runtime backend switch.                                 |
-| Deployment baseline | Single-node Community SurrealDB with persistent SurrealKV; start from the tested 4.0.0 image digest in the experiment Compose file.                               |
-| Cloud               | Use the same server through the supported database HTTP API. Cloud is a separate verification target, not the source of truth for a reproducible local release.   |
-| Topology            | One Retainer server process with its deterministic worker. Concurrent requests and multiple workspaces are supported; multiple application replicas are deferred. |
-| Tenancy             | One catalog database and one database per workspace, under a Retainer namespace.                                                                                  |
-| CRM storage         | One typed table per object, one native relation table per owning relation field, shared assertion/fact/event-link tables within each workspace.                   |
-| Metadata            | Retainer metadata remains authoritative and generates database definitions, tool discovery and presentation.                                                      |
-| Policy              | TypeScript owns validation, claim ranking, review, schema approval and lifecycle policy. Database constraints supplement it.                                      |
-| Concurrency         | Intentionally serialize writes per workspace using a local queue plus a database revision check. Read only affected data, not the whole workspace.                |
-| Transport           | HTTP `/rpc` with CBOR parameters and token authentication. No JSON-RPC parameters, no per-request password authentication (section 9).                            |
-| Rollups             | Store one-hop rollup attachments at write time, so a record's history is an indexed page rather than a per-source fan-out at read time (section 5).               |
-| Interfaces          | Preserve existing REST/MCP/SDK behavior and the web app. Add one bounded traversal operation after core parity.                                                   |
-| Intelligence        | External agents make model calls. Retainer performs no extraction, embeddings or model-based maintenance. Agent Memory is outside this migration.                 |
+| Area                | Decision                                                                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Branch              | Start `codex/surrealdb-v1` from the PostgreSQL baseline. Keep `main` on PostgreSQL; keep the experiment branch as research.                                                                                         |
+| Runtime storage     | SurrealDB only, including auth/catalog data, views, jobs and operation receipts. No PostgreSQL sidecar or runtime backend switch.                                                                                   |
+| Deployment baseline | Single-node Community SurrealDB with persistent SurrealKV; start from the tested 4.0.0 image digest in the experiment Compose file.                                                                                 |
+| Cloud               | Use the same server through the supported database HTTP API. Cloud is a separate verification target, not the source of truth for a reproducible local release.                                                     |
+| Topology            | One Retainer process (`RETAINER_ROLE=all`) per deployment, held to one by a catalog lease (section 9). `main`'s AWS Lambda deployment, separate API/worker processes and replicas are not supported on this branch. |
+| Tenancy             | One catalog database and one database per workspace, under a Retainer namespace.                                                                                                                                    |
+| CRM storage         | One typed table per object, one native relation table per owning relation field, shared assertion/fact/event-link tables within each workspace.                                                                     |
+| Metadata            | Retainer metadata remains authoritative and generates database definitions, tool discovery and presentation.                                                                                                        |
+| Policy              | TypeScript owns validation, claim ranking, review, schema approval and lifecycle policy. Database constraints supplement it.                                                                                        |
+| Concurrency         | Intentionally serialize writes per workspace using a local queue plus a database revision check. Read only affected data, not the whole workspace.                                                                  |
+| Transport           | HTTP `/rpc` with CBOR parameters and token authentication. No JSON-RPC parameters, no per-request password authentication (section 9).                                                                              |
+| Rollups             | Store one-hop rollup attachments at write time, so a record's history is an indexed page rather than a per-source fan-out at read time (section 5).                                                                 |
+| Interfaces          | Preserve existing REST/MCP/SDK behavior and the web app. Add one bounded traversal operation after core parity.                                                                                                     |
+| Intelligence        | External agents make model calls. Retainer performs no extraction, embeddings or model-based maintenance. Agent Memory is outside this migration.                                                                   |
 
 There is no production customer-data migration requirement. Seed fresh test
 workspaces through Retainer's public tools; do not build a general PostgreSQL
@@ -59,12 +62,23 @@ PostgreSQL databases and Cloud experiment fixtures are separate resources.
 Preserve the guarantee that a workspace's own schema changes retain its data.
 Retainer's early development status does not waive that guarantee.
 
+The SurrealDB server license (BSL 1.1) restricts a "Database Service" in terms
+that may cover customer-controlled schemas, which is Retainer's model
+([evaluation](postgres-surrealdb-evaluation.md#license)). Request SurrealDB's
+written answer for the intended hosted service in Phase 0. Branch work may
+proceed while it is pending; replacing `main` or offering a hosted service may
+not.
+
 ## 3. What carries forward
 
-Port the behavior in ARCHITECTURE.md and the tests merged with PR #26:
+Port the behavior in ARCHITECTURE.md and the tests merged through PR #27:
 
 - Runtime-defined objects and fields, stable universal IDs and field keys,
   protected base identities, templates and destructive-change approval.
+- Upgrading existing workspaces to a release's built-in definitions: match by
+  universal ID whatever the status, add only what a workspace never had, protect
+  listed elements, skip and report conflicts, and record a definitions digest
+  so current workspaces are skipped (ARCHITECTURE.md 3).
 - Public record IDs and existing composite value shapes. Database IDs and
   native numeric/date types are converted at the boundary; they do not leak into
   the MIT SDK or change JSON precision, money units or null/omitted semantics.
@@ -106,15 +120,22 @@ that key. Short-lived internal database sessions do not replace this check.
 Already accepted requests are not promised cancellation when a key is revoked.
 
 Use database-scoped **record-access JWTs** for workspace runtime access, signed
-by Retainer with one server-side key pair. Tokens bind namespace, database,
-access method and the backend principal. Keep them inside the server; refresh
-them on expiry. No external identity provider or per-workspace secret vault is
-needed. The catalog client is separately scoped and confined to auth/routing.
+by Retainer with a server-side key pair (rotation below). Tokens bind namespace,
+database, access method and the backend principal. Keep them inside the server;
+refresh them on expiry. No external identity provider or per-workspace secret
+vault is needed. The catalog client is separately scoped and confined to
+auth/routing.
 
-The generated runtime permissions grant the backend principal only the data and
-metadata operations it needs. Definition/provisioning operations use a separate
-administrative client behind the validated schema/provisioning code paths.
-Never fall back to administrative credentials after a runtime permission error.
+In a workspace database, every table grants the backend principal `FULL`
+permissions. The isolation boundary is the token's database and the refusal of
+definitions to record users, both verified in section 12; per-table rules would
+add generated surface whose failures are silent. In the catalog, the runtime
+client may read key hashes, scopes, actors, revocation and workspace routes,
+and maintain the process lease (section 9). Workspace and key management use
+the administrative client, as the operator CLI does today. Definition and
+provisioning operations use that separate administrative client behind the
+validated schema/provisioning code paths. Never fall back to administrative
+credentials after a runtime permission error.
 Plain `TYPE JWT` system access is not an equivalent substitute for record
 access: system identities bypass table/field permissions [S2, S3].
 
@@ -122,14 +143,31 @@ On the pinned release, a record-access token is confined to the database named
 in its claims: a request header naming another database is ignored, `USE DB` is
 refused, and definitions, `REMOVE` and `INFO` are refused. Refused data
 operations do not fail: `SELECT`, `CREATE`, `UPDATE` and `DELETE` return an empty
-result with status OK, and an enclosing transaction still commits. A missing or
-wrong generated permission therefore silently drops a write unless the write
-protocol checks its effects (section 6).
+result with status OK, and an enclosing transaction still commits. A table
+defined without a permissions clause (which defaults to none) therefore
+silently drops writes unless the write protocol checks their effects (section 6).
+
+Each signing key has an ID, and each workspace database has one access method
+per accepted key, named after it (`backend_<key id>`). Rotate a key in three
+steps:
+
+1. Configure the new key as current and keep the old one listed as previous.
+2. Upgrade each workspace through the same runner as other fixed-table
+   upgrades (section 7). The runner defines the new access method and records
+   it in `workspace_state`; the server signs with the newest key a workspace
+   has.
+3. Once every workspace records the new key, remove the old access methods
+   and drop the old key from configuration.
+
+For a compromised key, the worker's pass removes the old access method in the
+same upgrade that adds the new one, rather than after every workspace has
+moved. Requests for workspaces it has not reached wait for their upgrade.
 
 Provisioning/schema administration uses a configured namespace-scoped system
-credential; the server signing key is separate. Both stay in deployment secret
-configuration. A manually brokered Cloud token is suitable for experiments, not
-a long-lived application's credential or automatic credential-refresh strategy.
+credential; the server signing keys are separate. All of them stay in
+deployment secret configuration. A manually brokered Cloud token is suitable for
+experiments, not a long-lived application's credential or automatic
+credential-refresh strategy.
 
 API/MCP clients continue to call Retainer, not the database. Runtime DB sessions
 are trusted backend identities, not a claim that every business rule is enforced
@@ -212,15 +250,22 @@ and edges and must agree with them, as for other projections.
 ## 6. Write protocol: simple and intentionally coarse
 
 Each workspace has `workspace_state` with a revision, published schema version
-and mode (`active` or `schema_update`). Every workspace mutation, including review, merge,
-retraction, forgetting, derived-state repair and worker changes, uses this
-protocol. No module writes around it.
+and mode (`active` or `schema_update`). Every workspace mutation, including
+review, merge, retraction, forgetting, derived-state repair and worker changes,
+uses this protocol. No module writes around it.
 
 1. Enter the process-local workspace write queue. Do only database work while
    holding it, never model or third-party service calls. Other workspaces and
-   ordinary reads proceed.
-2. Read the revision, published schema and the operation's records, sources,
-   identifier candidates and other dependencies in one database snapshot.
+   ordinary reads proceed. A caller that waits longer than the queue limit
+   (default 10 s) gets a retryable `workspace_busy` error, shaped like
+   `schema_busy`. Record queue wait and hold time for every operation.
+2. Read the revision first, then the published schema and the operation's
+   records, sources, identifier candidates and other dependencies. Each request
+   is its own snapshot, so several reads may see different states; the revision
+   check in step 4 rejects a plan built on them. Before returning a domain
+   error found while planning (not found, ambiguous identifier, failed
+   precondition), re-read the revision. If it changed, replan rather than
+   report an error that may come from a torn read.
 3. Compute the mutation in TypeScript. Fetch only dependencies needed for it;
    remove the experiment's full-workspace snapshot/recomputation approach.
 4. Submit one explicit transaction: verify the revision/mode/schema still match,
@@ -252,7 +297,8 @@ This intentionally sacrifices parallel writes within one workspace for a small,
 auditable implementation. It replaces the earlier recommendation to design
 fine-grained coordination immediately. Optimize only after measured queue wait
 or conflict rates show a real problem; do not introduce distributed reader/writer
-locks, multi-node leases or serializable-engine dependencies in this phase.
+locks, multi-node coordination leases or serializable-engine dependencies in
+this phase. The single-process lease (section 9) only detects a second process.
 
 For potentially large merge/retraction/forget operations, gather dependencies
 before the commit and retain one atomic business transaction. If a tested engine
@@ -300,9 +346,20 @@ field. Fail a plan safely if it cannot preserve these rules.
 
 Every step compares actual and desired definitions. `IF NOT EXISTS` alone does
 not verify equivalence. The catalog records an internal schema revision for
-fixed tables; each workspace records both its fixed-table revision and business
-schema version. Upgrade workspaces on access, one at a time, using this runner;
-do not build a fleet-upgrade scheduler.
+fixed tables. Each workspace records three things: its fixed-table revision, its
+business schema version, and the definitions digest of the built-in
+definitions it was last fully upgraded to (section 3).
+
+At start, the worker brings each workspace up to date, one at a time, using this
+runner: fixed tables first, then built-in definitions, then signing-key access
+methods. A request for a workspace the worker has not reached yet triggers that
+workspace's upgrade first. Nothing else schedules upgrades.
+
+A failed fixed-table or access-method upgrade is reported. Because the code
+expects the new tables, that workspace's requests get a retryable error until
+the upgrade succeeds. A failed built-in definition upgrade behaves as on
+`main`: the workspace keeps its current schema and keeps running, conflicts are
+skipped and reported, and the next start retries the upgrade.
 
 Validate the logical plan before pausing. On a failed physical step, record its
 error and progress. Restore active mode only after verifying the previous
@@ -310,8 +367,10 @@ published model and its constraints remain usable; otherwise retain the paused
 state for explicit repair/resumption. Do not drop retained fields to undo a plan.
 
 Every public mutation gets an operation ID. Callers may provide an idempotency
-key; its scope includes the authenticated key identity and operation kind, and
-its canonical request digest detects reuse with different inputs. A completed
+key. As on `main` (`idempotency.ts`), its scope is the workspace and operation
+kind, so a retry after a key rotation or from another of the workspace's keys
+still deduplicates. Its canonical request digest detects reuse with different
+inputs. A completed
 receipt commits with the mutation. Retries use stable allocated IDs and check
 the receipt inside the commit transaction before applying effects.
 
@@ -322,8 +381,10 @@ retries. A lost response has an unknown outcome until resolved: timeout is not
 rollback, as the Cloud experiment demonstrated. Do not indiscriminately retry
 timeouts as though they were confirmed transaction conflicts.
 
-`get_operation` accepts either the operation ID or the caller's key plus operation
-kind, scoped to the authenticated key. A missing receipt means `not_observed`,
+`get_operation` accepts either the operation ID or the idempotency key plus
+operation kind. It is scoped to the authenticated key's workspace, like every
+other read: every key in a workspace sees all of its records (ARCHITECTURE.md
+7.2). A missing receipt means `not_observed`,
 not confirmed rollback: the original request may still commit. Repeating the
 same idempotency key must remain safe in that case. SDK retries reuse their
 original key; MCP guidance tells agents to retain it before a write.
@@ -425,8 +486,20 @@ identifiers only from validated metadata; never interpolate caller text as
 SurrealQL. Authenticate with tokens, never per-request passwords: Basic
 authentication cost 48 ms per request locally, against 1.4 ms with a token.
 Check both HTTP status and every statement result. Keep transport/auth/retry
-code in one module. Do not depend on the currently failing
-Earth instance MCP forwarding route or add a WebSocket requirement in v1.
+code in one module. Do not depend on the currently failing Earth instance MCP
+forwarding route or add a WebSocket requirement in v1.
+
+One process runs per deployment. At start, the server writes a lease to the
+catalog: process ID, a heartbeat every 10 s and expiry after 30 s. It refuses
+to start while another live lease exists, and it releases the lease at
+shutdown. A process that cannot renew its lease stops admitting writes and
+exits.
+
+The lease only detects a mistaken second process, such as an overlapping
+deploy or a separately started worker. It is not coordination. Correctness
+across processes still rests on the revision check, which holds even if a
+stalled process outlives its lease. Workspace upgrades, schema-plan
+resumption and job resumption run only under the lease.
 
 Local development/CI runs a pinned persistent SurrealDB image and requires no
 Cloud credentials. Cloud checks use an isolated new workspace, never overwrite
@@ -457,14 +530,14 @@ Each phase has a runnable agent scenario and real-database checks. Keep pure
 domain functions where useful; replace PostgreSQL persistence directly rather
 than designing a universal ORM or maintaining two runtime implementations.
 
-| Phase                                       | Deliverable and exit condition                                                                                                                                                                                                                                       |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0. Spike                                    | Local checks on the pinned release (section 12): done. Still open before Phase 1: repeat transport, access and rollup checks on Cloud in a fresh database, and obtain the license answer.                                                                            |
-| 1. Foundation                               | New branch, pinned Compose/CI, catalog/workspace provisioning, scoped runtime access, API-key bootstrap/revocation, transaction/receipt module. Boot and authenticate without PostgreSQL. Prove cross-workspace denial and duplicate retry handling.                 |
-| 2. Agent-managed schema and records         | Metadata compiler/step runner, base templates/protection, IDs/directory, all existing field shapes, assertions/review, identifiers/uniqueness and single/collection/polymorphic native relations. An agent creates a custom object and safely writes it through MCP. |
-| 3. Evidence and lifecycle                   | Event logging/retries/links, facts/internal notes, source retraction, merge, delete and forget/suppression, including queue/receipt cleanup. Competing operations preserve the existing invariants.                                                                  |
-| 4. Retrieval and human use                  | Search, filtered lists/aggregates, bounded rollups/timeline/context, saved views/lists, SDK and existing web flows. Port browser checks alongside backend reads.                                                                                                     |
-| 5. Native graph value and operational proof | Bounded traversal, payment/invoice and introduction scenarios, large-fan-out plans, restart/restore and representative Cloud checks. Agent can complete and explain the workflow end to end.                                                                         |
+| Phase                                       | Deliverable and exit condition                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0. Spike                                    | Local checks on the pinned release (section 12): done. Before Phase 1: send the license question (section 2) and repeat the transport, access and rollup checks on Cloud in a fresh database.                                                                                                                                                                                                                        |
+| 1. Foundation                               | New branch, pinned Compose/CI, catalog/workspace provisioning, runtime access and signing-key rotation, process lease, API-key bootstrap/revocation, CBOR transport, transaction/receipt module. Boot and authenticate without PostgreSQL. Prove cross-workspace denial, duplicate retry handling and a refused second process. Record write latency and queue wait for a 200-event ingestion burst as the baseline. |
+| 2. Agent-managed schema and records         | Metadata compiler/step runner, base templates/protection, built-in definition upgrades, IDs/directory, all existing field shapes, assertions/review, identifiers/uniqueness and single/collection/polymorphic native relations. An agent creates a custom object and safely writes it through MCP.                                                                                                                   |
+| 3. Evidence and lifecycle                   | Event logging/retries/links, facts/internal notes, source retraction, merge, delete and forget/suppression, including queue/receipt cleanup. Competing operations preserve the existing invariants.                                                                                                                                                                                                                  |
+| 4. Retrieval and human use                  | Search, filtered lists/aggregates, bounded rollups/timeline/context, saved views/lists, SDK and existing web flows. Port browser checks alongside backend reads.                                                                                                                                                                                                                                                     |
+| 5. Native graph value and operational proof | Bounded traversal, payment/invoice and introduction scenarios, large-fan-out plans, restart/restore and representative Cloud checks. Agent can complete and explain the workflow end to end.                                                                                                                                                                                                                         |
 
 During the port, mark unported surfaces unavailable explicitly. The branch is
 not described as a complete replacement until all phases pass. Remove PostgreSQL
@@ -473,9 +546,18 @@ by completion. Historical comparison fixtures may remain optional research tools
 outside the application dependency graph.
 
 Reuse SDK/client/API types and the current UI. Update branch documentation and
-startup commands with the phase that changes them. Keep PG-specific deployment
-scripts out of the SurrealDB launch path; a new cloud deployment pipeline and
-horizontal scaling are deferred. Periodically merge `main` into this branch and
+startup commands with the phase that changes them. That includes the
+PostgreSQL-specific rules in `CLAUDE.md` and ARCHITECTURE.md: `records.data`,
+"search is Postgres full-text only", Drizzle commands and the PostgreSQL testing
+rules. Agents working on the branch must not follow rules for code that no
+longer exists.
+
+Do not port the AWS Lambda deployment (`packages/server/src/lambda`,
+`deploy/aws`, `docs/aws.md`) or the separate `api` and `worker` roles: they run
+several processes, which this topology does not support. Remove them from the
+branch with the PostgreSQL runtime. The container image with `RETAINER_ROLE=all`
+is the only launch path. A new cloud deployment pipeline and horizontal scaling
+are deferred. Periodically merge `main` into this branch and
 port behavior changes deliberately; do not merge backend replacement into `main`
 without a separate decision.
 
@@ -498,10 +580,10 @@ without a separate decision.
 - On 1,000 and 10,000 synthetic events, verify correctness and inspect measured
   candidates/plans for ordinary lists and history/context pages. Include a
   record whose history rolls up from 5,000 source records, and a source record
-  moved between rollup targets. No complete
-  materialization before page limiting. Record queue wait/conflicts and p50/p95;
-  set a performance target after the first correct implementation, not from the
-  prototype's unequal HTTP/PostgreSQL-driver timings.
+  moved between rollup targets. No complete materialization before page
+  limiting. Record queue wait/conflicts and p50/p95; set a performance target
+  after the first correct implementation, not from the prototype's unequal
+  HTTP/PostgreSQL-driver timings.
 - A live agent must discover schema, add a custom type, resolve an ambiguous
   contact without guessing, log/cite evidence, distinguish pending review,
   retrieve context/history and explain a bounded introduction path. Browser
@@ -509,11 +591,14 @@ without a separate decision.
 - Restart during a schema plan and after a lost mutation response. Resume safely
   without duplicate claims or exposing half-published metadata. Restore a backup
   and verify identities, routes and suppression.
+- Start a second process against a live lease and confirm it refuses to start.
+  Rotate the signing key across several workspaces, including one that is
+  mid-upgrade. Upgrade a workspace created by an older release's built-in
+  definitions, including a renamed, a deleted and a conflicting element.
 
 The release gate is a functioning agent-first CRM with no PostgreSQL dependency,
-not a graph demo. Production adoption additionally requires checking the chosen
-server license against the intended customizable hosted service, resolving the
-question recorded in the evaluation, and verifying the actual hosted backend's
+not a graph demo. Production adoption additionally requires SurrealDB's written
+license answer (section 2), and verification of the actual hosted backend's
 authorization, concurrency and retention behavior.
 
 ## 12. Local spike findings
