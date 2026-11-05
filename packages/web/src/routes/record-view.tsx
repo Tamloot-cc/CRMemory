@@ -622,11 +622,15 @@ export function InlineEditor({
       } else onDone(outside);
     } catch (e) {
       if (e instanceof RetainerApiError && e.status === 412) {
+        // Fetch the latest version first, then show the problem: the notice,
+        // the current value and a free editor (busy cleared below) appear in
+        // one render, so a click away right after the notice is not ignored
+        // as if a save were still in flight.
+        await refresh();
         setStale(true);
         setError(
           'This record changed. Your draft is preserved below. Compare it with the current value before retrying.',
         );
-        await refresh();
       } else setError((e as Error).message);
     } finally {
       setBusy(false);
