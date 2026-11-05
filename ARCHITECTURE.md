@@ -493,9 +493,12 @@ assertions belong to:
   hidden internal-note type (it resolves as not found); a required target
   field left empty on any event (`invalid_values`); a moved value of a
   unique field another record claims (`unique_conflict`, rather than the
-  silent review rule 2.4 uses for retractions); and records pointing at the
-  events through a relation field that cannot target the new type
-  (`referenced_by_relations`), since a relation's targets never change (1.1).
+  silent review rule 2.4 uses for retractions); and records whose active or
+  superseded relation claims point at the events through an active field
+  that cannot target the new type (`referenced_by_relations`), since a
+  relation's targets never change (1.1) and a retraction restores a
+  superseded claim without checking its target again. A deleted field is
+  never recomputed, so its links do not block a move.
 
 A move needs a `user` actor with the `admin` scope, the rule for destructive
 schema changes (3) and `forget` (2.1): the request is the approval, and an

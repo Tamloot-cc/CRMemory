@@ -247,9 +247,13 @@ cites the events and blocks their identity for good.
   happened). A later log of the same source with that value then matches the
   moved event, as a retry would. A required target field with no value on
   some moved event is 422 `invalid_values`; give it in `defaults`.
-- Records that point at the events through a relation field that cannot
-  point at the target type make it 409 `referenced_by_relations`, listing the
-  fields; clear those values first.
+- Records whose relation values point at the events through an active field
+  that cannot point at the target type make it 409 `referenced_by_relations`,
+  listing the fields with the records holding such a value (`records`) and
+  those holding it now (`current`). Earlier, superseded values count too,
+  since retracting the claim that replaced one would restore it. Clear the
+  current values; if earlier ones remain, replace the field with one that can
+  point at both types. A deleted field never blocks a move.
 - Moving into or out of the hidden internal-note type is impossible: it
   resolves as not found, as everywhere.
 

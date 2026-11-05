@@ -345,9 +345,12 @@ is a small change to `main.tsx`, `ui/shell.tsx` and `routes/objects.tsx`.
    - **The schema lock, exclusively.** A move holds the workspace schema lock
      exclusively, as schema changes do, so no write in the workspace
      interleaves with it, and moving a whole type is one transaction.
-   - **Refuse what would break other records.** Records that point at the
-     events through a relation field whose targets exclude the new type block
-     the move (`referenced_by_relations`); relation targets never change.
+   - **Refuse what would break other records.** Records whose relation
+     values, current or superseded, point at the events through an active
+     field whose targets exclude the new type block the move
+     (`referenced_by_relations`); relation targets never change. Superseded
+     values count because a retraction can restore one without checking its
+     target again.
      Unique values another record claims block it too, rather than going to
      review silently.
 

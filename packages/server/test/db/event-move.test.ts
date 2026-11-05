@@ -570,10 +570,52 @@ describe('fields the target cannot hold', () => {
     expect(refused).toMatchObject({
       status: 409,
       code: 'referenced_by_relations',
-      details: { relations: [{ object: 'task', field: 'meeting', records: 1 }] },
+      details: { relations: [{ object: 'task', field: 'meeting', records: 1, current: 1 }] },
     });
+
+    // Cleared, the old value is superseded but could come back if the clearing
+    // claim were retracted, so it still counts.
     await patchRecord(app, w.as(AGENT), task.id, { values: { meeting: null } });
+    const earlier = await failure(w.move({}));
+    expect(earlier).toMatchObject({
+      code: 'referenced_by_relations',
+      details: { relations: [{ field: 'meeting', records: 1, current: 0 }] },
+    });
+    expect(await w.typeOf(meeting.id)).toBe('meeting');
+
+    // A deleted field is never read or recomputed again: its links do not block.
+    await patchRecord(app, w.as(AGENT), task.id, { values: { meeting: meeting.id } });
+    await w.change([{ op: 'delete_field', object: 'task', field: 'meeting' }]);
     expect((await w.move({})).eventIds).toEqual([meeting.id]);
+  });
+
+  it('counts superseded relation values pointing at the events, and ignores records that point at other events', async () => {
+    const w = await workspace();
+    await w.change([
+      {
+        op: 'create_field',
+        object: 'task',
+        field: {
+          name: 'meetings',
+          label: 'Meetings',
+          type: 'relation',
+          settings: { targetObject: 'meeting', relationCardinality: 'many_to_many' },
+        },
+      },
+    ]);
+    const first = await w.log();
+    const second = await w.log();
+    const task = await createRecord(app, w.as(AGENT), 'task', {
+      title: 'Follow up',
+      meetings: [first.id, second.id],
+    });
+    // The set now holds only the second meeting; the first is in a superseded set.
+    await patchRecord(app, w.as(AGENT), task.id, { values: { meetings: [second.id] } });
+    const refused = await failure(w.move({ events: [first.id] }));
+    expect(refused).toMatchObject({
+      code: 'referenced_by_relations',
+      details: { relations: [{ field: 'meetings', records: 1, current: 0 }] },
+    });
   });
 });
 

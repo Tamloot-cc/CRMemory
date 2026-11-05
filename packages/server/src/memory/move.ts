@@ -466,9 +466,13 @@ function valueProblem(
 }
 
 /**
- * Other records that point at the events through a relation field that
- * cannot point at the target type. Its targets are fixed once created
- * (1.1), so those values must be cleared, or the field replaced, first.
+ * Other records whose relation values point at the events through a field
+ * that cannot point at the target type. Its targets are fixed once created
+ * (1.1), so such a value would break the field. Current values count, and so
+ * do superseded ones: a retraction recomputes a field from its remaining
+ * claims (rule 2.4) without checking targets again, so an earlier value can
+ * come back. Only active fields of active objects count, since a deleted
+ * field is never read or recomputed; deleted records, likewise.
  */
 async function checkInboundRelations(
   tx: Tx,
@@ -476,20 +480,35 @@ async function checkInboundRelations(
   target: CompiledObject,
   ids: string[],
 ): Promise<void> {
-  const rows = await tx<{ field_id: string; records: number }[]>`
-    select l.field_id, count(distinct l.source_record_id)::int as records
-    from record_links l
-    join records s on s.id = l.source_record_id and s.deleted_at is null
-    where l.workspace_id = ${context.workspaceId} and l.target_record_id = any(${ids}::uuid[])
-      and l.source_record_id <> all(${ids}::uuid[])
-    group by l.field_id`;
+  const fields = context.schema.state.objects
+    .filter((o) => o.status === 'active')
+    .flatMap((o) => o.fields)
+    .filter(
+      (f) =>
+        f.status === 'active' &&
+        f.type === 'relation' &&
+        !f.settings.isInverse &&
+        !relationTargetIds(f.settings).includes(target.state.universalId),
+    );
+  if (fields.length === 0) return;
+  // `?|` matches a string value, or a member of a set, equal to any of the IDs.
+  const rows = await tx<{ field_id: string; records: number; current: number }[]>`
+    select a.field_id, count(distinct a.record_id)::int as records,
+      count(distinct a.record_id) filter (where a.status = 'active')::int as current
+    from field_assertions a
+    join records s on s.id = a.record_id and s.deleted_at is null
+    where a.workspace_id = ${context.workspaceId}
+      and a.field_id = any(${fields.map((f) => f.id as string)}::uuid[])
+      and a.status in ('active', 'superseded')
+      and a.record_id <> all(${ids}::uuid[])
+      and a.value ?| ${ids}::text[]
+    group by a.field_id`;
   const blocked = rows.flatMap((row) => {
     const owner = context.schema.fieldOwners.get(row.field_id);
     const field = owner?.fieldsById.get(row.field_id);
-    if (!owner || !field || relationTargetIds(field.settings).includes(target.state.universalId)) {
-      return [];
-    }
-    return [{ object: owner.name, field: field.name, records: row.records }];
+    return owner && field
+      ? [{ object: owner.name, field: field.name, records: row.records, current: row.current }]
+      : [];
   });
   if (blocked.length > 0) {
     throw new AppError(
@@ -497,7 +516,9 @@ async function checkInboundRelations(
       'referenced_by_relations',
       `records point at these events through relation fields that cannot point at a ` +
         `${target.name}: ${blocked.map((b) => `${b.object}.${b.field} (${b.records} records)`).join(', ')}. ` +
-        "A relation's targets cannot change: clear those values or replace the field first",
+        "A relation's targets cannot change. Clear the current values (current counts " +
+        'them); earlier values the field held count too, since a retraction could restore ' +
+        'them, so if any remain, replace the field with one that can point at both types',
       { relations: blocked },
     );
   }
