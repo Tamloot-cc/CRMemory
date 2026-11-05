@@ -7,14 +7,14 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GUIDE_NAMES } from '../../src/mcp/guides.js';
 import { callTool, startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
 /**
  * Layer 4 through `@retainer/mcp`: an MCP client speaks stdio to the bridge,
  * running as its own process, which relays to the server over real HTTP.
  */
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 const BRIDGE = fileURLToPath(new URL('../../../mcp/src/index.ts', import.meta.url));
 const SERVER_DIR = fileURLToPath(new URL('../..', import.meta.url));
 /** Runs the bridge from source; tsx resolves from the server package. */
@@ -46,7 +46,7 @@ async function connect(env: Record<string, string>) {
 }
 
 beforeAll(async () => {
-  t = startTestApp(db);
+  t = startTestApp(backend);
   const setup = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     { agent: { actor: { type: 'agent', id: 'inbox' }, scopes: ['read', 'write'] } },

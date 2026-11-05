@@ -1,14 +1,14 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 let t: TestApp;
 let keys: Record<'agent' | 'reader', string>;
 let otherKey: string;
 
 beforeAll(async () => {
-  t = startTestApp(db);
+  t = startTestApp(backend);
   ({ keys } = await t.setupWorkspace(
     { name: 'Acme', template: 'sales' },
     {

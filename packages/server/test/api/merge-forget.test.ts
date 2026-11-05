@@ -1,16 +1,16 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { consolidateWorkspace } from '../../src/worker/consolidate.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 let t: TestApp;
 let workspaceId: string;
 let keys: Record<'agent' | 'user' | 'admin' | 'agentAdmin' | 'reader', string>;
 let otherKey: string;
 
 beforeAll(async () => {
-  t = startTestApp(db);
+  t = startTestApp(backend);
   const setup = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     {
@@ -133,7 +133,7 @@ describe('merge suggestions in review', () => {
   it('lists suggestions from the consolidator, and dismisses one as a user', async () => {
     const a = await createPerson({ name: 'Yael Mizrahi' });
     const b = await createPerson({ name: 'Yael Mizrachi' });
-    await consolidateWorkspace(t.sql, workspaceId);
+    await consolidateWorkspace(backend, workspaceId);
     const review = await t.request('/v1/review', { key: keys.reader });
     const suggestion = review.body.mergeSuggestions.find(
       (s: { recordIds: string[] }) => s.recordIds.includes(a) && s.recordIds.includes(b),

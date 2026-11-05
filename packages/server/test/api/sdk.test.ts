@@ -2,14 +2,14 @@ import { RetainerApiError, RetainerClient } from '@retainer/sdk';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { consolidateWorkspace } from '../../src/worker/consolidate.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
 /**
  * The SDK against the real routes and a real database: each method reaches
  * the route it names and returns the shape its type promises.
  */
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 let t: TestApp;
 let workspaceId: string;
 let agent: RetainerClient;
@@ -24,7 +24,7 @@ const client = (apiKey: string) =>
   });
 
 beforeAll(async () => {
-  t = startTestApp(db);
+  t = startTestApp(backend);
   const setup = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     {
@@ -173,7 +173,7 @@ describe('SDK against the server', () => {
     const c = await agent.createRecord('person', {
       values: { name: 'Yael Mizrahy', emails: 'yael@three.test' },
     });
-    await consolidateWorkspace(t.sql, workspaceId);
+    await consolidateWorkspace(backend, workspaceId);
     const review = await user.review({ limit: 50 });
     const pair = (x: string, y: string) =>
       review.mergeSuggestions.find((s) => s.recordIds.includes(x) && s.recordIds.includes(y));

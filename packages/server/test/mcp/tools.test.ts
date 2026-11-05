@@ -4,9 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GUIDE_NAMES } from '../../src/mcp/guides.js';
 import { schemaOperationSchema } from '../../src/schema-engine/operations.js';
 import { type McpTestClient, startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 let t: TestApp;
 let agent: McpTestClient;
 let agent2: McpTestClient;
@@ -24,6 +24,7 @@ const TOOLS = [
   'describe_schema',
   'get_context',
   'get_guide',
+  'get_operation',
   'get_record',
   'get_timeline',
   'list_templates',
@@ -32,6 +33,7 @@ const TOOLS = [
   'query_records',
   'remember',
   'search',
+  'traverse_records',
   'upsert_record',
 ];
 
@@ -41,7 +43,7 @@ async function toolsByName(client: McpTestClient) {
 }
 
 beforeAll(async () => {
-  t = startTestApp(db);
+  t = startTestApp(backend);
   const sales = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     {
@@ -179,6 +181,47 @@ describe('connecting', () => {
     expect(byName.get('remember')?.description).toContain('log_event');
     expect(byName.get('log_event')?.description).toContain('source');
     expect(byName.get('query_records')?.inputSchema.properties).toHaveProperty('linked');
+  });
+});
+
+describe('traverse_records and get_operation', () => {
+  it('walks a relation and resolves a write by its idempotency key', async () => {
+    const company = await agent.call('upsert_record', {
+      object: 'company',
+      values: { name: 'Traverse Co' },
+    });
+    const dana = await createPerson({ company: company.body.id });
+    const walked = await reader.call('traverse_records', {
+      starts: [company.body.id],
+      path: [{ field: 'people', direction: 'out' }],
+    });
+    expect(walked.isError).toBe(false);
+    expect(walked.body.paths.map((p: { records: { id: string }[] }) => p.records[1]?.id)).toEqual([
+      dana.id,
+    ]);
+    const bad = await reader.call('traverse_records', {
+      starts: [company.body.id],
+      path: [{ field: 'nope', direction: 'out' }],
+    });
+    expect(bad.isError).toBe(true);
+    expect(JSON.stringify(bad.body)).toContain('invalid_path');
+
+    const fact = await agent.call('remember', {
+      record: dana.id,
+      text: 'Prefers mornings',
+      idempotencyKey: 'mcp-op-1',
+    });
+    expect(fact.isError).toBe(false);
+    const receipt = await agent.call('get_operation', {
+      kind: 'remember',
+      idempotencyKey: 'mcp-op-1',
+    });
+    expect(receipt.body).toMatchObject({ status: 'completed', result: fact.body });
+    const byId = await agent.call('get_operation', { operationId: receipt.body.operationId });
+    expect(byId.body).toEqual(receipt.body);
+    const neither = await agent.call('get_operation', {});
+    expect(neither.isError).toBe(true);
+    expect(JSON.stringify(neither.body)).toContain('invalid_request');
   });
 });
 

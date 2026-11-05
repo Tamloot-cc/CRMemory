@@ -1,15 +1,20 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { RecordId } from '../../src/db/cbor.js';
 import { startTestApp, type TestApp } from '../helpers/app.js';
-import { useTestDatabase } from '../helpers/db.js';
+import { useTestBackend } from '../helpers/backend.js';
 
-const db = useTestDatabase();
+const backend = useTestBackend();
 let t: TestApp;
 let keys: Record<'agent' | 'reader' | 'dana' | 'omer' | 'admin', string>;
 let otherKey: string;
+let workspaceId: string;
 
 beforeAll(async () => {
-  t = startTestApp(db);
-  ({ keys } = await t.setupWorkspace(
+  t = startTestApp(backend);
+  ({
+    keys,
+    workspace: { id: workspaceId },
+  } = await t.setupWorkspace(
     { name: 'Acme Sales', template: 'sales' },
     {
       agent: { actor: { type: 'agent', id: 'inbox' }, scopes: ['read', 'write'] },
@@ -434,8 +439,11 @@ describe('views across schema changes', () => {
     expect(view.status).toBe(201);
     expect((await schemaChange([{ op: 'delete_object', object: 'ticket' }])).status).toBe(200);
     expect((await t.request(`/v1/views/${view.body.id}`, { key: keys.dana })).status).toBe(404);
-    const [row] = await db.owner`select count(*)::int as n from views where id = ${view.body.id}`;
-    expect(row?.n).toBe(0);
+    const db = await backend.workspaceAdmin(workspaceId);
+    const rows = await db.rows('SELECT id FROM $view;', {
+      view: new RecordId('views', view.body.id),
+    });
+    expect(rows).toEqual([]);
   });
 
   it('leaves views alone when a change gives them nothing to repair', async () => {
