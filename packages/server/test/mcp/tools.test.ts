@@ -219,13 +219,37 @@ describe('event history and schema guidance', () => {
     expect(body).toContain('current API names');
   });
 
-  it('keeps valid custom event types out of the legacy entity migration advice', async () => {
+  it('warns that moving events between types is not a quick cleanup', async () => {
     const { body } = await reader.call<string>('get_guide', { name: 'schema_design' });
     const review = body.slice(body.indexOf('## Reviewing a schema in use'));
     expect(review).toContain('entity objects (class "entity")');
-    expect(review).toContain('Custom event types (class "event") are valid');
-    expect(review).toContain('do not propose');
     expect(review).toContain('Moving legacy entity records');
+    expect(review).toContain('never propose it as a\n  quick cleanup');
+  });
+
+  it.each(GUIDE_NAMES)(
+    '%s steers conversations to medium and new types to the D4 rule',
+    async (name) => {
+      const { body } = await reader.call<string>('get_guide', { name });
+      expect(body).toContain('one event type, conversation');
+      expect(body).toContain('Add an event type only when the event has fields a conversation');
+      expect(body).toContain('channel is where an event came from');
+      expect(body).not.toMatch(/Meetings, calls, emails, messages and notes are events/);
+    },
+  );
+
+  it('tells agents to log conversations with a medium, and channel apart from medium', async () => {
+    const instructions = agent.getInstructions() ?? '';
+    expect(instructions).toContain(
+      'Log meetings, calls, emails and chats as conversation with a medium. Use\nanother event ' +
+        'type only when the workspace defines one for that kind of event.',
+    );
+    const byName = await toolsByName(agent);
+    expect(byName.get('log_event')?.description).toContain(
+      'Log meetings, calls, emails and chats as conversation with a medium.',
+    );
+    expect(byName.get('describe_schema')?.description).toContain('medium');
+    expect(JSON.stringify(byName.get('log_event')?.inputSchema)).toContain('not the channel');
   });
 });
 
@@ -339,7 +363,7 @@ describe('describe_schema, list_templates and apply_template', () => {
     });
     // Every workspace starts with the base objects and event types (6.1).
     expect(before.body.objects.map((o: { nameSingular: string }) => o.nameSingular).sort()).toEqual(
-      ['call', 'company', 'email', 'meeting', 'message', 'note', 'person', 'task'],
+      ['company', 'conversation', 'note', 'person', 'task'],
     );
 
     const list = await fresh.call('list_templates');
@@ -390,7 +414,7 @@ describe('describe_schema, list_templates and apply_template', () => {
     expect(res.body.builtIns[0].writeWith).toContain('remember');
     const objects = res.body.objects as { nameSingular: string; class: string }[];
     const events = objects.filter((o) => o.class === 'event').map((o) => o.nameSingular);
-    expect(events.sort()).toEqual(['call', 'email', 'meeting', 'message', 'note']);
+    expect(events.sort()).toEqual(['conversation', 'note']);
     expect(objects.find((o) => o.nameSingular === 'person')?.class).toBe('entity');
     // Neither interactions nor the hidden internal-note type are listed.
     expect(objects.map((o) => o.nameSingular)).not.toContain('interaction');
@@ -714,7 +738,7 @@ describe('the memory workflow (4.1): log_event, then cite it', () => {
   let external = 0;
   const logCall = async (args: Record<string, unknown> = {}, client = agent) =>
     client.call('log_event', {
-      type: 'call',
+      type: 'conversation',
       channel: 'zoom',
       occurredAt: '2026-10-29T14:00:00+02:00',
       ...args,
@@ -736,7 +760,7 @@ describe('the memory workflow (4.1): log_event, then cite it', () => {
     expect(res.isError).toBe(false);
     expect(res.body).toEqual({
       id: expect.any(String),
-      type: 'call',
+      type: 'conversation',
       created: true,
       participants: {
         matched: [
@@ -787,31 +811,31 @@ describe('the memory workflow (4.1): log_event, then cite it', () => {
     });
 
     const found = await agent.call('query_records', {
-      object: 'call',
+      object: 'conversation',
       linked: { record: acme.body.id, link: 'about' },
     });
     expect(found.isError).toBe(false);
     expect(found.body).toMatchObject({ nextCursor: null });
     expect(found.body.records.map((r: { id: string }) => r.id)).toEqual([first.body.id]);
     expect(found.body.records[0]).toMatchObject({
-      object: 'call',
+      object: 'conversation',
       event: { channel: 'zoom', externalId, about: [acme.body.id] },
     });
     // Dana is a participant, not an about record.
     const asParticipant = await agent.call('query_records', {
-      object: 'call',
+      object: 'conversation',
       linked: { record: dana.id, link: 'participant' },
     });
     expect(asParticipant.body.records.map((r: { id: string }) => r.id)).toEqual([first.body.id]);
     const notAbout = await agent.call('query_records', {
-      object: 'call',
+      object: 'conversation',
       linked: { record: dana.id, link: 'about' },
     });
     expect(notAbout.body.records).toEqual([]);
 
     const context = await agent.call('get_context', { record: acme.body.id });
     expect(context.body.recentEvents).toEqual([
-      expect.objectContaining({ id: first.body.id, type: 'call', via: { kind: 'about' } }),
+      expect.objectContaining({ id: first.body.id, type: 'conversation', via: { kind: 'about' } }),
     ]);
   });
 
@@ -836,7 +860,7 @@ describe('the memory workflow (4.1): log_event, then cite it', () => {
     const dana = await createPerson();
     const call = await logCall({ occurredAt: '2026-10-28T10:00:00Z' });
     const mail = await logCall({
-      type: 'email',
+      type: 'conversation',
       channel: 'gmail',
       occurredAt: '2026-09-01T10:00:00Z',
     });
@@ -946,7 +970,7 @@ describe('the memory workflow (4.1): log_event, then cite it', () => {
 
 describe('events are records (6.2, 7.1)', () => {
   const logMeeting = (args: Record<string, unknown>) =>
-    agent.call('log_event', { type: 'meeting', channel: 'calendar', ...args });
+    agent.call('log_event', { type: 'conversation', channel: 'calendar', ...args });
 
   it('lists the events linked to a record with query_records, by built-in column', async () => {
     const dana = await createPerson();
@@ -968,14 +992,14 @@ describe('events are records (6.2, 7.1)', () => {
     await logMeeting({ occurredAt: '2026-10-04T09:00:00Z', title: 'Without Dana' });
 
     const newest = await agent.call('query_records', {
-      object: 'meeting',
+      object: 'conversation',
       linked: { record: dana.id },
       sort: [{ field: 'occurredAt', direction: 'desc' }],
     });
     expect(newest.isError).toBe(false);
     expect(newest.body.records.map((r: { id: string }) => r.id)).toEqual([ids[1], ids[2], ids[0]]);
     const onCalendar = await agent.call('query_records', {
-      object: 'meeting',
+      object: 'conversation',
       linked: { record: dana.id, link: 'participant' },
       filter: { channel: 'calendar', occurredAt: { gte: '2026-10-02T00:00:00Z' } },
     });
@@ -990,15 +1014,55 @@ describe('events are records (6.2, 7.1)', () => {
     expect(entity.body.error.details).toMatchObject({ field: 'linked' });
   });
 
+  it('queries every event type at once with object "event"', async () => {
+    const dana = await createPerson();
+    const call = await logMeeting({
+      occurredAt: '2026-10-06T09:00:00Z',
+      title: 'Call with Dana',
+      fields: { medium: 'call' },
+      participants: [{ recordId: dana.id }],
+    });
+    const note = await agent.call('log_event', {
+      type: 'note',
+      channel: 'web',
+      occurredAt: '2026-10-07T09:00:00Z',
+      title: 'Dana prefers mornings',
+      about: [dana.id],
+    });
+    expect(note.isError).toBe(false);
+    await agent.call('remember', { record: dana.id, text: 'Dana runs ops.' });
+
+    const all = await agent.call('query_records', { object: 'event', linked: { record: dana.id } });
+    expect(all.isError).toBe(false);
+    expect(all.body.records.map((r: { id: string; type: string }) => [r.id, r.type])).toEqual([
+      [note.body.id, 'note'],
+      [call.body.id, 'conversation'],
+    ]);
+    expect(all.body.records[1].fields.medium).toBe('call');
+
+    const notes = await agent.call('query_records', {
+      object: 'event',
+      linked: { record: dana.id },
+      filter: { type: { in: ['note'] } },
+    });
+    expect(notes.body.records.map((r: { id: string }) => r.id)).toEqual([note.body.id]);
+    const medium = await agent.call('query_records', {
+      object: 'event',
+      filter: { medium: 'call' },
+    });
+    expect(medium.isError).toBe(true);
+    expect(medium.body.error.code).toBe('invalid_filter');
+  });
+
   it('refuses to create an event with upsert_record, but edits one that exists', async () => {
     const created = await agent.call('upsert_record', {
-      object: 'meeting',
+      object: 'conversation',
       values: { title: 'Made up' },
     });
     expect(created.isError).toBe(true);
     expect(created.body.error).toMatchObject({
       code: 'use_log_event',
-      details: { object: 'meeting' },
+      details: { object: 'conversation' },
     });
     expect(created.body.error.message).toContain('log_event');
 
@@ -1008,7 +1072,7 @@ describe('events are records (6.2, 7.1)', () => {
       title: 'Kickoff',
     });
     const edited = await agent.call('upsert_record', {
-      object: 'meeting',
+      object: 'conversation',
       id: logged.body.id,
       values: { title: 'Kickoff with Acme' },
     });
@@ -1029,7 +1093,7 @@ describe('events are records (6.2, 7.1)', () => {
     const entity = await agent.call('log_event', { ...base, type: 'person' });
     expect(entity.body.error).toMatchObject({ code: 'not_an_event_type' });
     expect(entity.body.error.details.eventTypes).toEqual(
-      expect.arrayContaining(['meeting', 'call', 'email', 'message', 'note']),
+      expect.arrayContaining(['conversation', 'note']),
     );
     const unknown = await agent.call('log_event', { ...base, type: 'interaction' });
     expect(unknown.body.error.code).toBe('not_found');
@@ -1044,7 +1108,7 @@ describe('finding and reading a record (5): search, then get_context', () => {
     const dana = await createPerson({ name: 'Dana Mizrahi-Katz', jobTitle: 'CFO' });
     const danaEmail = (dana.record.fields.emails as { primary: string }).primary;
     const call = await agent.call('log_event', {
-      type: 'call',
+      type: 'conversation',
       channel: 'zoom',
       occurredAt: '2026-10-29T14:00:00+02:00',
       title: 'Budget planning',
@@ -1075,7 +1139,12 @@ describe('finding and reading a record (5): search, then get_context', () => {
       { content: 'Signs off on anything above 50k.', sources: [call.body.id] },
     ]);
     expect(pack.body.recentEvents).toMatchObject([
-      { id: call.body.id, type: 'call', title: 'Budget planning', via: { kind: 'participant' } },
+      {
+        id: call.body.id,
+        type: 'conversation',
+        title: 'Budget planning',
+        via: { kind: 'participant' },
+      },
     ]);
     expect(pack.body.tokenEstimate).toBeLessThanOrEqual(500);
 
@@ -1134,7 +1203,7 @@ describe('after a person merges and forgets (4.2, 2.1)', () => {
     // Later the agent logs a meeting with her: the handle is not stored, and
     // creating her again is refused.
     const logged = await agent.call('log_event', {
-      type: 'meeting',
+      type: 'conversation',
       channel: 'calendar',
       occurredAt: '2026-10-30T09:00:00Z',
       participants: [{ handle: emails.primary, role: 'customer' }],

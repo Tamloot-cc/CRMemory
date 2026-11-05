@@ -23,6 +23,7 @@ import {
   Inset,
   Notice,
 } from '../ui/index.js';
+import { withEventValues } from './event-list.js';
 import { defaultColumnOrder, formatAggregate } from './list-state.js';
 import type { MoveNotice } from './record-move.js';
 import { useRecordMoves } from './record-move.js';
@@ -239,7 +240,11 @@ function Column({
   });
 
   const cards: Card[] = (query.data?.pages ?? []).flatMap((page) =>
-    page.records.map((record) => ({ record, references: page.relationReferences })),
+    // An event's built-in columns read like fields on its card.
+    page.records.map((record) => ({
+      record: withEventValues(record),
+      references: page.relationReferences,
+    })),
   );
   const here = new Set(cards.map((c) => c.record.id));
   // Cards on the move show where they are going while the move saves.

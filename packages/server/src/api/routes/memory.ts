@@ -13,6 +13,8 @@ import {
   retractEventFor,
   retractFactFor,
 } from '../../memory/service.js';
+import { queryInputSchema } from '../../records/query.js';
+import { findEvents } from '../../records/service.js';
 import type { AppEnv } from '../http.js';
 import { idParam, readBody } from '../request.js';
 
@@ -22,6 +24,11 @@ export function memoryRoutes(app: Hono<AppEnv>, sql: Sql) {
     const input = await readBody(c, logEventInputSchema);
     const result = await logEventFor(sql, c.get('caller'), input);
     return c.json(result, result.created ? 201 : 200);
+  });
+
+  app.post('/events/query', requireScope('read'), async (c) => {
+    const input = await readBody(c, queryInputSchema);
+    return c.json(await findEvents(sql, c.get('caller'), input));
   });
 
   app.get('/events/:id', requireScope('read'), async (c) =>

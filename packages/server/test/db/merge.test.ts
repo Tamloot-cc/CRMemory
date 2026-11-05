@@ -48,7 +48,7 @@ const reviewQueue = (sql: Sql, caller: Caller, limit: number) =>
   withRead(sql, caller, (tx, schema) => reviewPage(tx, caller.workspaceId, schema, limit, {}));
 const logCall = (title: string, participants: { recordId: string }[] = []) =>
   logEventFor(app, as(AGENT), {
-    type: 'call',
+    type: 'conversation',
     channel: 'zoom',
     occurredAt: '2026-10-01T10:00:00Z',
     title,
@@ -68,7 +68,7 @@ describe('merging records (4.2)', () => {
     const a = await person({ name: 'Dana Cohen', jobTitle: 'VP Sales' });
     const b = await person({ name: 'Dana Cohen', phones: '+972 54 123 4567' });
     const call = await logEventFor(app, as(AGENT), {
-      type: 'call',
+      type: 'conversation',
       channel: 'zoom',
       occurredAt: '2026-10-01T10:00:00Z',
       fields: {},
@@ -112,7 +112,7 @@ describe('merging records (4.2)', () => {
     const b = await company('Umbrella Corp');
     const dana = await person();
     const meeting = await logEventFor(app, as(AGENT), {
-      type: 'meeting',
+      type: 'conversation',
       channel: 'calendar',
       occurredAt: '2026-10-02T10:00:00Z',
       fields: {},

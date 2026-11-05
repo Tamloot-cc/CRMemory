@@ -68,7 +68,7 @@ beforeAll(async () => {
     });
     const twin = await createRecord(app, as(AGENT), 'person', { name: 'José Muñoz' });
     const call = await logEventFor(app, as(AGENT), {
-      type: 'call',
+      type: 'conversation',
       channel: 'zoom',
       occurredAt: '2026-10-01T10:00:00Z',
       title: 'Café kickoff',

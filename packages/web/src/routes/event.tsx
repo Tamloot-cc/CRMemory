@@ -10,6 +10,7 @@ import {
   Button,
   Dialog,
   Empty,
+  JsonBlock,
   Muted,
   Notice,
   Page,
@@ -21,9 +22,11 @@ import {
   Stack,
   Tabs,
 } from '../ui/index.js';
+import { DeveloperFacts, useApiName, useDeveloper } from './developer.js';
 import { EventDetailsView } from './event-details.js';
+import { eventMedium, mediumField } from './event-list.js';
 import { AssertionCard } from './record-view.js';
-import { eventTitle, objectByName, QueryError, useView } from './state.js';
+import { classLabel, eventTitle, objectByName, QueryError, useView } from './state.js';
 
 /**
  * One event (`GET /v1/events/:id`): its type, time, channel, participants and
@@ -33,16 +36,21 @@ export function EventPage() {
   const { id } = useParams({ strict: false }) as { id: string };
   const { session, schema } = useWorkspace(),
     client = useQueryClient(),
-    { search, setSearch } = useView();
-  const tab = search.tab === 'facts' ? 'facts' : 'assertions';
+    { search, setSearch } = useView(),
+    developer = useDeveloper(),
+    apiName = useApiName();
+  const tab =
+    search.tab === 'facts' || (developer && search.tab === 'json') ? search.tab : 'assertions';
   const query = useQuery({
     queryKey: [session.workspace.id, 'event', id],
     queryFn: ({ signal }) => api.event(id, signal),
   });
+  const json = tab === 'json';
+  const claimsTab = tab === 'facts' ? 'facts' : 'assertions';
   const claims = useQuery({
-    queryKey: [session.workspace.id, 'claims', id, tab, search.cursor],
-    queryFn: ({ signal }) => api.claims(id, { [`${tab}Cursor`]: search.cursor, signal }),
-    enabled: !!query.data,
+    queryKey: [session.workspace.id, 'claims', id, claimsTab, search.cursor],
+    queryFn: ({ signal }) => api.claims(id, { [`${claimsTab}Cursor`]: search.cursor, signal }),
+    enabled: !!query.data && !json,
   });
   const [confirm, setConfirm] = useState(false),
     [busy, setBusy] = useState(false),
@@ -88,12 +96,24 @@ export function EventPage() {
   const e = r.event;
   const type = objectByName(schema, r.object);
   // Title and summary show above; the type's other fields are listed here.
-  const others = (type?.fields ?? []).filter((f) => !f.coreRole && !isInverseRelation(f));
+  // The medium shows beside the type and source, so it isn't listed again below.
+  const medium = eventMedium(type, r);
+  const mediumName = medium ? mediumField(type)?.name : undefined;
+  const others = (type?.fields ?? []).filter(
+    (f) => !f.coreRole && !isInverseRelation(f) && f.name !== mediumName,
+  );
   return (
     <Page
-      eyebrow={type?.labelSingular ?? r.object}
+      eyebrow={classLabel(type) ?? r.object}
       title={eventTitle(e)}
-      description={`${e.channel ?? 'Channel erased'} · ${new Date(e.occurredAt).toLocaleString()}`}
+      description={[
+        type?.labelSingular ?? r.object,
+        medium,
+        e.channel ? `Source: ${e.channel}` : 'Source erased',
+        new Date(e.occurredAt).toLocaleString(),
+      ]
+        .filter(Boolean)
+        .join(' · ')}
       actions={
         <>
           <Button asChild variant="ghost" size="small">
@@ -106,6 +126,7 @@ export function EventPage() {
       }
     >
       {message ? <Notice>{message}</Notice> : null}
+      <DeveloperFacts record={r} object={type} />
       <Panel title="Summary">
         <Stack>
           {e.summary ? <p>{e.summary}</p> : <Muted>No summary</Muted>}
@@ -113,7 +134,13 @@ export function EventPage() {
         </Stack>
       </Panel>
       <Panel title="Details">
-        <EventDetailsView id={r.id} event={e} editable={canWrite} />
+        <EventDetailsView
+          id={r.id}
+          event={e}
+          editable={canWrite}
+          medium={medium}
+          {...(mediumName ? { mediumName } : {})}
+        />
       </Panel>
       {others.length ? (
         <Panel title="Fields">
@@ -121,7 +148,7 @@ export function EventPage() {
             {others.map((f) => {
               const Display = fields[f.type].Display;
               return (
-                <Property key={f.name} label={f.label}>
+                <Property key={f.name} label={f.label} apiName={apiName(f.name)}>
                   <Display field={f} value={r.fields[f.name]} references={r.relationReferences} />
                 </Property>
               );
@@ -135,40 +162,49 @@ export function EventPage() {
         items={[
           { value: 'assertions', label: 'Field assertions' },
           { value: 'facts', label: 'Facts citing this event' },
+          ...(developer ? [{ value: 'json', label: 'JSON' }] : []),
         ]}
       />
-      {claims.error ? <QueryError error={claims.error} /> : null}
-      {claims.isPending ? <Notice>Loading claims…</Notice> : null}
-      <Stack>
-        {tab === 'assertions'
-          ? claims.data?.assertions.map((a) => <AssertionCard key={a.id} assertion={a} />)
-          : claims.data?.facts.map((f) => (
-              <Panel key={f.id}>
-                <Stack>
-                  <p>{f.content}</p>
-                  {f.status ? <Badge>{f.status}</Badge> : null}
-                  <RecordLink id={f.record}>View record</RecordLink>
-                  <ActorBadge actor={f.writtenBy} />
-                  {f.sources
-                    .filter((s) => s.event === id && s.quote)
-                    .map((s) => (
-                      <blockquote key={`${s.event}:${s.quote}`}>{s.quote}</blockquote>
-                    ))}
-                </Stack>
-              </Panel>
-            ))}
-        {claims.data &&
-        !(tab === 'assertions' ? claims.data.assertions : claims.data.facts).length ? (
-          <Empty title="No claims in this section" />
-        ) : null}
-      </Stack>
+      {json ? (
+        <JsonBlock value={r} label="Event JSON" />
+      ) : (
+        <>
+          {claims.error ? <QueryError error={claims.error} /> : null}
+          {claims.isPending ? <Notice>Loading claims…</Notice> : null}
+          <Stack>
+            {claimsTab === 'assertions'
+              ? claims.data?.assertions.map((a) => <AssertionCard key={a.id} assertion={a} />)
+              : claims.data?.facts.map((f) => (
+                  <Panel key={f.id}>
+                    <Stack>
+                      <p>{f.content}</p>
+                      {f.status ? <Badge>{f.status}</Badge> : null}
+                      <RecordLink id={f.record}>View record</RecordLink>
+                      <ActorBadge actor={f.writtenBy} />
+                      {f.sources
+                        .filter((s) => s.event === id && s.quote)
+                        .map((s) => (
+                          <blockquote key={`${s.event}:${s.quote}`}>{s.quote}</blockquote>
+                        ))}
+                    </Stack>
+                  </Panel>
+                ))}
+            {claims.data &&
+            !(claimsTab === 'assertions' ? claims.data.assertions : claims.data.facts).length ? (
+              <Empty title="No claims in this section" />
+            ) : null}
+          </Stack>
+        </>
+      )}
       <Row>
         {search.cursor ? (
           <Button onClick={() => void setSearch({ cursor: undefined })}>First page</Button>
         ) : null}
-        {claims.data?.nextCursors[tab] ? (
+        {!json && claims.data?.nextCursors[claimsTab] ? (
           <Button
-            onClick={() => void setSearch({ cursor: claims.data?.nextCursors[tab] ?? undefined })}
+            onClick={() =>
+              void setSearch({ cursor: claims.data?.nextCursors[claimsTab] ?? undefined })
+            }
           >
             Next page
           </Button>

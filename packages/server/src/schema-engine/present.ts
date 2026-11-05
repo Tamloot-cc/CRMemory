@@ -1,8 +1,8 @@
 import {
+  BASE_EVENT_FIELD_IDS,
+  BASE_EVENT_TYPE_IDS,
   BASE_FIELD_IDS,
   BASE_OBJECT_IDS,
-  type BaseFieldName,
-  type BaseObjectName,
   EVENT_COLUMNS,
   type FieldSettings,
   type ObjectView,
@@ -13,11 +13,21 @@ import type { FieldState } from './types.js';
 
 export type { FieldView, ObjectView } from '@retainer/shared';
 
-const BASE_OBJECT_NAMES = new Map<string, BaseObjectName>(
-  Object.entries(BASE_OBJECT_IDS).map(([name, id]) => [id, name as BaseObjectName]),
+type BaseObject = NonNullable<ObjectView['baseObject']>;
+type BaseField = NonNullable<ObjectView['fields'][number]['baseField']>;
+
+/** Base objects and base event types by universal ID, so clients find them after a rename. */
+const BASE_OBJECT_NAMES = new Map<string, BaseObject>(
+  Object.entries({ ...BASE_OBJECT_IDS, ...BASE_EVENT_TYPE_IDS }).map(([name, id]) => [
+    id,
+    name as BaseObject,
+  ]),
 );
-const BASE_FIELD_NAMES = new Map<string, BaseFieldName>(
-  Object.entries(BASE_FIELD_IDS).map(([name, id]) => [id, name as BaseFieldName]),
+const BASE_FIELD_NAMES = new Map<string, BaseField>(
+  Object.entries({ ...BASE_FIELD_IDS, ...BASE_EVENT_FIELD_IDS }).map(([name, id]) => [
+    id,
+    name as BaseField,
+  ]),
 );
 
 /** Field settings with universal IDs turned back into API names. */

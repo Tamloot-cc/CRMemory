@@ -27,7 +27,12 @@ import {
   type WriteContext,
   writeFields,
 } from '../records/write.js';
-import { type CompiledObject, type CompiledSchema, eventText } from '../schema-engine/compiled.js';
+import {
+  type CompiledObject,
+  type CompiledSchema,
+  eventText,
+  objectNamed,
+} from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import {
   type AddLinksInput,
@@ -79,9 +84,7 @@ export type LogEventInput = z.infer<typeof logEventInputSchema>;
 /** An event type by API name; entities and the hidden note type are refused. */
 export function requireEventType(schema: CompiledSchema, name: string): CompiledObject {
   const types = [...schema.objectsByName.values()].filter((o) => o.isEvent);
-  const object =
-    schema.objectsByName.get(name) ??
-    [...schema.objectsByName.values()].find((o) => o.state.namePlural === name);
+  const object = objectNamed(schema, name);
   if (!object) {
     throw notFound(`event type "${name}"`, { eventTypes: types.map((o) => o.name) });
   }

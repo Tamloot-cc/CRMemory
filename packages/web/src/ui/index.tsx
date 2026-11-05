@@ -12,6 +12,7 @@ import {
   useContext,
 } from 'react';
 import { cn, isPlainClick, NavigationContext, ROW_STATE, type Tone } from './core.js';
+import { ApiName } from './layout.js';
 
 // Adapted from shadcn/ui Button (MIT); see THIRD_PARTY.md.
 const buttonVariants = cva(
@@ -203,11 +204,14 @@ export function Notice({
  */
 export function FormField({
   label,
+  apiName,
   hint,
   error,
   children,
 }: {
   label: string;
+  /** Developer view: the API name, shown beside the label. */
+  apiName?: string;
   hint?: string;
   error?: string;
   children: ReactNode;
@@ -215,7 +219,10 @@ export function FormField({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline gap-2 text-sm font-medium">
-        {label}
+        <span>
+          {label}
+          {apiName ? <ApiName>{apiName}</ApiName> : null}
+        </span>
         {hint ? <span className="text-xs font-normal text-muted-foreground">{hint}</span> : null}
       </div>
       {children}
@@ -232,6 +239,7 @@ export function FormField({
 export function Page({
   eyebrow,
   title,
+  apiName,
   description,
   actions,
   layout = 'default',
@@ -239,6 +247,8 @@ export function Page({
 }: {
   eyebrow?: string;
   title: string;
+  /** Developer view: the API name, shown beside the title. */
+  apiName?: string;
   actions?: ReactNode;
   children: ReactNode;
 } & ({ layout?: 'default'; description?: string } | { layout: 'fill'; description?: never })) {
@@ -276,6 +286,7 @@ export function Page({
           ) : (
             <span className="truncate font-medium">{title}</span>
           )}
+          {apiName ? <ApiName>{apiName}</ApiName> : null}
         </div>
         {actions ? <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div> : null}
       </header>
@@ -589,19 +600,24 @@ export {
   Toolbar,
 } from './data-grid.js';
 export {
+  DiagramDashedKey,
   type DiagramEdge,
   type DiagramEnd,
   DiagramKey,
   type DiagramNode,
 } from './diagram-parts.js';
 export { DragArea } from './drag.js';
+export { FeedDay, FeedItem, FeedLinks, FeedScroll } from './feed.js';
 /** React Flow and dagre are heavy, so the canvas loads on first render; wrap it in Suspense. */
 export const Diagram = lazy(() => import('./diagram.js').then((m) => ({ default: m.Diagram })));
 export {
+  ApiName,
   CardGrid,
   Check,
   Code,
+  CopyButton,
   EntityHeader,
+  JsonBlock,
   NavItem,
   NavList,
   SplitView,
@@ -609,7 +625,7 @@ export {
   Timeline,
   TimelineItem,
 } from './layout.js';
-export { Menu, MenuAction, MenuChoice, MenuChoices, MenuSeparator } from './menu.js';
+export { Menu, MenuAction, MenuCheck, MenuChoice, MenuChoices, MenuSeparator } from './menu.js';
 export {
   IconLabel,
   OptionList,
@@ -630,7 +646,7 @@ export {
 } from './popover.js';
 export { Property, PropertyEditor, PropertyList, Section } from './property.js';
 export { Sheet } from './sheet.js';
-export { objectIcon, Shell } from './shell.js';
+export { activityIcon, objectIcon, Shell } from './shell.js';
 export function SignInFrame({ children }: { children: ReactNode }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/30 p-6">

@@ -1,10 +1,14 @@
 import {
   EVENT_ATTACHMENTS,
+  type EventPage,
+  type EventRecord,
   type FieldType,
   type FilterOperator,
   filterOperatorsFor,
   isCollectionRelation,
+  type PresentedRecord,
   type RecordPage,
+  type RecordReference,
   SORTABLE_TYPES,
 } from '@retainer/shared';
 import type { Fragment } from 'postgres';
@@ -12,7 +16,11 @@ import { z } from 'zod';
 import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { directAttachments } from '../memory/events.js';
-import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
+import {
+  type CompiledObject,
+  type CompiledSchema,
+  objectNamed,
+} from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
 import { relationReferences } from '../web/reads.js';
 import { normalizeDomain, normalizeEmail, normalizePhone } from './derive.js';
@@ -79,20 +87,36 @@ const EVENT_COLUMN_NAMES: Record<string, 'occurred_at' | 'channel' | 'external_i
 
 type BuiltIn = { expr: Fragment; type: 'uuid' | 'timestamptz' | 'text' };
 
-/** A built-in column of `object` by API name, as a SQL expression over `records r`. */
-function builtInColumn(tx: Tx, object: CompiledObject, name: string): BuiltIn | undefined {
+/**
+ * A built-in column by API name, as a SQL expression over `records r`.
+ * Event columns come from `event_records`: read per row (`subselect`), or
+ * from `e` when the query joins it (`joined`); `none` has no event columns.
+ */
+function columnOf(
+  tx: Tx,
+  name: string,
+  events: 'none' | 'subselect' | 'joined',
+): BuiltIn | undefined {
   const record = BUILT_IN_COLUMNS[name];
   if (record) {
     return { expr: tx`${tx(`r.${record}`)}`, type: record === 'id' ? 'uuid' : 'timestamptz' };
   }
-  const event = object.isEvent ? EVENT_COLUMN_NAMES[name] : undefined;
+  const event = events !== 'none' ? EVENT_COLUMN_NAMES[name] : undefined;
   if (event) {
     return {
-      expr: tx`(select ${tx(`e.${event}`)} from event_records e where e.record_id = r.id)`,
+      expr:
+        events === 'joined'
+          ? tx`${tx(`e.${event}`)}`
+          : tx`(select ${tx(`e.${event}`)} from event_records e where e.record_id = r.id)`,
       type: event === 'occurred_at' ? 'timestamptz' : 'text',
     };
   }
   return undefined;
+}
+
+/** A built-in column of `object` by API name. */
+function builtInColumn(tx: Tx, object: CompiledObject, name: string): BuiltIn | undefined {
+  return columnOf(tx, name, object.isEvent ? 'subselect' : 'none');
 }
 
 /** Built-in column names an object's filters and sorts take. */
@@ -144,6 +168,41 @@ function castParam(tx: Tx, field: FieldState, value: unknown): Fragment {
   }
 }
 
+/** A condition as operator to value: a bare value means `eq`. */
+function conditionsOf(condition: unknown): Record<string, unknown> {
+  return condition !== null && typeof condition === 'object' && !Array.isArray(condition)
+    ? (condition as Record<string, unknown>)
+    : { eq: condition };
+}
+
+/** A condition on a built-in column: text takes eq, neq and in; the rest also compare. */
+function builtInCondition(
+  tx: Tx,
+  name: string,
+  builtIn: BuiltIn,
+  conditions: Record<string, unknown>,
+): Fragment {
+  const parts: Fragment[] = [];
+  const ordered = builtIn.type !== 'text';
+  const allowed = ordered ? ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'] : ['eq', 'neq', 'in'];
+  for (const [op, value] of Object.entries(conditions)) {
+    const column = builtIn.expr;
+    const type = tx.unsafe(builtIn.type);
+    const sqlOp = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
+    if (op === 'in' && Array.isArray(value)) {
+      parts.push(tx`${column} = any(${value as string[]}::${type}[])`);
+    } else if (sqlOp && allowed.includes(op) && typeof value === 'string') {
+      parts.push(tx`${column} ${tx.unsafe(sqlOp)} ${value}::${type}`);
+    } else {
+      throw invalidFilter(`${name} does not support "${op}" with that value`, {
+        field: name,
+        allowed,
+      });
+    }
+  }
+  return and(tx, parts);
+}
+
 function compileCondition(
   tx: Tx,
   object: CompiledObject,
@@ -151,32 +210,10 @@ function compileCondition(
   condition: unknown,
 ): Fragment {
   const builtIn = builtInColumn(tx, object, name);
-  const conditions =
-    condition !== null && typeof condition === 'object' && !Array.isArray(condition)
-      ? (condition as Record<string, unknown>)
-      : { eq: condition };
+  const conditions = conditionsOf(condition);
   const parts: Fragment[] = [];
 
-  if (builtIn) {
-    const ordered = builtIn.type !== 'text';
-    const allowed = ordered ? ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte'] : ['eq', 'neq', 'in'];
-    for (const [op, value] of Object.entries(conditions)) {
-      const column = builtIn.expr;
-      const type = tx.unsafe(builtIn.type);
-      const sqlOp = { eq: '=', neq: '<>', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
-      if (op === 'in' && Array.isArray(value)) {
-        parts.push(tx`${column} = any(${value as string[]}::${type}[])`);
-      } else if (sqlOp && allowed.includes(op) && typeof value === 'string') {
-        parts.push(tx`${column} ${tx.unsafe(sqlOp)} ${value}::${type}`);
-      } else {
-        throw invalidFilter(`${name} does not support "${op}" with that value`, {
-          field: name,
-          allowed,
-        });
-      }
-    }
-    return and(tx, parts);
-  }
+  if (builtIn) return builtInCondition(tx, name, builtIn, conditions);
 
   const field = object.fieldsByName.get(name);
   if (!field) {
@@ -335,6 +372,18 @@ export function compileFilter(
   filter: unknown,
   depth = 0,
 ): Fragment {
+  return compileTree(tx, filter, depth, (name, condition) =>
+    compileCondition(tx, object, name, condition),
+  );
+}
+
+/** `and`, `or` and `not` over a filter whose leaves `leaf` compiles. */
+function compileTree(
+  tx: Tx,
+  filter: unknown,
+  depth: number,
+  leaf: (name: string, condition: unknown) => Fragment,
+): Fragment {
   if (depth > 8) throw invalidFilter('filters nest at most 8 levels deep');
   if (filter === null || typeof filter !== 'object' || Array.isArray(filter)) {
     throw invalidFilter('a filter is an object of field conditions');
@@ -343,12 +392,12 @@ export function compileFilter(
   for (const [name, condition] of Object.entries(filter)) {
     if (name === 'and' || name === 'or') {
       if (!Array.isArray(condition)) throw invalidFilter(`${name} takes an array of filters`);
-      const nested = condition.map((f) => compileFilter(tx, object, f, depth + 1));
+      const nested = condition.map((f) => compileTree(tx, f, depth + 1, leaf));
       parts.push(name === 'and' ? and(tx, nested) : or(tx, nested));
     } else if (name === 'not') {
-      parts.push(tx`not ${compileFilter(tx, object, condition, depth + 1)}`);
+      parts.push(tx`not ${compileTree(tx, condition, depth + 1, leaf)}`);
     } else {
-      parts.push(compileCondition(tx, object, name, condition));
+      parts.push(leaf(name, condition));
     }
   }
   return and(tx, parts);
@@ -430,6 +479,16 @@ function linkedTo(
       field: 'linked',
     });
   }
+  return attachedTo(tx, workspaceId, schema, linked);
+}
+
+/** Events, of any type, directly attached to a record (7.1), as a condition on `r`. */
+function attachedTo(
+  tx: Tx,
+  workspaceId: string,
+  schema: CompiledSchema,
+  linked: NonNullable<QueryInput['linked']>,
+): Fragment {
   const record = tx`(select s.id from records m
     join records s on s.id = coalesce(m.merged_into_id, m.id) and s.deleted_at is null
       and s.object_type_id = any(${schema.visibleObjectIds}::uuid[])
@@ -471,8 +530,27 @@ export async function queryRecords(
     where ${matchingRecords(tx, workspaceId, schema, object, input)}
     order by ${compileSort(tx, object, input.sort)}
     limit ${input.limit + 1} offset ${offset}`;
-  const page = rows.slice(0, input.limit);
-  const records = await presentRecords(tx, schema, page);
+  return pageOf(tx, schema, rows, input, offset, (records) => records);
+}
+
+/**
+ * One page of rows fetched with `limit + 1` from `offset`: the records
+ * presented and shaped by `shape`, their references if asked for, and the
+ * cursor to the next page.
+ */
+async function pageOf<T extends PresentedRecord>(
+  tx: Tx,
+  schema: CompiledSchema,
+  rows: RecordRow[],
+  input: Pick<QueryInput, 'limit' | 'include'>,
+  offset: number,
+  shape: (records: PresentedRecord[]) => T[],
+): Promise<{
+  records: T[];
+  nextCursor: string | null;
+  relationReferences?: Record<string, RecordReference>;
+}> {
+  const records = shape(await presentRecords(tx, schema, rows.slice(0, input.limit)));
   const refs = input.include?.includes('relationReferences')
     ? await relationReferences(tx, schema, records)
     : undefined;
@@ -481,4 +559,134 @@ export async function queryRecords(
     ...(refs ? { relationReferences: refs } : {}),
     nextCursor: rows.length > input.limit ? encodeCursor(offset + input.limit) : null,
   };
+}
+
+/**
+ * `query_records` with `object: "event"` and `POST /v1/events/query` (7.1):
+ * events of every visible event type, never the hidden internal notes.
+ * Filters and sorts take only what every event type shares; a type's own
+ * fields, such as a conversation's medium, are returned but not filterable.
+ */
+export const EVENT_QUERY_OBJECT = 'event';
+
+/** The columns every event type shares, as SQL over `records r` joined to `event_records e`. */
+const eventQueryColumn = (tx: Tx, name: string) => columnOf(tx, name, 'joined');
+
+const EVENT_SORT_NAMES = [...Object.keys(EVENT_COLUMN_NAMES), ...Object.keys(BUILT_IN_COLUMNS)];
+const EVENT_FILTER_NAMES = ['type', ...EVENT_SORT_NAMES];
+
+/** The event type IDs a `type` condition names; unknown names fail with the known ones. */
+function eventTypeIds(schema: CompiledSchema, names: unknown): string[] {
+  const list = Array.isArray(names) ? names : [names];
+  if (list.length === 0 || list.some((n) => typeof n !== 'string')) {
+    throw invalidFilter('type takes event type API names', { field: 'type' });
+  }
+  return (list as string[]).map((name) => {
+    const type = objectNamed(schema, name);
+    if (!type?.isEvent) {
+      throw invalidFilter(`unknown event type "${name}"`, {
+        field: 'type',
+        allowed: [...schema.objectsByName.values()].filter((o) => o.isEvent).map((o) => o.name),
+      });
+    }
+    return type.id;
+  });
+}
+
+function eventCondition(
+  tx: Tx,
+  schema: CompiledSchema,
+  name: string,
+  condition: unknown,
+): Fragment {
+  const conditions = conditionsOf(condition);
+  if (name === 'type') {
+    const parts: Fragment[] = [];
+    for (const [op, value] of Object.entries(conditions)) {
+      if ((op === 'eq' || op === 'neq') && typeof value !== 'string') {
+        throw invalidFilter(`type.${op} takes one event type API name; use in for several`, {
+          field: 'type',
+        });
+      }
+      if (op === 'eq' || op === 'in') {
+        if (op === 'in' && !Array.isArray(value)) throw invalidFilter('type.in takes an array');
+        parts.push(tx`r.object_type_id = any(${eventTypeIds(schema, value)}::uuid[])`);
+      } else if (op === 'neq') {
+        parts.push(tx`r.object_type_id <> all(${eventTypeIds(schema, value)}::uuid[])`);
+      } else {
+        throw invalidFilter(`type does not support "${op}"`, {
+          field: 'type',
+          allowed: ['eq', 'neq', 'in'],
+        });
+      }
+    }
+    return and(tx, parts);
+  }
+  const builtIn = eventQueryColumn(tx, name);
+  if (!builtIn) {
+    throw invalidFilter(
+      `"${name}" is not a column every event type shares; to filter by a type's own ` +
+        'fields, query that type with query_records',
+      { field: name, allowed: EVENT_FILTER_NAMES },
+    );
+  }
+  return builtInCondition(tx, name, builtIn, conditions);
+}
+
+/**
+ * Newest first by default. `occurredAt` is never null and ties break on the
+ * event's ID in the same direction, so the default order is the order of
+ * `event_records_workspace_time_idx`.
+ */
+function eventSort(tx: Tx, sort: QueryInput['sort']): Fragment {
+  const keys = sort?.length ? sort : [{ field: 'occurredAt', direction: 'desc' as const }];
+  const parts: Fragment[] = [];
+  for (const { field: name, direction } of keys) {
+    const builtIn = eventQueryColumn(tx, name);
+    if (!builtIn) {
+      throw invalidFilter(`cannot sort events by "${name}"`, {
+        field: name,
+        allowed: EVENT_SORT_NAMES,
+      });
+    }
+    const dir = tx.unsafe(direction === 'desc' ? 'desc' : 'asc');
+    parts.push(
+      name === 'occurredAt' ? tx`${builtIn.expr} ${dir}` : tx`${builtIn.expr} ${dir} nulls last`,
+    );
+  }
+  // A stable order makes cursors deterministic.
+  parts.push(tx`e.record_id ${tx.unsafe(keys[0]?.direction === 'desc' ? 'desc' : 'asc')}`);
+  return parts.reduce((a, b) => tx`${a}, ${b}`);
+}
+
+/** Filters, sorts and pages live events across every visible event type. */
+export async function queryEvents(
+  tx: Tx,
+  workspaceId: string,
+  schema: CompiledSchema,
+  input: QueryInput,
+): Promise<EventPage> {
+  const offset = decodeCursor(input.cursor);
+  const where = input.filter
+    ? compileTree(tx, input.filter, 0, (name, condition) =>
+        eventCondition(tx, schema, name, condition),
+      )
+    : tx`true`;
+  const columns = RECORD_COLUMNS.map((c) => `r.${c}`);
+  const rows = await tx<RecordRow[]>`
+    select ${tx.unsafe(columns.join(', '))}
+    from records r
+    join event_records e on e.record_id = r.id and e.workspace_id = r.workspace_id
+    where r.workspace_id = ${workspaceId}
+      and r.object_type_id = any(${schema.eventTypeIds}::uuid[])
+      and r.deleted_at is null and ${where}
+      ${input.search ? tx`and r.search @@ ${plainPrefixQuery(tx, input.search)}` : tx``}
+      ${input.linked ? tx`and ${attachedTo(tx, workspaceId, schema, input.linked)}` : tx``}
+    order by ${eventSort(tx, input.sort)}
+    limit ${input.limit + 1} offset ${offset}`;
+  return pageOf(tx, schema, rows, input, offset, (presented) =>
+    presented.flatMap((record): EventRecord[] =>
+      record.event ? [{ ...record, type: record.object, event: record.event }] : [],
+    ),
+  );
 }

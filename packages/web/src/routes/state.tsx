@@ -1,7 +1,9 @@
 import type { FieldView, ObjectView, SchemaDescription } from '@retainer/shared';
 import { isInverseRelation, relationTargets } from '@retainer/shared';
+import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearch } from '@tanstack/react-router';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
+import { api, useWorkspace } from '../api/client.js';
 import { Button, Notice, Row } from '../ui/index.js';
 export type ViewSearch = {
   tab?: string;
@@ -25,11 +27,26 @@ export type ViewSearch = {
   kind?: string;
   /** Record timeline: field API names to show changes of, comma-separated. */
   fields?: string;
-  /** Record timeline: event type API names to show, comma-separated. */
+  /** Record timeline and activity feed: event type API names to show, comma-separated. */
   eventTypes?: string;
+  /** Activity feed: the one source (`channel`) shown. */
+  channel?: string;
+  /** Activity feed: the first day shown, `yyyy-MM-dd`. */
+  from?: string;
+  /** Activity feed: the last day shown, `yyyy-MM-dd`. */
+  to?: string;
+  /** Activity feed: the one record events are attached to. */
+  linked?: string;
+  /** Event type list without a saved view: `calendar` places events by when they happened. */
+  layout?: string;
 };
 /** How a record is named on screen. */
 export const recordTitle = (r: { label: string | null }) => r.label || 'Untitled record';
+/** "Record · Company" or "Activity · Conversation": a record's class, then its object. */
+export const classLabel = (object: Pick<ObjectView, 'class' | 'labelSingular'> | undefined) =>
+  object
+    ? `${object.class === 'event' ? 'Activity' : 'Record'} · ${object.labelSingular}`
+    : undefined;
 /** How an event is named on screen. */
 export const eventTitle = (e: { title: string | null }) => e.title || 'Untitled event';
 /** The object (or event type) by its singular API name. */
@@ -49,6 +66,19 @@ export const relationsTo = (fields: FieldView[], object: string) =>
   fields.filter(
     (f) => f.type === 'relation' && !isInverseRelation(f) && relationTargets(f).includes(object),
   );
+
+/**
+ * A record fetched only to name it (no relation references): one cached
+ * query per record, shared by every place that labels it.
+ */
+export function useRecordLabel(id: string, enabled = true) {
+  const { session } = useWorkspace();
+  return useQuery({
+    queryKey: [session.workspace.id, 'record', id, 'label'],
+    queryFn: ({ signal }) => api.record(id, [], signal),
+    enabled,
+  });
+}
 
 /** `value` once it has stopped changing for `ms`, so typing is not a request per key. */
 export function useDebounced<T>(value: T, ms = 200): T {

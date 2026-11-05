@@ -16,6 +16,10 @@ import { references } from '../records/references.js';
 import { normalizeFieldValue } from '../records/values.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
 
+/**
+ * Labels for every record a page names: relation values and, for events,
+ * participants, their candidates and `about` records.
+ */
 export async function relationReferences(
   tx: Tx,
   schema: CompiledSchema,
@@ -23,10 +27,25 @@ export async function relationReferences(
 ) {
   const ids = records.flatMap((r) => {
     const object = schema.objectsByName.get(r.object);
-    return (object?.activeFields.filter((f) => f.type === 'relation') ?? []).flatMap((f) => {
-      const value = r.fields[f.name];
-      return typeof value === 'string' ? [value] : Array.isArray(value) ? (value as string[]) : [];
-    });
+    const related = (object?.activeFields.filter((f) => f.type === 'relation') ?? []).flatMap(
+      (f) => {
+        const value = r.fields[f.name];
+        return typeof value === 'string'
+          ? [value]
+          : Array.isArray(value)
+            ? (value as string[])
+            : [];
+      },
+    );
+    const event = r.event;
+    return event
+      ? [
+          ...related,
+          ...event.participants.matched.map((p) => p.recordId),
+          ...event.participants.unmatched.flatMap((p) => p.candidates ?? []),
+          ...event.about,
+        ]
+      : related;
   });
   return references(tx, schema, [...new Set(ids)]);
 }

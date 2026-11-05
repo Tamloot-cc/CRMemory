@@ -36,7 +36,12 @@ const create = async (object: string, values: Record<string, unknown>, key = key
 const logEvent = async (body: Record<string, unknown>, key = keys.agent) => {
   const res = await t.request('/v1/events', {
     key,
-    body: { type: 'call', channel: 'zoom', occurredAt: '2026-10-29T14:00:00+02:00', ...body },
+    body: {
+      type: 'conversation',
+      channel: 'zoom',
+      occurredAt: '2026-10-29T14:00:00+02:00',
+      ...body,
+    },
   });
   expect(res.status).toBe(201);
   return res.body.id as string;
@@ -81,7 +86,7 @@ describe('POST /v1/search', () => {
       events: [
         {
           id: call,
-          type: 'call',
+          type: 'conversation',
           occurredAt: '2026-10-29T12:00:00.000Z',
           title: `Renewal call ${tag}`,
           summary: 'Talked about pricing.',
@@ -229,14 +234,14 @@ describe('POST /v1/search', () => {
       participants: [{ handle: email }, { recordId: dana }],
       about: [acme, dana],
     });
-    const meeting = await logEvent({ type: 'meeting', summary: `Kickoff ${tag}` });
+    const meeting = await logEvent({ type: 'conversation', summary: `Kickoff ${tag}` });
     const res = await search({ query: tag });
     expect(res.body.records).toEqual([]);
     expect(res.body.events).toEqual([
-      expect.objectContaining({ id: call, type: 'call', records: [dana, acme] }),
+      expect.objectContaining({ id: call, type: 'conversation', records: [dana, acme] }),
       expect.objectContaining({
         id: meeting,
-        type: 'meeting',
+        type: 'conversation',
         title: null,
         summary: `Kickoff ${tag}`,
         records: [],
@@ -322,7 +327,7 @@ describe('GET /v1/records/:id/context', () => {
     await create('task', { title: 'Unrelated', status: 'todo' });
 
     const demo = await logEvent({
-      type: 'meeting',
+      type: 'conversation',
       occurredAt: '2026-10-21T09:00:00Z',
       title: 'Demo',
       summary: 'Showed the data platform.',
@@ -387,7 +392,7 @@ describe('GET /v1/records/:id/context', () => {
     expect(pack.recentEvents).toEqual([
       {
         id: followUp,
-        type: 'call',
+        type: 'conversation',
         occurredAt: '2026-10-25T09:00:00.000Z',
         title: 'Follow-up',
         summary: null,
@@ -395,7 +400,7 @@ describe('GET /v1/records/:id/context', () => {
       },
       {
         id: demo,
-        type: 'meeting',
+        type: 'conversation',
         occurredAt: '2026-10-21T09:00:00.000Z',
         title: 'Demo',
         summary: 'Showed the data platform.',
@@ -422,7 +427,7 @@ describe('GET /v1/records/:id/context', () => {
         operations: [
           {
             op: 'create_field',
-            object: 'call',
+            object: 'conversation',
             field: {
               name: 'account',
               label: 'Account',
@@ -450,7 +455,7 @@ describe('GET /v1/records/:id/context', () => {
       key,
     );
     const aboutOnly = await logEvent(
-      { type: 'meeting', occurredAt: '2026-10-04T09:00:00Z', about: [dana] },
+      { type: 'conversation', occurredAt: '2026-10-04T09:00:00Z', about: [dana] },
       key,
     );
     const byField = await logEvent(
@@ -482,7 +487,7 @@ describe('GET /v1/records/:id/context', () => {
     // `linked` on the event type's query sees the same attachments.
     const linked = async (link?: string) =>
       (
-        await t.request('/v1/objects/call/query', {
+        await t.request('/v1/objects/conversation/query', {
           key,
           body: { linked: { record: acme, ...(link ? { link } : {}) } },
         })
@@ -506,7 +511,7 @@ describe('GET /v1/records/:id/context', () => {
     // A deleted relation field no longer attaches anything.
     const dropped = await t.request('/v1/schema/changes', {
       key: own.keys.admin,
-      body: { operations: [{ op: 'delete_field', object: 'call', field: 'account' }] },
+      body: { operations: [{ op: 'delete_field', object: 'conversation', field: 'account' }] },
     });
     expect(dropped.body.status).toBe('applied');
     expect(await recent(other)).toEqual([]);

@@ -11,6 +11,7 @@ import type {
 import { AGGREGATE_OPS, aggregateOps, isPolymorphic, SORTABLE_TYPES } from '@retainer/shared';
 import { dateText, microsToDecimal, moneyText } from '../fields/common.js';
 import { clampWidth } from '../ui/data-grid.js';
+import { eventColumnOrder } from './event-list.js';
 import { objectLabel, recordTitle } from './state.js';
 
 // ---------------------------------------------------------------------------
@@ -85,6 +86,8 @@ export function saveColumnPrefs(
 }
 
 export function defaultColumnOrder(object: ObjectView): string[] {
+  // Event types lead with when it happened, and add their built-in columns (5.3).
+  if (object.class === 'event') return eventColumnOrder(object);
   return object.fields
     .filter((f) => f.type !== 'json' && !f.readOnly && f.name !== object.labelField)
     .map((f) => f.name);
@@ -149,6 +152,8 @@ export function shiftColumn(order: string[], name: string, by: -1 | 1): string[]
 const NARROW_TYPES = new Set(['boolean', 'number', 'money', 'date']);
 export function defaultColumnWidth(field: FieldView, isLabel: boolean): number {
   if (isLabel) return 240;
+  // An event's people and records, each with its object named.
+  if (field.readOnly && (field.name === 'participants' || field.name === 'about')) return 240;
   if (NARROW_TYPES.has(field.type)) return 140;
   if (field.type === 'emails' || field.type === 'links' || field.type === 'address') return 220;
   return 180;

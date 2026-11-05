@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
 import { fields } from '../fields/index.js';
 import { Button, Dialog, Form, FormField, Notice, RecordLink, Row } from '../ui/index.js';
+import { useApiName } from './developer.js';
 import {
   creatableFields,
   initialDraft,
@@ -27,7 +28,8 @@ export function CreateRecordDialog({
   onCreated: (id: string) => void;
 }) {
   const { session } = useWorkspace(),
-    client = useQueryClient();
+    client = useQueryClient(),
+    apiName = useApiName();
   const list = useMemo(() => creatableFields(object), [object]);
   const [draft, setDraft] = useState(() => initialDraft(list)),
     [errors, setErrors] = useState<Record<string, string>>({}),
@@ -90,6 +92,7 @@ export function CreateRecordDialog({
             <FormField
               key={f.name}
               label={f.label}
+              apiName={apiName(f.name)}
               hint={f.isNullable ? undefined : 'Required'}
               error={errors[f.name] ? `${f.label} ${errors[f.name]}` : undefined}
             >

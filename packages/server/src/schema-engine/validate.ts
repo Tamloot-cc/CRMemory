@@ -20,8 +20,9 @@ const reserved = (names: string[], reason: string) => names.map((name) => [name,
 export const RESERVED_OBJECT_NAMES: ReadonlyMap<string, string> = new Map([
   ...reserved(
     ['interaction', 'interactions', 'event', 'events'],
-    'meetings, calls, emails and messages are event types (class "event"): log them with ' +
-      'log_event (or POST /v1/events), or create your own event type with class "event"',
+    'meetings, calls, emails and chats are logged as the "conversation" event type with a ' +
+      'medium, using log_event (or POST /v1/events); for events a conversation does not fit, ' +
+      'create your own event type with class "event"',
   ),
   ...reserved(
     ['internalNote', 'internalNotes'],

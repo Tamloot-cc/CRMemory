@@ -21,6 +21,7 @@ import {
   MoreEntries,
   Notice,
 } from '../ui/index.js';
+import { isEventColumn, withEventValues } from './event-list.js';
 import { useRecordMoves } from './record-move.js';
 import { QueryError, recordTitle } from './state.js';
 import { MissingLayoutField } from './view-bar.js';
@@ -104,7 +105,8 @@ export function CalendarView({
         { filter: andFilter(filter, { [field?.name as string]: { isNull: true } }) },
         signal,
       ),
-    enabled: !!field,
+    // An event's time is never empty, and the totals route doesn't take built-in columns.
+    enabled: !!field && !(isEventColumn(field.name) && field.readOnly),
   });
 
   // Where a record shows: where it is moving to, while that saves.
@@ -261,7 +263,8 @@ async function loadMonth(
       page?.nextCursor ? { ...input, cursor: page.nextCursor } : input,
       signal,
     );
-    records.push(...page.records);
+    // An event type's calendar may be placed by when its events happened.
+    records.push(...page.records.map(withEventValues));
   } while (page.nextCursor && records.length < MAX_RECORDS);
   return { records, truncated: !!page.nextCursor };
 }

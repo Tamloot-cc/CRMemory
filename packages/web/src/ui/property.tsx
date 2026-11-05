@@ -10,6 +10,7 @@ import {
   useRef,
 } from 'react';
 import { cn, focusFirst, isPlainClick, PANEL } from './core.js';
+import { ApiName } from './layout.js';
 import { PanelBody } from './popover.js';
 
 /** A titled group on a record: fields, relations. */
@@ -34,12 +35,15 @@ export function PropertyList({ children }: { children: ReactNode }) {
  */
 export function Property({
   label,
+  apiName,
   actions,
   onEdit,
   editor,
   children,
 }: {
   label: string;
+  /** Developer view: the API name, shown beside the label. */
+  apiName?: string;
   actions?: ReactNode;
   onEdit?: () => void;
   editor?: ReactNode;
@@ -55,7 +59,10 @@ export function Property({
         editor ? 'grid-cols-1 gap-y-1.5 py-2' : 'grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)]',
       )}
     >
-      <dt className={cn('truncate text-sm text-muted-foreground', !editor && 'py-1.5')}>{label}</dt>
+      <dt className={cn('truncate text-sm text-muted-foreground', !editor && 'py-1.5')}>
+        {label}
+        {apiName ? <ApiName>{apiName}</ApiName> : null}
+      </dt>
       <dd className="m-0 min-w-0">
         {editor ?? (
           <div className="flex min-h-8 items-start gap-1">

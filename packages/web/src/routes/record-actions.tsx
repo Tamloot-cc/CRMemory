@@ -21,7 +21,14 @@ import {
   Stack,
 } from '../ui/index.js';
 import { MergePicker } from './merge.js';
-import { eventTitle, objectByName, QueryError, recordTitle as title, useReport } from './state.js';
+import {
+  eventTitle,
+  objectByName,
+  QueryError,
+  recordTitle as title,
+  useRecordLabel,
+  useReport,
+} from './state.js';
 import { describeImpact, forgetConfirmation } from './write-model.js';
 
 /**
@@ -407,11 +414,7 @@ export function CandidateRecord({
   );
 }
 function FetchedRecord({ id }: { id: string }) {
-  const { session } = useWorkspace();
-  const record = useQuery({
-    queryKey: [session.workspace.id, 'record', id, 'label'],
-    queryFn: ({ signal }) => api.record(id, [], signal),
-  });
+  const record = useRecordLabel(id);
   return <RecordLink id={id}>{record.data ? title(record.data) : 'Record'}</RecordLink>;
 }
 function CandidateEvent({ id }: { id: string }) {

@@ -42,7 +42,7 @@ let n = 0;
 const at = (minute: number) => new Date(Date.UTC(2026, 2, 1, 9, minute)).toISOString();
 const log = (input: Partial<LogEventInput> = {}) =>
   logEventFor(app, as(AGENT), {
-    type: 'call',
+    type: 'conversation',
     channel: 'zoom',
     externalId: `evt-${++n}`,
     occurredAt: at(0),
@@ -100,7 +100,7 @@ describe('record timeline', () => {
     const [event, change, stated] = items;
     expect(event).toMatchObject({
       id: call.id,
-      type: 'call',
+      type: 'conversation',
       title: expect.stringMatching(/^Call /),
       via: { kind: 'about' },
     });
@@ -110,7 +110,7 @@ describe('record timeline', () => {
       status: 'active',
       current: true,
       actor: AGENT,
-      source: { id: call.id, type: 'call' },
+      source: { id: call.id, type: 'conversation' },
     });
     expect(stated).toMatchObject({ id: fact.fact.id, content: 'Wants SSO', status: 'current' });
 
@@ -239,7 +239,8 @@ describe('record timeline', () => {
     expect(keys(visits)).toEqual([`event:${visit.id}`]);
 
     // Named explicitly, other kinds come back too, each filter on its own kind.
-    const mixed = (await timeline(d.id, { types: ['event', 'fact'], eventTypes: ['call'] })).items;
+    const mixed = (await timeline(d.id, { types: ['event', 'fact'], eventTypes: ['conversation'] }))
+      .items;
     expect(mixed.map((i) => i.kind).sort()).toEqual(['event', 'fact']);
     expect(mixed.find((i) => i.kind === 'event')?.id).toBe(call.id);
 

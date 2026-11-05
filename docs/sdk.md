@@ -44,13 +44,13 @@ const dana = await retainer.upsertRecord('person', {
 });
 
 const call = await retainer.logEvent({
-  type: 'call', // an event type from retainer.schema(): meeting, call, email, ...
-  channel: 'zoom',
+  type: 'conversation', // meetings, calls, emails and chats; see retainer.schema() for others
+  channel: 'zoom', // the source system or account, part of the event's identity
   externalId: 'zoom-8812-3390',
   occurredAt: '2026-10-29T14:00:00+02:00',
   title: 'Acme renewal call',
   summary: 'Dana wants to move the renewal to Q1.',
-  fields: {}, // the event type's other fields, by name
+  fields: { medium: 'call' }, // the event type's other fields, by name
   participants: [{ handle: 'dana@acme.com', role: 'customer' }],
   about: [acme.id], // the records it concerns: a company, project, deal or tasks
 });
@@ -93,12 +93,20 @@ const page = await retainer.queryRecords('company', {
 // page.records, page.nextCursor
 
 // Events are records of event types: query a type, linked to a record.
-const calls = await retainer.queryRecords('call', {
+const calls = await retainer.queryRecords('conversation', {
   linked: { record: acme.id },
   filter: { occurredAt: { gte: '2026-10-01T00:00:00Z' } },
   sort: [{ field: 'occurredAt', direction: 'desc' }],
 });
 // calls.records (each with .event: occurredAt, title, summary, participants, about)
+
+// Events of every type at once, newest first; filter by type, channel and time.
+const activity = await retainer.queryEvents({
+  linked: { record: acme.id },
+  filter: { type: { in: ['conversation', 'note'] } },
+  include: ['relationReferences'],
+});
+// activity.records[0].type: 'conversation'; .fields.medium: 'call'
 
 // A record's event history, across types, with how each event is attached:
 // directly, or rolled up from a record pointing at it (rollUpEvents).

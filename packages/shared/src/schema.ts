@@ -55,14 +55,26 @@ export type ObjectClass = (typeof OBJECT_CLASSES)[number];
 export const CORE_ROLES = ['title', 'summary'] as const;
 export type CoreRole = (typeof CORE_ROLES)[number];
 
-/** Event types the base template adds to every workspace; none is protected. */
+/**
+ * Event types the base template adds to every workspace; none is protected.
+ * A conversation's kind (meeting, call, email, message) is its `medium`
+ * field, not its type, so a misclassified one costs an edit, not a re-log.
+ */
 export const BASE_EVENT_TYPE_IDS = {
-  meeting: 'f3d0b7a2-58c1-4a8e-9d2f-6b1e0c7a4d31',
-  call: '2b9e4f61-07d3-4c5a-8e1b-93f2a6d8c045',
-  email: '8c1a6e37-d4b2-4f09-a5e8-1d7c3b9f2e64',
-  message: '5e7f2c94-a1b8-4d36-9c0e-4f8a2d6b1e73',
+  conversation: '564ad764-a57c-4741-ad63-61604fa4cf5a',
   note: 'a4c8e1f6-3b72-4e95-8d1a-7c2f5b9e0d48',
 } as const;
+
+/**
+ * Fields of the base event types, found by universal ID like `BASE_FIELD_IDS`.
+ * None is protected: `conversation.medium`'s options can be added and removed.
+ */
+export const BASE_EVENT_FIELD_IDS = {
+  conversationMedium: '6475aaeb-54ab-4e7c-8e43-d1a4469a12a0',
+} as const;
+
+export type BaseEventTypeName = keyof typeof BASE_EVENT_TYPE_IDS;
+export type BaseEventFieldName = keyof typeof BASE_EVENT_FIELD_IDS;
 
 /**
  * The hidden, protected event type of the notes `remember` creates for

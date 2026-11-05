@@ -146,7 +146,7 @@ describe('web read contracts', () => {
       await t.request('/v1/events', {
         key: keys.agent,
         body: {
-          type: 'meeting',
+          type: 'conversation',
           channel: 'zoom',
           occurredAt: '2026-10-20T10:00:00Z',
           title: 'Review meeting',
@@ -168,7 +168,7 @@ describe('web read contracts', () => {
       isInitial: false,
       source: {
         id: event.id,
-        type: 'meeting',
+        type: 'conversation',
         title: 'Review meeting',
         occurredAt: '2026-10-20T10:00:00.000Z',
       },
@@ -187,7 +187,7 @@ describe('web read contracts', () => {
     expect(events.items).toHaveLength(1);
     expect(events.items[0]).toMatchObject({
       id: event.id,
-      object: 'meeting',
+      object: 'conversation',
       via: { kind: 'participant' },
       event: { title: 'Review meeting', summary: 'A meeting' },
     });
@@ -368,7 +368,7 @@ it('keeps historical facts in event claims while record memory only lists curren
     await t.request('/v1/events', {
       key: keys.agent,
       body: {
-        type: 'meeting',
+        type: 'conversation',
         channel: 'test',
         occurredAt: '2026-10-20T10:00:00Z',
         title: 'Source',
@@ -419,7 +419,7 @@ it('hydrates event pages in a bounded number of real database queries', async ()
     await t.request('/v1/events', {
       key: keys.agent,
       body: {
-        type: 'meeting',
+        type: 'conversation',
         channel: 'test',
         occurredAt: `2026-10-${String(i + 1).padStart(2, '0')}T10:00:00Z`,
         title: `Meeting ${i}`,
@@ -471,7 +471,7 @@ describe('GET /v1/records/:id/events', () => {
   const logEvent = async (body: Record<string, unknown>) => {
     const res = await t.request('/v1/events', {
       key: keys.agent,
-      body: { type: 'call', channel: 'test', ...body },
+      body: { type: 'conversation', channel: 'test', ...body },
     });
     expect(res.status).toBe(201);
     return res.body.id as string;
@@ -486,7 +486,7 @@ describe('GET /v1/records/:id/events', () => {
         operations: [
           {
             op: 'create_field',
-            object: 'call',
+            object: 'conversation',
             field: {
               name: 'account',
               label: 'Account',
@@ -548,7 +548,7 @@ describe('GET /v1/records/:id/events', () => {
     const full = (await page(company, '?limit=1')).body;
     expect(full.items[0]).toMatchObject({
       id: participant,
-      object: 'call',
+      object: 'conversation',
       fields: { account: company },
       event: {
         occurredAt: '2026-10-04T10:00:00.000Z',
@@ -571,7 +571,7 @@ describe('GET /v1/records/:id/events', () => {
   it("lists an event's initial values beside the claims on other records", async () => {
     const dana = (await create({ name: 'Dana' })).body.record.id as string;
     const event = await logEvent({
-      type: 'meeting',
+      type: 'conversation',
       occurredAt: '2026-10-04T10:00:00Z',
       title: 'Kickoff',
     });

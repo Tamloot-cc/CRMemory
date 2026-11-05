@@ -52,7 +52,7 @@ let n = 0;
 const at = () => new Date(Date.UTC(2026, 0, 1) + ++n * 60_000).toISOString();
 const log = (input: Partial<LogEventInput> = {}) =>
   logEventFor(app, as(AGENT), {
-    type: 'call',
+    type: 'conversation',
     channel: 'zoom',
     externalId: `evt-${++n}`,
     occurredAt: at(),
@@ -355,7 +355,7 @@ describe('the rollup query on a large fan-out', () => {
         // An event relation field, so attachment through one is looked up too.
         {
           op: 'create_field',
-          object: 'call',
+          object: 'conversation',
           field: {
             name: 'deal',
             label: 'Deal',
@@ -378,7 +378,7 @@ describe('the rollup query on a large fan-out', () => {
         select d.id as deal, c.id as call, f.id as field
         from object_types d, object_types c, fields f
         where d.workspace_id = ${ws} and d.name_singular = 'deal'
-          and c.workspace_id = ${ws} and c.name_singular = 'call'
+          and c.workspace_id = ${ws} and c.name_singular = 'conversation'
           and f.object_type_id = d.id and f.name = 'company'`;
       if (!types) throw new Error('sales template objects missing');
       const actor = tx.json(AGENT);

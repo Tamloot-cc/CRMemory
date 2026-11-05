@@ -52,7 +52,7 @@ describe('SDK against the server', () => {
     expect(created.created).toBe(true);
 
     const meeting = await agent.logEvent({
-      type: 'meeting',
+      type: 'conversation',
       channel: 'calendar',
       occurredAt: '2026-10-01T09:00:00Z',
       title: 'Budget review with Noa',
@@ -78,7 +78,7 @@ describe('SDK against the server', () => {
     expect(pack.record.fields.jobTitle?.value).toBe('CFO');
     expect(pack.facts.map((f) => f.id)).toEqual([fact.id]);
     expect(pack.recentEvents.map((i) => [i.id, i.type, i.via])).toEqual([
-      [meeting.id, 'meeting', { kind: 'participant' }],
+      [meeting.id, 'conversation', { kind: 'participant' }],
     ]);
   });
 
@@ -88,16 +88,16 @@ describe('SDK against the server', () => {
     });
     const company = await agent.createRecord('company', { values: { name: 'Katz Ltd' } });
     const logged = await agent.logEvent({
-      type: 'call',
+      type: 'conversation',
       channel: 'phone',
       externalId: 'sdk-call-1',
       occurredAt: '2026-10-02T09:00:00Z',
       title: 'Intro call with Lior',
     });
-    expect(logged).toMatchObject({ type: 'call', created: true, about: [] });
+    expect(logged).toMatchObject({ type: 'conversation', created: true, about: [] });
     await expect(
       agent.logEvent({
-        type: 'call',
+        type: 'conversation',
         channel: 'phone',
         externalId: 'sdk-call-1',
         occurredAt: '2026-10-02T09:00:00Z',
@@ -116,7 +116,7 @@ describe('SDK against the server', () => {
     const read = await agent.event(logged.id);
     expect(read).toMatchObject({
       id: logged.id,
-      object: 'call',
+      object: 'conversation',
       event: { channel: 'phone', externalId: 'sdk-call-1', title: 'Intro call with Lior' },
     });
     const history = await agent.recordEvents(person.id);
@@ -138,7 +138,7 @@ describe('SDK against the server', () => {
     expect(claims.assertions.find((a) => a.recordId === person.id)).toMatchObject({
       field: 'jobTitle',
       sourceRecordId: logged.id,
-      source: { id: logged.id, type: 'call', title: 'Intro call with Lior' },
+      source: { id: logged.id, type: 'conversation', title: 'Intro call with Lior' },
     });
 
     await expect(agent.removeParticipant(logged.id, participantId)).rejects.toMatchObject({

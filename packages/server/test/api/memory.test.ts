@@ -49,7 +49,12 @@ const createCompany = async (name = `Acme ${++n}`) => {
 const logCall = (body: Record<string, unknown> = {}, key = keys.agent) =>
   t.request('/v1/events', {
     key,
-    body: { type: 'call', channel: 'zoom', occurredAt: '2026-10-29T14:00:00+02:00', ...body },
+    body: {
+      type: 'conversation',
+      channel: 'zoom',
+      occurredAt: '2026-10-29T14:00:00+02:00',
+      ...body,
+    },
   });
 
 /** The internal note `remember` created for a fact with no source, read as the owner. */
@@ -75,7 +80,7 @@ describe('POST /v1/events', () => {
     expect(first.status).toBe(201);
     expect(first.body).toEqual({
       id: expect.any(String),
-      type: 'call',
+      type: 'conversation',
       created: true,
       participants: {
         matched: [
@@ -106,8 +111,8 @@ describe('POST /v1/events', () => {
       code: 'event_conflict',
       details: { id: first.body.id },
     });
-    // The identity spans event types: the same source as a meeting conflicts too.
-    const otherType = await logCall({ ...body, type: 'meeting' });
+    // The identity spans event types: the same source as a note conflicts too.
+    const otherType = await logCall({ ...body, type: 'note' });
     expect(otherType.status).toBe(409);
     expect(otherType.body.error.code).toBe('event_conflict');
   });
@@ -128,7 +133,7 @@ describe('POST /v1/events', () => {
     const unknown = await logCall({ type: 'fax' });
     expect(unknown.status).toBe(404);
     expect(unknown.body.error.details.eventTypes).toEqual(
-      expect.arrayContaining(['meeting', 'call', 'email', 'message', 'note']),
+      expect.arrayContaining(['conversation', 'note']),
     );
     const entity = await logCall({ type: 'person' });
     expect(entity.status).toBe(422);
@@ -157,13 +162,13 @@ describe('POST /v1/events', () => {
   });
 
   it('creates events only by logging them', async () => {
-    const created = await t.request('/v1/objects/call/records', {
+    const created = await t.request('/v1/objects/conversation/records', {
       key: keys.agent,
       body: { values: { title: 'Made as a record' } },
     });
     expect(created.status).toBe(422);
     expect(created.body.error.code).toBe('use_log_event');
-    const upserted = await t.request('/v1/objects/call/upsert', {
+    const upserted = await t.request('/v1/objects/conversation/upsert', {
       key: keys.agent,
       body: { values: { title: 'Made as a record' } },
     });
@@ -197,7 +202,7 @@ describe('GET and DELETE /v1/events/:id', () => {
     expect(read.status).toBe(200);
     expect(read.body).toMatchObject({
       id: newer.body.id,
-      object: 'call',
+      object: 'conversation',
       label: 'Newer call',
       event: {
         occurredAt: '2026-10-01T10:00:00.000Z',
@@ -381,8 +386,8 @@ describe('POST /v1/objects/:event/query', () => {
     for (const day of ['01', '02', '03']) {
       expect((await logCall({ channel, occurredAt: `2026-10-${day}T10:00:00Z` })).status).toBe(201);
     }
-    expect((await logCall({ channel, type: 'email' })).status).toBe(201);
-    const res = await t.request('/v1/objects/call/query', {
+    expect((await logCall({ channel, type: 'note' })).status).toBe(201);
+    const res = await t.request('/v1/objects/conversation/query', {
       key: keys.reader,
       body: { filter: { channel: { eq: channel } }, sort: [{ field: 'occurredAt' }], limit: 2 },
     });
@@ -390,7 +395,7 @@ describe('POST /v1/objects/:event/query', () => {
     expect(
       res.body.records.map((r: { event: { occurredAt: string } }) => r.event.occurredAt),
     ).toEqual(['2026-10-01T10:00:00.000Z', '2026-10-02T10:00:00.000Z']);
-    const next = await t.request('/v1/objects/call/query', {
+    const next = await t.request('/v1/objects/conversation/query', {
       key: keys.reader,
       body: {
         filter: { channel: { eq: channel } },
@@ -402,15 +407,15 @@ describe('POST /v1/objects/:event/query', () => {
     expect(next.body.records).toHaveLength(1);
     expect(next.body.nextCursor).toBeNull();
 
-    const later = await t.request('/v1/objects/call/query', {
+    const later = await t.request('/v1/objects/conversation/query', {
       key: keys.reader,
       body: { filter: { channel: { eq: channel }, occurredAt: { gt: '2026-10-01T12:00:00Z' } } },
     });
     expect(later.body.records).toHaveLength(2);
 
     for (const [object, total] of [
-      ['call', 3],
-      ['email', 1],
+      ['conversation', 3],
+      ['note', 1],
     ] as const) {
       const counted = await t.request(`/v1/objects/${object}/aggregate`, {
         key: keys.reader,
@@ -420,7 +425,7 @@ describe('POST /v1/objects/:event/query', () => {
       expect(counted.body.total, object).toBe(total);
     }
 
-    const invalid = await t.request('/v1/objects/call/query', {
+    const invalid = await t.request('/v1/objects/conversation/query', {
       key: keys.reader,
       body: { filter: { occurredAt: { contains: 'x' } } },
     });
@@ -446,7 +451,9 @@ describe('POST /v1/objects/:event/query', () => {
     const query = (object: string, linked: Record<string, unknown>) =>
       t.request(`/v1/objects/${object}/query`, { key: keys.reader, body: { linked } });
     const ids = async (linked: Record<string, unknown>) =>
-      ((await query('call', linked)).body.records as { id: string }[]).map((r) => r.id).sort();
+      ((await query('conversation', linked)).body.records as { id: string }[])
+        .map((r) => r.id)
+        .sort();
 
     expect(await ids({ record: dana.id })).toEqual([asParticipant.body.id, asAbout.body.id].sort());
     expect(await ids({ record: dana.id, link: 'participant' })).toEqual([asParticipant.body.id]);
@@ -457,8 +464,208 @@ describe('POST /v1/objects/:event/query', () => {
     const entity = await query('person', { record: dana.id });
     expect(entity.status).toBe(422);
     expect(entity.body.error.code).toBe('invalid_filter');
-    const badLink = await query('call', { record: dana.id, link: 'rollup' });
+    const badLink = await query('conversation', { record: dana.id, link: 'rollup' });
     expect(badLink.status).toBe(400);
+  });
+});
+
+describe('POST /v1/events/query (7.1)', () => {
+  it('returns events of every type in one page, filters the shared columns, never internal notes', async () => {
+    // Its own workspace, with a third event type and an internal note.
+    const own = await t.setupWorkspace(
+      { name: `Events query ${++n}` },
+      {
+        agent: { actor: { type: 'agent', id: 'inbox' }, scopes: ['read', 'write'] },
+        admin: { actor: { type: 'user', id: 'dana' }, scopes: ['admin'] },
+      },
+    );
+    const key = own.keys.agent;
+    const change = await t.request('/v1/schema/changes', {
+      key: own.keys.admin,
+      body: {
+        operations: [
+          {
+            op: 'create_object',
+            object: {
+              class: 'event',
+              nameSingular: 'payment',
+              namePlural: 'payments',
+              labelSingular: 'Payment',
+              labelPlural: 'Payments',
+              fields: [{ name: 'amount', label: 'Amount', type: 'number' }],
+            },
+          },
+        ],
+      },
+    });
+    expect(change.body.status).toBe('applied');
+    const company = await t.request('/v1/objects/company/records', {
+      key,
+      body: { values: { name: 'Team8' } },
+    });
+    const team8 = company.body.id as string;
+    const log = async (body: Record<string, unknown>) => {
+      const res = await t.request('/v1/events', {
+        key,
+        body: { channel: 'zoom', externalId: `q-${++n}`, ...body },
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      return res.body.id as string;
+    };
+    const meeting = await log({
+      type: 'conversation',
+      occurredAt: '2026-10-03T10:00:00Z',
+      title: 'Kickoff with Team8',
+      fields: { medium: 'meeting' },
+      about: [team8],
+    });
+    const note = await log({
+      type: 'note',
+      channel: 'web',
+      occurredAt: '2026-10-02T10:00:00Z',
+      title: 'Pricing thoughts',
+      about: [team8],
+    });
+    const payment = await log({
+      type: 'payment',
+      channel: 'stripe',
+      occurredAt: '2026-10-01T10:00:00Z',
+      title: 'Invoice 7',
+      fields: { amount: 120 },
+    });
+    // remember without a source creates a hidden internal note.
+    const fact = await t.request(`/v1/records/${team8}/facts`, {
+      key,
+      body: { text: 'Team8 pays annually.' },
+    });
+    expect(fact.status).toBe(201);
+
+    const query = (body: Record<string, unknown>) => t.request('/v1/events/query', { key, body });
+    const ids = async (body: Record<string, unknown>) => {
+      const res = await query(body);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      return (res.body.records as { id: string }[]).map((r) => r.id);
+    };
+
+    // Newest first across types, each item with its type, core and own fields.
+    const all = await query({ include: ['relationReferences'] });
+    expect(all.status).toBe(200);
+    expect(all.body.records.map((r: { id: string }) => r.id)).toEqual([meeting, note, payment]);
+    expect(all.body.records[0]).toMatchObject({
+      id: meeting,
+      type: 'conversation',
+      object: 'conversation',
+      fields: { medium: 'meeting', title: 'Kickoff with Team8' },
+      event: { channel: 'zoom', title: 'Kickoff with Team8', about: [team8] },
+    });
+    expect(all.body.records[2]).toMatchObject({ type: 'payment', fields: { amount: 120 } });
+    expect(all.body.relationReferences[team8]).toMatchObject({ label: 'Team8' });
+
+    expect(await ids({ filter: { type: 'note' } })).toEqual([note]);
+    expect(await ids({ filter: { type: { in: ['payment', 'conversations'] } } })).toEqual([
+      meeting,
+      payment,
+    ]);
+    expect(await ids({ filter: { type: { neq: 'conversation' } } })).toEqual([note, payment]);
+    expect(await ids({ filter: { channel: { in: ['web', 'stripe'] } } })).toEqual([note, payment]);
+    expect(
+      await ids({
+        filter: { occurredAt: { gte: '2026-10-02T00:00:00Z', lt: '2026-10-03T00:00:00Z' } },
+      }),
+    ).toEqual([note]);
+    expect(await ids({ linked: { record: team8 } })).toEqual([meeting, note]);
+    expect(await ids({ linked: { record: team8 }, filter: { type: 'conversation' } })).toEqual([
+      meeting,
+    ]);
+    expect(await ids({ search: 'pricing' })).toEqual([note]);
+    expect(await ids({ sort: [{ field: 'occurredAt', direction: 'asc' }] })).toEqual([
+      payment,
+      note,
+      meeting,
+    ]);
+
+    // Pages with a cursor.
+    const first = await query({ limit: 2 });
+    expect(first.body.records).toHaveLength(2);
+    const second = await query({ limit: 2, cursor: first.body.nextCursor });
+    expect(second.body.records.map((r: { id: string }) => r.id)).toEqual([payment]);
+    expect(second.body.nextCursor).toBeNull();
+
+    // A type's own fields are returned, not filterable here.
+    const medium = await query({ filter: { medium: 'meeting' } });
+    expect(medium.status).toBe(422);
+    expect(medium.body.error).toMatchObject({
+      code: 'invalid_filter',
+      details: { field: 'medium', allowed: expect.arrayContaining(['type', 'channel']) },
+    });
+    const unknownType = await query({ filter: { type: 'internalNote' } });
+    expect(unknownType.status).toBe(422);
+    expect(unknownType.body.error.details.allowed.sort()).toEqual([
+      'conversation',
+      'note',
+      'payment',
+    ]);
+    expect((await query({ sort: [{ field: 'title' }] })).status).toBe(422);
+    // eq and neq take one type; several go in `in`.
+    for (const op of ['eq', 'neq']) {
+      const several = await query({ filter: { type: { [op]: ['note', 'payment'] } } });
+      expect(several.status, op).toBe(422);
+      expect(several.body.error.code).toBe('invalid_filter');
+    }
+    // type filters but does not sort; the error lists what does.
+    const byType = await query({ sort: [{ field: 'type' }] });
+    expect(byType.status).toBe(422);
+    expect(byType.body.error.details.allowed).toEqual(
+      expect.arrayContaining(['occurredAt', 'channel', 'externalId', 'createdAt']),
+    );
+    expect(byType.body.error.details.allowed).not.toContain('type');
+
+    // query_records' REST route takes the reserved name too.
+    const viaObjects = await t.request('/v1/objects/event/query', {
+      key,
+      body: { filter: { type: 'payment' } },
+    });
+    expect(viaObjects.body.records.map((r: { id: string }) => r.id)).toEqual([payment]);
+
+    // Other workspaces' events never show.
+    const other = await t.request('/v1/events/query', { key: otherKey, body: {} });
+    expect(other.body.records.map((r: { id: string }) => r.id)).not.toContain(meeting);
+  });
+
+  it('corrects a medium with upsert, while a re-log with another medium still conflicts', async () => {
+    const externalId = `medium-${++n}`;
+    const body = {
+      type: 'conversation',
+      channel: 'tamloot',
+      externalId,
+      occurredAt: '2026-10-05T09:00:00Z',
+      title: 'Recorded catch-up',
+      fields: { medium: 'call' },
+    };
+    const logged = await t.request('/v1/events', { key: keys.agent, body });
+    expect(logged.status).toBe(201);
+    const id = logged.body.id as string;
+
+    const fixed = await t.request('/v1/objects/conversation/upsert', {
+      key: keys.agent,
+      body: { id, values: { medium: 'meeting' } },
+    });
+    expect(fixed.status, JSON.stringify(fixed.body)).toBe(200);
+    expect(fixed.body.fields.medium).toBe('applied');
+    const read = await t.request(`/v1/events/${id}`, { key: keys.reader });
+    expect(read.body.fields.medium).toBe('meeting');
+
+    const relog = await t.request('/v1/events', {
+      key: keys.agent,
+      body: { ...body, fields: { medium: 'email' } },
+    });
+    expect(relog.status).toBe(409);
+    expect(relog.body.error.code).toBe('event_conflict');
+    const invalid = await t.request('/v1/objects/conversation/upsert', {
+      key: keys.agent,
+      body: { id, values: { medium: 'fax' } },
+    });
+    expect(invalid.status).toBe(422);
   });
 });
 

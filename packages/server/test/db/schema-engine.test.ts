@@ -315,14 +315,14 @@ describe('event types', () => {
     const { id } = await newWorkspace();
     const schema = await inWorkspace(app, id, (tx) => getSchema(tx, id));
     const events = [...schema.objectsByName.values()].filter((o) => o.isEvent);
-    expect(events.map((o) => o.name).sort()).toEqual([
-      'call',
-      'email',
-      'meeting',
-      'message',
-      'note',
-    ]);
-    expect(schema.eventTypeIds).toHaveLength(5);
+    expect(events.map((o) => o.name).sort()).toEqual(['conversation', 'note']);
+    expect(schema.eventTypeIds).toHaveLength(2);
+    expect(schema.objectsByName.get('conversation')?.fieldsByName.get('medium')).toMatchObject({
+      type: 'select',
+      isNullable: true,
+      isFilterable: true,
+      isProtected: false,
+    });
     expect(schema.internalNote).toBeDefined();
     expect(schema.visibleObjectIds).not.toContain(schema.internalNote?.id);
   });
@@ -350,7 +350,7 @@ describe('event types', () => {
     const { id } = await newWorkspace();
     const caller = { workspaceId: id, actor: agent, scopes: ['read', 'write'] as ApiKeyScope[] };
     const call = await logEventFor(app, caller, {
-      type: 'call',
+      type: 'conversation',
       channel: 'zoom',
       externalId: 'z-1',
       occurredAt: '2026-10-01T10:00:00Z',
@@ -368,7 +368,7 @@ describe('event types', () => {
     );
     expect(person.record.fields.jobTitle).toBe('CTO');
 
-    const result = await change(id, [{ op: 'delete_object', object: 'call' }], admin, ALL);
+    const result = await change(id, [{ op: 'delete_object', object: 'conversation' }], admin, ALL);
     expect(result.status).toBe('applied');
 
     // The call is deleted with its type, and what it was cited for no longer counts.

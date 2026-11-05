@@ -37,8 +37,9 @@ The design, the data model and the write rules are in
   _assertions_ from agents and people: people outrank agents, newer
   observations outrank older ones, and an agent that would overwrite a
   person's value leaves a pending assertion for review instead.
-- **Events** are records of event types: meetings, calls, emails, messages,
-  notes and any type the workspace adds. Agents log them first, then cite
+- **Events** are records of event types: conversations (meetings, calls,
+  emails and chats, told apart by their `medium`), notes and any type the
+  workspace adds. Agents log them first, then cite
   them as the `source` of what they write.
 - **Facts** are plain-language statements about a record (`remember`), each
   citing the event it came from.

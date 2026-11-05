@@ -50,9 +50,9 @@ describe('GET /v1/schema', () => {
         .filter((o) => o.class === 'event')
         .map((o) => o.nameSingular)
         .sort(),
-    ).toEqual(['call', 'email', 'meeting', 'message', 'note']);
+    ).toEqual(['conversation', 'note']);
     const meeting = res.body.objects.find(
-      (o: { nameSingular: string }) => o.nameSingular === 'meeting',
+      (o: { nameSingular: string }) => o.nameSingular === 'conversation',
     );
     expect(meeting).toMatchObject({
       labelField: 'title',
@@ -64,8 +64,22 @@ describe('GET /v1/schema', () => {
       expect.arrayContaining([
         ['title', 'title'],
         ['summary', 'summary'],
+        ['medium', undefined],
       ]),
     );
+    // Medium is an ordinary select a person or agent can correct, documented against channel.
+    // Clients find the base event types and medium after a rename, as for base objects.
+    expect(meeting.baseObject).toBe('conversation');
+    expect(
+      res.body.objects.find((o: { nameSingular: string }) => o.nameSingular === 'note').baseObject,
+    ).toBe('note');
+    expect(meeting.fields.find((f: { name: string }) => f.name === 'medium')).toMatchObject({
+      baseField: 'conversationMedium',
+      type: 'select',
+      isFilterable: true,
+      isProtected: false,
+      description: expect.stringContaining('channel'),
+    });
     expect(res.body.builtIns.map((b: { name: string }) => b.name)).toEqual(['fact']);
     const person = objects.find((o) => o.nameSingular === 'person') as never as {
       labelField: string;

@@ -105,6 +105,14 @@ export function compileSchema(state: SchemaState, version: number): CompiledSche
   return compiled;
 }
 
+/** An active, visible object by singular or plural API name. */
+export function objectNamed(schema: CompiledSchema, name: string): CompiledObject | undefined {
+  return (
+    schema.objectsByName.get(name) ??
+    [...schema.objectsByName.values()].find((o) => o.state.namePlural === name)
+  );
+}
+
 /** An event's core title and summary (6.1), found by role; null when not text. */
 export function eventText(
   object: CompiledObject | undefined,

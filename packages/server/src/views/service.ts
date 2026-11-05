@@ -79,6 +79,9 @@ const NESTING = new Set(['and', 'or', 'not']);
 // Names and keys (rule 1.4.1)
 // ---------------------------------------------------------------------------
 
+/** An event's participants and `about` records, shown as table columns. */
+const EVENT_LINK_COLUMNS = ['participants', 'about'] as const;
+
 /** An object's fields both ways, plus every key it has ever used for the issue messages. */
 class FieldNames {
   private readonly byName: Map<string, FieldState>;
@@ -86,10 +89,16 @@ class FieldNames {
   private readonly allByKey: Map<string, FieldState>;
   /** Built-in columns, stored under their own names. */
   private readonly builtIn: Set<string>;
+  /**
+   * An event's links, which a table shows as columns (FRONTEND.md 5.3) but
+   * cannot filter, sort or total: only a column's order and width take them.
+   */
+  private readonly displayOnly: Set<string>;
   readonly issues: string[] = [];
 
   constructor(readonly object: CompiledObject) {
     this.builtIn = new Set(builtInNames(object));
+    this.displayOnly = new Set(object.isEvent ? EVENT_LINK_COLUMNS : []);
     this.byName = object.fieldsByName;
     this.byKey = new Map(object.activeFields.map((f) => [f.key, f]));
     this.allByKey = new Map(object.state.fields.map((f) => [f.key, f]));
@@ -109,6 +118,16 @@ class FieldNames {
 
   key(fieldName: string, path: string): string {
     return this.builtIn.has(fieldName) ? fieldName : this.field(fieldName, path).key;
+  }
+
+  /** A shown column's stored key: a field, a built-in column or an event's links. */
+  columnKey(fieldName: string, path: string): string {
+    return this.displayOnly.has(fieldName) ? fieldName : this.key(fieldName, path);
+  }
+
+  /** A shown column's name for a stored key, as `name` reads it. */
+  columnName(key: string, where: string): string | undefined {
+    return this.displayOnly.has(key) ? key : this.name(key, where);
   }
 
   /** The active field's name for a stored key, or undefined (recording why). */
@@ -257,9 +276,11 @@ function toStored(
     }
     out.columns = columns
       ? {
-          order: columns.order.map((n) => fields.key(n, 'columns.order')),
+          order: columns.order.map((n) => fields.columnKey(n, 'columns.order')),
           ...(columns.widths
-            ? { widths: renameKeys(columns.widths, (n) => fields.key(n, 'columns.widths')) }
+            ? {
+                widths: renameKeys(columns.widths, (n) => fields.columnKey(n, 'columns.widths')),
+              }
             : {}),
           ...(columns.aggregates
             ? {
@@ -385,10 +406,14 @@ export function presentView(tx: Tx, object: CompiledObject, row: ViewRow): Saved
   const columns: ViewColumns | null = config.columns
     ? {
         order: config.columns.order
-          .map((k) => fields.name(k, 'A column'))
+          .map((k) => fields.columnName(k, 'A column'))
           .filter((n): n is string => !!n),
         ...(config.columns.widths
-          ? { widths: renameKeys(config.columns.widths, (k) => fields.name(k, 'A column width')) }
+          ? {
+              widths: renameKeys(config.columns.widths, (k) =>
+                fields.columnName(k, 'A column width'),
+              ),
+            }
           : {}),
         ...(config.columns.aggregates
           ? {

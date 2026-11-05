@@ -14,25 +14,35 @@ import { z } from 'zod';
  */
 const DESIGN_RULES = `### Use what Retainer already has
 
-- Meetings, calls, emails, messages and notes are events: describe_schema
-  lists their types as objects of class "event", and log_event logs them.
-  Never create an entity object for them, nor a join object for who
-  attended; participants are part of the event. The company, project, deal
-  or tasks a meeting concerns go in its about list, so it shows on those
-  records too; never list them as participants.
-- Something else that happens at a point in time and that you would log
-  from a source (a payment, a shipment, a site visit) can be a new event
-  type: create_object with class "event". It gets a title and summary of
-  its own; add only the fields that type needs, such as an amount. A
-  relation field on an event type (a payment's invoice) also attaches the
-  event to that record's history; prefer about for "what this concerns".
-  A scheduled piece of business with its own status and outcome, such as
-  an appointment or a viewing, can still be an entity object.
+- Meetings, calls, emails and chats are all one event type, conversation,
+  and its medium field says which. Notes are the note event type.
+  describe_schema lists event types as objects of class "event", and
+  log_event logs them. Never create an entity object for them, nor a join
+  object for who attended; participants are part of the event. The company,
+  project, deal or tasks a meeting concerns go in its about list, so it
+  shows on those records too; never list them as participants.
+- channel is where an event came from: the source system or account
+  (gmail, zoom, whatsapp-business). It is part of the event's identity and
+  fixed once logged. medium is what happened (meeting, call, email,
+  message), optional and correctable later. Don't make one stand in for the
+  other.
+- Add an event type only when the event has fields a conversation would
+  never use. A payment has an amount and an invoice; a form submission has a
+  form name and answers; a site visit has an address and an outcome. These
+  are new event types: create_object with class "event". Each gets a title
+  and summary of its own; add only the fields that type needs. Conversation
+  details such as duration, direction or a recording link are optional
+  fields on conversation, added from evidence, and a new kind of
+  conversation (a workshop, a voice note) is a new medium option, not a new
+  type. A relation field on an event type (a payment's invoice) also
+  attaches the event to that record's history; prefer about for "what this
+  concerns". A scheduled piece of business with its own status and outcome,
+  such as an appointment or a viewing, can still be an entity object.
 - describe_schema lists facts under builtIns. They are part of every
   workspace; don't add fields or objects to copy them.
 - To find events by type, channel, date or linked record, use
-  query_records on the event type with linked; there is no need for a field
-  like "meeting count".
+  query_records with object "event" (every type) or on one event type, with
+  linked; there is no need for a field like "meeting count".
 - One-off knowledge ("prefers WhatsApp after 6pm") is a fact: store it with
   remember. A field is for something you would filter, sort or fill in for
   every record.
@@ -249,10 +259,13 @@ When your user asks whether the schema still fits:
   name the ones that are almost always empty.
 - Look for entity objects (class "entity") used to log meetings, calls or
   emails, join objects for who attended, and fields tracking last contact
-  by hand. Custom event types (class "event") are valid: do not propose
-  replacing one merely because it represents a meeting, call or email.
-  Moving legacy entity records means logging them as events first, so
-  propose it as a plan, not a single change.
+  by hand. Moving legacy entity records means logging them as events first,
+  so propose it as a plan, not a single change.
+- Look for event types that a conversation with a medium would cover: ones
+  whose fields a conversation would also use. Moving logged events between
+  types means deleting and re-logging them, which retracts what cites them
+  and loses deduplication against the source, so never propose it as a
+  quick cleanup; say what it would cost and let your user decide.
 - Look for twins of template objects and for type fields that tags could
   replace.
 Propose additions as usual. Renames and removals wait for a person with

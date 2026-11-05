@@ -2,7 +2,10 @@
 
 Status: web steps 1–5 are implemented and verified locally, including
 record creation, deletion, merges and suggested merges, `forget` and global
-search, plus saved views with table, board and calendar layouts (5.3b).
+search, plus saved views with table, board and calendar layouts (5.3b), and
+the Records and Activity split: event type lists, the activity feed, notes
+written in the app and developer view
+([conversations and activity spec](docs/conversations-and-activity-spec.md)).
 Read `ARCHITECTURE.md` first; this document uses its section numbers.
 
 Retainer is used by agents through REST and MCP. The web app is for the
@@ -275,6 +278,20 @@ One route for every object. Source: `POST /v1/objects/:object/query`.
   and a `409 unique_conflict` or `409 suppressed` on the field it names, with
   a link to the record that holds a conflicting value. The new record opens
   in the side sheet.
+- **Event type lists** use the same grid with event defaults. They sort by
+  `occurredAt`, newest first, until another sort is chosen. After the title
+  they show Occurred, the type's own fields (`medium` first, for
+  conversations), Participants, About and Source (`channel`); the summary and
+  External ID are available in the column menu but hidden. These built-in
+  columns are read-only; Occurred, Source and External ID can be filtered
+  and sorted with the operators the query engine takes on them, and they
+  have no footer totals. A **Table / Calendar** switch shows a month
+  calendar of when events happened (`?layout=calendar`) without a saved
+  view. In place of the New button the top bar shows one muted line,
+  "Logged by agents and integrations.", which opens a short help popover
+  naming `log_event` and `POST /v1/events`; for `note` it is the **Write a
+  note** button (5.6a). Merge is never offered; with two events selected the
+  selection bar says "Events can't be merged".
 - Clicking a row, or its label link, opens the record in a side sheet that
   slides in over the list (5.4 content). The open record is the `record`
   search parameter, so Back closes the sheet and a copied address reopens
@@ -286,10 +303,16 @@ One route for every object. Source: `POST /v1/objects/:object/query`.
 ### 5.3a Shell
 
 - A left sidebar: workspace, Find anything (⌘K), Review inbox with its
-  pending count, every object from the schema (standard ones first, with an
-  icon), Schema, and the signed-in actor with Sign out.
+  pending count, then two labeled groups. **Records** lists the entity
+  objects (standard ones first, each with its icon). **Activity** starts
+  with **All activity** (5.3c), then lists each event type. Event types
+  take their icons from one family (squared speech marks), so the two
+  groups are told apart at a glance. Then Schema, and the signed-in actor,
+  whose account menu holds the **Developer view** switch (5.8) and Sign out.
+  `main.tsx` passes each object's `class` to the shell.
 - It collapses to an icon rail with its toggle or ⌘\, remembered in
-  `localStorage`. Below `md` it is a drawer opened from the top bar.
+  `localStorage`; the rail keeps a divider between the two groups. Below
+  `md` it is a drawer opened from the top bar.
 - Every screen has a slim top bar with a breadcrumb and the screen's
   actions. Record lists fill the width; other screens use a readable
   centred column.
@@ -344,10 +367,37 @@ set for one object, shown as a table, a board or a calendar. Source:
   have no manual order: a column follows the view's sort.
 - Clicking a card or calendar record opens the side sheet as in the table.
 
+### 5.3c All activity — `/app/activity`
+
+A feed, not a grid: people read activity by time, not by column. Source:
+`POST /v1/events/query` (every visible event type, never internal notes),
+with `include: ["relationReferences"]` so participants and `about` records
+are named without a read each.
+
+- Newest first, 30 at a time with **Load more** on the cursor. Events are
+  grouped by the viewer's local day under a heading that stays in view:
+  Today, Yesterday, then the date (with the year when it is not this one).
+- Each row shows the type's icon, the medium as a chip when there is one,
+  the title, two lines of summary, participants ("With", matched ones
+  linked, other handles as text), the `about` records as linked chips
+  ("About") and the time.
+- Filters live in the address only (saved views stay per object): event
+  type (`eventTypes`, several allowed), source (`channel`), a date range
+  (`from` and `to`, local days, both included) and one linked record
+  (`linked`, chosen with a record picker over every entity object). Each
+  shows as a removable chip, like list filters; a linked record's chip
+  names it from the page or a single label read.
+- Clicking a row opens the event in the side sheet, as record lists do
+  (`?record=`).
+- **Write a note** (5.6a) in the top bar, starting about the linked record
+  when one is filtered.
+
 ### 5.4 Record — `/app/r/:id`
 
 Source: `GET /v1/records/:id`, its provenance (9.1), facts and events.
-An ID that was merged loads the surviving record and says so.
+An ID that was merged loads the surviving record and says so. The header's
+breadcrumb (and the side sheet's) starts with a quiet class label before
+the object's name: "Record · Company" or "Activity · Conversation".
 
 Three areas:
 
@@ -372,12 +422,12 @@ Three areas:
   - _Facts_: `GET /v1/records/:id/facts`. Content, `validFrom`, writer, and
     each source with its quote; a fact resting on an internal note says so,
     without a link. Retract (`DELETE /v1/facts/:id`) asks for confirmation.
-  - _Events_: `GET /v1/records/:id/events`, newest first (9.1). Type badge,
+  - _Activity_ (`?tab=events`): `GET /v1/records/:id/events`, newest first (9.1). Type badge,
     title, date, how the event is attached (participant, about, through one
     of its fields, or rolled up from a record pointing at this one, linked),
     summary, and participants, matched ones linked.
   - _Timeline_: `GET /v1/records/:id/timeline`, grouped by day, newest
-    first, with "Load more" on the cursor. Events as in the Events tab;
+    first, with "Load more" on the cursor. Events as in the Activity tab;
     values asserted for a field read "<Field> set to <value>" with who set
     it and the cited event, and one that is not the current value says so,
     never as a change from an earlier value; facts with a superseded or
@@ -426,15 +476,33 @@ name matches jump to their list.
 
 ### 5.6 Event — `/app/e/:id`
 
-Source: `GET /v1/events/:id`. Type, channel, time, title, summary, the
+Source: `GET /v1/events/:id`. Type, medium (when the type has a `medium`
+select and it is set) and source beside it, time, title, summary, the
 type's other fields, participants (matched and unmatched with the reason),
 the records it is about (by label, each a link), and everything that cites
-it: field assertions and facts (9.1). A channel or external ID erased for
-privacy says so. Participants and `about` records can be added and removed
-(a person only). Delete (`DELETE /v1/events/:id`) shows the server's counts
-afterwards: retracted assertions, recomputed records and hidden facts. An
-event opened as a record (`/app/r/:id`) shows the same details and links
-here. Event types have no "New" button: only agents log events.
+it: field assertions and facts (9.1). The UI calls `channel` **Source**
+everywhere. A source or external ID erased for privacy says so.
+Participants and `about` records can be added and removed (a person only).
+Delete (`DELETE /v1/events/:id`) shows the server's counts afterwards:
+retracted assertions, recomputed records and hidden facts. An event opened
+as a record (`/app/r/:id`) shows the same details and links here.
+
+Events are logged by agents and integrations, so event types have no "New"
+button. Notes are the one exception (5.6a).
+
+### 5.6a Writing a note
+
+**Write a note** (on All activity and on the `note` list, for `write` keys
+with a `user` actor, when the workspace has a `note` event type) opens a
+dialog: title, body (the summary), date (default now) and **About**, a
+multi-record picker over every entity object. Participants are not asked
+for: a note is about records, not with people. It sends `POST /v1/events`
+with type `note`, channel `web` and an `externalId` made once per dialog,
+so a retry after a lost response finds the same note instead of writing a
+second one; the signed-in person is the actor. A saved note opens in the
+side sheet and shows on the timeline of every record it is about. A person
+can already add and remove participants and `about` links, so this is the
+same permission with no new risk.
 
 ### 5.7 Schema — `/app/schema`
 
@@ -442,7 +510,10 @@ Read-only in v1. Agents change the schema; people approve (5.2). Three tabs
 (`?tab=`), with a "N proposed" link to the review inbox in the top bar when
 changes are waiting:
 
-- **Objects.** A list of objects (standard first, with icon and field count)
+- **Objects.** It opens with one short paragraph per class: what a record
+  is and how it is written (`upsert_record`,
+  `POST /v1/objects/:object/upsert`), and what an event is and how it is
+  logged (`log_event`, `POST /v1/events`). Then a list of objects (standard first, with icon and field count)
   beside the selected one (`?object=`): its API names, owner, label field,
   description and a link to its records. Its fields are a table that can be
   filtered: label and API name, type with an icon and what the settings add
@@ -451,8 +522,9 @@ changes are waiting:
   `workspace`, `agent`). Clicking a field opens it in a side sheet
   (`?field=`): definition, select options, the relation's target,
   cardinality, other side (linked) and delete behaviour, and each flag in
-  words. Event types are listed apart, with an "Event" badge and their
-  built-in columns (`occurredAt`, `channel`, `externalId`); their protected
+  words. Entities are listed under **Records** and event types apart under
+  **Activity**, with an "Event" badge and their built-in columns
+  (`occurredAt`, `channel` shown as Source, `externalId`); their protected
   title and summary fields are marked. Under the objects, a "Built-in" list holds facts
   (`builtIns` from `GET /v1/schema`): each shows its description, its fields
   with a line on each, and the tools that write and read it, with nothing to
@@ -470,13 +542,40 @@ changes are waiting:
   highlights its lines. Clicking a card's header opens the object in the
   Objects tab, and clicking a row or a line opens that field there. React
   Flow and dagre load only when the tab is first opened (`Diagram` in
-  `src/ui` is lazy).
+  `src/ui` is lazy). Event types are drawn as a distinct card (a tinted
+  header and a round icon, "Event" in the meta) with an About row, and each
+  draws `about` as a dashed line to one dashed "Any record" card, so the
+  link shows in the model without a fake relation field. The legend
+  explains the dashed line; clicking either opens nothing, as neither is a
+  field.
 - **Change history.** `GET /v1/schema/changes` as a timeline, filterable by
   status (`?status=`): each change's operations in words, reason, proposer,
   who decided, and the schema version it produced.
 
 A workspace with no template applied shows the template list
 (`GET /v1/templates`) and an Apply button for `schema:write` keys.
+
+### 5.8 Developer view
+
+A **Developer view** switch in the account menu, remembered per browser in
+`localStorage` (`retainer:developer-view:v1`; refused storage leaves it off
+and the switch still works for the visit), available to every actor. It
+changes what is displayed, never what is sent. When on:
+
+- Object and field labels show their API names beside them: list column
+  headers and the list's title, the filter and sort menus, the record's
+  fields and relations, the event's details, and the create and note forms.
+- Record and event pages, and the side sheet, show a Developer section: the
+  object's API name and class (`entity` or `event`), the record ID with a
+  copy button, and the write path: `upsert_record`,
+  `POST /v1/objects/:object/upsert` and `PATCH /v1/records/:id` for
+  entities, `log_event` and `POST /v1/events` for events.
+- Event rows show their raw identity: on a record's Activity tab, `via` and
+  `externalId`; in the activity feed, the type's API name, `channel` and
+  `externalId`.
+- A **JSON** tab on record and event pages shows the REST response as
+  returned (`?tab=json`; without developer view the address falls back to
+  the first tab).
 
 ### Not in v1
 
@@ -644,6 +743,8 @@ this:
 | `POST /v1/records/delete-impact`                          | What deleting several records together would cascade to, overlaps counted once                                                  | 5.3       |
 | `groupBy` on the aggregate route                          | The same calculations per option of a single-select field, plus the overall result                                              | 5.3b      |
 | Saved views: `/v1/objects/:object/views`, `/v1/views/:id` | List, create, read, update and delete views (`ARCHITECTURE.md` 1.4)                                                             | 5.3b      |
+| `POST /v1/events/query`                                   | Events of every visible event type, newest first, filtered by `type`, `channel`, `occurredAt` and `linked`, cursor-paginated    | 5.3c      |
+| Participant and `about` labels on event queries           | `include=relationReferences` on per-type and cross-type event queries also names participants, candidates and `about` records   | 5.3, 5.3c |
 
 The v1 read contracts are:
 
@@ -718,11 +819,11 @@ when switching the server to the shared helpers.
 
 Same rules as `ARCHITECTURE.md` section 12: a real database, never a mock.
 
-| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | How                                                                                                                              |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns, paging and footer totals; saved views over the URL, board columns and calendar days; schema page descriptions                                                                                                                                                                                                                                                                                                                                                        | Vitest                                                                                                                           |
-| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Vitest and Testing Library                                                                                                       |
-| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; list selection with bulk delete and merge, column totals and editing in the grid; saving a board view with column totals, moving a card and a calendar record from the keyboard, and saving or resetting a view's unsaved filter; ⌘K search across objects, events and facts; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; deleting an event; read-only keys; session replacement | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
+| Layer      | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | How                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Unit       | Field modules: every type round-trips through its shared schema; money to micros; registry completeness; list URL state, columns, paging and footer totals; event list columns; feed filters in the URL, its query and day grouping; the note request; the developer view switch; saved views over the URL, board columns and calendar days; schema page descriptions                                                                                                                                                                                                                                                                                                                                                                                  | Vitest                                                                                                                           |
+| Component  | Displays and inputs per type, composite list editing, the inline property editor, Escape order and outside clicks in the side sheet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Vitest and Testing Library                                                                                                       |
+| End to end | Sign in; review accept, reject, bulk and keyboard; schema approval; inline and stale record edits; list sort, filters, columns and side sheet; list selection with bulk delete and merge, column totals and editing in the grid; saving a board view with column totals, moving a card and a calendar record from the keyboard, and saving or resetting a view's unsaved filter; ⌘K search across objects, events and facts; record creation and its field errors; delete with cascade warning; suggested and manual merges; erase for privacy; deleting an event; read-only keys; session replacement; the Records and Activity sidebar groups and event list explanations; activity feed filters; writing a note with a retried save; developer view | Playwright against the real server and Postgres, a fresh database per test, seeded through the REST API with agent and user keys |
 
 Add coverage for inboxes larger than one page (including decisions between
 page loads), accurate totals and off-page review links; acceptance that leaves

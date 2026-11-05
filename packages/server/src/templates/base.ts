@@ -1,4 +1,5 @@
 import {
+  BASE_EVENT_FIELD_IDS,
   BASE_EVENT_TYPE_IDS,
   BASE_FIELD_IDS,
   BASE_OBJECT_IDS,
@@ -14,8 +15,8 @@ import type { SchemaOperation } from '../schema-engine/operations.js';
 export { BASE_EVENT_TYPE_IDS, BASE_FIELD_IDS, BASE_OBJECT_IDS, INTERNAL_NOTE_TYPE_ID };
 
 /**
- * An event type (6.1) with only its core title and summary fields, which the
- * schema engine adds. None of the base event types is protected: a
+ * An event type (6.1): its core title and summary fields, which the schema
+ * engine adds, and `fields`. None of the base event types is protected: a
  * workspace can delete the ones it does not use.
  */
 function eventType(
@@ -24,6 +25,7 @@ function eventType(
   labelSingular: string,
   labelPlural: string,
   description: string,
+  fields: Extract<SchemaOperation, { op: 'create_object' }>['object']['fields'] = [],
 ): SchemaOperation {
   return {
     op: 'create_object',
@@ -35,22 +37,44 @@ function eventType(
       labelSingular,
       labelPlural,
       description,
-      fields: [],
+      fields,
     },
   };
 }
 
-/** The event types every workspace starts with. */
+/**
+ * The event types every workspace starts with. Meetings, calls, emails and
+ * chats are all conversations: `medium` says which, and stays editable
+ * after logging. A new event type is for events whose fields a conversation
+ * would never use, such as a payment or a form submission.
+ */
 export const BASE_EVENT_OPERATIONS: SchemaOperation[] = [
-  eventType('meeting', 'meetings', 'Meeting', 'Meetings', 'A meeting, in person or online.'),
-  eventType('call', 'calls', 'Call', 'Calls', 'A phone or video call.'),
-  eventType('email', 'emails', 'Email', 'Emails', 'An email or email thread.'),
   eventType(
-    'message',
-    'messages',
-    'Message',
-    'Messages',
-    'A chat or text message, or a thread of them.',
+    'conversation',
+    'conversations',
+    'Conversation',
+    'Conversations',
+    'A meeting, call, email thread or chat between people.',
+    [
+      {
+        universalId: BASE_EVENT_FIELD_IDS.conversationMedium,
+        name: 'medium',
+        label: 'Medium',
+        description:
+          'What kind of conversation it was. Leave it empty when unsure; it can be corrected ' +
+          'later. Where it came from (gmail, zoom) is the channel, not the medium.',
+        type: 'select',
+        isFilterable: true,
+        settings: {
+          options: [
+            { value: 'meeting', label: 'Meeting' },
+            { value: 'call', label: 'Call' },
+            { value: 'email', label: 'Email' },
+            { value: 'message', label: 'Message' },
+          ],
+        },
+      },
+    ],
   ),
   eventType('note', 'notes', 'Note', 'Notes', 'A note someone wrote down.'),
 ];

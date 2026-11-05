@@ -3,7 +3,7 @@ import { useWorkspace } from '../api/client.js';
 import { Notice, Page } from '../ui/index.js';
 import { RecordActions } from './record-actions.js';
 import { RecordView, useRecord } from './record-view.js';
-import { objectLabel, QueryError, recordTitle, useView } from './state.js';
+import { classLabel, objectByName, QueryError, recordTitle, useView } from './state.js';
 
 export function RecordPage() {
   const { id } = useParams({ strict: false }) as { id: string };
@@ -24,7 +24,7 @@ export function RecordPage() {
   const r = record.data;
   return (
     <Page
-      eyebrow={objectLabel(schema, r.object)}
+      eyebrow={classLabel(objectByName(schema, r.object)) ?? r.object}
       title={recordTitle(r)}
       description={`Last updated ${new Date(r.updatedAt).toLocaleString()}`}
       actions={

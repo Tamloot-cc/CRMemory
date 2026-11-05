@@ -52,10 +52,10 @@ cannot do that now, pick a template with list_templates and apply_template,
 or ask your user.
 
 Find records with search (keywords across records, events and facts) or
-query_records (exact filters on one object). Events (meetings, calls, emails,
-messages, notes and any event types the workspace adds) are records too: list
-or filter them with query_records on their type, and pass linked to get the
-events directly attached to one record. For history including one-hop event
+query_records (exact filters on one object). Events (conversations, notes and
+any event types the workspace adds) are records too: list or filter them with
+query_records on their type, or with object "event" for every type at once,
+and pass linked to get the events directly attached to one record. For history including one-hop event
 rollups, use get_context or get_timeline. Before working on a person or company,
 read get_context: their current values, open tasks, facts and recent events in one
 call; get_timeline shows how they got there. Write records with upsert_record.
@@ -64,11 +64,18 @@ which value wins. A value a person set outranks yours, so your write may come
 back as pending_review: tell your user it is waiting for approval rather than
 saying it is done.
 
+Log meetings, calls, emails and chats as conversation with a medium. Use
+another event type only when the workspace defines one for that kind of event.
+channel is where the record came from (the source system or account, such as
+gmail or zoom) and is part of its identity; medium is what happened (meeting,
+call, email, message): leave it empty if you can't tell.
+
 After a meeting, call, email thread or chat, write what you learned in order:
-1. log_event: its type (describe_schema lists the event types), channel, when
-   it happened, a title, your own short summary, the source's external ID, the
-   participants' emails or phones (or record IDs), and in about the IDs of the
-   company, project or other records it concerns. Keep the id it returns.
+1. log_event: its type (conversation, or another event type describe_schema
+   lists), channel, when it happened, a title, your own short summary, the
+   source's external ID, fields such as medium, the participants' emails or
+   phones (or record IDs), and in about the IDs of the company, project or
+   other records it concerns. Keep the id it returns.
    Unmatched participants come back with a reason; create the people worth
    keeping with upsert_record, or leave them. Retainer never creates records
    on its own.
@@ -139,12 +146,16 @@ const getRecordInput = z.strictObject({
 });
 
 const queryRecordsInput = z.strictObject({
-  object: objectName,
+  object: objectName.describe(
+    'Singular API name of the object, e.g. "person", as describe_schema lists it; or ' +
+      '"event" for events of every event type at once.',
+  ),
   ...queryInputSchema.shape,
   filter: queryInputSchema.shape.filter.describe(
     'Field name to a value (equality) or to operators: eq, neq, in, gt, gte, lt, lte, ' +
       'e.g. { "status": "todo", "dueDate": { "lte": "2026-11-30" } }. Only filterable fields. ' +
-      'Event types also filter and sort by occurredAt, channel and externalId. A ' +
+      'Event types also filter and sort by occurredAt, channel and externalId; with object ' +
+      '"event", only those and type (event type API names: eq, neq or in) apply. A ' +
       'many_to_many relation takes containsAny or containsAll (lists of record IDs) and ' +
       'isEmpty (true or false), e.g. { "contacts": { "containsAny": ["<person id>"] } }.',
   ),
@@ -194,12 +205,15 @@ const upsertRecordInput = z.strictObject({
 const logEventInput = z.strictObject({
   ...logEventInputSchema.shape,
   type: logEventInputSchema.shape.type.describe(
-    'The event type\'s API name, e.g. "meeting", "call", "email", "message" or "note", or ' +
-      'one the workspace added. describe_schema lists them as objects of class "event".',
+    'The event type\'s API name: "conversation" for meetings, calls, emails and chats (set ' +
+      'fields.medium), "note" for a note, or another event type only when the workspace ' +
+      'defines one for that kind of event. describe_schema lists them as objects of class "event".',
   ),
   channel: logEventInputSchema.shape.channel.describe(
-    'Where it happened, e.g. "gmail", "zoom", "whatsapp". Use a distinct channel per source ' +
-      'account when their external IDs could overlap.',
+    'The source system or account the event came from, e.g. "gmail", "zoom", "tamloot", ' +
+      '"whatsapp-business". Part of its identity and fixed once logged: use a distinct channel ' +
+      'per source account when their external IDs could overlap. What kind of conversation it ' +
+      'was is the medium field, not the channel.',
   ),
   externalId: logEventInputSchema.shape.externalId.describe(
     "The source's own ID (message, thread, meeting or call ID). Logging it again with the " +
@@ -214,8 +228,9 @@ const logEventInput = z.strictObject({
       'workspace should keep.',
   ),
   fields: logEventInputSchema.shape.fields.describe(
-    'The event type\'s other fields by name, e.g. { "deal": "<record id>" } for a call ' +
-      'type with a deal relation. Title and summary go at the top level, not here.',
+    'The event type\'s other fields by name, e.g. { "medium": "call" } for a conversation, ' +
+      'or { "deal": "<record id>" } for a type with a deal relation. Title and summary go at ' +
+      'the top level, not here.',
   ),
   participants: z
     .array(
@@ -295,7 +310,7 @@ const getTimelineInput = z.strictObject({
     'Only values asserted for these fields (API names), e.g. ["stage"].',
   ),
   eventTypes: timelineInputSchema.shape.eventTypes.describe(
-    'Only events of these types (API names), e.g. ["call", "meeting"].',
+    'Only events of these types (API names), e.g. ["conversation", "note"].',
   ),
   from: timelineInputSchema.shape.from.describe('Items at or after this ISO 8601 time.'),
   to: timelineInputSchema.shape.to.describe('Items before this ISO 8601 time.'),
@@ -336,8 +351,11 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'Renames, labels and descriptions remain allowed under the usual approval rules. ' +
         'baseObject and baseField identify built-ins after renames: use their current API ' +
         "names in calls. coreRole identifies an event type's protected title and summary " +
-        'fields. Objects of class "event" are event types (meeting, call, email, ...): ' +
-        'log them with log_event, never create them with upsert_record. builtIns lists facts, ' +
+        'fields. Objects of class "event" are event types (conversation, note, ...): ' +
+        'log them with log_event, never create them with upsert_record. Every event has a ' +
+        'channel (eventColumns): the source system or account, part of its identity. A ' +
+        "conversation's medium field says what kind it was (meeting, call, email, message) " +
+        'and can be corrected later. builtIns lists facts, ' +
         'written with remember. Call it first, ' +
         'and again after a schema change. If initialized is false, ' +
         'the schema has not been set up yet: follow get_guide("discover_schema"), or see ' +
@@ -425,7 +443,10 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'default (at most 200). Use it to find the record to update when you know a name, ' +
         'phone or company rather than a unique email. Text filters match exactly; pass ' +
         'nextCursor back as cursor for the next page.\n\n' +
-        'For an event type, linked: { record } lists the events attached to that record: ' +
+        'object "event" lists events of every event type in one page, newest first: filter ' +
+        "by type, occurredAt, channel and externalId (a type's own fields, such as medium, " +
+        'are returned but filter only on that type). ' +
+        'For an event type or "event", linked: { record } lists the events attached to that record: ' +
         "as a participant, about it, or through one of the event's own relation fields " +
         '(narrow with link). These are direct attachments only; use get_context or ' +
         'get_timeline to include one-hop event rollups. Sort by occurredAt, e.g. the last ' +
@@ -546,8 +567,9 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
     {
       title: 'Log an event',
       description:
-        'Logs something that happened, as a record of an event type (meeting, call, email, ' +
-        'message, note, or one the workspace added): when it happened, a title, your own ' +
+        'Logs something that happened, as a record of an event type. Log meetings, calls, ' +
+        'emails and chats as conversation with a medium. Use another event type only when ' +
+        'the workspace defines one for that kind of event. Give when it happened, a title, your own ' +
         'short summary, its other fields, who took part (participants) and the records it ' +
         'concerns (about: e.g. the company and project of a meeting with Dana about the Acme ' +
         'pilot). Do this first after a conversation, then pass the returned id as source to ' +
@@ -602,9 +624,10 @@ export function createMcpServer(sql: Sql, caller: Caller): McpServer {
         'set it on text fields people will look records up by (the label field is always ' +
         'searchable). Give a short reason. Needs the schema:write scope.\n\n' +
         'Make the smallest change that works: an option before a field, a field before an ' +
-        'object. Meetings, calls, emails and messages are events (log_event): add a field ' +
-        'to an event type, or create one with class "event", rather than an entity object ' +
-        'for them. One-off knowledge is a fact (remember), never an object or field. If you have not ' +
+        'object. Meetings, calls, emails and chats are conversations (log_event): add an ' +
+        'option to medium or a field to conversation rather than a new type. Create an event ' +
+        'type (class "event") only for events with fields a conversation would never use, ' +
+        'such as a payment. One-off knowledge is a fact (remember), never an object or field. If you have not ' +
         'yet, read get_guide("schema_design") before creating an object.',
       inputSchema: schemaChangeRequestSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },

@@ -1,6 +1,9 @@
 # Conversations and the Activity UI: spec
 
-Status: **proposed; not implemented**. Written November 5, 2026.
+Status: **implemented** November 5, 2026. Open questions (7) remain open.
+The SDK method is `queryEvents` (the client has no namespaces), and the
+events query's `search` uses the records' search index: the core title and
+summary, plus any searchable fields of the type.
 
 This spec amends the [merged schema, events and history spec](schema-events-and-history-spec.md)
 (6.1 base event types, 7.1 direct retrieval) and [FRONTEND.md](../FRONTEND.md)
