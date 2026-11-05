@@ -1,34 +1,37 @@
 import type {
   AddedLinks,
-  AttachedEvent,
-  EventAttachment,
   EventRetraction,
   LogEventResult,
-  PresentedRecord,
-  RecordReference,
   SourceReference,
-  Via,
 } from '@retainer/shared';
-import type { Fragment } from 'postgres';
 import { z } from 'zod';
-import { after, page } from '../db/pagination.js';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { isUuid, publicId } from '../db/names.js';
+import { type Operation, serverNow } from '../db/protocol.js';
 import { AppError, notFound, requireUser } from '../errors.js';
 import { isEventIdentitySuppressed } from '../privacy/suppression.js';
-import { getRecord, presentRecords, RECORD_COLUMNS, type RecordRow } from '../records/read.js';
-import { references } from '../records/references.js';
+import { directoryEntries } from '../records/store.js';
 import { normalizeFieldValue, prepareValues } from '../records/values.js';
 import { sameValue } from '../records/winner.js';
 import {
+  type AssertionRow,
+  entriesOf,
+  fromStored,
   insertRecord,
+  loadRecords,
   lockRecordsForUpdate,
+  planState,
   type RemovedClaim,
   releaseAndRecompute,
+  type StoredAssertion,
+  updateAssertion,
   type WriteContext,
   writeFields,
 } from '../records/write.js';
 import { type CompiledObject, type CompiledSchema, eventText } from '../schema-engine/compiled.js';
 import type { FieldState } from '../schema-engine/types.js';
+import { removeDirectAttachments } from './attachments.js';
 import {
   type AddLinksInput,
   addLinks,
@@ -48,7 +51,7 @@ import {
  */
 
 /** How far past the server's clock `occurredAt` may be, for clock skew. */
-const FUTURE_SKEW = '10 minutes';
+const FUTURE_SKEW_MS = 10 * 60 * 1000;
 
 /**
  * The channel of the internal notes `remember` creates for uncited facts
@@ -131,22 +134,13 @@ function initialValues(object: CompiledObject, input: LogEventInput): Map<FieldS
   return values;
 }
 
-/** Advisory-lock class for event identities (6.2, 6.4). */
-const IDENTITY_LOCK_CLASS = 0x5245; // "RE"
-
-/**
- * Serializes everything that touches one event identity in a workspace:
- * concurrent logs of it, and a log racing the erasure that tombstones it.
- */
-async function lockEventIdentity(
-  tx: Tx,
-  workspaceId: string,
-  channel: string,
-  externalId: string,
-): Promise<void> {
-  await tx`select pg_advisory_xact_lock(${IDENTITY_LOCK_CLASS}::int4,
-    hashtext(${JSON.stringify([workspaceId, channel, externalId])}))`;
-}
+type IdentityRow = {
+  id: RecordId;
+  object_type_id: string;
+  occurred_at: Date;
+  channel?: string | null;
+  external_id?: string | null;
+};
 
 /**
  * Logs an event (4.1). Logging the same `(channel, externalId)` again with
@@ -154,21 +148,20 @@ async function lockEventIdentity(
  * `created: false`, after adding any participants and `about` records it did
  * not have yet (1.3). A different payload is `event_conflict`; an identity
  * whose event was deleted or erased is `event_retracted`. Without an
- * external ID there is no source deduplication.
+ * external ID there is no source deduplication. Concurrent logs of one
+ * identity are serialized by the write protocol, and the unique index on
+ * `(channel, external_id)` backs it up.
  */
 export async function logEvent(
-  tx: Tx,
   context: WriteContext,
   input: LogEventInput,
 ): Promise<LogEventResult> {
-  const { workspaceId, schema } = context;
+  const { workspaceId, schema, op } = context;
   const object = requireEventType(schema, input.type);
   const participants = normalizeParticipants(input.participants);
   const values = initialValues(object, input);
   const occurredAt = new Date(input.occurredAt);
-  const [check] = await tx<{ future: boolean }[]>`
-    select ${occurredAt}::timestamptz > clock_timestamp() + ${FUTURE_SKEW}::interval as future`;
-  if (check?.future) {
+  if (occurredAt.getTime() > serverNow().getTime() + FUTURE_SKEW_MS) {
     throw new AppError(
       422,
       'invalid_occurred_at',
@@ -178,35 +171,26 @@ export async function logEvent(
   }
 
   if (input.externalId !== undefined) {
-    await lockEventIdentity(tx, workspaceId, input.channel, input.externalId);
-    if (await isEventIdentitySuppressed(tx, workspaceId, input.channel, input.externalId)) {
+    if (await isEventIdentitySuppressed(op.db, workspaceId, input.channel, input.externalId)) {
       throw retracted(null);
     }
-    const [existing] = await tx<
-      { record_id: string; object_type_id: string; deleted_at: Date | null; occurred_at: Date }[]
-    >`
-      select e.record_id, r.object_type_id, r.deleted_at, e.occurred_at
-      from event_records e join records r on r.id = e.record_id
-      where e.workspace_id = ${workspaceId} and e.channel = ${input.channel}
-        and e.external_id = ${input.externalId}
-      for no key update of r`;
-    if (existing) {
-      // Read under the lock: a delete that committed while this waited is
-      // seen here, so a retry never lands on a deleted event (6.2, 6.4).
-      if (existing.deleted_at) throw retracted(existing.record_id);
-      await checkSameEvent(tx, context, existing, object, occurredAt, values);
-      const stored = await loadLinks(tx, workspaceId, existing.record_id);
-      const { rows, inserted } = await addLinks(
-        tx,
-        workspaceId,
-        schema,
-        existing.record_id,
-        stored,
-        { participants, about: input.about },
-      );
-      const links = await presentLinks(tx, workspaceId, schema, rows, inserted);
+    const [identity] = await op.rows<IdentityRow>(
+      'SELECT * FROM event_identity WHERE channel = $channel AND external_id = $external;',
+      { channel: input.channel, external: input.externalId },
+    );
+    if (identity) {
+      const id = publicId(identity.id);
+      const entry = (await entriesOf(op, [id])).get(id);
+      if (!entry || entry.deleted_at) throw retracted(id);
+      await checkSameEvent(context, { record_id: id, object_type_id: identity.object_type_id, occurred_at: identity.occurred_at }, object, occurredAt, values);
+      const stored = await loadLinks(op.db, id);
+      const { rows, inserted } = await addLinks(context, id, stored, {
+        participants,
+        about: input.about,
+      });
+      const links = await presentLinks(op.db, schema, rows, inserted);
       return {
-        id: existing.record_id,
+        id,
         type: object.name,
         created: false,
         participants: links.participants,
@@ -216,22 +200,25 @@ export async function logEvent(
     }
   }
 
-  const record = await insertRecord(tx, context, object);
-  await tx`
-    insert into event_records (workspace_id, record_id, occurred_at, channel, external_id)
-    values (${workspaceId}, ${record.id}, ${occurredAt}, ${input.channel},
-      ${input.externalId ?? null})`;
+  const record = await insertRecord(context, object, { occurredAt });
+  op.batch.create('event_identity', record.id, {
+    object_type_id: object.id,
+    occurred_at: occurredAt,
+    channel: input.channel,
+    external_id: input.externalId,
+    created_at: op.now,
+  });
   // The initial values cite the event itself and were true when it happened.
-  await writeFields(tx, context, object, record, values, {
+  await writeFields(context, object, record, values, {
     sourceRecordId: record.id,
     observedAt: occurredAt,
     isInitial: true,
   });
-  const { rows } = await addLinks(tx, workspaceId, schema, record.id, [], {
+  const { rows } = await addLinks(context, record.id, [], {
     participants,
     about: input.about,
   });
-  const links = await presentLinks(tx, workspaceId, schema, rows);
+  const links = await presentLinks(op.db, schema, rows);
   return {
     id: record.id,
     type: object.name,
@@ -261,7 +248,6 @@ function retracted(id: string | null): AppError {
  * both sides, so a retry using the original or the surviving IDs matches.
  */
 async function checkSameEvent(
-  tx: Tx,
   context: WriteContext,
   existing: { record_id: string; object_type_id: string; occurred_at: Date },
   object: CompiledObject,
@@ -281,10 +267,10 @@ async function checkSameEvent(
   if (existing.object_type_id !== object.id) throw conflict('type');
   if (existing.occurred_at.getTime() !== occurredAt.getTime()) throw conflict('occurredAt');
 
-  const initial = await tx<{ field_id: string; value: unknown }[]>`
-    select field_id, value from field_assertions
-    where workspace_id = ${context.workspaceId} and record_id = ${existing.record_id}
-      and is_initial`;
+  const initial = await context.op.rows<{ field_id: string; value: unknown }>(
+    'SELECT field_id, value FROM field_assertions WHERE record = $record AND is_initial = true;',
+    { record: existing.record_id },
+  );
   const original = new Map(initial.map((row) => [row.field_id, row.value]));
   const fields = object.activeFields.filter((f) => !f.settings.isInverse);
 
@@ -293,7 +279,7 @@ async function checkSameEvent(
     .filter((f) => f.type === 'relation')
     .flatMap((f) => [values.get(f), original.get(f.id as string)])
     .flatMap((v) => (typeof v === 'string' ? [v] : Array.isArray(v) ? (v as string[]) : []));
-  const survivors = await canonicalRecordsAll(tx, context, relationIds);
+  const survivors = await canonicalRecordsAll(context, relationIds);
   const resolve = (field: FieldState, value: unknown) => {
     if (field.type !== 'relation' || value === undefined || value === null) return value;
     if (Array.isArray(value)) {
@@ -315,54 +301,54 @@ async function checkSameEvent(
 
 /** Survivors of record IDs after merges, including deleted and hidden records. */
 async function canonicalRecordsAll(
-  tx: Tx,
   context: WriteContext,
   ids: readonly string[],
 ): Promise<Map<string, string>> {
-  const rows = await followMerges(tx, context.workspaceId, ids);
+  const rows = await followMerges(context.op.db, ids);
   return new Map(rows.map((r) => [r.start_id, r.id]));
 }
 
-/** A live, visible event record, locked for a change to its links. */
-async function lockEvent(tx: Tx, context: WriteContext, id: string): Promise<{ id: string }> {
-  const [row] = await tx<{ id: string; object_type_id: string; deleted_at: Date | null }[]>`
-    select r.id, r.object_type_id, r.deleted_at from records r
-    where r.id = ${id} and r.workspace_id = ${context.workspaceId}
-    for no key update`;
-  const object = row && context.schema.objectsById.get(row.object_type_id);
-  if (!row || !object || object.hidden || object.state.status !== 'active' || !object.isEvent) {
+/** A live, visible event record, for a change to its links. */
+async function lockEvent(context: WriteContext, id: string): Promise<{ id: string }> {
+  const entry = (await entriesOf(context.op, [id])).get(id);
+  const object = entry && context.schema.objectsById.get(entry.object_type_id);
+  if (!entry || !object || object.hidden || object.state.status !== 'active' || !object.isEvent) {
     throw notFound('event', { id });
   }
-  if (row.deleted_at) {
+  if (entry.deleted_at) {
     throw new AppError(404, 'record_deleted', `event ${id} was deleted`, { recordId: id });
   }
-  return row;
+  return { id };
 }
 
 /**
  * Adds participants and `about` records to a logged event, with the same
  * matching as `logEvent` (1.3). Idempotent: links it already has are not
- * added again.
+ * added again. Returns what was added; the caller presents the event after
+ * the write commits.
  */
 export async function addEventLinks(
-  tx: Tx,
   context: WriteContext,
   id: string,
   input: AddLinksInput,
-): Promise<PresentedRecord & { added: AddedLinks }> {
+): Promise<{ id: string; added: AddedLinks }> {
   const participants = normalizeParticipants(input.participants);
-  await lockEvent(tx, context, id);
-  const stored = await loadLinks(tx, context.workspaceId, id);
-  const { inserted, rows } = await addLinks(tx, context.workspaceId, context.schema, id, stored, {
+  await lockEvent(context, id);
+  const stored = await loadLinks(context.op.db, id);
+  const { inserted, rows } = await addLinks(context, id, stored, {
     participants,
     about: input.about,
   });
-  const links = await presentLinks(tx, context.workspaceId, context.schema, rows, inserted);
-  return {
-    ...(await getRecord(tx, context.workspaceId, context.schema, id)),
-    added: links.added,
-  };
+  const links = await presentLinks(context.op.db, context.schema, rows, inserted);
+  return { id, added: links.added };
 }
+
+type StoredLinkRow = {
+  id: RecordId;
+  event: string;
+  link: 'participant' | 'about';
+  record?: string | null;
+};
 
 /**
  * Removes one participant, or one record from the `about` list, from an
@@ -370,69 +356,69 @@ export async function addEventLinks(
  * until someone decides otherwise.
  */
 export async function removeEventLink(
-  tx: Tx,
   context: WriteContext,
   id: string,
   target: { participant: string } | { about: string },
-): Promise<PresentedRecord> {
+): Promise<{ id: string }> {
   requireUser(context.actor, 'remove a participant or an about record');
-  await lockEvent(tx, context, id);
-  // The about record is locked and followed through merges, as in addLinks,
-  // so a merge cannot move its link to the survivor before the delete runs.
-  const match =
-    'participant' in target
-      ? tx`link = 'participant' and id = ${target.participant}`
-      : tx`link = 'about' and record_id = ${
-          (await lockLinkTargets(tx, context.workspaceId, context.schema, [target.about])).get(
-            target.about,
-          )?.id ?? target.about
-        }`;
-  const [removed] = await tx<{ id: string }[]>`
-    delete from event_links
-    where workspace_id = ${context.workspaceId} and event_id = ${id} and ${match}
-    returning id`;
-  if (!removed) {
+  await lockEvent(context, id);
+  const { op } = context;
+  let found: StoredLinkRow | undefined;
+  if ('participant' in target) {
+    if (isUuid(target.participant)) {
+      const [row] = await op.rows<StoredLinkRow>('SELECT * FROM $link;', {
+        link: new RecordId('event_links', target.participant),
+      });
+      if (row && row.event === id && row.link === 'participant') found = row;
+    }
+  } else {
+    // The about record is followed through merges, as in addLinks.
+    const record =
+      (await lockLinkTargets(context, [target.about])).get(target.about)?.id ?? target.about;
+    [found] = await op.rows<StoredLinkRow>(
+      "SELECT * FROM event_links WHERE event = $event AND link = 'about' AND record = $record;",
+      { event: id, record },
+    );
+  }
+  if (!found) {
     throw 'participant' in target
       ? notFound('participant', { id: target.participant, event: id })
       : notFound('about record', { id: target.about, event: id });
   }
-  return getRecord(tx, context.workspaceId, context.schema, id);
+  const linkId = publicId(found.id);
+  op.batch.deleteIds('event_links', [linkId]);
+  if (found.record) {
+    await removeDirectAttachments(context, [
+      { event: id, target: found.record, via: found.link, linkId },
+    ]);
+  }
+  return { id };
 }
 
 /** A live event cited as a source, and when it happened (rules 2.1, 2.2). */
 export type CitedSource = { id: string; occurredAt: Date };
 
 /**
- * Locks a cited event `FOR KEY SHARE` for the rest of the transaction.
- * Deleting an event locks it `FOR UPDATE`, so a write citing it either
- * commits before the deletion (which then retracts its claims) or sees it
- * deleted. Take this before any record lock. Only a live event record of a
- * visible type in this workspace can be a source: an entity record, the
- * hidden internal notes and other workspaces' records cannot.
+ * A live event to cite as a source. Writes citing it and its deletion are
+ * serialized by the write protocol, so a write either commits before the
+ * deletion (which then retracts its claims) or sees it deleted. Only a live
+ * event record of a visible type in this workspace can be a source: an
+ * entity record, the hidden internal notes and other workspaces' records
+ * cannot.
  */
 export async function lockSource(
-  tx: Tx,
-  context: Pick<WriteContext, 'workspaceId' | 'schema'>,
+  context: WriteContext,
   recordId: string,
 ): Promise<CitedSource> {
-  const [row] = await tx<
-    {
-      id: string;
-      object_type_id: string;
-      deleted_at: Date | null;
-      occurred_at: Date | null;
-    }[]
-  >`
-    select r.id, r.object_type_id, r.deleted_at, e.occurred_at from records r
-    left join event_records e on e.record_id = r.id
-    where r.id = ${recordId} and r.workspace_id = ${context.workspaceId}
-    for key share of r`;
-  const object = row && context.schema.objectsById.get(row.object_type_id);
-  if (!row || !object || object.hidden || !row.occurred_at) {
+  const record = isUuid(recordId)
+    ? (await loadRecords(context, [recordId])).get(recordId)
+    : undefined;
+  const object = record && context.schema.objectsById.get(record.object_type_id);
+  if (!record || !object || object.hidden || !record.occurred_at) {
     throw new AppError(
       422,
       'invalid_source',
-      row && object && !object.isEvent
+      record && object && !object.isEvent
         ? `source ${recordId} is a ${object.name}, not an event; a source is an event record: ` +
             'log it with log_event first and pass the id it returns'
         : `source ${recordId} is not an event in this workspace; log it with log_event first ` +
@@ -440,74 +426,151 @@ export async function lockSource(
       { source: recordId },
     );
   }
-  if (row.deleted_at) {
-    throw new AppError(409, 'source_retracted', `source event ${row.id} was deleted`, {
-      source: row.id,
+  if (record.deleted_at) {
+    throw new AppError(409, 'source_retracted', `source event ${record.id} was deleted`, {
+      source: record.id,
     });
   }
-  return { id: row.id, occurredAt: row.occurred_at };
+  return { id: record.id, occurredAt: record.occurred_at };
+}
+
+/** Assertions citing any of some events, as this plan sees them. */
+async function assertionsCiting(
+  context: WriteContext,
+  eventIds: readonly string[],
+): Promise<AssertionRow[]> {
+  const vars: Record<string, unknown> = {};
+  const statements = eventIds.map((id, i) => {
+    vars[`e${i}`] = id;
+    return `SELECT * FROM field_assertions WHERE source = $e${i};`;
+  });
+  const results = (await context.op.db.query(statements.join('\n'), vars)) as StoredAssertion[][];
+  const rows = new Map(results.flat().map((row) => [publicId(row.id), fromStored(row)]));
+  const wanted = new Set(eventIds);
+  for (const [id, row] of planState(context.op).assertions) {
+    if (row.source && wanted.has(row.source)) rows.set(id, row);
+    else rows.delete(id);
+  }
+  return [...rows.values()];
 }
 
 /**
- * The deletion lifecycle of events (6.4), after they are soft-deleted and
- * locked `FOR UPDATE`: every field assertion on other records that cites
- * one of them becomes `retracted`, the fields where one was winning are
- * recomputed, and facts left with no live source are hidden on read. A
- * retracted assertion is never eligible again, so an older superseded claim
- * from the same source cannot win either (rule 2.4). The events' own
- * initial values stay with them.
+ * The deletion lifecycle of events (6.4), after they are soft-deleted:
+ * every field assertion on other records that cites one of them becomes
+ * `retracted`, the fields where one was winning are recomputed, and facts
+ * left with no live source are hidden on read. A retracted assertion is
+ * never eligible again, so an older superseded claim from the same source
+ * cannot win either (rule 2.4). The events' own initial values stay with
+ * them.
  */
 export async function retractEventClaims(
-  tx: Tx,
   context: WriteContext,
   eventIds: readonly string[],
 ): Promise<EventRetraction> {
   if (eventIds.length === 0) {
     return { retractedAssertions: 0, recomputedRecordIds: [], hiddenFactIds: [] };
   }
-  const ids = [...eventIds];
-  // No new claim can cite the events now: writers lock their source first.
-  const affected = await tx<{ record_id: string }[]>`
-    select distinct record_id from field_assertions
-    where workspace_id = ${context.workspaceId} and source_record_id = any(${ids}::uuid[])
-      and record_id <> all(${ids}::uuid[])
-      and status in ('active', 'superseded', 'pending_review')`;
-  const locked = await lockRecordsForUpdate(
-    tx,
-    context.workspaceId,
-    affected.map((a) => a.record_id),
+  const ids = new Set(eventIds);
+  const citing = (await assertionsCiting(context, [...ids])).filter(
+    (a) =>
+      !ids.has(a.record) && ['active', 'superseded', 'pending_review'].includes(a.status),
   );
-  const retracted = await tx<RemovedClaim[]>`
-    with target as (
-      select id, record_id, field_id, status from field_assertions
-      where workspace_id = ${context.workspaceId} and source_record_id = any(${ids}::uuid[])
-        and record_id <> all(${ids}::uuid[])
-        and status in ('active', 'superseded', 'pending_review')
-    )
-    update field_assertions a set status = 'retracted'
-    from target t where a.id = t.id
-    returning t.record_id, t.field_id, t.status`;
+  const locked = await lockRecordsForUpdate(
+    context,
+    citing.map((a) => a.record),
+  );
+  const retracted: RemovedClaim[] = citing.map((a) => {
+    updateAssertion(context, a, { status: 'retracted' });
+    return { record_id: a.record, field_id: a.field_id, status: a.status };
+  });
   // A claim from these very events on a record later in the order must not
   // block another record's previous value from coming back.
-  const recomputed = await releaseAndRecompute(tx, context, locked, retracted);
-  const hidden = await tx<{ id: string }[]>`
-    select distinct f.id from facts f
-    join fact_sources s on s.fact_id = f.id and s.source_record_id = any(${ids}::uuid[])
-    where f.workspace_id = ${context.workspaceId} and f.deleted_at is null
-      and not exists (${liveFactSource(tx, tx`f.id`)})
-    order by f.id`;
+  const recomputed = await releaseAndRecompute(context, locked, retracted);
+  const cited = await factsCiting(context.op.db, [...ids]);
+  const live = await liveFactSources(context.op, cited);
   return {
     retractedAssertions: retracted.length,
     recomputedRecordIds: recomputed,
-    hiddenFactIds: hidden.map((f) => f.id),
+    hiddenFactIds: cited.filter((f) => (live.get(f)?.length ?? 0) === 0).sort(),
   };
 }
 
-/** `select … from` a fact's live sources: events not deleted (2.1). */
-export function liveFactSource(tx: Tx, factId: Fragment): Fragment {
-  return tx`select 1 from fact_sources s
-    join records src on src.id = s.source_record_id and src.deleted_at is null
-    where s.fact_id = ${factId}`;
+/** Live facts (not retracted) citing any of some events. */
+async function factsCiting(db: Db, eventIds: readonly string[]): Promise<string[]> {
+  const vars: Record<string, unknown> = {};
+  const statements = eventIds.map((id, i) => {
+    vars[`e${i}`] = id;
+    return `SELECT VALUE fact FROM fact_sources WHERE source = $e${i};`;
+  });
+  const factIds = [...new Set(((await db.query(statements.join('\n'), vars)) as string[][]).flat())];
+  if (factIds.length === 0) return [];
+  const facts = await db.rows<{ id: RecordId; deleted_at?: Date | null }>(
+    'SELECT id, deleted_at FROM $ids;',
+    { ids: factIds.map((id) => new RecordId('facts', id)) },
+  );
+  return facts.filter((f) => !f.deleted_at).map((f) => publicId(f.id));
+}
+
+/** A fact's source event that is still live (2.1). */
+export type LiveFactSource = {
+  fact: string;
+  source: string;
+  objectTypeId: string;
+  occurredAt: Date;
+  quote: string | null;
+};
+
+/**
+ * The live sources of facts, in order of occurrence: events not deleted
+ * (2.1). A fact with none is hidden on read. Inside a plan, deletions the
+ * plan made count. Replaces a join: one indexed statement per fact, then
+ * point lookups of the sources.
+ */
+export async function liveFactSources(
+  dbOrOp: Db | Operation,
+  factIds: readonly string[],
+): Promise<Map<string, LiveFactSource[]>> {
+  const ids = [...new Set(factIds)];
+  const result = new Map<string, LiveFactSource[]>(ids.map((id) => [id, []]));
+  if (ids.length === 0) return result;
+  const db = 'db' in dbOrOp ? dbOrOp.db : dbOrOp;
+  const vars: Record<string, unknown> = {};
+  const statements = ids.map((id, i) => {
+    vars[`f${i}`] = id;
+    return `SELECT fact, source, quote, id FROM fact_sources WHERE fact = $f${i} ORDER BY id;`;
+  });
+  const rows = (
+    (await db.query(statements.join('\n'), vars)) as {
+      fact: string;
+      source?: string | null;
+      quote?: string | null;
+    }[][]
+  ).flat();
+  const sourceIds = [...new Set(rows.flatMap((r) => (r.source ? [r.source] : [])))];
+  const entries =
+    'db' in dbOrOp ? await entriesOf(dbOrOp, sourceIds) : await directoryEntries(db, sourceIds);
+  const identities = await db.rows<{ id: RecordId; occurred_at: Date }>(
+    'SELECT id, occurred_at FROM $ids;',
+    { ids: sourceIds.map((id) => new RecordId('event_identity', id)) },
+  );
+  const occurred = new Map(identities.map((i) => [publicId(i.id), i.occurred_at]));
+  for (const row of rows) {
+    if (!row.source) continue;
+    const entry = entries.get(row.source);
+    const at = occurred.get(row.source);
+    if (!entry || entry.deleted_at || !at) continue;
+    result.get(row.fact)?.push({
+      fact: row.fact,
+      source: row.source,
+      objectTypeId: entry.object_type_id,
+      occurredAt: at,
+      quote: row.quote ?? null,
+    });
+  }
+  for (const list of result.values()) {
+    list.sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
+  }
+  return result;
 }
 
 /**
@@ -533,222 +596,3 @@ export function presentSource(
   };
 }
 
-/** The precedence of attachment kinds (7.1): a lower rank wins. */
-const VIA_RANK = { participant: 1, about: 2, field: 3, rollup: 4 } as const;
-
-/**
- * Events directly attached to a record (6.3, 7.1): it took part, the event
- * is about it, or one of the event's own relation fields points at it. One
- * row per event, with the attachment that wins by precedence; among several
- * relation fields, the one with the smallest field ID. Live events of
- * visible types only, never internal notes.
- */
-export function directAttachments(
-  tx: Tx,
-  schema: CompiledSchema,
-  workspaceId: string,
-  record: string | Fragment,
-  link?: EventAttachment,
-  eventTypeIds: string[] = schema.eventTypeIds,
-): Fragment {
-  const recordId = typeof record === 'string' ? tx`${record}::uuid` : record;
-  const fieldIds = schema.eventRelationFieldIds;
-  const want = (kind: EventAttachment) => !link || link === kind;
-  const parts: Fragment[] = [];
-  if (want('participant') || want('about')) {
-    const kinds = (['participant', 'about'] as const).filter(want);
-    parts.push(tx`
-      select l.event_id, min(case l.link when 'participant' then ${VIA_RANK.participant}::int
-          else ${VIA_RANK.about}::int end) as rank, null::uuid as field_id
-      from event_links l
-      where l.workspace_id = ${workspaceId} and l.record_id = ${recordId}
-        and l.link = any(${kinds as unknown as string[]}::text[])
-      group by l.event_id`);
-  }
-  if (want('field') && fieldIds.length > 0) {
-    parts.push(tx`
-      select l.source_record_id as event_id, ${VIA_RANK.field}::int as rank,
-        min(l.field_id::text)::uuid as field_id
-      from record_links l
-      where l.workspace_id = ${workspaceId} and l.target_record_id = ${recordId}
-        and l.field_id = any(${fieldIds}::uuid[])
-      group by l.source_record_id`);
-  }
-  if (parts.length === 0) {
-    parts.push(tx`select null::uuid as event_id, 0 as rank, null::uuid as field_id where false`);
-  }
-  const union = parts.reduce((a, b) => tx`${a} union all ${b}`);
-  return tx`(
-    select distinct on (a.event_id) a.event_id, a.rank, a.field_id
-    from (${union}) a
-    join records ev on ev.id = a.event_id and ev.deleted_at is null
-      and ev.object_type_id = any(${eventTypeIds}::uuid[])
-    order by a.event_id, a.rank, a.field_id)`;
-}
-
-/** A row of `eventHistory`: one event and the attachment that wins. */
-export type HistoryRow = {
-  event_id: string;
-  occurred_at: Date;
-  rank: number;
-  field_id: string | null;
-  via_record_id: string | null;
-};
-
-/**
- * The events in a record's history (7.1, 7.2): those attached to it
- * directly and, unless `link` asks for one direct kind, those attached
- * directly to a live record that points at it through a `rollUpEvents`
- * field. One row per event, with the attachment that wins: a direct kind
- * first (participant, about, field), then a rollup, the smallest field ID
- * and then source record ID among several. Never more than one hop: what a
- * source has only by rollup stays with it.
- *
- * `where` bounds the events by (occurred_at, id), for a keyset page or a
- * time range, and `eventTypeIds` narrows them to some event types (visible
- * ones only). With `limit`, the rows are at least the newest `limit` of
- * those, merged from each source's own newest `limit`: an event's position among one source's events is never later
- * than its position overall, so they hold the page and every path to its
- * events, and the full fan-out is never gathered. The caller orders and
- * limits. Without `limit`, every event, for counts.
- */
-export function eventHistory(
-  tx: Tx,
-  schema: CompiledSchema,
-  workspaceId: string,
-  recordId: string,
-  options: {
-    link?: EventAttachment;
-    limit?: number;
-    where?: (time: Fragment, id: Fragment) => Fragment;
-    eventTypeIds?: string[];
-  } = {},
-): Fragment {
-  return tx`(
-    select distinct on (m.event_id) m.event_id, m.occurred_at, m.rank, m.field_id,
-      m.via_record_id
-    from (${historyBranches(tx, schema, workspaceId, recordId, options)}) m
-    order by m.event_id, m.rank, m.field_id, m.via_record_id)`;
-}
-
-/** Every path to every event in a record's history, before deduplication. */
-function historyBranches(
-  tx: Tx,
-  schema: CompiledSchema,
-  workspaceId: string,
-  recordId: string,
-  options: Parameters<typeof eventHistory>[4] = {},
-): Fragment {
-  const { link, limit, where } = options;
-  const types = options.eventTypeIds
-    ? options.eventTypeIds.filter((id) => schema.eventTypeIds.includes(id))
-    : schema.eventTypeIds;
-  const newest = (events: Fragment) => tx`
-    select d.event_id, e.occurred_at, d.rank, d.field_id
-    from ${events} d
-    join event_records e on e.record_id = d.event_id
-    where ${where ? where(tx`e.occurred_at`, tx`d.event_id`) : tx`true`}
-    ${limit === undefined ? tx`` : tx`order by e.occurred_at desc, d.event_id desc limit ${limit}`}`;
-  const branches = [
-    tx`select t.*, null::uuid as via_record_id
-      from (${newest(directAttachments(tx, schema, workspaceId, recordId, link, types))}) t`,
-  ];
-  const fieldIds = link ? [] : schema.rollUpFieldIds;
-  if (fieldIds.length > 0) {
-    branches.push(tx`
-      select t.event_id, t.occurred_at, ${VIA_RANK.rollup}::int as rank, s.field_id,
-        s.source_record_id as via_record_id
-      from record_links s
-      join records src on src.id = s.source_record_id and src.deleted_at is null
-      cross join lateral (${newest(
-        directAttachments(tx, schema, workspaceId, tx`s.source_record_id`, undefined, types),
-      )}) t
-      where s.target_record_id = ${recordId} and s.field_id = any(${fieldIds}::uuid[])
-        and s.workspace_id = ${workspaceId} and s.source_record_id <> ${recordId}`);
-  }
-  return branches.reduce((a, b) => tx`${a} union all ${b}`);
-}
-
-/** The number of events in a record's history, each counted once (7.2). */
-export async function countEventHistory(
-  tx: Tx,
-  schema: CompiledSchema,
-  workspaceId: string,
-  recordId: string,
-): Promise<number> {
-  // Counts distinct events over every path, without choosing each one's
-  // winning attachment, which only a page needs.
-  const [row] = await tx<{ total: string }[]>`
-    select count(distinct m.event_id) as total
-    from (${historyBranches(tx, schema, workspaceId, recordId)}) m`;
-  return Number(row?.total ?? 0);
-}
-
-/** How a row from `directAttachments` or `eventHistory` presents its attachment. */
-export function viaOf(
-  schema: CompiledSchema,
-  row: { rank: number; field_id: string | null; via_record_id?: string | null },
-): Via {
-  if (row.rank === VIA_RANK.participant) return { kind: 'participant' };
-  if (row.rank === VIA_RANK.about) return { kind: 'about' };
-  const field = row.field_id
-    ? schema.fieldOwners.get(row.field_id)?.fieldsById.get(row.field_id)
-    : undefined;
-  const name = field?.name ?? 'unknown';
-  if (row.rank === VIA_RANK.rollup && row.via_record_id) {
-    return { kind: 'rollup', field: name, record: row.via_record_id };
-  }
-  return { kind: 'field', field: name };
-}
-
-/**
- * A page of a record's event history (7.1, 7.2), newest first, each event
- * once with how it is attached. Keyset on (occurred_at, id).
- */
-export async function attachedEventPage(
-  tx: Tx,
-  schema: CompiledSchema,
-  workspaceId: string,
-  recordId: string,
-  limit: number,
-  cursor?: string,
-  link?: EventAttachment,
-): Promise<{
-  items: AttachedEvent[];
-  nextCursor: string | null;
-  references: Record<string, RecordReference>;
-}> {
-  const history = eventHistory(tx, schema, workspaceId, recordId, {
-    link,
-    where: (time, id) => after(tx, time, id, cursor, true),
-    limit: limit + 1,
-  });
-  const rows = await tx<
-    (RecordRow & Omit<HistoryRow, 'event_id' | 'occurred_at'> & { stamp: string })[]
-  >`
-    select ${tx(RECORD_COLUMNS.map((c) => `r.${c}`))}, h.occurred_at::text as stamp,
-      h.rank, h.field_id, h.via_record_id
-    from ${history} h
-    join records r on r.id = h.event_id
-    order by h.occurred_at desc, h.event_id desc
-    limit ${limit + 1}`;
-  const result = page(rows, limit);
-  const presented = await presentRecords(tx, schema, result.items);
-  const items = presented.flatMap((record, i): AttachedEvent[] => {
-    const row = result.items[i];
-    return row && record.event ? [{ ...record, event: record.event, via: viaOf(schema, row) }] : [];
-  });
-  // Labels for every record the page names, in one read, so a client never
-  // fetches one per participant.
-  const named = items.flatMap(({ event, via }) => [
-    ...event.participants.matched.map((p) => p.recordId),
-    ...event.participants.unmatched.flatMap((p) => p.candidates ?? []),
-    ...event.about,
-    ...(via.kind === 'rollup' ? [via.record] : []),
-  ]);
-  return {
-    items,
-    nextCursor: result.nextCursor,
-    references: await references(tx, schema, [...new Set(named)]),
-  };
-}

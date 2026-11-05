@@ -56,7 +56,10 @@ export function tableStatements(table: TableDefinition): string[] {
 }
 
 export function indexStatement(index: IndexDefinition): string {
-  const fields = index.fields.map(ident).join(', ');
+  // `name.*` indexes each element of an array field.
+  const fields = index.fields
+    .map((f) => (f.endsWith('.*') ? `${ident(f.slice(0, -2))}.*` : ident(f)))
+    .join(', ');
   const kind = index.fulltext
     ? ` FULLTEXT ANALYZER ${ident(index.fulltext)} BM25`
     : index.unique
@@ -244,6 +247,9 @@ export const WORKSPACE_TABLES: TableDefinition[] = [
       ['record', 'string'],
       ['field_id', 'string'],
       ['value', 'any'],
+      // Relation values: the record IDs the value points at, element-indexed
+      // so a merge finds every assertion pointing at the merged record.
+      ['refs', 'array<string>'],
       ['actor', ACTOR_TYPE],
       ['source', OPT('string')],
       ['is_initial', 'bool'],
@@ -481,6 +487,7 @@ export const WORKSPACE_INDEXES: IndexDefinition[] = [
   },
   { name: 'field_assertions_field_idx', table: 'field_assertions', fields: ['field_id'] },
   { name: 'field_assertions_source_idx', table: 'field_assertions', fields: ['source'] },
+  { name: 'field_assertions_refs_idx', table: 'field_assertions', fields: ['refs.*'] },
   {
     name: 'field_assertions_review_idx',
     table: 'field_assertions',
@@ -524,6 +531,7 @@ export const WORKSPACE_INDEXES: IndexDefinition[] = [
   { name: 'event_links_event_idx', table: 'event_links', fields: ['event', 'position'] },
   { name: 'event_links_record_idx', table: 'event_links', fields: ['record', 'link'] },
   { name: 'event_links_unmatched_idx', table: 'event_links', fields: ['unmatched_reason'] },
+  { name: 'event_links_handle_idx', table: 'event_links', fields: ['handle'] },
   {
     name: 'event_attachments_target_idx',
     table: 'event_attachments',
@@ -578,7 +586,7 @@ export const WORKSPACE_INDEXES: IndexDefinition[] = [
     unique: true,
   },
   { name: 'operations_expiry_idx', table: 'operations', fields: ['expires_at'] },
-  { name: 'operations_refs_idx', table: 'operations', fields: ['refs'] },
+  { name: 'operations_refs_idx', table: 'operations', fields: ['refs.*'] },
   { name: 'suppressions_uq', table: 'suppressions', fields: ['kind', 'hmac'], unique: true },
   { name: 'deletion_audit_log_idx', table: 'deletion_audit_log', fields: ['created_at'] },
   { name: 'jobs_status_idx', table: 'jobs', fields: ['status', 'run_after'] },

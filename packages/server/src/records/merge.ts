@@ -1,19 +1,29 @@
 import type { MergeResult, MergeSuggestionDecision } from '@retainer/shared';
 import { FieldValueError, MULTI_VALUE_TYPES } from '@retainer/shared';
 import { z } from 'zod';
-import type { Tx } from '../db/tx.js';
+import { RecordId } from '../db/cbor.js';
+import { fieldColumn, isUuid, publicId } from '../db/names.js';
 import { AppError, notFound, requireUser } from '../errors.js';
+import { addDirectAttachments, removeDirectAttachments } from '../memory/attachments.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import { type FieldState, relationTargetIds } from '../schema-engine/types.js';
-import { getRecord } from './read.js';
+import { deleteSearchDocuments } from './search-docs.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 import { sameValue } from './winner.js';
 import {
+  type AssertionRow,
   closeSuggestionsFor,
+  entriesOf,
+  fromStored,
   lockRecordsForUpdate,
   objectOf,
+  planState,
   recomputeFields,
+  releaseIdentifiers,
   resolveRecordId,
+  type StoredAssertion,
+  syncEdges,
+  updateAssertion,
   type WriteContext,
   writeFields,
 } from './write.js';
@@ -89,38 +99,65 @@ export function inboundRelationFields(schema: CompiledSchema, object: CompiledOb
   );
 }
 
+/** Assertions whose relation value points at a record, as this plan sees them. */
+async function assertionsPointingAt(
+  context: WriteContext,
+  recordId: string,
+): Promise<AssertionRow[]> {
+  const stored = await context.op.rows<StoredAssertion>(
+    'SELECT * FROM field_assertions WHERE refs CONTAINS $record;',
+    { record: recordId },
+  );
+  const rows = new Map(stored.map((row) => [publicId(row.id), fromStored(row)]));
+  const pointsAt = (value: unknown) =>
+    value === recordId || (Array.isArray(value) && value.includes(recordId));
+  for (const [id, row] of planState(context.op).assertions) {
+    if (pointsAt(row.value)) rows.set(id, row);
+    else rows.delete(id);
+  }
+  return [...rows.values()];
+}
+
+/** The merged result the plan returns; the survivor is presented after commit. */
+export type MergeOutcome = Omit<MergeResult, 'record'>;
+
+type LinkRow = {
+  id: RecordId;
+  event: string;
+  position: number;
+  record?: string | null;
+  link: 'participant' | 'about';
+};
+
 /**
  * Merges record `input.recordId` (B) into `survivorId` (A), in one
- * transaction (4.2):
+ * operation (4.2). The write protocol serializes it with every other write
+ * in the workspace, so no relation write or logging interleaves:
  *
  * 1. Resolve both to canonical IDs. B already merged into A is a no-op.
- * 2. Lock A and B `FOR UPDATE` in sorted ID order, then every record with a
- *    relation assertion pointing at B. A relation write locks its target
- *    `FOR KEY SHARE`, so one that started earlier commits first and is seen
- *    here, and one that starts later waits and then follows the merge.
- * 3. Point inbound relation assertions and links at A, keeping provenance.
- * 4. Move B's assertions, facts and event links to A; drop B's
- *    identifiers and links, then recompute the moved fields of A with the
+ * 2. Point inbound relation assertions at A, keeping provenance, and
+ *    recompute those fields, which moves their edges and attachments.
+ * 3. Move B's assertions, facts and event links to A; release B's
+ *    identifiers and edges, then recompute the moved fields of A with the
  *    normal rules, which rebuilds identifiers and revalidates unique claims.
- * 5. For `emails`, `phones` and `links`, write the combined current winners
+ * 4. For `emails`, `phones` and `links`, write the combined current winners
  *    as the merging user; `values` overrides any field.
- * 6. Soft-delete B with `merged_into_id = A`, point records merged into B at
+ * 5. Soft-delete B with `merged_into = A`, point records merged into B at
  *    A so chains stay one hop, accept the pair's suggestion and close B's
  *    others.
  */
 export async function mergeRecords(
-  tx: Tx,
   context: WriteContext,
   survivorId: string,
   input: MergeInput,
-): Promise<MergeResult> {
+): Promise<MergeOutcome> {
   requireUser(context.actor, 'merge records');
-  const { workspaceId } = context;
+  const { op } = context;
   if (survivorId === input.recordId) {
     throw new AppError(422, 'invalid_merge', 'a record cannot be merged into itself');
   }
-  const a = await resolveRecordId(tx, workspaceId, survivorId);
-  const b = await resolveRecordId(tx, workspaceId, input.recordId);
+  const a = await resolveRecordId(op, survivorId);
+  const b = await resolveRecordId(op, input.recordId);
   if (a === b) {
     if (a !== survivorId) {
       throw new AppError(
@@ -130,17 +167,11 @@ export async function mergeRecords(
         { recordId: a },
       );
     }
-    return {
-      id: a,
-      mergedId: input.recordId,
-      merged: false,
-      recomputedRecordIds: [],
-      record: await getRecord(tx, workspaceId, context.schema, a),
-    };
+    return { id: a, mergedId: input.recordId, merged: false, recomputedRecordIds: [] };
   }
 
   const pair = [a, b].sort() as [string, string];
-  const locked = await lockRecordsForUpdate(tx, workspaceId, pair);
+  const locked = await lockRecordsForUpdate(context, pair);
   const survivor = locked.find((r) => r.id === a);
   const merged = locked.find((r) => r.id === b);
   if (!survivor || !merged || survivor.merged_into_id || merged.merged_into_id) {
@@ -171,68 +202,118 @@ export async function mergeRecords(
     );
   }
   const overrides = prepareValues(object, input.values ?? {}, 'update');
+  const before = { ...survivor.data };
 
-  // Inbound relations: lock their records, then point them at A. The
-  // winning assertion stays the same row, so its edge simply follows it.
-  let inboundIds: string[] = [];
-  const relationFieldIds = inboundRelationFields(context.schema, object);
-  if (relationFieldIds.length > 0) {
-    // A single-record value is B; a set (many_to_many) holds B among others.
-    const pointsAtB = tx`(value = ${tx.json(b)}
-      or (jsonb_typeof(value) = 'array' and value @> ${tx.json([b])}))`;
-    const inbound = await tx<{ record_id: string }[]>`
-      select distinct record_id from field_assertions
-      where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
-        and ${pointsAtB} and record_id <> all(${pair}::uuid[])`;
-    inboundIds = inbound.map((r) => r.record_id).sort();
-    await lockRecordsForUpdate(tx, workspaceId, inboundIds);
-    await tx`
-      update field_assertions set value = ${tx.json(a)}
-      where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
-        and value = ${tx.json(b)}`;
-    // In a set, B becomes A once: membership is deduplicated and kept in ID
-    // order (byte order, as the server sorts), so it still compares equal.
-    await tx`
-      update field_assertions set value = (
-        select coalesce(jsonb_agg(x order by x collate "C"), '[]'::jsonb)
-        from (select distinct case when v = ${b} then ${a} else v end as x
-          from jsonb_array_elements_text(value) v) d)
-      where workspace_id = ${workspaceId} and field_id = any(${relationFieldIds}::uuid[])
-        and jsonb_typeof(value) = 'array' and value @> ${tx.json([b])}`;
-    // Edges follow; an edge to B whose source already links to A is dropped.
-    await tx`
-      delete from record_links d using record_links k
-      where d.workspace_id = ${workspaceId} and d.target_record_id = ${b}
-        and k.source_record_id = d.source_record_id and k.field_id = d.field_id
-        and k.target_record_id = ${a}`;
-    await tx`
-      update record_links set target_record_id = ${a}
-      where workspace_id = ${workspaceId} and target_record_id = ${b}
-        and source_record_id <> ${b}`;
+  // Move B's own claims to A first, so recomputing inbound records below
+  // never sees B's edges or identifiers as current.
+  const ownFields = object.state.fields;
+  await releaseIdentifiers(context, b, ownFields);
+  for (const field of ownFields) {
+    if (field.type === 'relation' && !field.settings.isInverse) {
+      await syncEdges(context, object, field, b, [], { assertion: null, actor: context.actor });
+    }
+  }
+  const own = await (async () => {
+    const stored = await op.rows<StoredAssertion>(
+      'SELECT * FROM field_assertions WHERE record = $record;',
+      { record: b },
+    );
+    const rows = new Map(stored.map((row) => [publicId(row.id), fromStored(row)]));
+    for (const [id, row] of planState(op).assertions) if (row.record === b) rows.set(id, row);
+    return [...rows.values()].filter((row) => row.record === b);
+  })();
+  for (const row of own) updateAssertion(context, row, { record: a });
+  const movedFieldIds = [...new Set(own.map((row) => row.field_id))];
+
+  // Inbound relations: B becomes A in every value that points at it. In a
+  // set, B becomes A once: membership is deduplicated and kept in ID order.
+  const inboundFields = new Set(inboundRelationFields(context.schema, object));
+  const inbound = (await assertionsPointingAt(context, b)).filter(
+    (row) => inboundFields.has(row.field_id) && !pair.includes(row.record),
+  );
+  const inboundByRecord = new Map<string, Set<string>>();
+  for (const row of inbound) {
+    const value = Array.isArray(row.value)
+      ? [...new Set((row.value as string[]).map((v) => (v === b ? a : v)))].sort()
+      : a;
+    updateAssertion(context, row, { value });
+    const fields = inboundByRecord.get(row.record) ?? new Set();
+    fields.add(row.field_id);
+    inboundByRecord.set(row.record, fields);
+  }
+  const inboundIds = [...inboundByRecord.keys()].sort();
+  for (const record of await lockRecordsForUpdate(context, inboundIds)) {
+    const owner = context.schema.objectsById.get(record.object_type_id);
+    if (owner) {
+      await recomputeFields(context, owner, record, [
+        ...(inboundByRecord.get(record.id) ?? []),
+      ]);
+    }
   }
 
-  // Move B's claims to A and release its identifiers and edges.
-  await tx`delete from record_identifiers where record_id = ${b}`;
-  await tx`delete from record_links where source_record_id = ${b}`;
-  const moved = await tx<{ field_id: string }[]>`
-    update field_assertions set record_id = ${a} where record_id = ${b} returning field_id`;
-  await tx`update facts set record_id = ${a} where record_id = ${b}`;
-  await tx`update event_links set record_id = ${a} where record_id = ${b}`;
-  // An event is about a record once: drop an about link that now repeats
-  // another link to the survivor (1.3).
-  await tx`
-    delete from event_links d using event_links k
-    where d.workspace_id = ${workspaceId} and d.record_id = ${a} and d.link = 'about'
-      and k.event_id = d.event_id and k.record_id = ${a} and k.id <> d.id
-      and (k.link = 'participant' or k.position < d.position)`;
+  // Facts move with their search documents.
+  const facts = await op.rows<{ id: RecordId }>('SELECT id FROM facts WHERE record = $record;', {
+    record: b,
+  });
+  for (const fact of facts) {
+    op.batch.update('facts', publicId(fact.id), { record: a });
+    op.batch.write(
+      `UPDATE ${op.batch.v(new RecordId('search_documents', publicId(fact.id)))} SET owner = ${op.batch.v(a)} RETURN id`,
+      { min: 0, max: 1 },
+      'search_documents',
+    );
+  }
+
+  // Event links and their attachments move to A. An event is about a
+  // record once: an about link that now repeats another link to the
+  // survivor is dropped (1.3).
+  const linksOfB = await op.rows<LinkRow>('SELECT * FROM event_links WHERE record = $record;', {
+    record: b,
+  });
+  const linksOfA = await op.rows<LinkRow>('SELECT * FROM event_links WHERE record = $record;', {
+    record: a,
+  });
+  const byEvent = new Map<string, LinkRow[]>();
+  for (const link of [...linksOfA, ...linksOfB]) {
+    byEvent.set(link.event, [...(byEvent.get(link.event) ?? []), link]);
+  }
+  const dropped = new Set<string>();
+  for (const links of byEvent.values()) {
+    const sorted = [...links].sort(
+      (x, y) =>
+        (x.link === 'participant' ? 0 : 1) - (y.link === 'participant' ? 0 : 1) ||
+        x.position - y.position,
+    );
+    const keep = sorted[0];
+    for (const link of sorted.slice(1)) {
+      if (link.link === 'about' && link !== keep) dropped.add(publicId(link.id));
+    }
+  }
+  for (const link of linksOfB) {
+    const linkId = publicId(link.id);
+    await removeDirectAttachments(context, [
+      { event: link.event, target: b, via: link.link, linkId },
+    ]);
+    if (dropped.has(linkId)) {
+      op.batch.deleteIds('event_links', [linkId]);
+      continue;
+    }
+    op.batch.update('event_links', linkId, { record: a });
+    await addDirectAttachments(context, [{ event: link.event, target: a, via: link.link, linkId }]);
+  }
+  for (const link of linksOfA) {
+    const linkId = publicId(link.id);
+    if (!dropped.has(linkId)) continue;
+    op.batch.deleteIds('event_links', [linkId]);
+    await removeDirectAttachments(context, [
+      { event: link.event, target: a, via: link.link, linkId },
+    ]);
+  }
+
   // The survivor changed even when no field did (it gained B's facts), so
   // the consolidator's next run compares it again.
-  await tx`
-    update records set updated_at = clock_timestamp(), updated_by = ${tx.json(context.actor)}
-    where id = ${a}`;
-
-  const before = survivor.data;
-  await recomputeFields(tx, context, object, survivor, [...new Set(moved.map((m) => m.field_id))]);
+  op.batch.update(object.table, a, { updated_at: op.now, updated_by: context.actor });
+  await recomputeFields(context, object, survivor, movedFieldIds);
 
   const combined = new Map<FieldState, unknown>();
   for (const field of object.activeFields) {
@@ -243,50 +324,78 @@ export async function mergeRecords(
   // B's handles were released above, but both records held them while
   // live: they are not coming back, so they skip the suppression check.
   if (combined.size > 0) {
-    await writeFields(tx, context, object, survivor, combined, { skipSuppressionCheck: true });
+    await writeFields(context, object, survivor, combined, { skipSuppressionCheck: true });
   }
-  if (overrides.size > 0) await writeFields(tx, context, object, survivor, overrides);
+  if (overrides.size > 0) await writeFields(context, object, survivor, overrides);
 
-  await tx`
-    update records set merged_into_id = ${a}, deleted_at = clock_timestamp(),
-      updated_at = clock_timestamp(), updated_by = ${tx.json(context.actor)},
-      data = '{}'::jsonb, label = null, search = null
-    where id = ${b}`;
-  await tx`update records set merged_into_id = ${a} where merged_into_id = ${b}`;
-  await tx`
-    update merge_suggestions set status = 'accepted', decided_by = ${tx.json(context.actor)},
-      decided_at = clock_timestamp()
-    where workspace_id = ${workspaceId} and record_a_id = ${pair[0]}
-      and record_b_id = ${pair[1]} and status = 'pending'`;
-  await closeSuggestionsFor(tx, context, [b]);
-
-  return {
-    id: a,
-    mergedId: b,
-    merged: true,
-    recomputedRecordIds: inboundIds,
-    record: await getRecord(tx, workspaceId, context.schema, a),
+  // B is gone: no values, label or search document, and it resolves to A.
+  const cleared: Record<string, unknown> = {
+    merged_into: a,
+    deleted_at: op.now,
+    updated_at: op.now,
+    updated_by: context.actor,
+    label: undefined,
   };
+  for (const field of object.state.fields) {
+    if (field.type !== 'relation') cleared[fieldColumn(field.key)] = undefined;
+  }
+  op.batch.update(object.table, b, cleared);
+  op.batch.update('record_directory', b, { merged_into: a, deleted_at: op.now, updated_at: op.now });
+  const entryOfB = (await entriesOf(op, [b])).get(b);
+  if (entryOfB) {
+    planState(op).directory.set(b, { ...entryOfB, merged_into: a, deleted_at: op.now });
+  }
+  merged.merged_into_id = a;
+  merged.deleted_at = op.now;
+  deleteSearchDocuments(context, [b]);
+
+  const chained = await op.rows<{ id: RecordId; tb: string }>(
+    'SELECT id, tb FROM record_directory WHERE merged_into = $record;',
+    { record: b },
+  );
+  for (const row of chained) {
+    const id = publicId(row.id);
+    op.batch.update('record_directory', id, { merged_into: a });
+    op.batch.update(row.tb, id, { merged_into: a });
+    const entry = (await entriesOf(op, [id])).get(id);
+    if (entry) planState(op).directory.set(id, { ...entry, merged_into: a });
+  }
+
+  const [suggestion] = await op.rows<{ id: RecordId }>(
+    "SELECT id FROM merge_suggestions WHERE record_a = $a AND record_b = $b AND status = 'pending';",
+    { a: pair[0], b: pair[1] },
+  );
+  if (suggestion) {
+    op.batch.update('merge_suggestions', publicId(suggestion.id), {
+      status: 'accepted',
+      decided_by: context.actor,
+      decided_at: op.now,
+    });
+  }
+  await closeSuggestionsFor(context, [b]);
+
+  return { id: a, mergedId: b, merged: true, recomputedRecordIds: inboundIds };
 }
 
 /** Dismisses a suggested merge; the consolidator never suggests the pair again. */
 export async function dismissMergeSuggestion(
-  tx: Tx,
   context: WriteContext,
   id: string,
 ): Promise<MergeSuggestionDecision> {
   requireUser(context.actor, 'decide merge suggestions');
-  const [row] = await tx<{ status: string }[]>`
-    select status from merge_suggestions
-    where id = ${id} and workspace_id = ${context.workspaceId}
-    for update`;
+  const [row] = isUuid(id)
+    ? await context.op.rows<{ status: string }>('SELECT status FROM $id;', {
+        id: new RecordId('merge_suggestions', id),
+      })
+    : [];
   if (!row) throw notFound('merge suggestion', { id });
   if (row.status !== 'pending') {
     throw new AppError(409, 'not_pending', `merge suggestion is ${row.status}, not pending`);
   }
-  await tx`
-    update merge_suggestions set status = 'dismissed', decided_by = ${tx.json(context.actor)},
-      decided_at = clock_timestamp()
-    where id = ${id}`;
+  context.op.batch.update('merge_suggestions', id, {
+    status: 'dismissed',
+    decided_by: context.actor,
+    decided_at: context.op.now,
+  });
   return { id, status: 'dismissed' };
 }

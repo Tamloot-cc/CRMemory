@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import type { Operation } from '../db/protocol.js';
 import { AppError } from '../errors.js';
 import type { Handle } from '../memory/handles.js';
 import { identifiersFor } from '../records/derive.js';
@@ -64,22 +65,27 @@ const handleKey = (handle: Handle) => `${handle.kind}:${handle.value}`;
 
 /** Adds normalized handles to the workspace's suppression list. Returns how many were new. */
 export async function suppress(
-  tx: Tx,
+  op: Operation,
   workspaceId: string,
   handles: readonly Handle[],
 ): Promise<number> {
   const key = requireSuppressionKey();
   if (handles.length === 0) return 0;
   const rows = [...new Map(handles.map((h) => [handleKey(h), h])).values()].map((h) => ({
-    workspace_id: workspaceId,
     kind: h.kind,
     hmac: hmac(key, workspaceId, h),
   }));
-  const inserted = await tx`
-    insert into suppressions ${tx(rows)}
-    on conflict (workspace_id, kind, hmac) do nothing
-    returning id`;
-  return inserted.length;
+  const existing = await op.rows<{ kind: string; hmac: string }>(
+    'SELECT kind, hmac FROM suppressions WHERE hmac IN $hmacs;',
+    { hmacs: rows.map((r) => r.hmac) },
+  );
+  const known = new Set(existing.map((r) => `${r.kind}:${r.hmac}`));
+  const fresh = rows.filter((r) => !known.has(`${r.kind}:${r.hmac}`));
+  op.batch.insert(
+    'suppressions',
+    fresh.map((r) => ({ id: op.newId(), ...r, created_at: op.now })),
+  );
+  return fresh.length;
 }
 
 /**
@@ -92,23 +98,24 @@ export async function suppress(
  * fails closed rather than skip the check.
  */
 export async function suppressedOf(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   handles: readonly Handle[],
 ): Promise<Set<string>> {
   if (handles.length === 0) return new Set();
   const keys = configuredKeys();
   if (keys.length === 0) {
-    const [any] = await tx`select 1 from suppressions where workspace_id = ${workspaceId} limit 1`;
+    const [any] = await db.rows('SELECT id FROM suppressions LIMIT 1;');
     if (any) requireSuppressionKey();
     return new Set();
   }
   const byHmac = new Map(
     keys.flatMap((key) => handles.map((h) => [hmac(key, workspaceId, h), h] as const)),
   );
-  const rows = await tx<{ hmac: string }[]>`
-    select hmac from suppressions
-    where workspace_id = ${workspaceId} and hmac = any(${[...byHmac.keys()]}::text[])`;
+  const rows = await db.rows<{ hmac: string }>(
+    'SELECT hmac FROM suppressions WHERE hmac IN $hmacs;',
+    { hmacs: [...byHmac.keys()] },
+  );
   return new Set(
     rows.flatMap((r) => {
       const handle = byHmac.get(r.hmac);
@@ -153,20 +160,29 @@ function identityHmac(
  * and the HMAC. A retained suppression token, not anonymization.
  */
 export async function tombstoneEventIdentity(
-  tx: Tx,
+  op: Operation,
   workspaceId: string,
   identities: readonly { channel: string; externalId: string }[],
 ): Promise<void> {
   if (identities.length === 0) return;
   const key = requireSuppressionKey();
-  const rows = identities.map((i) => ({
-    workspace_id: workspaceId,
-    key_id: keyId(key),
-    hmac: identityHmac(key, workspaceId, i.channel, i.externalId),
-  }));
-  await tx`
-    insert into event_identity_tombstones ${tx(rows)}
-    on conflict (workspace_id, key_id, hmac) do nothing`;
+  const rows = [
+    ...new Map(
+      identities.map((i) => {
+        const digest = identityHmac(key, workspaceId, i.channel, i.externalId);
+        return [digest, { key_id: keyId(key), hmac: digest }] as const;
+      }),
+    ).values(),
+  ];
+  const existing = await op.rows<{ hmac: string }>(
+    'SELECT hmac FROM event_identity_tombstones WHERE key_id = $key AND hmac IN $hmacs;',
+    { key: keyId(key), hmacs: rows.map((r) => r.hmac) },
+  );
+  const known = new Set(existing.map((r) => r.hmac));
+  op.batch.insert(
+    'event_identity_tombstones',
+    rows.filter((r) => !known.has(r.hmac)).map((r) => ({ id: op.newId(), ...r, created_at: op.now })),
+  );
 }
 
 /**
@@ -180,17 +196,19 @@ export async function tombstoneEventIdentity(
  * erasure and a logging of the same identity never interleave.
  */
 export async function isEventIdentitySuppressed(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   channel: string,
   externalId: string,
 ): Promise<boolean> {
-  const stored = await tx<{ key_id: string }[]>`
-    select distinct key_id from event_identity_tombstones where workspace_id = ${workspaceId}`;
-  if (stored.length === 0) return false;
+  const [stored] = (await db.query(
+    'SELECT VALUE array::distinct(key_id) FROM event_identity_tombstones GROUP ALL;',
+  )) as [string[][]];
+  const keyIds = [...new Set((stored ?? []).flat())];
+  if (keyIds.length === 0) return false;
   const keys = configuredKeys();
   const known = new Set(keys.map(keyId));
-  if (stored.some((row) => !known.has(row.key_id))) {
+  if (keyIds.some((id) => !known.has(id))) {
     throw new AppError(
       503,
       'not_configured',
@@ -202,12 +220,9 @@ export async function isEventIdentitySuppressed(
     key_id: keyId(key),
     hmac: identityHmac(key, workspaceId, channel, externalId),
   }));
-  const [hit] = await tx`
-    select 1 from event_identity_tombstones t
-    join (select * from unnest(${candidates.map((c) => c.key_id)}::text[],
-      ${candidates.map((c) => c.hmac)}::text[])) as c(key_id, hmac)
-      on c.key_id = t.key_id and c.hmac = t.hmac
-    where t.workspace_id = ${workspaceId}
-    limit 1`;
-  return hit !== undefined;
+  const rows = await db.rows<{ key_id: string; hmac: string }>(
+    'SELECT key_id, hmac FROM event_identity_tombstones WHERE hmac IN $hmacs;',
+    { hmacs: candidates.map((c) => c.hmac) },
+  );
+  return rows.some((r) => candidates.some((c) => c.key_id === r.key_id && c.hmac === r.hmac));
 }

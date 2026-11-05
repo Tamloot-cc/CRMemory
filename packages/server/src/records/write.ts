@@ -1,16 +1,39 @@
 import type { Actor, ActorType } from '@retainer/shared';
+import type { Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { fieldColumn, publicId, relationTable } from '../db/names.js';
+import { toColumn } from '../db/physical.js';
+import type { Operation } from '../db/protocol.js';
+import { ident } from '../db/surreal.js';
 import type { AssertionStatus, ReviewReason } from '../db/types.js';
-import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
+import { edgesChanged } from '../memory/attachments.js';
 import { isSuppressed, suppressedOf, suppressibleHandles } from '../privacy/suppression.js';
 import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
 import { type FieldState, relationTargetIds } from '../schema-engine/types.js';
-import { identifiersFor, searchTextOf } from './derive.js';
-import { searchVector } from './search-sql.js';
+import { type Identifier, identifiersFor } from './derive.js';
+import { deleteSearchDocuments, writeRecordSearch } from './search-docs.js';
+import {
+  type DirEntry,
+  directoryEntries,
+  edgeTargets,
+  fetchRows,
+  type RecordRow,
+} from './store.js';
 import { compareAssertions, pickWinner, type RankedAssertion, reviewReason } from './winner.js';
 
-/** Everything a write needs: who, where, and the schema it validated against. */
+/**
+ * The record write path (rules 2.2–2.5) on the write protocol (spec
+ * section 6). A plan reads what it needs, decides every effect in
+ * TypeScript and adds it to the operation's batch; nothing is written until
+ * the commit. Later steps of one operation read through the plan state
+ * below, so a merge or a retraction that touches a record twice sees its
+ * own earlier decisions.
+ */
+
+/** Everything a write needs: who, where, the schema it validated against and the plan. */
 export type WriteContext = {
+  op: Operation;
   workspaceId: string;
   actor: Actor;
   schema: CompiledSchema;
@@ -46,9 +69,13 @@ export type LockedRecord = {
   id: string;
   object_type_id: string;
   data: Record<string, unknown>;
+  label: string | null;
   updated_at: Date;
   deleted_at: Date | null;
   merged_into_id: string | null;
+  created_at: Date;
+  created_by: Actor;
+  occurred_at: Date | null;
 };
 
 /** Another record already holds a unique value (1.2). */
@@ -73,17 +100,24 @@ export class UniqueConflictError extends AppError {
   }
 }
 
-type AssertionRow = {
+export type AssertionRow = {
   id: string;
+  record: string;
   field_id: string;
   value: unknown;
   actor: Actor;
+  source: string | null;
+  is_initial: boolean;
+  confidence: number;
   status: AssertionStatus;
+  review_reason: ReviewReason | null;
   observed_at: Date;
+  reviewed_by: Actor | null;
+  reviewed_at: Date | null;
   created_at: Date;
 };
 
-const toRanked = (row: AssertionRow): RankedAssertion => ({
+export const toRanked = (row: AssertionRow): RankedAssertion => ({
   id: row.id,
   actorType: row.actor.type,
   observedAt: row.observed_at,
@@ -92,7 +126,7 @@ const toRanked = (row: AssertionRow): RankedAssertion => ({
   value: row.value,
 });
 
-/** Fields whose values become rows in `record_identifiers`. */
+/** Fields whose values become identifier lookups (1.2). */
 const hasIdentifiers = (field: FieldState) =>
   field.isUnique || field.type === 'emails' || field.type === 'phones' || field.type === 'links';
 
@@ -102,41 +136,147 @@ const hasIdentifiers = (field: FieldState) =>
  */
 export const MAX_MERGE_HOPS = 16;
 
-/** Follows `merged_into_id` to the surviving record (4.2). */
-export async function resolveRecordId(tx: Tx, workspaceId: string, id: string): Promise<string> {
+// ---------------------------------------------------------------------------
+// Plan state
+// ---------------------------------------------------------------------------
+
+type IdentifierRow = { id: string; kind: string; value: string };
+type ClaimRow = { id: string; value: string };
+
+type PlanState = {
+  directory: Map<string, DirEntry | null>;
+  records: Map<string, LockedRecord>;
+  /** Assertions this plan created or changed. */
+  assertions: Map<string, AssertionRow>;
+  /** `record\nfield` → identifier lookups after this plan. */
+  identifiers: Map<string, IdentifierRow[]>;
+  /** `record\nfield` → unique claims after this plan. */
+  claims: Map<string, ClaimRow[]>;
+  /** `field\nvalue` → the record holding the claim after this plan, or null if released. */
+  holders: Map<string, string | null>;
+  /** `field\nsource` → edge targets after this plan. */
+  edges: Map<string, string[]>;
+};
+
+export function planState(op: Operation): PlanState {
+  let state = op.cache.get('records') as PlanState | undefined;
+  if (!state) {
+    state = {
+      directory: new Map(),
+      records: new Map(),
+      assertions: new Map(),
+      identifiers: new Map(),
+      claims: new Map(),
+      holders: new Map(),
+      edges: new Map(),
+    };
+    op.cache.set('records', state);
+  }
+  return state;
+}
+
+const pair = (a: string, b: string) => `${a}\n${b}`;
+
+/** Directory entries as this plan sees them. */
+export async function entriesOf(
+  op: Operation,
+  ids: readonly string[],
+): Promise<Map<string, DirEntry>> {
+  const state = planState(op);
+  const missing = [...new Set(ids)].filter((id) => !state.directory.has(id));
+  if (missing.length > 0) {
+    const found = await directoryEntries(op.db, missing);
+    for (const id of missing) state.directory.set(id, found.get(id) ?? null);
+  }
+  const result = new Map<string, DirEntry>();
+  for (const id of ids) {
+    const entry = state.directory.get(id);
+    if (entry) result.set(id, entry);
+  }
+  return result;
+}
+
+function setEntry(op: Operation, entry: DirEntry): void {
+  planState(op).directory.set(entry.id, entry);
+}
+
+/** Follows `merged_into` to the surviving record (4.2), as this plan sees it. */
+export async function resolveRecordId(op: Operation, id: string): Promise<string> {
   let current = id;
   for (let hops = 0; hops < MAX_MERGE_HOPS; hops++) {
-    const [row] = await tx<{ merged_into_id: string | null }[]>`
-      select merged_into_id from records where id = ${current} and workspace_id = ${workspaceId}`;
-    if (!row) throw notFound('record', { id });
-    if (!row.merged_into_id) return current;
-    current = row.merged_into_id;
+    const entry = (await entriesOf(op, [current])).get(current);
+    if (!entry) throw notFound('record', { id });
+    if (!entry.merged_into) return current;
+    current = entry.merged_into;
   }
   throw new AppError(409, 'merge_cycle', `record ${id} has a merge chain that does not end`);
 }
 
+/** Follows merges outside a plan (reads). */
+export async function resolveRecordIdIn(db: Db, id: string): Promise<string> {
+  let current = id;
+  for (let hops = 0; hops < MAX_MERGE_HOPS; hops++) {
+    const entry = (await directoryEntries(db, [current])).get(current);
+    if (!entry) throw notFound('record', { id });
+    if (!entry.merged_into) return current;
+    current = entry.merged_into;
+  }
+  throw new AppError(409, 'merge_cycle', `record ${id} has a merge chain that does not end`);
+}
+
+const lockedFromRow = (row: RecordRow): LockedRecord => ({
+  id: row.id,
+  object_type_id: row.object_type_id,
+  data: row.data,
+  label: row.label,
+  updated_at: row.updated_at,
+  deleted_at: row.deleted_at,
+  merged_into_id: row.merged_into_id,
+  created_at: row.created_at,
+  created_by: row.created_by,
+  occurred_at: row.occurred_at,
+});
+
+/** Records as this plan sees them, by public ID (unknown IDs absent). */
+export async function loadRecords(
+  context: WriteContext,
+  ids: readonly string[],
+): Promise<Map<string, LockedRecord>> {
+  const state = planState(context.op);
+  const missing = [...new Set(ids)].filter((id) => !state.records.has(id));
+  if (missing.length > 0) {
+    const entries = await entriesOf(context.op, missing);
+    const rows = await fetchRows(
+      context.op.db,
+      context.workspaceId,
+      context.schema,
+      entries.values(),
+    );
+    for (const [id, row] of rows) state.records.set(id, lockedFromRow(row));
+  }
+  const result = new Map<string, LockedRecord>();
+  for (const id of ids) {
+    const record = state.records.get(id);
+    if (record) result.set(id, record);
+  }
+  return result;
+}
+
 /**
- * Locks a live record for writing (rule 2.5). A merged ID resolves to the
- * surviving record; a deleted record cannot be written.
- *
- * Writes take `FOR NO KEY UPDATE`, so they serialize with each other but
- * not with the `FOR KEY SHARE` a relation write takes on its target. Merges
- * and deletes take `FOR UPDATE`, which waits for both.
+ * A live record to write (rule 2.5). A merged ID resolves to the surviving
+ * record; a deleted record cannot be written. Concurrent writers are
+ * serialized by the workspace queue and the revision check (section 6).
  */
-export async function lockRecord(tx: Tx, workspaceId: string, id: string): Promise<LockedRecord> {
-  const canonical = await resolveRecordId(tx, workspaceId, id);
-  const [row] = await tx<LockedRecord[]>`
-    select id, object_type_id, data, updated_at, deleted_at, merged_into_id from records
-    where id = ${canonical} and workspace_id = ${workspaceId}
-    for no key update`;
-  if (!row) throw notFound('record', { id });
-  if (row.merged_into_id) return lockRecord(tx, workspaceId, row.merged_into_id);
-  if (row.deleted_at) {
+export async function lockRecord(context: WriteContext, id: string): Promise<LockedRecord> {
+  const canonical = await resolveRecordId(context.op, id);
+  const record = (await loadRecords(context, [canonical])).get(canonical);
+  if (!record) throw notFound('record', { id });
+  if (record.deleted_at) {
     throw new AppError(409, 'record_deleted', `record ${canonical} is deleted`, {
       recordId: canonical,
     });
   }
-  return row;
+  return record;
 }
 
 /**
@@ -160,32 +300,28 @@ type TargetRow = {
   id: string;
   object_type_id: string;
   deleted_at: Date | null;
-  merged_into_id: string | null;
 };
 
-/**
- * Locks relation targets `FOR KEY SHARE` in sorted ID order, following
- * merges (4.2). A merge locks the record it removes `FOR UPDATE`, so this
- * waits for it; READ COMMITTED then sees the merged row, and the value
- * moves to the survivor.
- */
+/** Relation targets after following merges (4.2); a missing one is undefined. */
 export async function lockTargets(
-  tx: Tx,
-  workspaceId: string,
+  context: WriteContext,
   ids: readonly string[],
 ): Promise<Map<string, TargetRow | undefined>> {
-  const lock = (some: readonly string[]) => tx<TargetRow[]>`
-    select id, object_type_id, deleted_at, merged_into_id from records
-    where workspace_id = ${workspaceId} and id = any(${some as string[]}::uuid[])
-    order by id for key share`;
-  const rows = new Map((await lock(ids)).map((r) => [r.id, r]));
   const targets = new Map<string, TargetRow | undefined>();
   for (const id of ids) {
-    let row = rows.get(id);
-    for (let hops = 0; row?.merged_into_id && hops < MAX_MERGE_HOPS; hops++) {
-      [row] = await lock([row.merged_into_id]);
+    let resolved: string | undefined;
+    try {
+      resolved = await resolveRecordId(context.op, id);
+    } catch {
+      resolved = undefined;
     }
-    targets.set(id, row?.merged_into_id ? undefined : row);
+    const entry = resolved ? (await entriesOf(context.op, [resolved])).get(resolved) : undefined;
+    targets.set(
+      id,
+      entry
+        ? { id: entry.id, object_type_id: entry.object_type_id, deleted_at: entry.deleted_at }
+        : undefined,
+    );
   }
   return targets;
 }
@@ -196,7 +332,6 @@ export async function lockTargets(
  * a caller passes.
  */
 async function checkRelationTargets(
-  tx: Tx,
   context: WriteContext,
   object: CompiledObject,
   writes: Map<FieldState, unknown>,
@@ -206,7 +341,7 @@ async function checkRelationTargets(
       entry[0].type === 'relation' && entry[1] !== null,
   );
   if (relations.length === 0) return;
-  const byId = await lockTargets(tx, context.workspaceId, [
+  const byId = await lockTargets(context, [
     ...new Set(relations.flatMap(([, value]) => (Array.isArray(value) ? value : [value]))),
   ]);
   const errors = [];
@@ -242,14 +377,13 @@ async function checkRelationTargets(
 /**
  * Emails and phones erased by `forget` cannot be written again (2.1). A
  * handle the record already holds is not new: another live record can
- * share a phone with the forgotten person and keeps it. The caller holds
- * the privacy lock in shared mode, so the check and the write commit
- * inside the same boundary as `forget`. The error names the field, never
- * the value.
+ * share a phone with the forgotten person and keeps it. `forget` and every
+ * write are serialized by the write protocol. The error names the field,
+ * never the value.
  */
 async function checkSuppressed(
-  tx: Tx,
   context: WriteContext,
+  object: CompiledObject,
   record: LockedRecord,
   writes: Map<FieldState, unknown>,
 ): Promise<void> {
@@ -257,17 +391,20 @@ async function checkSuppressed(
     suppressibleHandles(field, value).map((handle) => ({ field, handle })),
   );
   const suppressed = await suppressedOf(
-    tx,
+    context.op.db,
     context.workspaceId,
     handles.map((h) => h.handle),
   );
   const hits = handles.filter((h) => isSuppressed(suppressed, h.handle));
   if (hits.length === 0) return;
-  const held = await tx<{ value: string }[]>`
-    select value from record_identifiers
-    where record_id = ${record.id} and kind in ('email', 'phone')`;
-  const heldValues = new Set(held.map((h) => h.value));
-  const hit = hits.find((h) => !heldValues.has(h.handle.value));
+  const held = new Set<string>();
+  for (const field of object.state.fields) {
+    if (field.type !== 'emails' && field.type !== 'phones') continue;
+    for (const row of await identifierRows(context, record.id, field)) {
+      if (row.kind === 'email' || row.kind === 'phone') held.add(row.value);
+    }
+  }
+  const hit = hits.find((h) => !held.has(h.handle.value));
   if (hit) {
     throw new AppError(
       409,
@@ -286,14 +423,90 @@ async function checkSuppressed(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Assertions
+// ---------------------------------------------------------------------------
+
+export type StoredAssertion = Omit<AssertionRow, 'id'> & { id: RecordId; refs?: string[] };
+
+export const fromStored = ({ refs: _refs, ...row }: StoredAssertion): AssertionRow => ({
+  ...row,
+  id: publicId(row.id),
+  source: row.source ?? null,
+  review_reason: row.review_reason ?? null,
+  reviewed_by: row.reviewed_by ?? null,
+  reviewed_at: row.reviewed_at ?? null,
+});
+
 /**
- * The write path (rules 2.2–2.5). With the record row locked: insert one
- * assertion per field, recompute only the touched fields' winners, then
- * update `data`, `record_links`, `record_identifiers`, label and search in
- * the same transaction.
+ * A record's assertions for some fields with the given statuses, as this
+ * plan sees them: stored rows overlaid with the plan's own changes.
+ */
+export async function assertionsOf(
+  context: WriteContext,
+  recordId: string,
+  fieldIds: readonly string[] | null,
+  statuses: readonly AssertionStatus[],
+): Promise<AssertionRow[]> {
+  const stored = await context.op.rows<StoredAssertion>(
+    fieldIds
+      ? 'SELECT * FROM field_assertions WHERE record = $record AND field_id IN $fields;'
+      : 'SELECT * FROM field_assertions WHERE record = $record;',
+    { record: recordId, fields: fieldIds ?? [] },
+  );
+  const overlay = planState(context.op).assertions;
+  const rows = new Map(stored.map((row) => [publicId(row.id), fromStored(row)]));
+  for (const [id, row] of overlay) {
+    if (row.record === recordId && (!fieldIds || fieldIds.includes(row.field_id))) {
+      rows.set(id, row);
+    }
+  }
+  return [...rows.values()].filter((row) => statuses.includes(row.status));
+}
+
+/** Adds a new assertion to the plan. */
+/** The record IDs a relation assertion's value points at (the `refs` index). */
+export function refsOf(schema: CompiledSchema, fieldId: string, value: unknown): string[] {
+  const field = schema.fieldOwners.get(fieldId)?.fieldsById.get(fieldId);
+  if (field?.type !== 'relation') return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return [...new Set(value.filter((v) => typeof v === 'string'))];
+  return [];
+}
+
+export function insertAssertion(context: WriteContext, row: AssertionRow): void {
+  planState(context.op).assertions.set(row.id, row);
+  const { id, ...content } = row;
+  context.op.batch.create('field_assertions', id, {
+    ...content,
+    refs: refsOf(context.schema, row.field_id, row.value),
+  });
+}
+
+/** Changes stored or planned assertions; the plan sees the new values. */
+export function updateAssertion(
+  context: WriteContext,
+  row: AssertionRow,
+  changes: Partial<Omit<AssertionRow, 'id'>>,
+): AssertionRow {
+  const next = { ...row, ...changes };
+  planState(context.op).assertions.set(row.id, next);
+  context.op.batch.update(
+    'field_assertions',
+    row.id,
+    'value' in changes
+      ? { ...changes, refs: refsOf(context.schema, next.field_id, next.value) }
+      : changes,
+  );
+  return next;
+}
+
+/**
+ * The write path (rules 2.2–2.5): one assertion per field, the touched
+ * fields' winners recomputed, then the record's columns, edges,
+ * identifiers, label and search document follow, all in the commit.
  */
 export async function writeFields(
-  tx: Tx,
   context: WriteContext,
   object: CompiledObject,
   record: LockedRecord,
@@ -308,20 +521,20 @@ export async function writeFields(
       updatedAt: record.updated_at.toISOString(),
     });
   }
-  await checkRelationTargets(tx, context, object, writes);
-  if (!options.skipSuppressionCheck) await checkSuppressed(tx, context, record, writes);
+  await checkRelationTargets(context, object, writes);
+  if (!options.skipSuppressionCheck) await checkSuppressed(context, object, record, writes);
 
   const fields = [...writes.keys()];
-  const fieldIds = fields.map((f) => f.id as string);
-  const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
-  const observedAt = options.observedAt ?? (clock?.now as Date);
+  const observedAt = options.observedAt ?? context.op.now;
   const confidence = options.confidence ?? 1;
   const actorType: ActorType = context.actor.type;
 
-  const existing = await tx<AssertionRow[]>`
-    select id, field_id, value, actor, status, observed_at, created_at from field_assertions
-    where record_id = ${record.id} and field_id = any(${fieldIds}::uuid[])
-      and status in ('active', 'superseded')`;
+  const existing = await assertionsOf(
+    context,
+    record.id,
+    fields.map((f) => f.id as string),
+    ['active', 'superseded'],
+  );
 
   const statuses: Record<string, FieldWriteStatus> = {};
   const winners = new Map<FieldState, AssertionRow | undefined>();
@@ -336,44 +549,319 @@ export async function writeFields(
       context.confidenceThreshold,
     );
 
-    const [inserted] = await tx<AssertionRow[]>`
-      insert into field_assertions (workspace_id, record_id, field_id, value, actor,
-        source_record_id, is_initial, confidence, status, review_reason, observed_at, created_at)
-      values (${context.workspaceId}, ${record.id}, ${field.id as string},
-        ${value === null ? null : tx.json(jsonValue(value))}, ${tx.json(context.actor)},
-        ${options.sourceRecordId ?? null}, ${options.isInitial ?? false}, ${confidence},
-        ${reason ? 'pending_review' : 'active'}, ${reason}, ${observedAt}, clock_timestamp())
-      returning id, field_id, value, actor, status, observed_at, created_at`;
-    const assertion = inserted as AssertionRow;
+    const assertion: AssertionRow = {
+      id: context.op.newId(),
+      record: record.id,
+      field_id: field.id as string,
+      value: value ?? null,
+      actor: context.actor,
+      source: options.sourceRecordId ?? null,
+      is_initial: options.isInitial ?? false,
+      confidence,
+      status: reason ? 'pending_review' : 'active',
+      review_reason: reason,
+      observed_at: observedAt,
+      reviewed_by: null,
+      reviewed_at: null,
+      created_at: context.op.tick(),
+    };
 
     if (reason) {
+      insertAssertion(context, assertion);
       statuses[field.name] = 'pending_review';
       continue;
     }
 
     const candidates = [...current, assertion];
-    const winner = candidates.find((a) => a.id === pickWinner(candidates.map(toRanked))?.id);
-    const winnerId = winner?.id as string;
-    await tx`update field_assertions set status = 'active'
-      where id = ${winnerId} and status <> 'active'`;
-    await tx`update field_assertions set status = 'superseded'
-      where record_id = ${record.id} and field_id = ${field.id as string}
-        and status = 'active' and id <> ${winnerId}`;
+    const winnerId = pickWinner(candidates.map(toRanked))?.id as string;
+    if (winnerId !== assertion.id) assertion.status = 'superseded';
+    insertAssertion(context, assertion);
+    for (const row of current) {
+      const status = row.id === winnerId ? 'active' : 'superseded';
+      if (row.status !== status) updateAssertion(context, row, { status });
+    }
     statuses[field.name] = winnerId === assertion.id ? 'applied' : 'superseded';
-    winners.set(field, winner);
+    winners.set(
+      field,
+      candidates.find((a) => a.id === winnerId),
+    );
   }
 
-  if (winners.size > 0) await applyWinners(tx, context, object, record, winners);
+  if (winners.size > 0) await applyWinners(context, object, record, winners);
   return statuses;
 }
 
+// ---------------------------------------------------------------------------
+// Derived state: columns, edges, identifiers, label, search
+// ---------------------------------------------------------------------------
+
+/** One field's current edge targets, as this plan sees them. */
+export async function currentTargets(
+  context: WriteContext,
+  object: CompiledObject,
+  field: FieldState,
+  sourceId: string,
+): Promise<string[]> {
+  const state = planState(context.op);
+  const key = pair(field.id as string, sourceId);
+  const planned = state.edges.get(key);
+  if (planned) return planned;
+  const targets = await edgeTargets(context.op.db, field, { id: sourceId, object });
+  state.edges.set(key, targets);
+  return targets;
+}
+
+/** The table of a record this plan knows. */
+async function tableOf(context: WriteContext, id: string): Promise<string> {
+  const entry = (await entriesOf(context.op, [id])).get(id);
+  const object = entry ? context.schema.objectsById.get(entry.object_type_id) : undefined;
+  if (!object) throw new Error(`record ${id} has no known object`);
+  return object.table;
+}
+
 /**
- * Makes `records.data`, `record_links`, `record_identifiers`, the label and
- * the search text follow the given fields' winners (rule 2.4). The record
- * must be locked.
+ * Makes one owning relation field's edges follow its winner: removes the
+ * targets that left, relates the new ones, and keeps provenance on the rest.
+ */
+export async function syncEdges(
+  context: WriteContext,
+  object: CompiledObject,
+  field: FieldState,
+  sourceId: string,
+  targets: readonly string[],
+  provenance: { assertion: string | null; actor: Actor },
+): Promise<void> {
+  const before = await currentTargets(context, object, field, sourceId);
+  const removed = before.filter((t) => !targets.includes(t));
+  const added = targets.filter((t) => !before.includes(t));
+  const kept = targets.filter((t) => before.includes(t));
+  const batch = context.op.batch;
+  const table = ident(relationTable(field.universalId));
+  const source = new RecordId(object.table, sourceId);
+  if (removed.length > 0) {
+    const outs = await Promise.all(
+      removed.map(async (id) => new RecordId(await tableOf(context, id), id)),
+    );
+    batch.write(
+      `DELETE ${table} WHERE in = ${batch.v(source)} AND out IN ${batch.v(outs)} RETURN BEFORE`,
+      removed.length,
+      'edges',
+    );
+  }
+  if (kept.length > 0) {
+    batch.write(
+      `UPDATE ${table} SET assertion = ${batch.v(provenance.assertion ?? undefined)}, created_by = ${batch.v(
+        provenance.actor,
+      )} WHERE in = ${batch.v(source)} RETURN id`,
+      kept.length,
+      'edges',
+    );
+  }
+  for (const id of added) {
+    const out = new RecordId(await tableOf(context, id), id);
+    batch.write(
+      `RELATE ${batch.v(source)}->${table}->${batch.v(out)} CONTENT ${batch.v({
+        assertion: provenance.assertion ?? undefined,
+        created_by: provenance.actor,
+        created_at: context.op.now,
+      })} RETURN id`,
+      1,
+      'edge',
+    );
+  }
+  planState(context.op).edges.set(pair(field.id as string, sourceId), [...targets]);
+  if (removed.length > 0 || added.length > 0) {
+    await edgesChanged(context, object, field, sourceId, added, removed);
+  }
+}
+
+/** A record's identifier lookups for one field, as this plan sees them. */
+async function identifierRows(
+  context: WriteContext,
+  recordId: string,
+  field: FieldState,
+): Promise<IdentifierRow[]> {
+  const state = planState(context.op);
+  const key = pair(recordId, field.id as string);
+  const planned = state.identifiers.get(key);
+  if (planned) return planned;
+  const rows = await context.op.rows<{ id: RecordId; kind: string; value: string }>(
+    'SELECT id, kind, value FROM record_identifiers WHERE record = $record AND field_id = $field;',
+    { record: recordId, field: field.id },
+  );
+  const list = rows.map((r) => ({ id: publicId(r.id), kind: r.kind, value: r.value }));
+  state.identifiers.set(key, list);
+  return list;
+}
+
+async function claimRows(
+  context: WriteContext,
+  recordId: string,
+  field: FieldState,
+): Promise<ClaimRow[]> {
+  const state = planState(context.op);
+  const key = pair(recordId, field.id as string);
+  const planned = state.claims.get(key);
+  if (planned) return planned;
+  const rows = await context.op.rows<{ id: RecordId; value: string }>(
+    'SELECT id, value FROM unique_claims WHERE record = $record AND field_id = $field;',
+    { record: recordId, field: field.id },
+  );
+  const list = rows.map((r) => ({ id: publicId(r.id), value: r.value }));
+  state.claims.set(key, list);
+  for (const row of list) state.holders.set(pair(field.id as string, row.value), recordId);
+  return list;
+}
+
+/** The record holding a unique value, as this plan sees it. */
+export async function claimHolder(
+  context: WriteContext,
+  field: FieldState,
+  value: string,
+): Promise<string | null> {
+  const state = planState(context.op);
+  const key = pair(field.id as string, value);
+  if (state.holders.has(key)) return state.holders.get(key) ?? null;
+  const [row] = await context.op.rows<{ record: string }>(
+    'SELECT record FROM unique_claims WHERE field_id = $field AND value = $value LIMIT 1;',
+    { field: field.id, value },
+  );
+  state.holders.set(key, row?.record ?? null);
+  return row?.record ?? null;
+}
+
+/**
+ * Replaces a field's identifier lookups and unique claims with those of a
+ * new value, returning the first claim another record holds instead (and
+ * changing nothing then), so a caller can try another value.
+ */
+async function claimIdentifiers(
+  context: WriteContext,
+  recordId: string,
+  field: FieldState,
+  value: unknown,
+): Promise<{ value: string; recordId: string } | null> {
+  const next: Identifier[] = identifiersFor(field, value);
+  if (field.isUnique) {
+    for (const identifier of next) {
+      const holder = await claimHolder(context, field, identifier.value);
+      if (holder && holder !== recordId) return { value: identifier.value, recordId: holder };
+    }
+  }
+  const state = planState(context.op);
+  const key = pair(recordId, field.id as string);
+  const batch = context.op.batch;
+
+  const lookups = await identifierRows(context, recordId, field);
+  const sameLookups =
+    lookups.length === next.length &&
+    next.every((i) => lookups.some((l) => l.kind === i.kind && l.value === i.value));
+  if (!sameLookups) {
+    batch.deleteIds(
+      'record_identifiers',
+      lookups.map((l) => l.id),
+    );
+    const rows = next.map((i) => ({ id: context.op.newId(), kind: i.kind, value: i.value }));
+    batch.insert(
+      'record_identifiers',
+      rows.map((r) => ({
+        ...r,
+        record: recordId,
+        field_id: field.id as string,
+        created_at: context.op.now,
+      })),
+    );
+    state.identifiers.set(key, rows);
+  }
+
+  if (field.isUnique) {
+    const claims = await claimRows(context, recordId, field);
+    const values = [...new Set(next.map((i) => i.value))];
+    const same =
+      claims.length === values.length && values.every((v) => claims.some((c) => c.value === v));
+    if (!same) {
+      batch.deleteIds(
+        'unique_claims',
+        claims.map((c) => c.id),
+      );
+      for (const claim of claims) state.holders.set(pair(field.id as string, claim.value), null);
+      const rows = values.map((v) => ({ id: context.op.newId(), value: v }));
+      batch.insert(
+        'unique_claims',
+        rows.map((r) => ({
+          ...r,
+          record: recordId,
+          field_id: field.id as string,
+          created_at: context.op.now,
+        })),
+      );
+      for (const row of rows) state.holders.set(pair(field.id as string, row.value), recordId);
+      state.claims.set(key, rows);
+    }
+  }
+  return null;
+}
+
+/** Releases every lookup and claim a record holds for some fields. */
+export async function releaseIdentifiers(
+  context: WriteContext,
+  recordId: string,
+  fields: readonly FieldState[],
+): Promise<void> {
+  for (const field of fields) {
+    if (!hasIdentifiers(field)) continue;
+    await claimIdentifiers(context, recordId, field, null);
+  }
+}
+
+async function replaceIdentifiers(
+  context: WriteContext,
+  recordId: string,
+  field: FieldState,
+  value: unknown,
+): Promise<void> {
+  const conflict = await claimIdentifiers(context, recordId, field, value);
+  if (conflict) throw new UniqueConflictError(field, conflict.value, conflict.recordId);
+}
+
+/** Writes a record's changed columns, label and search document. */
+export async function saveRecord(
+  context: WriteContext,
+  object: CompiledObject,
+  record: LockedRecord,
+  data: Record<string, unknown>,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  const set: Record<string, unknown> = {};
+  for (const field of object.state.fields) {
+    if (field.type === 'relation') continue;
+    const before = record.data[field.key];
+    const after = data[field.key];
+    if (JSON.stringify(before) === JSON.stringify(after) && Object.hasOwn(record.data, field.key) === Object.hasOwn(data, field.key)) {
+      continue;
+    }
+    set[fieldColumn(field.key)] = Object.hasOwn(data, field.key)
+      ? toColumn(field, after)
+      : undefined;
+  }
+  const label = await writeRecordSearch(context, object, record.id, data);
+  context.op.batch.update(object.table, record.id, {
+    ...set,
+    label,
+    updated_at: context.op.now,
+    updated_by: context.actor,
+    ...extra,
+  });
+  record.data = data;
+  record.label = label;
+  record.updated_at = context.op.now;
+}
+
+/**
+ * Makes the record's columns, edges, identifiers, label and search
+ * document follow the given fields' winners (rule 2.4).
  */
 async function applyWinners(
-  tx: Tx,
   context: WriteContext,
   object: CompiledObject,
   record: LockedRecord,
@@ -383,55 +871,31 @@ async function applyWinners(
   const data = { ...record.data };
   for (const [field, winner] of winners) {
     if (field.type === 'relation') {
-      // One edge per target; a set's edges are marked by the database (5.3).
       const targets = Array.isArray(winner?.value)
         ? (winner.value as string[])
         : winner?.value
           ? [winner.value as string]
           : [];
-      // Only the edges that changed: a set gaining one member keeps the rest.
-      await tx`delete from record_links where source_record_id = ${record.id}
-        and field_id = ${field.id as string} and target_record_id <> all(${targets}::uuid[])`;
-      if (targets.length > 0) {
-        await tx`
-          insert into record_links ${tx(
-            targets.map((target) => ({
-              workspace_id: context.workspaceId,
-              field_id: field.id as string,
-              source_record_id: record.id,
-              target_record_id: target,
-              created_by: tx.json(jsonValue(winner?.actor ?? context.actor)),
-            })),
-          )}
-          on conflict (workspace_id, source_record_id, field_id, target_record_id) do update
-            set created_by = excluded.created_by
-            where record_links.created_by is distinct from excluded.created_by`;
-      }
+      await syncEdges(context, object, field, record.id, targets, {
+        assertion: winner?.id ?? null,
+        actor: winner?.actor ?? context.actor,
+      });
       continue;
     }
     if (winner) data[field.key] = winner.value;
     else delete data[field.key];
 
     if (hasIdentifiers(field) && !identifiersDone.has(field)) {
-      await replaceIdentifiers(tx, context.workspaceId, record.id, field, winner?.value ?? null);
+      await replaceIdentifiers(context, record.id, field, winner?.value ?? null);
     }
   }
-
-  const { label, body } = searchTextOf(object.state.fields, object.labelField, data);
-  const [updated] = await tx<{ updated_at: Date }[]>`
-    update records set data = ${tx.json(jsonValue(data))}, label = ${label},
-      search = ${searchVector(tx, label, body)}, updated_at = clock_timestamp(),
-      updated_by = ${tx.json(context.actor)}
-    where id = ${record.id}
-    returning updated_at`;
-  record.data = data;
-  record.updated_at = updated?.updated_at ?? record.updated_at;
+  await saveRecord(context, object, record, data);
 }
 
 /**
- * Recomputes fields of a locked record from their eligible assertions alone
- * (rule 2.4): the winner becomes `active`, the rest `superseded`, and the
- * derived data follows. Used after assertions stop counting, e.g. when their
+ * Recomputes fields of a record from their eligible assertions alone (rule
+ * 2.4): the winner becomes `active`, the rest `superseded`, and the derived
+ * state follows. Used after assertions stop counting, e.g. when their
  * source is retracted.
  *
  * An older value can no longer be restored when another record has since
@@ -440,7 +904,6 @@ async function applyWinners(
  * one wins; accepting it later fails until the claim is released.
  */
 export async function recomputeFields(
-  tx: Tx,
   context: WriteContext,
   object: CompiledObject,
   record: LockedRecord,
@@ -450,10 +913,12 @@ export async function recomputeFields(
     .map((id) => object.fieldsById.get(id))
     .filter((f): f is FieldState => f !== undefined);
   if (fields.length === 0) return;
-  const rows = await tx<AssertionRow[]>`
-    select id, field_id, value, actor, status, observed_at, created_at from field_assertions
-    where record_id = ${record.id} and field_id = any(${fields.map((f) => f.id as string)}::uuid[])
-      and status in ('active', 'superseded')`;
+  const rows = await assertionsOf(
+    context,
+    record.id,
+    fields.map((f) => f.id as string),
+    ['active', 'superseded'],
+  );
   const winners = new Map<FieldState, AssertionRow | undefined>();
   const claimed = new Set<FieldState>();
   for (const field of fields) {
@@ -462,52 +927,45 @@ export async function recomputeFields(
       .sort((a, b) => compareAssertions(toRanked(a), toRanked(b)));
     let winner: AssertionRow | undefined = ranked[0];
     if (field.isUnique) {
-      // The claim attempt itself is the test, so a claim another transaction
-      // has made but not yet committed is waited for, not missed.
       winner = undefined;
       for (const candidate of ranked) {
-        const holder = await claimIdentifiers(
-          tx,
-          context.workspaceId,
-          record.id,
-          field,
-          candidate.value,
-        );
+        const holder = await claimIdentifiers(context, record.id, field, candidate.value);
         if (!holder) {
           winner = candidate;
           break;
         }
-        await tx`update field_assertions set status = 'pending_review',
-            review_reason = 'unique_conflict'
-          where id = ${candidate.id}`;
+        updateAssertion(context, candidate, {
+          status: 'pending_review',
+          review_reason: 'unique_conflict',
+        });
       }
-      if (!winner) await claimIdentifiers(tx, context.workspaceId, record.id, field, null);
+      if (!winner) await claimIdentifiers(context, record.id, field, null);
       claimed.add(field);
     }
-    const winnerId = winner?.id;
-    if (winnerId) {
-      await tx`update field_assertions set status = 'active'
-        where id = ${winnerId} and status <> 'active'`;
+    for (const row of ranked) {
+      if (row.status === 'pending_review') continue;
+      const current = planState(context.op).assertions.get(row.id) ?? row;
+      if (current.status === 'pending_review') continue;
+      const status = row.id === winner?.id ? 'active' : 'superseded';
+      if (current.status !== status) updateAssertion(context, current, { status });
     }
-    await tx`update field_assertions set status = 'superseded'
-      where record_id = ${record.id} and field_id = ${field.id as string}
-        and status = 'active' and id is distinct from ${winnerId ?? null}::uuid`;
     winners.set(field, winner);
   }
-  await applyWinners(tx, context, object, record, winners, claimed);
+  await applyWinners(context, object, record, winners, claimed);
 }
 
-/** Locks records `FOR UPDATE` in sorted ID order (rule 2.5), for merges, retraction and `forget`. */
+/** Loads records (sorted), for merges, retraction and `forget` (rule 2.5). */
 export async function lockRecordsForUpdate(
-  tx: Tx,
-  workspaceId: string,
+  context: WriteContext,
   ids: readonly string[],
 ): Promise<LockedRecord[]> {
   if (ids.length === 0) return [];
-  return tx<LockedRecord[]>`
-    select id, object_type_id, data, updated_at, deleted_at, merged_into_id from records
-    where workspace_id = ${workspaceId} and id = any(${[...ids].sort()}::uuid[])
-    order by id for update`;
+  const sorted = [...new Set(ids)].sort();
+  const records = await loadRecords(context, sorted);
+  return sorted.flatMap((id) => {
+    const record = records.get(id);
+    return record ? [record] : [];
+  });
 }
 
 /** An assertion that stopped counting, with the status it had. */
@@ -515,25 +973,22 @@ export type RemovedClaim = { record_id: string; field_id: string; status: string
 
 /**
  * After assertions stop counting (retracted or deleted), recomputes the
- * fields where one of them was winning, on the given locked records. Every
- * identifier those winners held is released first, across all records, so
- * a claim from one record cannot block another's previous value from
- * coming back. Returns the IDs of the records recomputed.
+ * fields where one of them was winning, on the given records. Every unique
+ * claim those winners held is released first, across all records, so a
+ * claim from one record cannot block another's previous value from coming
+ * back. Returns the IDs of the records recomputed.
  */
 export async function releaseAndRecompute(
-  tx: Tx,
   context: WriteContext,
   locked: readonly LockedRecord[],
   removed: readonly RemovedClaim[],
 ): Promise<string[]> {
   const winners = removed.filter((c) => c.status === 'active');
-  if (winners.length > 0) {
-    await tx`
-      delete from record_identifiers ri
-      using unnest(${winners.map((c) => c.record_id)}::uuid[],
-        ${winners.map((c) => c.field_id)}::uuid[]) as r(record_id, field_id)
-      where ri.workspace_id = ${context.workspaceId}
-        and ri.record_id = r.record_id and ri.field_id = r.field_id`;
+  for (const claim of winners) {
+    const record = locked.find((r) => r.id === claim.record_id);
+    const object = record ? context.schema.objectsById.get(record.object_type_id) : undefined;
+    const field = object?.fieldsById.get(claim.field_id);
+    if (field?.isUnique) await claimIdentifiers(context, claim.record_id, field, null);
   }
   const recomputed: string[] = [];
   for (const record of locked) {
@@ -542,7 +997,7 @@ export async function releaseAndRecompute(
     ];
     const object = context.schema.objectsById.get(record.object_type_id);
     if (fieldIds.length === 0 || !object) continue;
-    await recomputeFields(tx, context, object, record, fieldIds);
+    await recomputeFields(context, object, record, fieldIds);
     recomputed.push(record.id);
   }
   return recomputed;
@@ -553,101 +1008,100 @@ export async function releaseAndRecompute(
  * longer live (merged or deleted), so review only ever lists live pairs.
  */
 export async function closeSuggestionsFor(
-  tx: Tx,
   context: WriteContext,
   recordIds: readonly string[],
 ): Promise<void> {
   if (recordIds.length === 0) return;
-  await tx`
-    update merge_suggestions set status = 'dismissed', decided_by = ${tx.json(context.actor)},
-      decided_at = clock_timestamp()
-    where workspace_id = ${context.workspaceId} and status = 'pending'
-      and (record_a_id = any(${recordIds as string[]}::uuid[])
-        or record_b_id = any(${recordIds as string[]}::uuid[]))`;
-}
-
-/**
- * Replaces a field's identifier rows with those of its new winning value.
- * A claim another record already holds fails the whole write with the
- * holder's ID; ON CONFLICT waits for a concurrent claimer to commit or roll
- * back first, so the loser of a race sees the winner.
- */
-async function replaceIdentifiers(
-  tx: Tx,
-  workspaceId: string,
-  recordId: string,
-  field: FieldState,
-  value: unknown,
-): Promise<void> {
-  const conflict = await claimIdentifiers(tx, workspaceId, recordId, field, value);
-  if (conflict) throw new UniqueConflictError(field, conflict.value, conflict.recordId);
-}
-
-/**
- * Replaces a field's identifier rows, returning the first claim another
- * record holds instead of throwing. ON CONFLICT DO NOTHING leaves the
- * transaction usable, and the next call starts by deleting this field's
- * rows, so a caller can try another value.
- */
-async function claimIdentifiers(
-  tx: Tx,
-  workspaceId: string,
-  recordId: string,
-  field: FieldState,
-  value: unknown,
-): Promise<{ value: string; recordId: string } | null> {
-  const fieldId = field.id as string;
-  await tx`delete from record_identifiers where record_id = ${recordId} and field_id = ${fieldId}`;
-  for (const identifier of identifiersFor(field, value)) {
-    if (!field.isUnique) {
-      await tx`
-        insert into record_identifiers (workspace_id, record_id, field_id, kind, value, is_claim)
-        values (${workspaceId}, ${recordId}, ${fieldId}, ${identifier.kind}, ${identifier.value},
-          false)`;
-      continue;
-    }
-    const claimed = await tx`
-      insert into record_identifiers (workspace_id, record_id, field_id, kind, value, is_claim)
-      values (${workspaceId}, ${recordId}, ${fieldId}, ${identifier.kind}, ${identifier.value}, true)
-      on conflict (workspace_id, field_id, value) where is_claim do nothing
-      returning id`;
-    if (claimed.length === 0) {
-      const [holder] = await tx<{ record_id: string }[]>`
-        select record_id from record_identifiers
-        where workspace_id = ${workspaceId} and field_id = ${fieldId}
-          and value = ${identifier.value} and is_claim`;
-      return { value: identifier.value, recordId: holder?.record_id ?? 'unknown' };
-    }
+  const [a, b] = (await context.op.db.query(
+    `SELECT id FROM merge_suggestions WHERE record_a IN $ids AND status = 'pending';
+     SELECT id FROM merge_suggestions WHERE record_b IN $ids AND status = 'pending';`,
+    { ids: [...recordIds] },
+  )) as [{ id: RecordId }[], { id: RecordId }[]];
+  const ids = [...new Set([...a, ...b].map((r) => publicId(r.id)))];
+  for (const id of ids) {
+    context.op.batch.update('merge_suggestions', id, {
+      status: 'dismissed',
+      decided_by: context.actor,
+      decided_at: context.op.now,
+    });
   }
-  return null;
 }
 
-/** Inserts an empty record row; the caller writes its values with `writeFields`. */
+/** A new, empty record; the caller writes its values with `writeFields`. */
 export async function insertRecord(
-  tx: Tx,
   context: WriteContext,
   object: CompiledObject,
+  extra: { occurredAt?: Date } = {},
 ): Promise<LockedRecord> {
-  const [row] = await tx<LockedRecord[]>`
-    insert into records (workspace_id, object_type_id, created_by, updated_by)
-    values (${context.workspaceId}, ${object.id}, ${tx.json(context.actor)},
-      ${tx.json(context.actor)})
-    returning id, object_type_id, data, updated_at, deleted_at, merged_into_id`;
-  return row as LockedRecord;
+  const id = context.op.newId();
+  const now = context.op.now;
+  const batch = context.op.batch;
+  batch.create('record_directory', id, {
+    object_type_id: object.id,
+    tb: object.table,
+    is_event: object.isEvent,
+    created_at: now,
+    updated_at: now,
+  });
+  batch.create(object.table, id, {
+    created_at: now,
+    updated_at: now,
+    created_by: context.actor,
+    updated_by: context.actor,
+    label: null,
+    ...(extra.occurredAt ? { occurred_at: extra.occurredAt } : {}),
+  });
+  setEntry(context.op, {
+    id,
+    object_type_id: object.id,
+    tb: object.table,
+    is_event: object.isEvent,
+    created_at: now,
+    deleted_at: null,
+    merged_into: null,
+  });
+  const record: LockedRecord = {
+    id,
+    object_type_id: object.id,
+    data: {},
+    label: null,
+    updated_at: now,
+    deleted_at: null,
+    merged_into_id: null,
+    created_at: now,
+    created_by: context.actor,
+    occurred_at: extra.occurredAt ?? null,
+  };
+  planState(context.op).records.set(id, record);
+  // A new record has no edges, identifiers or claims to read.
+  const state = planState(context.op);
+  for (const field of object.state.fields) {
+    if (field.type === 'relation' && !field.settings.isInverse) {
+      state.edges.set(pair(field.id as string, id), []);
+    }
+    if (hasIdentifiers(field)) {
+      state.identifiers.set(pair(id, field.id as string), []);
+      state.claims.set(pair(id, field.id as string), []);
+    }
+  }
+  return record;
 }
 
 /**
  * Recomputes a record's values from its assertions alone (rule 2.4). Used
- * to prove `records.data` is a cache, and to rebuild it.
+ * to prove the columns are a cache, and to rebuild them.
  */
 export async function computeDataFromAssertions(
-  tx: Tx,
+  db: Db,
   object: CompiledObject,
   recordId: string,
 ): Promise<Record<string, unknown>> {
-  const rows = await tx<AssertionRow[]>`
-    select id, field_id, value, actor, status, observed_at, created_at from field_assertions
-    where record_id = ${recordId} and status in ('active', 'superseded')`;
+  const rows = (
+    await db.rows<StoredAssertion>(
+      "SELECT * FROM field_assertions WHERE record = $record AND status IN ['active', 'superseded'];",
+      { record: recordId },
+    )
+  ).map(fromStored);
   const data: Record<string, unknown> = {};
   for (const field of object.state.fields) {
     if (field.type === 'relation') continue;
@@ -660,28 +1114,47 @@ export async function computeDataFromAssertions(
 /**
  * The record and every live record that deleting it reaches through
  * `onDelete: cascade` relations, at any depth: what `softDeleteRecord`
- * deletes, and what the delete dialog warns about beforehand.
+ * deletes, and what the delete dialog warns about beforehand. Each step
+ * reads incoming edges through the records' own graph pointers.
  */
 export async function cascadeSet(
-  tx: Tx,
+  db: Db,
   schema: CompiledSchema,
   roots: readonly string[],
 ): Promise<Set<string>> {
-  const cascadeFieldIds = schema.state.objects.flatMap((o) =>
-    o.fields
-      .filter((f) => f.status === 'active' && f.settings.onDelete === 'cascade')
-      .map((f) => f.id as string),
+  const cascadeFields = schema.state.objects.flatMap((o) =>
+    o.fields.filter((f) => f.status === 'active' && f.settings.onDelete === 'cascade'),
   );
   const ids = new Set(roots);
   let frontier = [...ids];
-  while (frontier.length > 0 && cascadeFieldIds.length > 0) {
-    const rows = await tx<{ id: string }[]>`
-      select distinct l.source_record_id as id from record_links l
-      join records r on r.id = l.source_record_id and r.deleted_at is null
-      where l.target_record_id = any(${frontier}::uuid[])
-        and l.field_id = any(${cascadeFieldIds}::uuid[])`;
-    frontier = rows.map((r) => r.id).filter((rid) => !ids.has(rid));
-    for (const rid of frontier) ids.add(rid);
+  while (frontier.length > 0 && cascadeFields.length > 0) {
+    const entries = await directoryEntries(db, frontier);
+    const vars: Record<string, unknown> = {};
+    const statements: string[] = [];
+    let n = 0;
+    for (const field of cascadeFields) {
+      const targets = relationTargetIds(field.settings)
+        .map((id) => schema.objectsByUniversalId.get(id))
+        .filter((o): o is CompiledObject => o !== undefined);
+      const refs = [...entries.values()]
+        .filter((e) => targets.some((t) => t.id === e.object_type_id))
+        .map((e) => new RecordId(e.tb, e.id));
+      if (refs.length === 0) continue;
+      vars[`t${n}`] = refs;
+      statements.push(
+        `SELECT VALUE <-${ident(relationTable(field.universalId))}<-? FROM $t${n};`,
+      );
+      n++;
+    }
+    if (statements.length === 0) break;
+    const results = (await db.query(statements.join('\n'), vars)) as RecordId[][][];
+    const sources = [...new Set(results.flat(2).map(publicId))].filter((id) => !ids.has(id));
+    const live = await directoryEntries(db, sources);
+    frontier = sources.filter((id) => {
+      const entry = live.get(id);
+      return entry && !entry.deleted_at && !entry.merged_into;
+    });
+    for (const id of frontier) ids.add(id);
   }
   return ids;
 }
@@ -689,20 +1162,14 @@ export async function cascadeSet(
 /**
  * Soft-deletes a record (2.1). Relations to it with `onDelete: cascade`
  * soft-delete their source records too; `set_null` relations simply stop
- * resolving, since reads skip deleted targets. All affected records are
- * locked in sorted ID order (rule 2.5). Uniqueness claims stay, so writes
- * cannot silently recreate the record. Returns the IDs deleted; the events
- * among them are retracted by the caller (`deleteRecords`).
+ * resolving, since reads skip deleted targets. Uniqueness claims stay, so
+ * writes cannot silently recreate the record. Returns the IDs deleted; the
+ * events among them are retracted by the caller (`deleteRecords`).
  */
-export async function softDeleteRecord(
-  tx: Tx,
-  context: WriteContext,
-  id: string,
-): Promise<string[]> {
-  const rootId = await resolveRecordId(tx, context.workspaceId, id);
-  // Collect first, then lock everything in sorted order.
-  const sorted = [...(await cascadeSet(tx, context.schema, [rootId]))].sort();
-  const locked = await lockRecordsForUpdate(tx, context.workspaceId, sorted);
+export async function softDeleteRecord(context: WriteContext, id: string): Promise<string[]> {
+  const rootId = await resolveRecordId(context.op, id);
+  const sorted = [...(await cascadeSet(context.op.db, context.schema, [rootId]))].sort();
+  const locked = await lockRecordsForUpdate(context, sorted);
   const root = locked.find((r) => r.id === rootId);
   if (root) objectOf(context.schema, root);
   if (root?.deleted_at) {
@@ -710,22 +1177,35 @@ export async function softDeleteRecord(
       recordId: rootId,
     });
   }
-  return markDeleted(tx, context, sorted);
+  return markDeleted(context, sorted);
 }
 
-/** Sets `deleted_at` on locked records, returning those it deleted now. */
-export async function markDeleted(
-  tx: Tx,
-  context: WriteContext,
-  ids: readonly string[],
-): Promise<string[]> {
+/** Sets `deleted_at` on records, returning those it deleted now. */
+export async function markDeleted(context: WriteContext, ids: readonly string[]): Promise<string[]> {
   if (ids.length === 0) return [];
-  const deleted = await tx<{ id: string }[]>`
-    update records set deleted_at = clock_timestamp(), updated_at = clock_timestamp(),
-      updated_by = ${tx.json(context.actor)}
-    where id = any(${[...ids]}::uuid[]) and deleted_at is null
-    returning id`;
-  const sorted = deleted.map((r) => r.id).sort();
-  await closeSuggestionsFor(tx, context, sorted);
+  const records = await lockRecordsForUpdate(context, ids);
+  const deleted: string[] = [];
+  for (const record of records) {
+    if (record.deleted_at) continue;
+    const object = context.schema.objectsById.get(record.object_type_id);
+    if (!object) continue;
+    context.op.batch.update(object.table, record.id, {
+      deleted_at: context.op.now,
+      updated_at: context.op.now,
+      updated_by: context.actor,
+    });
+    context.op.batch.update('record_directory', record.id, {
+      deleted_at: context.op.now,
+      updated_at: context.op.now,
+    });
+    record.deleted_at = context.op.now;
+    record.updated_at = context.op.now;
+    const entry = (await entriesOf(context.op, [record.id])).get(record.id);
+    if (entry) setEntry(context.op, { ...entry, deleted_at: context.op.now });
+    deleteSearchDocuments(context, [record.id]);
+    deleted.push(record.id);
+  }
+  const sorted = deleted.sort();
+  await closeSuggestionsFor(context, sorted);
   return sorted;
 }

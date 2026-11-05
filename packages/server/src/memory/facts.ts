@@ -1,19 +1,24 @@
 import type { Actor, FactSource, PresentedFact } from '@retainer/shared';
 import { z } from 'zod';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { isUuid, publicId } from '../db/names.js';
+import type { Operation } from '../db/protocol.js';
 import { AppError, invalid, notFound } from '../errors.js';
 import { requestHash } from '../idempotency.js';
-import { textVector } from '../records/search-sql.js';
+import { deleteSearchDocuments, factDocument } from '../records/search-docs.js';
+import { directoryEntries } from '../records/store.js';
 import {
   insertRecord,
   lockRecord,
   objectOf,
-  resolveRecordId,
+  resolveRecordIdIn,
   type WriteContext,
   writeFields,
 } from '../records/write.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { type CitedSource, liveFactSource, lockSource, NOTE_CHANNEL } from './events.js';
+import { addDirectAttachments } from './attachments.js';
+import { type CitedSource, liveFactSources, lockSource, NOTE_CHANNEL } from './events.js';
 
 /**
  * Facts (1.3): plain-language claims about a record, each citing the event
@@ -34,7 +39,7 @@ export type { PresentedFact } from '@retainer/shared';
 /** What `remember` returns (6.2). */
 export type RememberResult = { fact: PresentedFact };
 
-type FactRow = {
+export type FactRow = {
   id: string;
   record_id: string;
   content: string;
@@ -61,7 +66,6 @@ export function rememberRequestHash(recordId: string, input: RememberInput): str
  * Nothing but this lifecycle reads, edits or deletes it.
  */
 async function createInternalNote(
-  tx: Tx,
   context: WriteContext,
   recordId: string,
   text: string,
@@ -70,20 +74,30 @@ async function createInternalNote(
   if (!object?.core) {
     throw new AppError(500, 'internal', 'this workspace has no internal-note type');
   }
-  const note = await insertRecord(tx, context, object);
-  const [created] = await tx<{ occurred_at: Date }[]>`
-    insert into event_records (workspace_id, record_id, occurred_at, channel)
-    values (${context.workspaceId}, ${note.id}, clock_timestamp(), ${NOTE_CHANNEL})
-    returning occurred_at`;
-  const occurredAt = (created as { occurred_at: Date }).occurred_at;
-  await writeFields(tx, context, object, note, new Map([[object.core.summary, text]]), {
+  const { op } = context;
+  const occurredAt = op.now;
+  const note = await insertRecord(context, object, { occurredAt });
+  op.batch.create('event_identity', note.id, {
+    object_type_id: object.id,
+    occurred_at: occurredAt,
+    channel: NOTE_CHANNEL,
+    created_at: op.now,
+  });
+  await writeFields(context, object, note, new Map([[object.core.summary, text]]), {
     sourceRecordId: note.id,
     observedAt: occurredAt,
     isInitial: true,
   });
-  await tx`
-    insert into event_links (workspace_id, event_id, position, record_id, link)
-    values (${context.workspaceId}, ${note.id}, 0, ${recordId}, 'about')`;
+  const linkId = op.newId();
+  op.batch.create('event_links', linkId, {
+    event: note.id,
+    position: 0,
+    record: recordId,
+    link: 'about',
+  });
+  await addDirectAttachments(context, [
+    { event: note.id, target: recordId, via: 'about', linkId },
+  ]);
   return { id: note.id, occurredAt };
 }
 
@@ -91,10 +105,9 @@ async function createInternalNote(
  * Writes one `stated` fact about a record (6.2). With `source`, the fact
  * cites that event and is valid from its `occurred_at`. Without one, an
  * internal note is created for it to cite, and it is valid from the write
- * time. Lock order matches deletion: the source, then the record.
+ * time.
  */
 export async function rememberFact(
-  tx: Tx,
   context: WriteContext,
   recordId: string,
   input: RememberInput,
@@ -103,22 +116,42 @@ export async function rememberFact(
     throw invalid('quote needs a source: pass the event the quote comes from');
   }
   let source: CitedSource | undefined;
-  if (input.source) source = await lockSource(tx, context, input.source);
-  const record = await lockRecord(tx, context.workspaceId, recordId);
-  objectOf(context.schema, record);
+  if (input.source) source = await lockSource(context, input.source);
+  const record = await lockRecord(context, recordId);
+  const object = objectOf(context.schema, record);
 
   const internal = !source;
-  if (!source) source = await createInternalNote(tx, context, record.id, input.text);
+  if (!source) source = await createInternalNote(context, record.id, input.text);
 
-  const [inserted] = await tx<FactRow[]>`
-    insert into facts (workspace_id, record_id, content, kind, valid_from, search, actor)
-    values (${context.workspaceId}, ${record.id}, ${input.text}, 'stated', ${source.occurredAt},
-      ${textVector(tx, input.text)}, ${tx.json(context.actor)})
-    returning id, record_id, content, kind, valid_from, valid_to, actor`;
-  const fact = inserted as FactRow;
-  await tx`
-    insert into fact_sources (workspace_id, fact_id, source_record_id, quote)
-    values (${context.workspaceId}, ${fact.id}, ${source.id}, ${input.quote ?? null})`;
+  const { op } = context;
+  const fact: FactRow = {
+    id: op.newId(),
+    record_id: record.id,
+    content: input.text,
+    kind: 'stated',
+    valid_from: source.occurredAt,
+    valid_to: null,
+    actor: context.actor,
+  };
+  op.batch.create('facts', fact.id, {
+    record: fact.record_id,
+    content: fact.content,
+    kind: fact.kind,
+    confidence: 1,
+    valid_from: fact.valid_from,
+    actor: fact.actor,
+    created_at: op.now,
+  });
+  op.batch.create('fact_sources', op.newId(), {
+    fact: fact.id,
+    source: source.id,
+    quote: input.quote ?? null,
+  });
+  op.batch.upsert(
+    'search_documents',
+    fact.id,
+    factDocument({ id: fact.id, record: record.id, content: fact.content }, object.id, op.now),
+  );
 
   return {
     fact: presentFact(fact, [
@@ -151,34 +184,49 @@ export function presentFact(
  * ID and quote, or an internal note marked as such, never its ID (6.4).
  */
 export async function factSources(
-  tx: Tx,
+  db: Db,
   schema: CompiledSchema,
   factIds: readonly string[],
 ): Promise<Map<string, FactSource[]>> {
-  const sources = new Map<string, FactSource[]>(factIds.map((id) => [id, []]));
-  if (factIds.length === 0) return sources;
-  const rows = await tx<
-    { fact_id: string; source_record_id: string; object_type_id: string; quote: string | null }[]
-  >`
-    select s.fact_id, s.source_record_id, src.object_type_id, s.quote from fact_sources s
-    join records src on src.id = s.source_record_id and src.deleted_at is null
-    join event_records e on e.record_id = src.id
-    where s.fact_id = any(${[...factIds]}::uuid[])
-    order by e.occurred_at, s.id`;
-  for (const row of rows) {
-    const internal = schema.objectsById.get(row.object_type_id)?.hidden;
-    sources
-      .get(row.fact_id)
-      ?.push(
-        internal
+  const live = await liveFactSources(db, factIds);
+  const sources = new Map<string, FactSource[]>();
+  for (const id of factIds) {
+    sources.set(
+      id,
+      (live.get(id) ?? []).map((row) =>
+        schema.objectsById.get(row.objectTypeId)?.hidden
           ? { event: null, internal: true, quote: null }
-          : { event: row.source_record_id, quote: row.quote },
-      );
+          : { event: row.source, quote: row.quote },
+      ),
+    );
   }
   return sources;
 }
 
 export type FactList = { record: string; facts: PresentedFact[] };
+
+type StoredFact = {
+  id: RecordId;
+  record: string;
+  content: string;
+  kind: 'stated' | 'inferred';
+  valid_from: Date;
+  valid_to?: Date | null;
+  superseded_by?: string | null;
+  actor: Actor;
+  created_at: Date;
+  deleted_at?: Date | null;
+};
+
+export const factFromStored = (row: StoredFact): FactRow => ({
+  id: publicId(row.id),
+  record_id: row.record,
+  content: row.content,
+  kind: row.kind,
+  valid_from: row.valid_from,
+  valid_to: row.valid_to ?? null,
+  actor: row.actor,
+});
 
 /**
  * A live record's current facts, newest `validFrom` first: not retracted,
@@ -186,54 +234,54 @@ export type FactList = { record: string; facts: PresentedFact[] };
  * live sources are listed.
  */
 export async function listFacts(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
+  _workspaceId: string,
   schema: CompiledSchema,
   recordId: string,
   limit: number,
 ): Promise<FactList> {
-  const canonical = await resolveRecordId(tx, workspaceId, recordId);
-  const [record] = await tx<{ deleted_at: Date | null; object_type_id: string }[]>`
-    select deleted_at, object_type_id from records
-    where id = ${canonical} and workspace_id = ${workspaceId}`;
-  if (!record || schema.objectsById.get(record.object_type_id)?.hidden) {
+  const canonical = await resolveRecordIdIn(db, recordId);
+  const entry = (await directoryEntries(db, [canonical])).get(canonical);
+  if (!entry || schema.objectsById.get(entry.object_type_id)?.hidden) {
     throw notFound('record', { id: recordId });
   }
-  if (record.deleted_at) {
+  if (entry.deleted_at) {
     throw new AppError(404, 'record_deleted', `record ${canonical} was deleted`, {
       recordId: canonical,
     });
   }
-  const rows = await tx<FactRow[]>`
-    select f.id, f.record_id, f.content, f.kind, f.valid_from, f.valid_to, f.actor from facts f
-    where f.workspace_id = ${workspaceId} and f.record_id = ${canonical}
-      and f.deleted_at is null and f.superseded_by is null and f.valid_to is null
-      and exists (${liveFactSource(tx, tx`f.id`)})
-    order by f.valid_from desc, f.created_at desc, f.id
-    limit ${limit}`;
-  const sources = await factSources(
-    tx,
-    schema,
-    rows.map((r) => r.id),
+  const stored = await db.rows<StoredFact>(
+    'SELECT * FROM facts WHERE record = $record ORDER BY valid_from DESC, created_at DESC, id;',
+    { record: canonical },
   );
+  const current = stored.filter((f) => !f.deleted_at && !f.superseded_by && !f.valid_to);
+  const sources = await factSources(
+    db,
+    schema,
+    current.map((f) => publicId(f.id)),
+  );
+  const facts = current
+    .map(factFromStored)
+    .filter((f) => (sources.get(f.id)?.length ?? 0) > 0)
+    .slice(0, limit);
   return {
     record: canonical,
-    facts: rows.map((row) => presentFact(row, sources.get(row.id) ?? [])),
+    facts: facts.map((row) => presentFact(row, sources.get(row.id) ?? [])),
   };
 }
 
 /** Retracts a fact (soft delete, 2.1). Its sources and history are kept. */
-export async function retractFact(
-  tx: Tx,
-  workspaceId: string,
-  id: string,
-): Promise<{ id: string; deleted: true }> {
-  const [row] = await tx<{ deleted_at: Date | null }[]>`
-    select deleted_at from facts where id = ${id} and workspace_id = ${workspaceId} for update`;
+export async function retractFact(op: Operation, id: string): Promise<{ id: string; deleted: true }> {
+  const [row] = isUuid(id)
+    ? await op.rows<{ deleted_at?: Date | null }>('SELECT deleted_at FROM $id;', {
+        id: new RecordId('facts', id),
+      })
+    : [];
   if (!row) throw notFound('fact', { id });
   if (row.deleted_at) {
     throw new AppError(409, 'fact_deleted', `fact ${id} is already retracted`, { id });
   }
-  await tx`update facts set deleted_at = clock_timestamp() where id = ${id}`;
+  op.batch.update('facts', id, { deleted_at: op.now });
+  deleteSearchDocuments({ op }, [id]);
   return { id, deleted: true };
 }

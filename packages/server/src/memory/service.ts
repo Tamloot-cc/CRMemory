@@ -4,12 +4,11 @@ import type {
   PresentedRecord,
   RetractEventResult,
 } from '@retainer/shared';
-import type { Sql } from '../db/client.js';
+import type { Backend } from '../db/backend.js';
 import { AppError, notFound } from '../errors.js';
-import { claimIdempotencyKey, storeIdempotentResult } from '../idempotency.js';
 import { getRecord } from '../records/read.js';
 import { type Caller, eventsAmong, withRead, withWrite } from '../records/service.js';
-import { softDeleteRecord } from '../records/write.js';
+import { entriesOf, resolveRecordId, softDeleteRecord } from '../records/write.js';
 import type { AddLinksInput } from './event-links.js';
 import {
   addEventLinks,
@@ -24,49 +23,72 @@ import {
   type RememberInput,
   type RememberResult,
   rememberFact,
-  rememberRequestHash,
   retractFact,
 } from './facts.js';
 
 /**
  * Memory writes and reads for one caller, shared by REST and MCP so both
- * apply the same validation and rules. Each is one short transaction (4.1).
+ * apply the same validation and rules. Each write is one operation under the
+ * write protocol (section 6); results that show a record are presented after
+ * it commits.
  */
 
 export async function logEventFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   input: LogEventInput,
 ): Promise<LogEventResult> {
-  return withWrite(sql, caller, (tx, context) => logEvent(tx, context, input));
+  const { result } = await withWrite<LogEventResult>(
+    backend,
+    caller,
+    { kind: 'log_event', refs: (r) => [r.id] },
+    (context) => logEvent(context, input),
+  );
+  return result;
 }
 
 /** One live event: the record with its built-in columns and links. */
-export async function readEvent(sql: Sql, caller: Caller, id: string): Promise<PresentedRecord> {
-  return withRead(sql, caller, async (tx, schema) => {
-    const record = await getRecord(tx, caller.workspaceId, schema, id);
+export async function readEvent(
+  backend: Backend,
+  caller: Caller,
+  id: string,
+): Promise<PresentedRecord> {
+  return withRead(backend, caller, async (db, schema) => {
+    const record = await getRecord(db, caller.workspaceId, schema, id);
     if (!record.event) throw notFound('event', { id });
     return record;
   });
 }
 
 export async function addEventLinksFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   id: string,
   input: AddLinksInput,
 ): Promise<PresentedRecord & { added: AddedLinks }> {
-  return withWrite(sql, caller, (tx, context) => addEventLinks(tx, context, id, input));
+  const { result } = await withWrite(
+    backend,
+    caller,
+    { kind: 'add_event_links', refs: (r: { id: string }) => [r.id] },
+    (context) => addEventLinks(context, id, input),
+  );
+  return { ...(await readEvent(backend, caller, result.id)), added: result.added };
 }
 
 /** Removes a participant, or a record from the `about` list; a person only. */
 export async function removeEventLinkFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   id: string,
   target: { participant: string } | { about: string },
 ): Promise<PresentedRecord> {
-  return withWrite(sql, caller, (tx, context) => removeEventLink(tx, context, id, target));
+  const { result } = await withWrite(
+    backend,
+    caller,
+    { kind: 'remove_event_link', refs: (r: { id: string }) => [r.id] },
+    (context) => removeEventLink(context, id, target),
+  );
+  return readEvent(backend, caller, result.id);
 }
 
 /**
@@ -75,74 +97,84 @@ export async function removeEventLinkFor(
  * deleted with `DELETE /v1/records/:id`.
  */
 export async function retractEventFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   id: string,
 ): Promise<RetractEventResult> {
-  return withWrite(sql, caller, async (tx, context) => {
-    const record = await getRecord(tx, caller.workspaceId, context.schema, id).catch((error) => {
-      if (error instanceof AppError && error.code === 'record_deleted') {
+  const { result } = await withWrite<RetractEventResult>(
+    backend,
+    caller,
+    { kind: 'retract_event', refs: (r) => [r.id] },
+    async (context) => {
+      const canonical = await resolveRecordId(context.op, id);
+      const entry = (await entriesOf(context.op, [canonical])).get(canonical);
+      const object = entry && context.schema.objectsById.get(entry.object_type_id);
+      if (!entry || !object || object.hidden || !object.isEvent) {
+        throw notFound('event', { id });
+      }
+      if (entry.deleted_at) {
         throw new AppError(409, 'event_deleted', `event ${id} is already deleted`, { id });
       }
-      throw error;
-    });
-    if (!record.event) throw notFound('event', { id });
-    const deleted = await softDeleteRecord(tx, context, record.id);
-    const retraction = await retractEventClaims(
-      tx,
-      context,
-      await eventsAmong(tx, context.schema, deleted),
-    );
-    return { id: record.id, deleted: true, ...retraction };
-  });
+      const deleted = await softDeleteRecord(context, canonical);
+      const retraction = await retractEventClaims(context, await eventsAmong(context, deleted));
+      return { id: canonical, deleted: true, ...retraction };
+    },
+  );
+  return result;
 }
 
 /**
- * `remember` (6.2). With an idempotency key, the key is claimed in the same
- * transaction as the fact, so a retry, even a concurrent one, returns the
- * original response instead of a second fact and note.
+ * `remember` (6.2). With an idempotency key, the receipt is written in the
+ * same transaction as the fact, so a retry, even a concurrent one, returns
+ * the original response instead of a second fact and note.
  */
 export async function remember(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   recordId: string,
   input: RememberInput,
   idempotencyKey?: string,
 ): Promise<RememberResult> {
-  return withWrite(sql, caller, async (tx, context) => {
-    let claimId: string | undefined;
-    if (idempotencyKey !== undefined) {
-      const claim = await claimIdempotencyKey(
-        tx,
-        caller.workspaceId,
-        'remember',
-        idempotencyKey,
-        rememberRequestHash(recordId, input),
-      );
-      if (claim.kind === 'replay') return claim.result as RememberResult;
-      claimId = claim.id;
-    }
-    const result = await rememberFact(tx, context, recordId, input);
-    if (claimId) await storeIdempotentResult(tx, claimId, result);
-    return result;
-  });
+  const { result } = await withWrite<RememberResult>(
+    backend,
+    caller,
+    {
+      kind: 'remember',
+      ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+      request: {
+        record: recordId,
+        text: input.text,
+        source: input.source ?? null,
+        quote: input.quote ?? null,
+      },
+      refs: (r) => [r.fact.id, r.fact.record],
+    },
+    (context) => rememberFact(context, recordId, input),
+  );
+  return result;
 }
 
 export async function factsOf(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   recordId: string,
   limit: number,
 ): Promise<FactList> {
-  return withRead(sql, caller, (tx, schema) =>
-    listFacts(tx, caller.workspaceId, schema, recordId, limit),
+  return withRead(backend, caller, (db, schema) =>
+    listFacts(db, caller.workspaceId, schema, recordId, limit),
   );
 }
 
 export async function retractFactFor(
-  sql: Sql,
+  backend: Backend,
   caller: Caller,
   id: string,
 ): Promise<{ id: string; deleted: true }> {
-  return withWrite(sql, caller, (tx) => retractFact(tx, caller.workspaceId, id));
+  const { result } = await withWrite(
+    backend,
+    caller,
+    { kind: 'retract_fact', refs: (r: { id: string }) => [r.id] },
+    (context) => retractFact(context.op, id),
+  );
+  return result;
 }

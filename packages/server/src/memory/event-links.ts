@@ -1,11 +1,15 @@
 import type { AddedLinks, EventDetails, Participants } from '@retainer/shared';
 import { z } from 'zod';
+import type { Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { publicId } from '../db/names.js';
 import type { EventLink, UnmatchedReason } from '../db/types.js';
-import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { isSuppressed, suppressedOf } from '../privacy/suppression.js';
-import { lockTargets, MAX_MERGE_HOPS } from '../records/write.js';
+import { directoryEntries } from '../records/store.js';
+import { lockTargets, MAX_MERGE_HOPS, type WriteContext } from '../records/write.js';
 import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
+import { addDirectAttachments, removeDirectAttachments } from './attachments.js';
 import { type Handle, parseHandle } from './handles.js';
 
 /**
@@ -46,7 +50,7 @@ type NormalizedParticipant = {
   role: string | null;
 };
 
-type LinkRow = {
+export type LinkRow = {
   id: string;
   handle: string | null;
   role: string | null;
@@ -55,7 +59,29 @@ type LinkRow = {
   link: EventLink;
 };
 
-type StoredLink = LinkRow & { position: number };
+export type StoredLink = LinkRow & { position: number };
+
+type StoredLinkRow = {
+  id: RecordId;
+  event: string;
+  position: number;
+  handle?: string | null;
+  role?: string | null;
+  record?: string | null;
+  unmatched_reason?: UnmatchedReason | null;
+  link: EventLink;
+};
+
+const linkOf = (row: StoredLinkRow): StoredLink & { event_id: string } => ({
+  id: publicId(row.id),
+  event_id: row.event,
+  position: row.position,
+  handle: row.handle ?? null,
+  role: row.role ?? null,
+  record_id: row.record ?? null,
+  unmatched_reason: row.unmatched_reason ?? null,
+  link: row.link,
+});
 
 /** Parses every handle, listing all invalid participants in one error. */
 export function normalizeParticipants(input: readonly ParticipantInput[]): NormalizedParticipant[] {
@@ -87,12 +113,11 @@ type CanonicalRecord = { id: string; deleted: boolean };
  * deleted objects, are absent from the map.
  */
 async function canonicalRecords(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   schema: CompiledSchema,
   ids: readonly string[],
 ): Promise<Map<string, CanonicalRecord>> {
-  const rows = await followMerges(tx, workspaceId, ids);
+  const rows = await followMerges(db, ids);
   const visible = new Set(schema.visibleObjectIds);
   return new Map(
     rows
@@ -106,22 +131,31 @@ async function canonicalRecords(
  * its object and whether it is deleted. Unknown IDs are absent.
  */
 export async function followMerges(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   ids: readonly string[],
 ): Promise<{ start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[]> {
-  if (ids.length === 0) return [];
-  return tx<{ start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[]>`
-    with recursive chain (start_id, id, merged_into_id, object_type_id, deleted_at, hops) as (
-      select r.id, r.id, r.merged_into_id, r.object_type_id, r.deleted_at, 0 from records r
-      where r.workspace_id = ${workspaceId} and r.id = any(${ids as string[]}::uuid[])
-      union all
-      select c.start_id, r.id, r.merged_into_id, r.object_type_id, r.deleted_at, c.hops + 1
-      from chain c
-      join records r on r.id = c.merged_into_id and r.workspace_id = ${workspaceId}
-      where c.hops < ${MAX_MERGE_HOPS}
-    )
-    select start_id, id, object_type_id, deleted_at from chain where merged_into_id is null`;
+  const result: { start_id: string; id: string; object_type_id: string; deleted_at: Date | null }[] =
+    [];
+  let current = new Map([...new Set(ids)].map((id) => [id, id]));
+  for (let hops = 0; hops <= MAX_MERGE_HOPS && current.size > 0; hops++) {
+    const entries = await directoryEntries(db, [...new Set(current.values())]);
+    const next = new Map<string, string>();
+    for (const [start, id] of current) {
+      const entry = entries.get(id);
+      if (!entry) continue;
+      if (entry.merged_into) next.set(start, entry.merged_into);
+      else {
+        result.push({
+          start_id: start,
+          id,
+          object_type_id: entry.object_type_id,
+          deleted_at: entry.deleted_at,
+        });
+      }
+    }
+    current = next;
+  }
+  return result;
 }
 
 type EmailMatch = { live: string[]; deleted: string[] };
@@ -132,20 +166,27 @@ type EmailMatch = { live: string[]; deleted: string[] };
  * non-unique email never selects a record.
  */
 async function matchEmails(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   schema: CompiledSchema,
   emails: readonly string[],
 ): Promise<Map<string, EmailMatch>> {
   const matches = new Map<string, EmailMatch>();
   if (emails.length === 0) return matches;
-  const claims = await tx<{ value: string; record_id: string }[]>`
-    select value, record_id from record_identifiers
-    where workspace_id = ${workspaceId} and kind = 'email' and is_claim
-      and value = any(${emails as string[]}::text[])`;
+  // Unique claims of emails fields only: one indexed lookup per field.
+  const fields = schema.state.objects.flatMap((o) =>
+    o.fields.filter((f) => f.type === 'emails' && f.isUnique).map((f) => f.id as string),
+  );
+  const vars: Record<string, unknown> = { emails: [...new Set(emails)] };
+  const statements = fields.map((field, i) => {
+    vars[`f${i}`] = field;
+    return `SELECT record AS record_id, value FROM unique_claims WHERE field_id = $f${i} AND value IN $emails;`;
+  });
+  const claims =
+    statements.length === 0
+      ? []
+      : ((await db.query(statements.join('\n'), vars)) as { value: string; record_id: string }[][]).flat();
   const canonical = await canonicalRecords(
-    tx,
-    workspaceId,
+    db,
     schema,
     claims.map((c) => c.record_id),
   );
@@ -267,30 +308,31 @@ function aboutOf(rows: readonly LinkRow[], live: ReadonlySet<string>): string[] 
 
 /** Of the records links point at, those that are live and of a visible object. */
 async function liveRecords(
-  tx: Tx,
+  db: Db,
   schema: CompiledSchema,
   rows: readonly LinkRow[],
 ): Promise<Set<string>> {
   const ids = [...new Set(rows.flatMap((r) => (r.record_id ? [r.record_id] : [])))];
   if (ids.length === 0) return new Set();
-  const found = await tx<{ id: string }[]>`
-    select id from records
-    where id = any(${ids}::uuid[]) and deleted_at is null
-      and object_type_id = any(${schema.visibleObjectIds}::uuid[])`;
-  return new Set(found.map((r) => r.id));
+  const visible = new Set(schema.visibleObjectIds);
+  const entries = await directoryEntries(db, ids);
+  return new Set(
+    [...entries.values()]
+      .filter((e) => !e.deleted_at && visible.has(e.object_type_id))
+      .map((e) => e.id),
+  );
 }
 
 /** Links as an event presents them, with what a write `added` among them. */
 export async function presentLinks(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   schema: CompiledSchema,
   rows: readonly LinkRow[],
   inserted: readonly LinkRow[] = [],
 ): Promise<{ participants: Participants; about: string[]; added: AddedLinks }> {
   const [candidates, live] = await Promise.all([
-    matchEmails(tx, workspaceId, schema, ambiguousHandles(rows)),
-    liveRecords(tx, schema, rows),
+    matchEmails(db, schema, ambiguousHandles(rows)),
+    liveRecords(db, schema, rows),
   ]);
   return {
     participants: presentParticipants(rows, live, candidates),
@@ -302,62 +344,74 @@ export async function presentLinks(
   };
 }
 
-export async function loadLinks(
-  tx: Tx,
-  workspaceId: string,
-  eventId: string,
-): Promise<StoredLink[]> {
-  return tx<StoredLink[]>`
-    select id, position, handle, role, record_id, unmatched_reason, link
-    from event_links
-    where workspace_id = ${workspaceId} and event_id = ${eventId}
-    order by position`;
+/** An event's links in logged order. */
+export async function loadLinks(db: Db, eventId: string): Promise<StoredLink[]> {
+  const rows = await db.rows<StoredLinkRow>(
+    'SELECT * FROM event_links WHERE event = $event ORDER BY position;',
+    { event: eventId },
+  );
+  return rows.map(linkOf);
 }
 
-type EventColumnsRow = {
-  record_id: string;
+/** Links of several events: one indexed statement per event, in one request. */
+export async function loadLinksOf(
+  db: Db,
+  eventIds: readonly string[],
+): Promise<Map<string, StoredLink[]>> {
+  const ids = [...new Set(eventIds)];
+  const byEvent = new Map<string, StoredLink[]>(ids.map((id) => [id, []]));
+  if (ids.length === 0) return byEvent;
+  const vars: Record<string, unknown> = {};
+  const statements = ids.map((id, i) => {
+    vars[`e${i}`] = id;
+    return `SELECT * FROM event_links WHERE event = $e${i} ORDER BY position;`;
+  });
+  const results = (await db.query(statements.join('\n'), vars)) as StoredLinkRow[][];
+  ids.forEach((id, i) => byEvent.set(id, (results[i] ?? []).map(linkOf)));
+  return byEvent;
+}
+
+type EventIdentityRow = {
+  id: RecordId;
   occurred_at: Date;
-  channel: string | null;
-  external_id: string | null;
+  channel?: string | null;
+  external_id?: string | null;
 };
 
 /**
- * The built-in columns and links of event records, for a page of them, in
- * one read of each table and one shared candidate lookup.
+ * The built-in columns and links of event records, for a page of them:
+ * point lookups of their identities, their links per event, and one shared
+ * candidate lookup.
  */
 export async function eventDetails(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
+  _workspaceId: string,
   schema: CompiledSchema,
   events: readonly { id: string; object_type_id: string; data: Record<string, unknown> }[],
 ): Promise<Map<string, EventDetails>> {
   if (events.length === 0) return new Map();
   const ids = events.map((e) => e.id);
-  const [columns, links] = await Promise.all([
-    tx<EventColumnsRow[]>`
-      select record_id, occurred_at, channel, external_id from event_records
-      where workspace_id = ${workspaceId} and record_id = any(${ids}::uuid[])`,
-    tx<(LinkRow & { event_id: string })[]>`
-      select event_id, id, handle, role, record_id, unmatched_reason, link from event_links
-      where workspace_id = ${workspaceId} and event_id = any(${ids}::uuid[])
-      order by event_id, position`,
+  const [columns, linksByEvent] = await Promise.all([
+    db.rows<EventIdentityRow>('SELECT * FROM $ids;', {
+      ids: ids.map((id) => new RecordId('event_identity', id)),
+    }),
+    loadLinksOf(db, ids),
   ]);
+  const links = [...linksByEvent.values()].flat();
   const [candidates, live] = await Promise.all([
-    matchEmails(tx, workspaceId, schema, ambiguousHandles(links)),
-    liveRecords(tx, schema, links),
+    matchEmails(db, schema, ambiguousHandles(links)),
+    liveRecords(db, schema, links),
   ]);
-  const byEvent = new Map<string, LinkRow[]>(ids.map((id) => [id, []]));
-  for (const link of links) byEvent.get(link.event_id)?.push(link);
-  const byRecord = new Map(columns.map((c) => [c.record_id, c]));
+  const byRecord = new Map(columns.map((c) => [publicId(c.id), c]));
   const details = new Map<string, EventDetails>();
   for (const event of events) {
     const row = byRecord.get(event.id);
     if (!row) continue;
-    const rows = byEvent.get(event.id) ?? [];
+    const rows = linksByEvent.get(event.id) ?? [];
     details.set(event.id, {
       occurredAt: row.occurred_at.toISOString(),
-      channel: row.channel,
-      externalId: row.external_id,
+      channel: row.channel ?? null,
+      externalId: row.external_id ?? null,
       ...eventText(schema.objectsById.get(event.object_type_id), event.data),
       participants: presentParticipants(rows, live, candidates),
       about: aboutOf(rows, live),
@@ -383,12 +437,11 @@ function participantKey(role: string | null, handle: string | null, recordId: st
  * absent: an event links only to records a caller can read.
  */
 export async function lockLinkTargets(
-  tx: Tx,
-  workspaceId: string,
-  schema: CompiledSchema,
+  context: WriteContext,
   ids: readonly string[],
 ): Promise<Map<string, CanonicalRecord>> {
-  const targets = await lockTargets(tx, workspaceId, [...new Set(ids)]);
+  const { schema } = context;
+  const targets = await lockTargets(context, [...new Set(ids)]);
   const visible = new Set(schema.visibleObjectIds);
   const records = new Map<string, CanonicalRecord>();
   for (const [id, row] of targets) {
@@ -415,23 +468,21 @@ export async function lockLinkTargets(
  * Returns the event's links after the write and the rows inserted.
  */
 export async function addLinks(
-  tx: Tx,
-  workspaceId: string,
-  schema: CompiledSchema,
+  context: WriteContext,
   eventId: string,
   stored: readonly StoredLink[],
   input: { participants: readonly NormalizedParticipant[]; about: readonly string[] },
 ): Promise<{ rows: LinkRow[]; inserted: LinkRow[] }> {
-  // A handle erased by forget is never stored again (2.1). The caller holds
-  // the privacy lock in shared mode, so forget cannot run between this check
-  // and the commit.
+  const { workspaceId, schema, op } = context;
+  // A handle erased by forget is never stored again (2.1). `forget` and
+  // this write are serialized by the write protocol.
   const [suppressed, emailMatches] = await Promise.all([
     suppressedOf(
-      tx,
+      op.db,
       workspaceId,
       input.participants.flatMap((p) => (p.handle ? [p.handle] : [])),
     ),
-    matchEmails(tx, workspaceId, schema, [
+    matchEmails(op.db, schema, [
       ...new Set(
         input.participants.flatMap((p) =>
           !p.recordId && p.handle?.kind === 'email' ? [p.handle.value] : [],
@@ -444,7 +495,7 @@ export async function addLinks(
       ? { ...p, handle: null, erased: true }
       : { ...p, erased: false },
   );
-  const records = await lockLinkTargets(tx, workspaceId, schema, [
+  const records = await lockLinkTargets(context, [
     ...kept.flatMap((p) => (p.recordId ? [p.recordId] : [])),
     ...input.about,
     ...stored.flatMap((r) => (r.record_id ? [r.record_id] : [])),
@@ -475,7 +526,19 @@ export async function addLinks(
     (r) => r.link === 'about' && attending.has(survivor(r.record_id) as string),
   );
   if (replaced.length > 0) {
-    await tx`delete from event_links where id = any(${replaced.map((r) => r.id)}::uuid[])`;
+    op.batch.deleteIds(
+      'event_links',
+      replaced.map((r) => r.id),
+    );
+    await removeDirectAttachments(
+      context,
+      replaced.map((r) => ({
+        event: eventId,
+        target: r.record_id as string,
+        via: 'about' as const,
+        linkId: r.id,
+      })),
+    );
   }
 
   // About records: known and live, not linked already, each once.
@@ -508,13 +571,12 @@ export async function addLinks(
   }
 
   let position = Math.max(-1, ...stored.map((r) => r.position)) + 1;
-  const inserts = [
-    ...newParticipants.map((p, n) => {
+  const inserted: StoredLink[] = [
+    ...newParticipants.map((p, n): StoredLink => {
       const resolution = resolutions[n] as Resolution;
       const matched = 'recordId' in resolution;
       return {
-        workspace_id: workspaceId,
-        event_id: eventId,
+        id: op.newId(),
         position: position++,
         handle: p.handle?.value ?? null,
         role: p.role,
@@ -523,23 +585,39 @@ export async function addLinks(
         link: 'participant',
       };
     }),
-    ...newAbout.map((recordId) => ({
-      workspace_id: workspaceId,
-      event_id: eventId,
-      position: position++,
-      handle: null,
-      role: null,
-      record_id: recordId,
-      unmatched_reason: null,
-      link: 'about',
-    })),
+    ...newAbout.map(
+      (recordId): StoredLink => ({
+        id: op.newId(),
+        position: position++,
+        handle: null,
+        role: null,
+        record_id: recordId,
+        unmatched_reason: null,
+        link: 'about',
+      }),
+    ),
   ];
-  const inserted =
-    inserts.length > 0
-      ? await tx<LinkRow[]>`
-          insert into event_links ${tx(inserts)}
-          returning id, handle, role, record_id, unmatched_reason, link`
-      : [];
+  op.batch.insert(
+    'event_links',
+    inserted.map((l) => ({
+      id: l.id,
+      event: eventId,
+      position: l.position,
+      handle: l.handle,
+      role: l.role,
+      record: l.record_id,
+      unmatched_reason: l.unmatched_reason,
+      link: l.link,
+    })),
+  );
+  await addDirectAttachments(
+    context,
+    inserted.flatMap((l) =>
+      l.record_id
+        ? [{ event: eventId, target: l.record_id, via: l.link, linkId: l.id }]
+        : [],
+    ),
+  );
   const gone = new Set(replaced.map((r) => r.id));
   return { rows: [...stored.filter((r) => !gone.has(r.id)), ...inserted], inserted };
 }

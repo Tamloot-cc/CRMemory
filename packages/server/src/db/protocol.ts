@@ -168,6 +168,11 @@ export class Operation {
   readonly batch = new Batch();
   /** The administrative session, for operations that define (sections 4, 7). */
   admin?: Db;
+  /**
+   * What this plan has already decided, by module: later steps of one
+   * operation read through it, since nothing is written until the commit.
+   */
+  readonly cache = new Map<string, unknown>();
   private readonly afterCommit: Array<() => void> = [];
   private schemaCache?: CompiledSchema;
 

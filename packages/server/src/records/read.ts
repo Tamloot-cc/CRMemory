@@ -1,78 +1,80 @@
 import { type Actor, isCollectionRelation, type PresentedRecord } from '@retainer/shared';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
 import { AppError, notFound } from '../errors.js';
 import { eventDetails } from '../memory/event-links.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { resolveRecordId } from './write.js';
+import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
+import type { FieldState } from '../schema-engine/types.js';
+import {
+  directoryEntries,
+  directoryEntry,
+  type Edge,
+  fetchRows,
+  incomingEdges,
+  outgoingEdges,
+  type RecordRow,
+} from './store.js';
+import { resolveRecordIdIn } from './write.js';
 
 export type { PresentedRecord } from '@retainer/shared';
-
-export type RecordRow = {
-  id: string;
-  workspace_id: string;
-  object_type_id: string;
-  data: Record<string, unknown>;
-  label: string | null;
-  created_at: Date;
-  updated_at: Date;
-  created_by: Actor;
-  updated_by: Actor;
-};
-
-export const RECORD_COLUMNS = [
-  'id',
-  'workspace_id',
-  'object_type_id',
-  'data',
-  'label',
-  'created_at',
-  'updated_at',
-  'created_by',
-  'updated_by',
-] as const;
+export type { RecordRow } from './store.js';
 
 const INVERSE_LIMIT = 100;
 
+/** The owning field an inverse field reads its edges from. */
+export function owningFieldOf(schema: CompiledSchema, inverse: FieldState): FieldState | undefined {
+  const target = schema.objectsByUniversalId.get(inverse.settings.targetObjectId ?? '');
+  return target?.state.fields.find((f) => f.universalId === inverse.settings.inverseFieldId);
+}
+
 /**
- * Presents rows of any objects, reading their relations in two queries and,
- * for event records, their built-in columns and links in two more.
+ * Presents rows of any objects: their relations from native edges (both
+ * directions), and for event records their built-in columns and links.
+ * Links whose other end is deleted no longer resolve (set_null on delete).
  */
 export async function presentRecords(
-  tx: Tx,
+  db: Db,
   schema: CompiledSchema,
   rows: RecordRow[],
 ): Promise<PresentedRecord[]> {
   if (rows.length === 0) return [];
-  const ids = rows.map((r) => r.id);
-  const workspaceId = rows[0]?.workspace_id;
-  const events =
-    workspaceId === undefined
-      ? new Map()
-      : await eventDetails(
-          tx,
-          workspaceId,
-          schema,
-          rows.filter((r) => schema.objectsById.get(r.object_type_id)?.isEvent),
-        );
+  const records = rows.flatMap((row) => {
+    const object = schema.objectsById.get(row.object_type_id);
+    return object ? [{ id: row.id, object }] : [];
+  });
+  const workspaceId = rows[0]?.workspace_id as string;
+  const events = await eventDetails(
+    db,
+    workspaceId,
+    schema,
+    rows.filter((r) => schema.objectsById.get(r.object_type_id)?.isEvent),
+  );
 
-  // Links whose other end is deleted no longer resolve (set_null on delete).
-  const [outgoing, incoming] = await Promise.all([
-    tx<{ record_id: string; field_id: string; other_id: string }[]>`
-      select l.source_record_id as record_id, l.field_id, l.target_record_id as other_id
-      from record_links l
-      join records t on t.id = l.target_record_id and t.deleted_at is null
-      where l.source_record_id = any(${ids}::uuid[])
-      order by l.target_record_id`,
-    tx<{ record_id: string; field_id: string; other_id: string }[]>`
-      select l.target_record_id as record_id, l.field_id, l.source_record_id as other_id
-      from record_links l
-      join records s on s.id = l.source_record_id and s.deleted_at is null
-      where l.target_record_id = any(${ids}::uuid[])
-      order by s.created_at, s.id`,
+  const outgoing = await outgoingEdges(db, records);
+  const incoming: Edge[] = [];
+  const inverseOf = new Map<string, FieldState>();
+  const byObject = new Map<CompiledObject, { id: string; object: CompiledObject }[]>();
+  for (const r of records) byObject.set(r.object, [...(byObject.get(r.object) ?? []), r]);
+  for (const [object, list] of byObject) {
+    for (const inverse of object.activeFields) {
+      if (inverse.type !== 'relation' || !inverse.settings.isInverse) continue;
+      const owning = owningFieldOf(schema, inverse);
+      if (!owning) continue;
+      inverseOf.set(owning.id as string, inverse);
+      incoming.push(...(await incomingEdges(db, owning, list)));
+    }
+  }
+  const others = await directoryEntries(db, [
+    ...outgoing.map((e) => e.other_id),
+    ...incoming.map((e) => e.other_id),
   ]);
+  const live = (id: string) => {
+    const entry = others.get(id);
+    return entry !== undefined && !entry.deleted_at;
+  };
 
-  const values = new Map<string, Record<string, unknown>>(ids.map((id) => [id, {}]));
-  for (const link of outgoing) {
+  const values = new Map<string, Record<string, unknown>>(rows.map((r) => [r.id, {}]));
+  for (const link of [...outgoing].sort((a, b) => a.other_id.localeCompare(b.other_id))) {
+    if (!live(link.other_id)) continue;
     const field = schema.fieldOwners.get(link.field_id)?.fieldsById.get(link.field_id);
     if (field?.status !== 'active') continue;
     const record = values.get(link.record_id) as Record<string, unknown>;
@@ -81,12 +83,16 @@ export async function presentRecords(
       record[field.name] = [...((record[field.name] as string[] | undefined) ?? []), link.other_id];
     } else record[field.name] = link.other_id;
   }
-  for (const link of incoming) {
-    // The edge belongs to the many_to_one field; show it on that field's inverse.
-    const manyToOne = schema.fieldOwners.get(link.field_id)?.fieldsById.get(link.field_id);
-    const inverseId = manyToOne?.settings.inverseFieldId;
-    const targetObject = schema.objectsByUniversalId.get(manyToOne?.settings.targetObjectId ?? '');
-    const inverse = targetObject?.state.fields.find((f) => f.universalId === inverseId);
+  // An inverse lists its sources oldest first, as on `main`.
+  const sorted = incoming
+    .filter((e) => live(e.other_id))
+    .sort((a, b) => {
+      const x = others.get(a.other_id) as { created_at: Date };
+      const y = others.get(b.other_id) as { created_at: Date };
+      return x.created_at.getTime() - y.created_at.getTime() || a.other_id.localeCompare(b.other_id);
+    });
+  for (const link of sorted) {
+    const inverse = inverseOf.get(link.field_id);
     if (inverse?.status !== 'active') continue;
     const record = values.get(link.record_id) as Record<string, unknown>;
     const list = (record[inverse.name] as string[] | undefined) ?? [];
@@ -126,13 +132,13 @@ export async function presentRecords(
  * not found.
  */
 export async function getRecord(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   id: string,
 ): Promise<PresentedRecord> {
-  const row = await findLiveRecord(tx, workspaceId, schema, id);
-  const [presented] = await presentRecords(tx, schema, [row]);
+  const row = await findLiveRecord(db, workspaceId, schema, id);
+  const [presented] = await presentRecords(db, schema, [row]);
   return presented as PresentedRecord;
 }
 
@@ -141,22 +147,24 @@ export async function getRecord(
  * routes that need only its ID and object. Refuses what `getRecord` refuses.
  */
 export async function findLiveRecord(
-  tx: Tx,
+  db: Db,
   workspaceId: string,
   schema: CompiledSchema,
   id: string,
 ): Promise<RecordRow> {
-  const canonical = await resolveRecordId(tx, workspaceId, id);
-  const [row] = await tx<(RecordRow & { deleted_at: Date | null })[]>`
-    select ${tx(RECORD_COLUMNS)}, deleted_at from records
-    where id = ${canonical} and workspace_id = ${workspaceId}`;
-  if (!row || schema.objectsById.get(row.object_type_id)?.hidden) {
+  const canonical = await resolveRecordIdIn(db, id);
+  const entry = await directoryEntry(db, canonical);
+  if (!entry || schema.objectsById.get(entry.object_type_id)?.hidden) {
     throw notFound('record', { id });
   }
-  if (row.deleted_at) {
+  const row = (await fetchRows(db, workspaceId, schema, [entry])).get(canonical);
+  if (!row) throw notFound('record', { id });
+  if (entry.deleted_at) {
     throw new AppError(404, 'record_deleted', `record ${canonical} was deleted`, {
       recordId: canonical,
     });
   }
   return row;
 }
+
+export type { Actor };

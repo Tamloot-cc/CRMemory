@@ -1,15 +1,23 @@
 import type { ForgetResult } from '@retainer/shared';
-import type { Tx } from '../db/tx.js';
+import type { Db } from '../db/backend.js';
+import { RecordId } from '../db/cbor.js';
+import { publicId, relationTable } from '../db/names.js';
+import { ident } from '../db/surreal.js';
 import { requireUser } from '../errors.js';
-import { liveFactSource } from '../memory/events.js';
+import { liveFactSources } from '../memory/events.js';
 import { type Handle, parseHandle } from '../memory/handles.js';
 import { inboundRelationFields } from '../records/merge.js';
-import { phraseQuery } from '../records/search-sql.js';
+import { fold } from '../records/search-docs.js';
 import {
+  type AssertionRow,
+  entriesOf,
+  fromStored,
   lockRecordsForUpdate,
   type RemovedClaim,
   releaseAndRecompute,
   resolveRecordId,
+  type StoredAssertion,
+  updateAssertion,
   type WriteContext,
 } from '../records/write.js';
 import type { CompiledSchema } from '../schema-engine/compiled.js';
@@ -23,15 +31,27 @@ import {
 /** How many review candidates of each kind `forget` returns. */
 const CANDIDATE_LIMIT = 100;
 
+/** Runs one indexed statement per value, in one request; results in order. */
+async function perValue<T>(
+  db: Db,
+  values: readonly string[],
+  statement: (v: string) => string,
+): Promise<T[][]> {
+  if (values.length === 0) return [];
+  const vars: Record<string, unknown> = {};
+  const statements = values.map((value, i) => {
+    vars[`v${i}`] = value;
+    return statement(`$v${i}`);
+  });
+  return (await db.query(statements.join('\n'), vars)) as T[][];
+}
+
 /**
- * `forget` (2.1): the hard delete for privacy requests. The caller holds
- * the privacy lock exclusively, so no other write runs in the workspace
- * until this commits, and every later write checks the suppression list.
- * Logging takes the same lock in shared mode, so an erasure and a logging
- * of the same event identity never interleave (6.4).
+ * `forget` (2.1): the hard delete for privacy requests. Like every write it
+ * runs under the write protocol (section 6), so no other write interleaves,
+ * and every later write checks the suppression list.
  *
- * Everything is collected first, before cascades or `SET NULL` can erase
- * the dependencies:
+ * Everything is gathered in the plan before anything is deleted:
  *
  * - the record and every record merged into it;
  * - its emails and phones, from current identifiers, every past email or
@@ -44,196 +64,311 @@ const CANDIDATE_LIMIT = 100;
  *
  * Then, in this one transaction: claims on other records that cite those
  * events are deleted (facts only once no live source remains) and inbound
- * relation claims are deleted; the affected records are recomputed; the
- * events and the records are hard-deleted, with their assertions, facts,
- * links and identifiers; an erased event's identity, and that of a
- * surviving event whose initial values were erased, is replaced by a keyed
- * tombstone; stored idempotent responses that mention them are deleted; the
- * handles are suppressed by keyed HMAC; and an audit row records who and
- * how many, never what.
+ * relation claims are deleted or trimmed; the affected records are
+ * recomputed; the events and the records are hard-deleted with every row
+ * derived from them; an erased event's identity, and that of a surviving
+ * event whose initial values were erased, is replaced by a keyed tombstone;
+ * receipts that mention them are erased; the handles are suppressed by
+ * keyed HMAC; and an audit row records who and how many, never what. If the
+ * transaction fails nothing is erased (section 6: no partial erasure).
  */
-export async function forgetRecord(
-  tx: Tx,
-  context: WriteContext,
-  id: string,
-): Promise<ForgetResult> {
+export async function forgetRecord(context: WriteContext, id: string): Promise<ForgetResult> {
   requireUser(context.actor, 'forget a record');
   requireSuppressionKey();
-  const { workspaceId, schema } = context;
-  const root = await resolveRecordId(tx, workspaceId, id);
+  const { workspaceId, schema, op } = context;
+  const { db } = op;
+  const root = await resolveRecordId(op, id);
 
-  const chain = await tx<{ id: string; label: string | null; object_type_id: string }[]>`
-    with recursive chain (id) as (
-      select ${root}::uuid
-      union
-      select r.id from records r join chain c on r.merged_into_id = c.id
-      where r.workspace_id = ${workspaceId}
+  // The record and the chain of records merged into it.
+  const recordIds: string[] = [root];
+  for (let frontier = [root]; frontier.length > 0; ) {
+    const merged = (
+      await perValue<{ id: RecordId }>(
+        db,
+        frontier,
+        (v) => `SELECT id FROM record_directory WHERE merged_into = ${v};`,
+      )
     )
-    select r.id, r.label, r.object_type_id from records r join chain c on c.id = r.id
-    order by r.id`;
-  const recordIds = chain.map((r) => r.id);
+      .flat()
+      .map((r) => publicId(r.id))
+      .filter((r) => !recordIds.includes(r));
+    recordIds.push(...merged);
+    frontier = merged;
+  }
+  recordIds.sort();
+  const entries = await entriesOf(op, recordIds);
+  const records = await lockRecordsForUpdate(context, recordIds);
 
   // Handles: current identifiers, past claims, and matched participants.
   const handles = new Map<string, Handle>();
   const addHandle = (handle: Handle | null) => {
     if (handle) handles.set(`${handle.kind}:${handle.value}`, handle);
   };
-  const identifiers = await tx<{ kind: 'email' | 'phone'; value: string }[]>`
-    select distinct kind, value from record_identifiers
-    where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])
-      and kind in ('email', 'phone')`;
-  for (const row of identifiers) addHandle(row);
-  const claims = await tx<{ field_id: string; value: unknown }[]>`
-    select field_id, value from field_assertions
-    where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])
-      and value is not null`;
-  for (const claim of claims) {
-    const field = schema.fieldOwners.get(claim.field_id)?.fieldsById.get(claim.field_id);
-    if (field) for (const handle of suppressibleHandles(field, claim.value)) addHandle(handle);
+  const [identifierRows, claimRows, linkRows] = await Promise.all([
+    perValue<{ kind: string; value: string }>(
+      db,
+      recordIds,
+      (v) => `SELECT kind, value FROM record_identifiers WHERE record = ${v};`,
+    ),
+    perValue<StoredAssertion>(
+      db,
+      recordIds,
+      (v) => `SELECT * FROM field_assertions WHERE record = ${v};`,
+    ),
+    perValue<{ id: RecordId; event: string; link: string; handle?: string | null }>(
+      db,
+      recordIds,
+      (v) => `SELECT id, event, link, handle FROM event_links WHERE record = ${v};`,
+    ),
+  ]);
+  for (const row of identifierRows.flat()) {
+    if (row.kind === 'email' || row.kind === 'phone') addHandle(row as Handle);
   }
-  const matched = await tx<{ handle: string }[]>`
-    select distinct handle from event_links
-    where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])
-      and handle is not null`;
-  for (const row of matched) addHandle(parseHandle(row.handle));
+  const ownAssertions = claimRows.flat();
+  for (const claim of ownAssertions) {
+    const field = schema.fieldOwners.get(claim.field_id)?.fieldsById.get(claim.field_id);
+    if (field && claim.value !== null && claim.value !== undefined) {
+      for (const handle of suppressibleHandles(field, claim.value)) addHandle(handle);
+    }
+  }
+  const linksToRecord = linkRows.flat();
+  for (const row of linksToRecord) if (row.handle) addHandle(parseHandle(row.handle));
   const handleValues = [...handles.values()].map((h) => h.value);
 
   // Events the record took part in, and the internal notes remember wrote
-  // about it. An event that is only `about` the record (a meeting about a
-  // company) is someone else's: it stays, without the link. A forgotten
-  // record that is itself an event is erased as one.
-  const events = await tx<{ id: string }[]>`
-    select distinct l.event_id as id from event_links l
-    join records ev on ev.id = l.event_id
-    where l.workspace_id = ${workspaceId}
-      and ((l.link = 'participant'
-          and (l.record_id = any(${recordIds}::uuid[]) or l.handle = any(${handleValues}::text[])))
-        or (l.link = 'about' and l.record_id = any(${recordIds}::uuid[])
-          and ev.object_type_id = ${schema.internalNote?.id ?? null}::uuid))
-    union
-    select r.id from records r
-    where r.id = any(${recordIds}::uuid[])
-      and r.object_type_id = any(${schema.eventTypeIds}::uuid[])
-    order by 1`;
-  const eventIds = events.map((r) => r.id);
-  const erased = [...new Set([...recordIds, ...eventIds])];
+  // about it. An event only `about` the record (a meeting about a company)
+  // is someone else's: it stays, without the link. A forgotten record that
+  // is itself an event is erased as one.
+  const byHandle = (
+    await perValue<{ event: string; link: string }>(
+      db,
+      handleValues,
+      (v) => `SELECT event, link FROM event_links WHERE handle = ${v};`,
+    )
+  )
+    .flat()
+    .filter((l) => l.link === 'participant');
+  const candidateEvents = [
+    ...new Set([...linksToRecord.map((l) => l.event), ...byHandle.map((l) => l.event)]),
+  ];
+  const eventEntries = await entriesOf(op, candidateEvents);
+  const noteType = schema.internalNote?.id;
+  const eventSet = new Set<string>();
+  for (const link of linksToRecord) {
+    const entry = eventEntries.get(link.event);
+    if (link.link === 'participant' || (entry && entry.object_type_id === noteType)) {
+      eventSet.add(link.event);
+    }
+  }
+  for (const link of byHandle) eventSet.add(link.event);
+  for (const recordId of recordIds) {
+    if (schema.objectsById.get(entries.get(recordId)?.object_type_id ?? '')?.isEvent) {
+      eventSet.add(recordId);
+    }
+  }
+  const eventIds = [...eventSet].sort();
+  const erased = [...new Set([...recordIds, ...eventIds])].sort();
+  const erasedSet = new Set(erased);
 
   const reviewCandidates = await findMentions(
-    tx,
-    workspaceId,
+    db,
     schema,
-    erased,
-    chain.flatMap((r) => (r.label?.trim() ? [r.label.trim()] : [])),
+    erasedSet,
+    records.flatMap((r) => (r.label?.trim() ? [r.label.trim()] : [])),
     handleValues,
   );
 
   // Claims on other records that cite those events or point at the record.
-  const object = schema.objectsById.get(chain[0]?.object_type_id ?? '');
-  const relationFieldIds = object ? inboundRelationFields(schema, object) : [];
-  const pointsAtRecord = tx`field_id = any(${relationFieldIds}::uuid[])
-    and value = any(array(select to_jsonb(x::text) from unnest(${recordIds}::uuid[]) x))`;
+  const object = schema.objectsById.get(entries.get(root)?.object_type_id ?? '');
+  const relationFieldIds = new Set(object ? inboundRelationFields(schema, object) : []);
+  const [citingRows, pointingRows] = await Promise.all([
+    perValue<StoredAssertion>(
+      db,
+      eventIds,
+      (v) => `SELECT * FROM field_assertions WHERE source = ${v};`,
+    ),
+    perValue<StoredAssertion>(
+      db,
+      recordIds,
+      (v) => `SELECT * FROM field_assertions WHERE refs CONTAINS ${v};`,
+    ),
+  ]);
+  const elsewhere = (row: AssertionRow) => !erasedSet.has(row.record);
+  const cited = new Map(
+    citingRows
+      .flat()
+      .map(fromStored)
+      .filter(elsewhere)
+      .map((row) => [row.id, row]),
+  );
+  const pointing = pointingRows
+    .flat()
+    .map(fromStored)
+    .filter((row) => elsewhere(row) && relationFieldIds.has(row.field_id) && !cited.has(row.id));
+  const inboundRemoved = pointing.filter((row) => !Array.isArray(row.value));
+  const inboundTrimmed = pointing.filter((row) => Array.isArray(row.value));
+
+  const affected = [...cited.values(), ...pointing].map((row) => row.record);
+  const locked = await lockRecordsForUpdate(context, affected);
+
+  // Surviving events whose initial values are erased lose their raw
+  // identity (6.4): the caller-chosen channel and external ID may identify.
+  const initialErased = [
+    ...new Set(pointing.filter((row) => row.is_initial).map((row) => row.record)),
+  ];
+  const identityRows = await db.rows<{
+    id: RecordId;
+    channel?: string | null;
+    external_id?: string | null;
+  }>('SELECT id, channel, external_id FROM $ids;', {
+    ids: [...eventIds, ...initialErased].map((e) => new RecordId('event_identity', e)),
+  });
+  const identities = identityRows.flatMap((row) =>
+    row.channel && row.external_id
+      ? [{ channel: row.channel, externalId: row.external_id }]
+      : [],
+  );
+
+  // Removed claims leave the plan's view first, so recomputation never
+  // brings one back; the rows themselves are deleted below.
+  const removed: RemovedClaim[] = [];
+  for (const row of [...cited.values(), ...inboundRemoved]) {
+    updateAssertion(context, row, { status: 'retracted' });
+    removed.push({ record_id: row.record, field_id: row.field_id, status: row.status });
+  }
   // A set (many_to_many) that holds the record, in any assertion, current
   // or historical: the record is removed from it, so no recomputation can
   // bring it back (5.3).
-  const holdsRecord = tx`field_id = any(${relationFieldIds}::uuid[])
-    and jsonb_typeof(value) = 'array' and value ?| ${recordIds}::text[]`;
-  const elsewhere = tx`workspace_id = ${workspaceId} and record_id <> all(${erased}::uuid[])`;
-  const affected = await tx<{ record_id: string }[]>`
-    select distinct record_id from field_assertions
-    where ${elsewhere}
-      and (source_record_id = any(${eventIds}::uuid[]) or (${pointsAtRecord})
-        or (${holdsRecord}))`;
-  const locked = await lockRecordsForUpdate(tx, workspaceId, [
-    ...new Set([...erased, ...affected.map((r) => r.record_id)]),
-  ]);
-
-  // Surviving events whose initial values are erased below lose their raw
-  // identity (6.4): the caller-chosen channel and external ID may identify.
-  const initialErased = await tx<{ record_id: string }[]>`
-    select distinct record_id from field_assertions
-    where ${elsewhere} and is_initial and ((${pointsAtRecord}) or (${holdsRecord}))`;
-  const identities = await tx<{ record_id: string; channel: string; external_id: string }[]>`
-    select record_id, channel, external_id from event_records
-    where workspace_id = ${workspaceId} and external_id is not null and channel is not null
-      and record_id = any(${[...eventIds, ...initialErased.map((r) => r.record_id)]}::uuid[])`;
-
-  const [counted] = await tx<{ assertions: number }[]>`
-    select count(*)::int as assertions from field_assertions
-    where workspace_id = ${workspaceId} and record_id = any(${erased}::uuid[])`;
-  const ownFacts = await tx<{ id: string }[]>`
-    select id from facts where workspace_id = ${workspaceId} and record_id = any(${erased}::uuid[])`;
-
-  const cited = await tx<RemovedClaim[]>`
-    delete from field_assertions
-    where ${elsewhere} and source_record_id = any(${eventIds}::uuid[])
-    returning record_id, field_id, status`;
-  const inboundRelations = await tx<RemovedClaim[]>`
-    delete from field_assertions where ${elsewhere} and ${pointsAtRecord}
-    returning record_id, field_id, status`;
-  const trimmed = await tx<RemovedClaim[]>`
-    update field_assertions set value = (
-      select coalesce(jsonb_agg(v order by v collate "C"), '[]'::jsonb)
-      from jsonb_array_elements_text(value) v
-      where v <> all(${recordIds}::text[]))
-    where ${elsewhere} and ${holdsRecord}
-    returning record_id, field_id, status`;
+  const trimmedRecords = new Set(recordIds);
+  for (const row of inboundTrimmed) {
+    const value = (row.value as string[]).filter((v) => !trimmedRecords.has(v)).sort();
+    updateAssertion(context, row, { value });
+    removed.push({ record_id: row.record, field_id: row.field_id, status: row.status });
+  }
   const recomputed = await releaseAndRecompute(
-    tx,
     context,
-    locked.filter((r) => !erased.includes(r.id)),
-    [...cited, ...inboundRelations, ...trimmed],
+    locked.filter((r) => !erasedSet.has(r.id)),
+    removed,
   );
 
-  // Facts on other records: drop the deleted sources, then any fact left
-  // without a live source.
-  const unsourced = await tx<{ fact_id: string }[]>`
-    delete from fact_sources
-    where workspace_id = ${workspaceId} and source_record_id = any(${eventIds}::uuid[])
-    returning fact_id`;
-  const orphaned = await tx<{ id: string }[]>`
-    delete from facts f
-    where f.workspace_id = ${workspaceId}
-      and f.id = any(${[...new Set(unsourced.map((s) => s.fact_id))]}::uuid[])
-      and f.record_id <> all(${erased}::uuid[])
-      and not exists (${liveFactSource(tx, tx`f.id`)})
-    returning f.id`;
-
-  await tombstoneEventIdentity(
-    tx,
-    workspaceId,
-    identities.map((i) => ({ channel: i.channel, externalId: i.external_id })),
+  // Facts: those of erased records go; facts elsewhere lose the deleted
+  // sources, and go once no live source remains.
+  const [ownFactRows, sourceRows] = await Promise.all([
+    perValue<{ id: RecordId }>(db, erased, (v) => `SELECT id FROM facts WHERE record = ${v};`),
+    perValue<{ id: RecordId; fact: string }>(
+      db,
+      eventIds,
+      (v) => `SELECT id, fact FROM fact_sources WHERE source = ${v};`,
+    ),
+  ]);
+  const ownFacts = ownFactRows.flat().map((f) => publicId(f.id));
+  const ownFactSet = new Set(ownFacts);
+  const unsourced = [...new Set(sourceRows.flat().map((s) => s.fact))].filter(
+    (f) => !ownFactSet.has(f),
   );
-  await tx`
-    update event_records set channel = null, external_id = null
-    where workspace_id = ${workspaceId}
-      and record_id = any(${initialErased.map((r) => r.record_id)}::uuid[])`;
-  await tx`
-    delete from event_links
-    where workspace_id = ${workspaceId} and record_id = any(${recordIds}::uuid[])`;
-  await tx`delete from records where id = any(${erased}::uuid[])`;
+  const remaining = await liveFactSources(db, unsourced);
+  const orphanCandidates = unsourced.filter(
+    (f) => !(remaining.get(f) ?? []).some((s) => !erasedSet.has(s.source)),
+  );
+  const orphanFacts = (
+    await db.rows<{ id: RecordId; deleted_at?: Date | null }>('SELECT id, deleted_at FROM $ids;', {
+      ids: orphanCandidates.map((f) => new RecordId('facts', f)),
+    })
+  ).map((f) => publicId(f.id));
+  const erasedFacts = [...ownFacts, ...orphanFacts];
 
-  // Stored responses mentioning any erased row are erased too.
-  const orphanedIds = new Set(orphaned.map((f) => f.id));
-  const erasedIds = [...erased, ...orphanedIds, ...ownFacts.map((f) => f.id)];
-  await tx`
-    delete from idempotency_keys k
-    where k.workspace_id = ${workspaceId} and k.result is not null
-      and exists (select 1 from unnest(${erasedIds}::text[]) x
-        where strpos(k.result::text, x) > 0)`;
+  await tombstoneEventIdentity(op, workspaceId, identities);
+  for (const eventId of initialErased.filter((e) => !erasedSet.has(e))) {
+    op.batch.update('event_identity', eventId, { channel: undefined, external_id: undefined });
+  }
 
-  const suppressedHandles = await suppress(tx, workspaceId, [...handles.values()]);
+  // Hard deletion. These statements run last, after every plan step above,
+  // and delete by indexed condition so nothing derived from an erased row
+  // is left, whichever step wrote it.
+  const batch = op.batch;
+  const sweep = (statement: string, label: string) =>
+    batch.write(`${statement} RETURN BEFORE`, { min: 0 }, label);
+  const claimIds = [...cited.keys(), ...inboundRemoved.map((r) => r.id)];
+  if (claimIds.length > 0) batch.deleteIds('field_assertions', claimIds);
+  for (const factId of erasedFacts) {
+    const fact = batch.v(factId);
+    sweep(`DELETE fact_sources WHERE fact = ${fact}`, 'fact_sources');
+    sweep(`DELETE ${batch.v(new RecordId('search_documents', factId))}`, 'search_documents');
+  }
+  if (erasedFacts.length > 0) batch.deleteIds('facts', erasedFacts);
+  for (const eventId of eventIds) {
+    sweep(`DELETE fact_sources WHERE source = ${batch.v(eventId)}`, 'fact_sources');
+    sweep(`DELETE field_assertions WHERE source = ${batch.v(eventId)}`, 'field_assertions');
+  }
+  for (const recordId of erased) {
+    const entry = (await entriesOf(op, [recordId])).get(recordId);
+    const owner = entry ? schema.objectsById.get(entry.object_type_id) : undefined;
+    const v = batch.v(recordId);
+    sweep(`DELETE field_assertions WHERE record = ${v}`, 'field_assertions');
+    sweep(`DELETE record_identifiers WHERE record = ${v}`, 'record_identifiers');
+    sweep(`DELETE unique_claims WHERE record = ${v}`, 'unique_claims');
+    sweep(`DELETE search_documents WHERE owner = ${v}`, 'search_documents');
+    sweep(`DELETE event_links WHERE record = ${v}`, 'event_links');
+    sweep(`DELETE event_links WHERE event = ${v}`, 'event_links');
+    sweep(`DELETE event_attachments WHERE event = ${v}`, 'event_attachments');
+    sweep(`DELETE event_attachments WHERE target = ${v}`, 'event_attachments');
+    sweep(`DELETE rollup_attachments WHERE event = ${v}`, 'rollup_attachments');
+    sweep(`DELETE rollup_attachments WHERE target = ${v}`, 'rollup_attachments');
+    sweep(`DELETE rollup_attachments WHERE source = ${v}`, 'rollup_attachments');
+    sweep(`DELETE merge_suggestions WHERE record_a = ${v}`, 'merge_suggestions');
+    sweep(`DELETE merge_suggestions WHERE record_b = ${v}`, 'merge_suggestions');
+    if (owner) {
+      const node = batch.v(new RecordId(owner.table, recordId));
+      for (const field of owner.state.fields) {
+        if (field.type === 'relation' && !field.settings.isInverse) {
+          sweep(`DELETE ${ident(relationTable(field.universalId))} WHERE in = ${node}`, 'edges');
+        }
+      }
+      for (const fieldId of inboundRelationFields(schema, owner)) {
+        const field = schema.fieldOwners.get(fieldId)?.fieldsById.get(fieldId);
+        if (field) {
+          sweep(`DELETE ${ident(relationTable(field.universalId))} WHERE out = ${node}`, 'edges');
+        }
+      }
+      batch.delete(owner.table, recordId);
+    }
+    if (owner?.isEvent) batch.delete('event_identity', recordId);
+    batch.delete('record_directory', recordId);
+  }
+
+  // Receipts mentioning any erased row keep their status, not their result.
+  for (const ref of [...erased, ...erasedFacts]) {
+    batch.write(
+      `UPDATE operations SET status = 'erased', result = NONE WHERE refs CONTAINS ${batch.v(ref)} RETURN id`,
+      { min: 0 },
+      'operations',
+    );
+  }
+
+  const suppressedHandles = await suppress(op, workspaceId, [...handles.values()]);
+  const ownAssertionCount = (
+    await perValue<{ count: number }>(
+      db,
+      eventIds.filter((e) => !recordIds.includes(e)),
+      (v) => `SELECT count() FROM field_assertions WHERE record = ${v} GROUP ALL;`,
+    )
+  ).reduce((sum, rows) => sum + (rows[0]?.count ?? 0), ownAssertions.length);
   const counts: ForgetResult['counts'] = {
     records: recordIds.length,
-    events: eventIds.filter((id) => !recordIds.includes(id)).length,
-    facts: ownFacts.length + orphaned.length,
-    assertions: (counted?.assertions ?? 0) + cited.length,
-    inboundRelations: inboundRelations.length + trimmed.length,
+    events: eventIds.filter((e) => !recordIds.includes(e)).length,
+    facts: erasedFacts.length,
+    assertions: ownAssertionCount + cited.size,
+    inboundRelations: inboundRemoved.length + inboundTrimmed.length,
     suppressedHandles,
   };
-  await tx`
-    insert into deletion_audit_log (workspace_id, actor_type, actor_id, counts)
-    values (${workspaceId}, ${context.actor.type}, ${context.actor.id}, ${tx.json(counts)})`;
+  batch.create('deletion_audit_log', op.newId(), {
+    actor_type: context.actor.type,
+    actor_id: context.actor.id,
+    counts,
+    created_at: op.now,
+  });
 
+  const orphanSet = new Set(orphanFacts);
   return {
     id: root,
     forgotten: true,
@@ -243,55 +378,75 @@ export async function forgetRecord(
     // facts orphaned by the deletion can have gone since.
     reviewCandidates: {
       ...reviewCandidates,
-      facts: reviewCandidates.facts.filter((f) => !orphanedIds.has(f)),
+      facts: reviewCandidates.facts.filter((f) => !orphanSet.has(f)),
     },
   };
 }
 
+type SearchHit = { id: RecordId; kind: 'record' | 'fact'; owner: string; object_type_id: string };
+
 /**
  * Live rows outside the deletion that may mention the person: by the name
- * (a phrase match on the search vectors) or by a handle in the text, and
- * other records sharing a handle. A best-effort list for a person to check.
+ * (a phrase in the search text) or by a handle in the text, and other
+ * records sharing a handle. A best-effort list for a person to check.
  */
 async function findMentions(
-  tx: Tx,
-  workspaceId: string,
+  db: Db,
   schema: CompiledSchema,
-  recordIds: readonly string[],
+  erased: ReadonlySet<string>,
   names: readonly string[],
   handles: readonly string[],
 ): Promise<ForgetResult['reviewCandidates']> {
-  const patterns = handles.map((h) => `%${h.replace(/[\\%_]/g, '\\$&')}%`);
-  const nameQuery =
-    names.length === 0
-      ? tx`false`
-      : tx`exists (select 1 from unnest(${names as string[]}::text[]) n
-          where search @@ ${phraseQuery(tx, tx`n`)})`;
-  const records = await tx<{ id: string }[]>`
-    select id from records
-    where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${schema.entityTypeIds}::uuid[])
-      and id <> all(${recordIds as string[]}::uuid[])
-      and (${nameQuery}
-        or id in (select record_id from record_identifiers
-          where workspace_id = ${workspaceId} and value = any(${handles as string[]}::text[])))
-    order by id limit ${CANDIDATE_LIMIT}`;
-  const facts = await tx<{ id: string }[]>`
-    select id from facts
-    where workspace_id = ${workspaceId} and deleted_at is null
-      and record_id <> all(${recordIds as string[]}::uuid[])
-      and (${nameQuery} or content ilike any(${patterns}::text[]))
-    order by id limit ${CANDIDATE_LIMIT}`;
-  const events = await tx<{ id: string }[]>`
-    select id from records
-    where workspace_id = ${workspaceId} and deleted_at is null
-      and object_type_id = any(${schema.eventTypeIds}::uuid[])
-      and id <> all(${recordIds as string[]}::uuid[])
-      and (${nameQuery} or data::text ilike any(${patterns}::text[]))
-    order by id limit ${CANDIDATE_LIMIT}`;
+  const phrases = [...new Set([...names, ...handles].map(fold).filter((p) => p.length > 0))];
+  const hits = (
+    await perValue<SearchHit>(
+      db,
+      phrases,
+      (v) =>
+        `SELECT id, kind, owner, object_type_id FROM search_documents WHERE folded @1@ ${v} AND string::contains(folded, ${v}) LIMIT ${CANDIDATE_LIMIT * 4};`,
+    )
+  ).flat();
+  const sharing = (
+    await perValue<{ record: string }>(
+      db,
+      handles,
+      (v) => `SELECT record FROM record_identifiers WHERE value = ${v};`,
+    )
+  ).flat();
+  const entityTypes = new Set(schema.entityTypeIds);
+  const eventTypes = new Set(schema.eventTypeIds);
+  const recordIds = new Set<string>(sharing.map((s) => s.record));
+  const eventIds = new Set<string>();
+  const factIds = new Set<string>();
+  for (const hit of hits) {
+    if (hit.kind === 'fact') factIds.add(publicId(hit.id));
+    else if (eventTypes.has(hit.object_type_id)) eventIds.add(hit.owner);
+    else if (entityTypes.has(hit.object_type_id)) recordIds.add(hit.owner);
+  }
+  const live = async (ids: Set<string>, types: Set<string>) => {
+    const candidates = [...ids].filter((id) => !erased.has(id));
+    const rows = await db.rows<{ id: RecordId; object_type_id: string; deleted_at?: Date | null }>(
+      'SELECT id, object_type_id, deleted_at FROM $ids;',
+      { ids: candidates.map((id) => new RecordId('record_directory', id)) },
+    );
+    return rows
+      .filter((r) => !r.deleted_at && types.has(r.object_type_id))
+      .map((r) => publicId(r.id))
+      .sort()
+      .slice(0, CANDIDATE_LIMIT);
+  };
+  const facts = await db.rows<{ id: RecordId; record: string; deleted_at?: Date | null }>(
+    'SELECT id, record, deleted_at FROM $ids;',
+    { ids: [...factIds].map((id) => new RecordId('facts', id)) },
+  );
   return {
-    records: records.map((r) => r.id),
-    facts: facts.map((r) => r.id),
-    events: events.map((r) => r.id),
+    records: await live(recordIds, entityTypes),
+    facts: facts
+      .filter((f) => !f.deleted_at && !erased.has(f.record))
+      .map((f) => publicId(f.id))
+      .sort()
+      .slice(0, CANDIDATE_LIMIT),
+    events: await live(eventIds, eventTypes),
   };
 }
+

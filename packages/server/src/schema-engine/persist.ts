@@ -7,6 +7,7 @@ import { fromColumn, physicalChanges } from '../db/physical.js';
 import type { Operation } from '../db/protocol.js';
 import { applyIndexes } from '../db/provision.js';
 import { ident } from '../db/surreal.js';
+import { rebuildRollupsForField } from '../memory/attachments.js';
 import { identifiersFor } from '../records/derive.js';
 import { deleteEventsOfType } from '../records/lifecycle.js';
 import { refreshObjectSearch } from '../records/search-docs.js';
@@ -341,6 +342,12 @@ export async function persistSchema(
       } else {
         releaseClaims(op, fieldId);
       }
+    }
+    if (change.kind === 'update_field' && change.property === 'rollUpEvents') {
+      const field = next.fieldOwners.get(fieldIds.get(change.fieldId) as string)?.fieldsById.get(
+        fieldIds.get(change.fieldId) as string,
+      );
+      if (field) await rebuildRollupsForField(op, next, field);
     }
     if (
       (change.kind === 'update_object' && change.property === 'labelFieldId') ||
