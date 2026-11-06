@@ -22,7 +22,7 @@ resolves conflicts and searches. It never calls a language model.
 | [Schema, events and history: merged spec](schema-events-and-history-spec.md) | Consolidated proposal: event records, native collection/polymorphic relations, rollups, history and phased delivery      |
 | [Workspace upgrade spec](workspace-upgrade-spec.md)                          | Bringing existing workspaces up to new built-in objects, event types, templates and protection                           |
 | [Comments spec](comments-spec.md)                                            | Proposed: comments on any record, entity-only event links, conversation as the only base event, the object-or-event rule |
-| [Accounts and access spec](accounts-and-access-spec.md)                      | Proposed: login, organizations, roles, self-serve workspaces, MCP OAuth and the hardening a public signup needs          |
+| [Accounts and access spec](accounts-and-access-spec.md)                      | Proposed: login with Better Auth, passkeys, organizations, roles, self-serve workspaces, MCP OAuth and public hardening  |
 
 The design, the data model and the write rules are in
 [ARCHITECTURE.md](../ARCHITECTURE.md); the web app's design is in

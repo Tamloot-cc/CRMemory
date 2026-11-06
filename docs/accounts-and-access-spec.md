@@ -1,7 +1,8 @@
 # Accounts, organizations and access: spec
 
-Status: **proposed** November 6, 2026. Nothing here is built. Three defaults
-need confirming before the work starts (section 9).
+Status: **proposed** November 6, 2026. Nothing here is built. Better Auth is
+chosen for login after a throwaway test, whose results are in section 12. One
+default needs confirming before the work starts (section 9).
 
 This spec turns Retainer from a server an operator runs into a service people
 sign up for: they log in, create workspaces, invite colleagues and connect
@@ -30,39 +31,47 @@ Gateway and RDS. None of that needs redesigning.
   an operator. There are no invitations or roles.
 - **Some agents cannot connect.** `/mcp` accepts only API keys, so clients that
   only support OAuth, such as connectors in Claude's web app, cannot use it.
-- **Tenants are assumed to be trusted.** There is one global throttle, no
-  quotas, and the API function holds the database owner's password (4.9).
+- **Tenants are assumed to be trusted.** There is one global throttle and no
+  quotas, and every function shares one database login (4.9).
 
 ## 2. Scope
 
 **In scope:** users and sessions; organizations; roles at organization and
 workspace level; self-serve workspaces; invitations; API keys in the web app;
-OAuth for MCP; the hardening a public signup needs.
+OAuth for MCP; passkeys; the hardening a public signup needs.
 
 **Out of scope, with the door left open (section 7):** groups, record-level
-access, field-level access, a permission service, billing. The seam billing
-will use is in scope (4.10); Stripe itself is not.
+access, field-level access, a permission service, multi-factor authentication
+(4.11), billing. The seam billing will use is in scope (4.10); Stripe itself is
+not.
 
 **What does not change:** the workspace stays the security boundary. RLS stays
 keyed on `workspace_id`. Records get no organization column. A `Caller` still
 has exactly one workspace. Queries never cross workspaces. Retainer still calls
 no language model.
 
+**What is open source.** If one team running Retainer on its own server would
+need something, it is open. If only someone selling Retainer as a service needs
+it, it is not. Everything in this spec is open. Publishing cannot be undone, so
+when unsure, decide first.
+
 ## 3. Decisions
 
-| #   | Decision                                                                                                     |
-| --- | ------------------------------------------------------------------------------------------------------------ |
-| A1  | Keep the backend and RLS. Clients never talk to the database (3.1).                                          |
-| A2  | People log in through an external identity provider over OIDC. Retainer stores no passwords.                 |
-| A3  | A session is a second way to build a `Caller`. Everything after `authenticate` is unchanged.                 |
-| A4  | Sessions are opaque tokens stored hashed. The cookie no longer holds an API key in accounts mode.            |
-| A5  | Organizations own workspaces and members. They are hidden in the UI until someone needs them.                |
-| A6  | Access is RBAC at workspace level (3.2). Roles are named bundles of the existing scopes.                     |
-| A7  | The client names the workspace on each request, and the server checks access each time.                      |
-| A8  | A narrow `retainer_control` role does account work. Nothing reachable from the internet uses the owner role. |
-| A9  | Functions in the VPC stay without internet. One function outside the VPC holds no database access (4.6).     |
-| A10 | MCP OAuth tokens are issued by Retainer and capped by the role of the person who granted them.               |
-| A11 | No third-party permission service for now, managed or self-hosted (3.3).                                     |
+| #   | Decision                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------------------------------------------ |
+| A1  | Keep the backend and RLS. Clients never talk to the database (3.1).                                                      |
+| A2  | People log in through Better Auth, running in our control function: magic link, Google, passkeys. No passwords.          |
+| A3  | A session is a second way to build a `Caller`. Everything after `authenticate` is unchanged.                             |
+| A4  | Sessions are Better Auth's: a signed cookie and a raw token in the database. The cookie no longer holds an API key.      |
+| A5  | Organizations own workspaces and members. They are hidden in the UI until someone needs them.                            |
+| A6  | Access is RBAC at workspace level (3.2). Roles are named bundles of the existing scopes.                                 |
+| A7  | The client names the workspace on each request, and the server checks access each time.                                  |
+| A8  | A narrow `retainer_control` role does account work. Nothing reachable from the internet uses the owner role.             |
+| A9  | Only the control function has internet, through a NAT gateway. The api and consolidator functions stay without it (4.6). |
+| A10 | MCP OAuth uses Better Auth's `mcp()` and `cimd()` plugins. Each request rechecks the person's role and consent (4.7).    |
+| A11 | No third-party permission service for now, managed or self-hosted (3.3).                                                 |
+| A12 | Whole workspaces are the finest thing to hide at launch, because first customers are small teams (3.2).                  |
+| A13 | Passkeys ship in the first version. Multi-factor authentication does not (4.11).                                         |
 
 ### 3.1 Why not a Supabase-style design
 
@@ -109,9 +118,9 @@ rules and answering "can X do Y?". For Retainer:
 - **Two stores can disagree.** A record and its access rule cannot commit in one
   transaction, and `forget` would have to clean both.
 - **It breaks deployment promises.** Self-hosters would run a second server. A
-  managed service would need internet from a VPC that has none, and would hold
-  access data outside the AWS account. The open-source product cannot depend on
-  our paid account.
+  managed service would need internet from functions that have none, and would
+  hold access data outside the AWS account. The open-source product cannot depend
+  on our paid account.
 - **The hard product questions stay** (7.2).
 
 Wanting "a Zanzibar-style model" is not a reason by itself. Write the rule as a
@@ -132,34 +141,65 @@ workspace RLS, and feed `record_access` from its change feed so RLS stays the
 enforcer. Prototype against filtered search with counts in a large workspace
 first.
 
+### 3.4 Why Better Auth rather than WorkOS
+
+Better Auth is an MIT library that runs in our process and keeps its data in our
+Postgres. First customers are small teams, self-hosters get login with no vendor,
+and it includes the OAuth server MCP needs. WorkOS would handle security fixes,
+enforced MFA and enterprise SSO for us, and is the better fit if companies start
+requiring those.
+
+The cost we accept is upkeep: its project lists 49 security advisories, 4 of them
+critical, including several in plugins we use (4.12). The choice can be reversed:
+with no passwords there are no hashes to migrate, and everything past the
+`Caller` stays the same.
+
+### 3.5 Why stay on Lambda rather than Lightsail
+
+A single Lightsail server would remove the separate functions and the NAT gateway,
+and also the 29-second limit and cold starts. It costs about the same, though,
+because the $15 database has no encryption. It also adds OS patching, a reverse
+proxy and a single point of failure, and it puts Better Auth, internet access and
+all customer data in one process. Its docs do not confirm Postgres 17 or the
+extensions Retainer needs. It suits one team running Retainer for itself. If the
+hosted service outgrows Lambda, look at ECS Fargate first.
+
 ## 4. System design
 
 ### 4.1 Two modes
 
-| Mode          | When                      | People sign in with | Workspaces come from   |
-| ------------- | ------------------------- | ------------------- | ---------------------- |
-| Key (default) | No OIDC settings          | A personal API key  | The operator CLI       |
-| Accounts      | `RETAINER_OIDC_*` are set | The provider        | The CLI or the web app |
+| Mode          | When                          | People sign in with           | Workspaces come from   |
+| ------------- | ----------------------------- | ----------------------------- | ---------------------- |
+| Key (default) | No `RETAINER_AUTH_SECRET`     | A personal API key            | The operator CLI       |
+| Accounts      | `RETAINER_AUTH_SECRET` is set | Magic link, Google or passkey | The CLI or the web app |
 
-A self-hosted install that upgrades sees no change unless it sets those values.
-In accounts mode `POST /auth/session` returns 404. API keys work for agents in
-both modes.
+A self-hosted install that upgrades sees no change unless it sets that value.
+Accounts mode also needs a way to send email. Google is optional. In accounts mode
+`POST /auth/session` returns 404. API keys work for agents in both modes.
 
 ### 4.2 Data model
 
 These tables are not tenant tables. Like `api_keys`, they have RLS enabled, no
 policy for the runtime role and no grants to it.
 
+**Owned by Better Auth.** `user`, `session`, `account`, `verification`, `passkey`,
+`jwks` and the `oauth_*` tables, generated with its CLI into a Drizzle schema, then
+through `pnpm db:generate` like any other table. IDs are UUIDs. The `user` table
+gains `disabled_at` as an additional field. Its generated timestamps have no time
+zone, so convert them to `timestamptz` to match the rest of the schema.
+
+**Ours.**
+
 | Table                  | Columns                                                                                                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `users`                | `id`, `provider_subject` (unique), `email`, `name`, `created_at`, `disabled_at`                                                       |
-| `sessions`             | `id`, `token_hash` (unique), `user_id`, `created_at`, `expires_at`, `revoked_at`                                                      |
 | `organizations`        | `id`, `name`, `limits` (4.10), `created_at`                                                                                           |
 | `organization_members` | `organization_id`, `user_id`, `role` (`owner`, `admin`, `member`), `created_at`                                                       |
 | `workspace_members`    | `organization_id`, `workspace_id`, `user_id`, `role` (`admin`, `editor`, `viewer`), `created_at`                                      |
 | `invitations`          | `id`, `organization_id`, `email`, `role`, `workspaces` (jsonb), `token_hash`, `invited_by`, `expires_at`, `accepted_at`, `revoked_at` |
-| `oauth_clients`        | `id`, `name`, `redirect_uris`, `created_at`                                                                                           |
-| `oauth_grants`         | `id`, `client_id`, `user_id`, `workspace_id`, `scopes`, `refresh_hash`, `created_at`, `revoked_at`                                    |
+
+We do not use Better Auth's organization plugin. It stores roles as comma-separated
+strings, has no idea of workspaces, and cannot join the single transaction that
+creates an organization, workspace and seed (4.5).
 
 Changes to existing tables:
 
@@ -167,16 +207,16 @@ Changes to existing tables:
   `(organization_id, id)`. Add it nullable, backfill, then make it required.
   Deleting an organization never cascades into workspaces.
 - `workspaces.deletion_scheduled_at` (4.5).
-- `api_keys.created_by_user`, `api_keys.expires_at` and
-  `api_keys.granted_by_user` (4.7).
+- `api_keys.created_by_user`.
 
 `workspace_members` has composite foreign keys to `organization_members` and to
 `workspaces (organization_id, id)`. A person can therefore only hold a role in
 a workspace of an organization they belong to, and leaving the organization
 removes those roles in the same statement.
 
-Users match by `provider_subject`, never by email, so a recycled address cannot
-take over an account.
+A person's identity is their verified email: a magic link proves it, and a Google
+sign-in for the same address reaches the same user. Whoever controls that inbox
+controls the account (4.11).
 
 **Existing data.** The migration creates one `Default` organization and moves
 every existing workspace into it. `bootstrap` does the same on a new container
@@ -228,14 +268,17 @@ one definition. A test runs every role against every route.
 
 `Caller` gains an optional `userId`. `authenticate` works in this order:
 
-1. **`Authorization` header present:** as today, it never falls back to the
-   cookie. A session token (`rts_`) in this header is refused.
-2. **Cookie holding `rts_`:** a session. Requires `X-Retainer-Workspace`, then
-   calls `retainer_session_access(token_hash, workspace_id)`.
-3. **Cookie holding `rtn_`:** key mode, as today.
+1. **`Authorization` header present:** an API key as today, or an OAuth token (4.7).
+   It never falls back to the cookie.
+2. **Better Auth session cookie:** requires `X-Retainer-Workspace`. The api
+   function verifies the cookie's signature with `RETAINER_AUTH_SECRET`, then calls
+   `retainer_session_access(session_token, workspace_id)`.
+3. **Key-mode cookie:** as today.
+
+The api function does not import Better Auth. A test fails if it does.
 
 `retainer_session_access` is `SECURITY DEFINER`, fixes its `search_path` and is
-granted only to `retainer_app`. It takes the token hash, not a user ID, so the
+granted only to `retainer_app`. It takes the session token, not a user ID, so the
 runtime role cannot ask about an arbitrary person. It returns the user and the
 effective role.
 
@@ -249,14 +292,24 @@ Access is checked on every request, so removing someone or changing their role
 applies at their next request. Cookie-authenticated mutations keep the
 `X-Retainer-Client` and Origin checks.
 
+**Session tokens are stored raw (A4).** Better Auth has no option to hash them. A
+wrapper that hashed them made sign-out and single-session revocation stop working
+without any error, so we do not use one. The signature is the protection: a token
+read from the database alone is refused, because a valid cookie also needs the
+secret. This has two costs. The api function holds the secret, and it relies on
+Better Auth's cookie format, which is not documented. A test using real Better Auth
+cookies must fail if an upgrade changes that format. Changing the secret signs
+everyone out.
+
 **Why the workspace is per request (A7).** If the session held an "active
 workspace", switching in one tab would make another tab write to the wrong
 place. The client chooses the workspace and never authorizes it. A bearer
 request needs no header, because keys belong to one workspace, and a header
 naming a different workspace is refused with a 400.
 
-**Session lifetime.** 30 days, fixed. After that the provider signs the person
-back in. `disabled_at` and "sign out everywhere" revoke all sessions.
+**Session lifetime.** 30 days, with `deferSessionRefresh` on so that reading a
+session writes nothing. The web app refreshes through the control function when it
+loads. `disabled_at` and "sign out everywhere" end all sessions.
 
 ### 4.5 Workspaces and account routes
 
@@ -266,8 +319,8 @@ add a member or create a workspace, as `ARCHITECTURE.md` 7.1 requires.
 
 | Route                                                           | Who                         |
 | --------------------------------------------------------------- | --------------------------- |
+| `/account/auth/*`: Better Auth's own routes                     | As Better Auth defines them |
 | `GET /account`: the user, organizations, workspaces, roles      | Signed in                   |
-| `POST /account/sign-out`                                        | Signed in                   |
 | `POST /account/workspaces`                                      | Organization owner or admin |
 | `DELETE /account/workspaces/:id`                                | Organization owner or admin |
 | `PATCH`, `DELETE /account/organizations/:id`                    | Owner                       |
@@ -280,7 +333,8 @@ add a member or create a workspace, as `ARCHITECTURE.md` 7.1 requires.
 **First workspace.** A person with no memberships and no pending invitation
 sees "Name your workspace". `POST /account/workspaces` then creates the
 organization, owner membership, workspace and seed in one transaction, so there
-are no empty organizations and nothing half-created.
+are no empty organizations and nothing half-created. A magic-link signup has no
+name yet, so this screen also asks for one.
 
 **One transaction.** `retainer_control` inserts the account rows and the
 workspace, then runs `SET LOCAL ROLE retainer_app` and sets `app.workspace_id`
@@ -292,11 +346,12 @@ would reveal another customer's workspace name, so self-serve creation adds a
 generated suffix, such as `sales-x7k2`. The CLI keeps exact slugs.
 
 **Invitations.** A token is stored hashed and expires after 7 days. Accepting
-requires a verified email from the provider that matches the invitation, so a
-forwarded link is useless to anyone else. Accepting twice is a no-op.
+requires a verified email that matches the invitation, so a forwarded link is
+useless to anyone else. Accepting twice is a no-op. The control function emails the
+link, and the web app also offers "Copy invite link".
 
-**Removing a member.** Web access ends at the next request. OAuth grants they
-made are revoked. Agent keys belong to the workspace and keep working, and the
+**Removing a member.** Web access ends at the next request, and so do OAuth tokens
+they granted (4.7). Agent keys belong to the workspace and keep working, and the
 UI shows who created each one. Past writes keep their actor.
 
 **The last owner.** An organization always has an owner. Membership changes lock
@@ -318,70 +373,73 @@ be a person. Keys with a `user` actor remain CLI-only.
    │ session cookie                      │ API key or MCP OAuth token
    ▼                                     ▼
  API Gateway
-   │        │                 │
-   │        │ /account        │ /auth/oidc, invitations, webhooks
-   │        │ /oauth          ▼
-   │        │             edge function ◄──► identity provider, email
-   │        │             (internet, no database)
-   │        ▼                 │ Lambda invoke (IAM)
-   │     control function ◄───┘
-   │     (VPC, no internet, retainer_control)
+   │                         │ /account, /.well-known/oauth-authorization-server,
+   │                         │ /.well-known/openid-configuration
+   │                         ▼
+   │                      control function ──► NAT ──► Google, email,
+   │                      (Better Auth,                client metadata
+   │                       retainer_control)
    │ /v1, /mcp, /app
    ▼
- api function (VPC, no internet, retainer_app + RLS)
-   │        │
-   └───► RDS Postgres ◄───┘
+ api function (no internet, no Better Auth, retainer_app + RLS)
+   │                         │
+   └───► RDS Postgres ◄──────┘
 ```
 
-`docs/aws.md` promises that the functions reach only the database. Login and
-webhooks need the internet, so they get their own function, which has no
-database access. A NAT gateway would be simpler but costs more and gives up the
-promise.
+- **Why the control function has internet.** Google sign-in and client metadata
+  documents both need it, in the same process that writes to the database. Claude
+  needs the second (4.7), so a design without internet would not serve it. A NAT
+  gateway costs roughly $35 a month.
+- **What stays isolated.** The api and consolidator functions keep no route to the
+  internet. `docs/aws.md` needs its promise narrowed to those two.
+- **Metadata routes.** OAuth clients look for the authorization server's metadata
+  at the domain root, with the issuer's path appended
+  (`/.well-known/oauth-authorization-server/account/auth`). Those root routes must
+  reach the control function.
+- **Rate limits on sign-in.** Better Auth counts in memory by default, which does not
+  work across Lambda instances. Use its database storage, and set `trustedProxies`
+  or `ipAddressHeaders` for API Gateway, since it otherwise trusts a header clients
+  can set.
+- **Container.** With `RETAINER_ROLE=all` everything runs in one process, including
+  Better Auth. Self-hosters who want the separation run `api` and `control` apart.
+- **Deploys.** `deploy.sh` also stops and starts `control`.
 
-- **Sign-in.** The edge function handles the OIDC redirect with PKCE and `state`,
-  exchanges the code and verifies the ID token. It refuses an unverified email,
-  then invokes control with the subject, email and name. Control upserts the user
-  and creates a session. The edge function sets the cookie and redirects to
-  `/app/`. It alone holds the client secret.
-- **Invitations.** The route goes through the edge function. Control creates the
-  invitation and returns the link, the edge function emails it, and the web app
-  also offers "Copy invite link".
-- **Direct invocations.** Control accepts them only with a strict event shape,
-  as the ops function does. An API Gateway event cannot pass as one.
-- **Container.** With `RETAINER_ROLE=all` the same routes run in one process. The
-  separate functions exist only for the no-internet AWS network.
-- **Deploys.** `deploy.sh` also stops and starts `control` and `edge`.
-
-The cookie stays `SameSite=Strict`. The redirect back from the provider still
-works, because the static app loads without a cookie and its own requests send
-one.
+The cookie stays `SameSite=Strict`. Tested in Chrome: a magic link opened from
+another site still sets it, and the app's own requests then send it.
 
 ### 4.7 MCP OAuth
 
-Retainer acts as its own authorization server, following the current MCP
-authorization specification (check the revision when building this):
+Better Auth's `mcp()` and `cimd()` plugins are the authorization server, with the
+JWT plugin signing access tokens. Claude's web app connected through them end to end
+(section 12).
 
-- `/.well-known/oauth-protected-resource` and
-  `/.well-known/oauth-authorization-server`.
-- A `401` from `/mcp` names the resource metadata in `WWW-Authenticate`.
-- `/oauth/register`, `/oauth/authorize` and `/oauth/token`, with PKCE and exact
-  redirect URI matching. Registration is rate limited.
-
-**Consent.** `/oauth/authorize` is opened from another site, so a
-`SameSite=Strict` cookie does not arrive. It redirects to `/app/oauth/consent`,
-whose own requests carry the cookie. There the person picks a workspace and
-scopes, capped by their role. That page must not be framed
-(`frame-ancestors 'none'`).
-
-**Tokens.** A grant creates a short-lived access token (1 hour) stored as an
-`api_keys` row with `expires_at` and `granted_by_user`, and a rotating refresh
-token on `oauth_grants`. The api function checks it like any key, with a database
-lookup and no internet. The actor is an `agent`, named after the client and the
-person, so the human-only rules still apply.
-
-**The cap.** `retainer_lookup_api_key` also rejects expired keys and returns the
-granting person's current effective role. The request's scopes are the key's
-scopes intersected with that role's. Losing access ends the token at once.
+- **Registration.** Claude identifies itself with a client metadata document
+  (`https://claude.ai/oauth/mcp-oauth-client-metadata`), which the server fetches
+  from the internet, using the plugin's fetcher that pins the resolved address.
+  Dynamic client registration stays on for other clients, rate limited. Whether
+  Claude falls back to it when metadata documents are not offered is unknown.
+- **Metadata.** A `401` from `/mcp` names the resource metadata in
+  `WWW-Authenticate`. The api function serves that metadata, which is static.
+- **Consent.** The authorize URL is opened from another site, so a `SameSite=Strict`
+  cookie does not arrive. It redirects to our sign-in page, whose own requests carry
+  the cookie and continue to `/app/oauth/consent`. The person picks a workspace there
+  through the plugin's `postLogin` step, and `consentReferenceId` ties it to the
+  consent. The page must not be framed (`frame-ancestors 'none'`). The test used one
+  fixed workspace, so a real picker is still to build.
+- **Tokens.** One-hour JWT access tokens (`at+jwt`, EdDSA) with the workspace as a
+  claim, and rotating refresh tokens stored hashed. A rotated refresh token can be
+  reused for 30 seconds by default, so that a retry can recover. We keep that.
+- **Checking a token with no internet.** JWTs are not stored, and a valid signature
+  says nothing about removal. So on every request the api function reads the public
+  signing keys through `retainer_token_keys()`, verifies signature, issuer and
+  audience, and then calls `retainer_token_access(subject, workspace, client)`, which
+  returns the person's role only if their consent still exists.
+- **The cap.** The request's scopes are the token's scopes intersected with that
+  role's. Downgrading a person, removing them or revoking consent all apply at the
+  next request.
+- **Actor.** Always an `agent`, so the human-only rules apply. Its ID combines the
+  client and the person, and its name reads like "Claude for Dana". In the test it
+  used the client alone, which would make everyone's Claude the same actor.
 
 ### 4.8 Limits
 
@@ -396,23 +454,24 @@ scopes intersected with that role's. Losing access ends the token at once.
 
 ### 4.9 Database credentials
 
-The API, consolidator and ops functions all receive one `DATABASE_URL` holding
-the owner's password, and the first two switch to `retainer_app` at connection
-start. RLS holds as long as nothing runs `SET ROLE`, but a SQL injection could
-switch back to the owner and bypass it. With public signup that is too thin.
+Today every function connects with one login and switches role at connection start.
+A hosted service gives each function its own login, with only what it needs.
 
 | Function             | Logs in as         | Direct privileges                                                             |
 | -------------------- | ------------------ | ----------------------------------------------------------------------------- |
 | `ops`                | Owner              | Migrations and the operator CLI; only the operator invokes it                 |
-| `api`, `consolidate` | `retainer_app`     | As today, and it no longer can become the owner                               |
+| `api`, `consolidate` | `retainer_app`     | As today, with no membership in any other role                                |
 | `control`            | `retainer_control` | Account tables, `workspaces`, `api_keys`; can `SET ROLE retainer_app` to seed |
-| `edge`               | None               | No database access                                                            |
 
 `retainer_control` has no `BYPASSRLS` and no DDL. It holds `retainer_app` with
 `INHERIT FALSE, SET TRUE`, and RLS policies of its own on `workspaces` and
 `api_keys`. It can still read tenant data by switching role, the same power the
 api function has, so its code only does that to seed. Each role gets its own
-secret.
+secret. The test ran Better Auth under such a login and the api function under
+`retainer_app` without problems.
+
+The runtime role gets three `SECURITY DEFINER` functions beyond today's two:
+`retainer_session_access`, `retainer_token_keys` and `retainer_token_access`.
 
 The container keeps one URL by default, and an optional
 `RETAINER_RUNTIME_DATABASE_URL` gives self-hosters the same separation.
@@ -421,18 +480,66 @@ The container keeps one URL by default, and an optional
 
 `organizations.limits` holds quotas, and null means unlimited, so self-hosted
 installs have no limits. Retainer enforces limits and does not know where they
-come from. Stripe webhooks arrive at the edge function, which invokes control
-to set them. Plans, prices and Stripe code stay out of the open repo.
+come from. Plans, prices and Stripe code stay out of the open repo.
+
+### 4.11 Sign-in methods, passkeys and MFA
+
+| Method     | Protection                                                                 |
+| ---------- | -------------------------------------------------------------------------- |
+| Passkey    | Strongest: resists phishing, and uses the device plus a fingerprint or PIN |
+| Google     | As strong as the person's Google account                                   |
+| Magic link | As strong as their inbox                                                   |
+
+**Passkeys** use `@better-auth/passkey`.
+
+- A person adds one after a first sign-in by magic link or Google. Signing up with
+  only a passkey stays off, because that first sign-in proves the email, and
+  invitations rely on it.
+- `userVerification` is `required`, so a device with no fingerprint, face or PIN is
+  refused.
+- Passkeys are tied to the domain (`rpID`). **Choose the permanent domain before
+  anyone registers one**, because changing it breaks them. Do not offer them on the
+  API Gateway URL.
+- They make no outbound calls and add no need for internet.
+
+**Email sign-in stays on after someone adds a passkey.** Adding a passkey does not
+close the inbox as a way in. That keeps recovery simple for a lost device: sign in by
+magic link and remove the old passkey. A setting to turn email sign-in off can come
+later if teams ask, with a process for people locked out.
+
+**No MFA at launch.** Better Auth's two-factor plugin only challenges password
+sign-ins. Its docs say magic link, social and passkey sign-ins "are not gated by 2FA
+by default", and its code confirms it. Turning it on would look like MFA and protect
+nothing. Gating those methods means custom hooks and a session state the api function
+must also check, which is security-critical code we should not own yet. A team that
+needs stricter rules can later get an organization setting such as "passkey or Google
+only".
+
+MFA does not protect API keys on any provider. Scopes and revocation do.
+
+### 4.12 Keeping Better Auth patched
+
+- Pin exact versions of `better-auth` and every `@better-auth/*` package, which
+  must move together.
+- Follow its security advisories and update within days. Twelve advisories were
+  published on one day, November 3, 2026.
+- Load only magic link, Google, JWT, passkey, `mcp()` and `cimd()`. SSO and SCIM have
+  some of its worst advisories, so add them only when a customer needs them, and lock
+  down who can register a provider.
+- Never install its `dash()` plugin, which calls Better Auth's own servers.
+- Only the control function loads it, which limits what any bug can reach.
+- Keep session cookie caching off, since revoked sessions can stay active until a
+  cached cookie expires.
 
 ## 5. Frontend design
 
 Plain words throughout, per the web app's rule. No screen says "RBAC", "scope",
-"OIDC" or "tenant".
+"OAuth" or "tenant".
 
-- **Sign in.** One button that goes to the provider. Key mode keeps today's
-  screen.
-- **First run.** "Name your workspace", then the existing flow. The word
-  organization does not appear.
+- **Sign in.** "Continue with Google", an email box for a magic link, and "Use a
+  passkey". Key mode keeps today's screen.
+- **First run.** Your name, then "Name your workspace", then the existing flow. The
+  word organization does not appear.
 - **URLs.** `/app/w/<slug>/...` in accounts mode, and `/app/...` as today in key
   mode. The router's base path is computed at startup from the location.
 - **Switching workspaces** is a full page load. It clears cached data and needs
@@ -440,14 +547,18 @@ Plain words throughout, per the web app's rule. No screen says "RBAC", "scope",
   appears when a person has more than one.
 - **Session state.** Inside a workspace, `Session` stays as it is, so scope checks
   and `canMutate` are unchanged. `GET /account` supplies the rest.
+- **Your account.** "Add a passkey", and a list of passkeys to rename or remove. After
+  a first sign-in, offer it once. Explain plainly that email sign-in still works.
 - **Members** (workspace settings). Everyone with access and their role, each
   explained with the plain words in 4.3. While an organization has one workspace,
   inviting happens here too.
 - **Organization** appears in settings only once there is a second member or a
   second workspace.
 - **Agents** (workspace settings). Create and revoke keys, shown once with
-  copyable connection instructions, and see who created each. OAuth grants appear
+  copyable connection instructions, and see who created each. OAuth connections appear
   here too, and can be revoked.
+
+The Better Auth browser client with the passkey plugin adds about 16 KB gzipped.
 
 ## 6. Implementation order
 
@@ -455,16 +566,18 @@ Each step lands with its tests and can ship alone.
 
 1. **Credentials (4.9).** Separate logins for each function. This is worth doing
    whether or not the rest goes ahead.
-2. **Model.** Account tables, the `Default` organization, the role tables in
+2. **Model.** Our account tables, the `Default` organization, the role tables in
    `shared`, the CLI.
-3. **Sign-in.** Provider, edge and control functions, sessions, `authenticate`,
-   the workspace header, URLs, Terraform.
+3. **Sign-in.** Better Auth with magic link and Google, the control function, the NAT
+   gateway, `authenticate`, the workspace header, URLs, Terraform. Choose the
+   permanent domain here.
 4. **Self-serve.** Workspace creation, members, invitations, keys in the web app.
-5. **MCP OAuth.**
-6. **Hardening.** Rate and quota limits, scheduled deletion, a staging deployment
+5. **Passkeys.** Then try real devices by hand.
+6. **MCP OAuth,** including the workspace picker.
+7. **Hardening.** Rate and quota limits, scheduled deletion, a staging deployment
    (a second `name`), a larger instance with `db_multi_az` on, and a practised
    restore. The legal items in section 9.
-7. **Private beta**, then billing when people want to pay.
+8. **Private beta**, then billing when people want to pay.
 
 ## 7. What can come later
 
@@ -503,46 +616,48 @@ change is additive. Keeping the table current becomes the new work.
 
 - `Caller` carries `userId`, and actors use a stable UUID, not an email.
 - Roles resolve in one function, the only place groups need to touch.
-- Everything in `ARCHITECTURE.md` 7.2 stays true. This spec adds exactly one
-  `SECURITY DEFINER` function, and a new test fails on any function outside the
-  list.
+- `ARCHITECTURE.md` 7.2 stays true apart from the three new `SECURITY DEFINER`
+  functions (4.9), and a new test fails on any function outside the list.
 - No generic permission tables or policy engine until a rule needs one.
 
 ## 8. Tests
 
 In the layers of `ARCHITECTURE.md` section 12.
 
-| Layer       | Proves                                                                                                                                                                                                                                                      |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit        | Effective role, the role-to-scope tables, slug suffixes, OAuth scope capping                                                                                                                                                                                |
-| Database    | The runtime role cannot read account tables; `retainer_session_access` answers only for its own token; expired and revoked tokens; the composite foreign keys; deleting an organization with workspaces fails                                               |
-| Concurrent  | Two owners removing each other leave one; two first sign-ins make one user; two accepts of one invitation make one membership; two first workspaces make one organization                                                                                   |
-| API         | Every role against every route; an API key on `/account` is refused; a session with a workspace it cannot access gets 404; a session token in `Authorization` is refused; header mismatch on a bearer request gets 400; removal applies at the next request |
-| Credentials | The runtime login cannot `SET ROLE` to the owner, and `retainer_control` holds no DDL rights                                                                                                                                                                |
-| Agent       | An OAuth client registers, is consented, connects and calls tools; its token dies when the person is removed                                                                                                                                                |
-| Browser     | Sign up, name a workspace, invite someone who accepts, each role sees the right buttons, two tabs on two workspaces write to the right ones                                                                                                                 |
+| Layer       | Proves                                                                                                                                                                                                                                                                      |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit        | Effective role, the role-to-scope tables, slug suffixes, OAuth scope capping, cookie signature checks                                                                                                                                                                       |
+| Database    | The runtime role cannot read account or Better Auth tables; `retainer_session_access` answers only for its own token; expired and revoked sessions; the composite foreign keys; deleting an organization with workspaces fails                                              |
+| Concurrent  | Two owners removing each other leave one; two first sign-ins make one user; two accepts of one invitation make one membership; two first workspaces make one organization                                                                                                   |
+| API         | Every role against every route; an API key on `/account` is refused; a session with a workspace it cannot access gets 404; a forged cookie and a raw token without its signature get 401; header mismatch on a bearer request gets 400; removal applies at the next request |
+| Contract    | Real Better Auth cookies pass the api function's check, so an upgrade that changes the format fails here; the api function imports no Better Auth; no unlisted `SECURITY DEFINER` function exists                                                                           |
+| Credentials | The runtime login cannot `SET ROLE` to the owner, and `retainer_control` holds no DDL rights                                                                                                                                                                                |
+| Agent       | An OAuth client registers both ways, is consented, connects and calls tools; its token ends when the person is removed or the consent is revoked                                                                                                                            |
+| Browser     | Sign up, name a workspace, invite someone who accepts, each role sees the right buttons, two tabs on two workspaces write to the right ones; passkeys through Chrome's virtual authenticator: add, sign in, replay fails, another site fails, another user cannot remove it |
 
-Every test uses real Postgres with a fresh cloned database. CI uses a fake OIDC
-provider, so no test needs the internet.
+Every test uses real Postgres with a fresh cloned database. Tests capture magic links
+instead of sending email, and no test needs the internet.
+
+Claude's web app cannot run in CI. Repeat that connection by hand on staging before
+launch and after each Better Auth upgrade that touches OAuth.
 
 ## 9. Open questions
 
-**To confirm before starting.** The spec takes these defaults:
+**To confirm before starting:**
 
 1. **Accounts live in the open repo (AGPL).** The auth path needs them, and
    self-hosters benefit. Billing stays private. This reverses the line in
    `ARCHITECTURE.md` 7 that puts provisioning and SSO outside the repository.
-2. **WorkOS AuthKit is the provider.** Its pricing page lists the first million
-   monthly users as free, and SSO can follow. The design only needs OIDC, so check
-   first that AuthKit works as a plain OIDC provider. If not, add a small adapter
-   in the edge function. Cognito is the alternative if keeping everything in one
-   AWS account matters more than developer experience. Either way the provider
-   sees names and emails, never CRM data.
-3. **Whole workspaces are the finest thing to hide at launch.** Choosing record
-   level would not change the build order, but section 7.2 would need designing now.
 
 **Later:**
 
+2. **Two sign-ins at once.** Two different magic links for a new email, opened at the
+   same instant, make one user as they should, but the second person gets a 500. It
+   should become a retry or a clear message.
+3. **Agent write formats.** In the test Claude called `upsert_record` twice, then
+   warned that names are `{first, last}` and emails `{primary, additional[]}`. The
+   failed call's error was not logged, but the tool descriptions may need to state
+   these formats more clearly.
 4. **Old personal keys.** Actors like `user:maya` stay separate from new user IDs,
    so a person cannot edit comments written under the old one. A mapping could
    be added if that matters.
@@ -556,17 +671,19 @@ provider, so no test needs the internet.
 8. **Legal.** Retainer becomes a data processor for customers' contacts: terms, a
    DPA and a sub-processor list are needed. Erased data stays in backups for up to
    14 days, and that must be stated. Private code that imports the AGPL server
-   needs the rights to any outside contributions checked.
+   needs the rights to any outside contributions checked, so add a contributor
+   agreement before the first outside pull request.
 
 ## 10. Acceptance
 
 - A new person signs up, names a workspace and connects an agent, with no operator.
+- They add a passkey and sign in with it on the same and on a second device.
 - They invite a colleague, who accepts and sees only the workspaces they were
   given, with the right buttons for their role.
 - Removing that colleague ends their web access and OAuth tokens at the next
   request, and agent keys keep working.
 - No agent credential can create a key, a member or a workspace.
-- Claude's web app connects to `/mcp` over OAuth.
+- Claude's web app connects to `/mcp` over OAuth on the real deployment.
 - One tenant's traffic spike gets `429`s while others keep working.
 - The api function's database login cannot become the owner.
 - A self-hosted install that sets nothing behaves exactly as before.
@@ -575,13 +692,39 @@ provider, so no test needs the internet.
 
 Update these when the work lands, not before:
 
-- `ARCHITECTURE.md`: section 7 (sessions, organizations, roles, the new function)
+- `ARCHITECTURE.md`: section 7 (sessions, organizations, roles, the new functions)
   and 7.1 (self-serve alongside the CLI).
 - `CLAUDE.md`: "Every write carries an Actor, taken from the API key" becomes "from
   the credential".
 - `FRONTEND.md`: section 4.
-- `docs/aws.md`: new functions, credentials, and the OAuth limit it lists.
-- `docs/self-hosting.md`: `RETAINER_OIDC_*`, `RETAINER_RUNTIME_DATABASE_URL`, the
-  new CLI commands.
+- `docs/aws.md`: the control function, NAT gateway, credentials, the narrower "no
+  internet" promise, and the OAuth limit it lists.
+- `docs/self-hosting.md`: `RETAINER_AUTH_SECRET`, email and Google settings,
+  `RETAINER_RUNTIME_DATABASE_URL`, the new CLI commands.
 - `docs/rest-api.md`: `/account`, `X-Retainer-Workspace`.
 - `docs/agents.md`: connecting over OAuth.
+
+## 12. Test results
+
+A throwaway test on November 6, 2026 ran Better Auth 1.7.18 against real Postgres 17,
+real Retainer routes and MCP tools. It was deleted afterwards.
+
+| Question                                | Result                                                                                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Does it fit our stack?                  | Yes: Drizzle with `postgres.js`, TypeScript 7 with the repo's settings, `pnpm db:generate`, and a login limited to its own tables                                                           |
+| Can the api function check a session?   | Yes, with no Better Auth import and no access to its tables, running real `/v1/me`, `/v1/schema` and scope checks under RLS                                                                 |
+| Are session tokens hashed?              | No (4.4). A raw token without the signature was refused by both Better Auth and the api function                                                                                            |
+| Can tokens be checked with no internet? | Yes. No outbound calls for magic link, sessions, dynamic registration, OAuth, MCP or passkeys                                                                                               |
+| Does access end immediately?            | Yes, for downgrade, removal and revoked consent, at the next request                                                                                                                        |
+| Do real clients work?                   | The official MCP client passed with dynamic registration and metadata documents (fetch stubbed). Claude's web app connected through metadata documents, then read schema and wrote a record |
+| Does `SameSite=Strict` work?            | Yes, in Chrome: a magic link and an OAuth flow opened from another site both succeeded                                                                                                      |
+| Do passkeys work?                       | Yes, in Chrome's virtual authenticator: adding, signing in, replay refused, another site refused, another user refused, lost-device recovery                                                |
+| What did it fail?                       | Two different magic links opened at once: one user, but the second gets a 500 (section 9)                                                                                                   |
+
+The server code loads in about 130 ms on a laptop and bundles to 3.3 MB (565 KB
+gzipped), so cold starts should not be a concern, though Lambda will be slower.
+
+**Not tested:** Google sign-in; real Lambda and API Gateway; passkeys on real devices
+and synced passkeys; the rate-limit plugin; a workspace picker at consent;
+`SET LOCAL ROLE` seeding by `retainer_control`; whether Claude falls back to dynamic
+registration.
