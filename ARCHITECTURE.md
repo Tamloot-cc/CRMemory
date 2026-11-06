@@ -1796,51 +1796,51 @@ and the original scaffold lacked. All of them landed in build step 1
 - [x] `idempotency_keys`: workspace, operation, key, request hash, result,
   expiry (6.2)
 - [x] Suppression list: workspace, keyed HMAC of a normalized email or phone
-      (2.1)
+  (2.1)
 - [x] Deletion audit log: actor ID, time, counts only (2.1)
 
 **New columns**
 
 - [x] `workspaces.templates jsonb` (applied template names and versions) and
-      `workspaces.initialized_at` (3.1)
+  `workspaces.initialized_at` (3.1)
 - [x] `records.merged_into_id` (1.1, 4.2)
 - [x] `field_assertions.observed_at` (1.3, rule 2.2)
 - [x] `search tsvector` on `facts` and `interactions` (title and summary),
-      computed by the server like `records.search` (5.1)
+  computed by the server like `records.search` (5.1)
 - [x] `records.label text`: the label field as plain text, for fuzzy name
-      lookup (5.1)
+  lookup (5.1)
 - [x] `workspace_id` on `interaction_participants` and `fact_sources` (7)
 
 **Agent-written memory (4.1, 4.3)**
 
 - [x] `interactions`: replace `content`, `content_format`, `ingest_status`
-      and `ingest_error` with `summary text`
+  and `ingest_error` with `summary text`
 - [x] Drop the `record_cards` table
 
 **Changed constraints and defaults**
 
 - [x] Unique index on `record_links (source_record_id, field_id)`, so a
-      many-to-one field has at most one edge per record (1.1)
+  many-to-one field has at most one edge per record (1.1)
 - [x] `facts.valid_from`: no `now()` default; set from the source (1.3,
-      rule 2.6)
+  rule 2.6)
 - [x] Remove `proposed` from live `object_types` / `fields` status and from
-      `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
+  `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
 - [x] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
-      `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
+  `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
 
 **Extensions and search indexes**
 
 - [x] The migration runner creates `pg_trgm`, `btree_gin` and `unaccent` (5.1)
 - [x] Replace `records_search_gin` with a GIN index on
-      `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
+  `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
 - [x] Trigram GIN index on `records (workspace_id, label)` (5.1)
 
 **Security**
 
 - [x] Row-level security policies on every tenant table, keyed on the
-      per-transaction `app.workspace_id` setting (7)
+  per-transaction `app.workspace_id` setting (7)
 - [x] Separate migration and runtime roles; the runtime role does not own
-      tables and has no `BYPASSRLS` (7)
+  tables and has no `BYPASSRLS` (7)
 - [x] The `SECURITY DEFINER` function for API-key lookup (7)
 
 ## 12. Testing
