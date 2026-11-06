@@ -1,8 +1,7 @@
 # Accounts, organizations and access: spec
 
 Status: **proposed** November 6, 2026. Nothing here is built. Better Auth is
-chosen for login after a throwaway test, whose results are in section 12. One
-default needs confirming before the work starts (section 9).
+chosen for login after a throwaway test, whose results are in section 12.
 
 This spec turns Retainer from a server an operator runs into a service people
 sign up for: they log in, create workspaces, invite colleagues and connect
@@ -72,6 +71,7 @@ when unsure, decide first.
 | A11 | No third-party permission service for now, managed or self-hosted (3.3).                                                 |
 | A12 | Whole workspaces are the finest thing to hide at launch, because first customers are small teams (3.2).                  |
 | A13 | Passkeys ship in the first version. Multi-factor authentication does not (4.11).                                         |
+| A14 | Accounts live in the open repo (AGPL), so self-hosters get login. Billing stays private (4.10).                          |
 
 ### 3.1 Why not a Supabase-style design
 
@@ -643,32 +643,24 @@ launch and after each Better Auth upgrade that touches OAuth.
 
 ## 9. Open questions
 
-**To confirm before starting:**
-
-1. **Accounts live in the open repo (AGPL).** The auth path needs them, and
-   self-hosters benefit. Billing stays private. This reverses the line in
-   `ARCHITECTURE.md` 7 that puts provisioning and SSO outside the repository.
-
-**Later:**
-
-2. **Two sign-ins at once.** Two different magic links for a new email, opened at the
+1. **Two sign-ins at once.** Two different magic links for a new email, opened at the
    same instant, make one user as they should, but the second person gets a 500. It
    should become a retry or a clear message.
-3. **Agent write formats.** In the test Claude called `upsert_record` twice, then
+2. **Agent write formats.** In the test Claude called `upsert_record` twice, then
    warned that names are `{first, last}` and emails `{primary, additional[]}`. The
    failed call's error was not logged, but the tool descriptions may need to state
    these formats more clearly.
-4. **Old personal keys.** Actors like `user:maya` stay separate from new user IDs,
+3. **Old personal keys.** Actors like `user:maya` stay separate from new user IDs,
    so a person cannot edit comments written under the old one. A mapping could
    be added if that matters.
-5. **Departed people's names** stay on past writes through the stored actor.
+4. **Departed people's names** stay on past writes through the stored actor.
    `forget` covers records, not actors. Erasing a former employee's name needs a
    decision.
-6. **Viewers and private views.** Creating a view needs `write`, so a viewer cannot
+5. **Viewers and private views.** Creating a view needs `write`, so a viewer cannot
    save a private view. That is acceptable at first.
-7. **Zero-downtime deploys.** Each deploy gives up to a minute of `503`s because one
+6. **Zero-downtime deploys.** Each deploy gives up to a minute of `503`s because one
    version runs at a time. Acceptable for a beta, not once customers rely on it.
-8. **Legal.** Retainer becomes a data processor for customers' contacts: terms, a
+7. **Legal.** Retainer becomes a data processor for customers' contacts: terms, a
    DPA and a sub-processor list are needed. Erased data stays in backups for up to
    14 days, and that must be stated. Private code that imports the AGPL server
    needs the rights to any outside contributions checked, so add a contributor
@@ -692,8 +684,9 @@ launch and after each Better Auth upgrade that touches OAuth.
 
 Update these when the work lands, not before:
 
-- `ARCHITECTURE.md`: section 7 (sessions, organizations, roles, the new functions)
-  and 7.1 (self-serve alongside the CLI).
+- `ARCHITECTURE.md`: section 7 (sessions, organizations, roles, the new functions;
+  provisioning and SSO no longer sit outside the repository) and 7.1 (self-serve
+  alongside the CLI).
 - `CLAUDE.md`: "Every write carries an Actor, taken from the API key" becomes "from
   the credential".
 - `FRONTEND.md`: section 4.
