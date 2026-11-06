@@ -230,7 +230,7 @@ To keep what real tables give you:
 3. **Uniqueness without DDL**: `is_unique` is enforced through
    `record_identifiers`, not a per-field unique index.
 4. **Shared indexes in v1**: equality filters use JSONB containment (`data
-@> …`) with the existing GIN index, scoped by workspace and object.
+   @> …`) with the existing GIN index, scoped by workspace and object.
    `is_filterable` exposes a field to structured filters; it does not create
    an index. Range filters and sorts scan that object's rows with typed
    comparisons. Add expression indexes later only for measured workloads.
@@ -766,7 +766,7 @@ How this is built:
   forgets the handles it suppressed.
 - **Event identities.** A tombstone stores the workspace, the key's ID and
   a keyed HMAC of the JSON encoding of `(workspace_id, channel,
-external_id)` under a domain separator of its own, so it never equals a
+  external_id)` under a domain separator of its own, so it never equals a
   handle's HMAC. It is a retained suppression token, not anonymization.
   `log_event` checks it, under the identity's lock and the shared privacy
   lock, before creating an event or adding retry links, and returns
@@ -1043,7 +1043,7 @@ How this is built:
   records that gained a fact or changed since `compared_until`.
 - **Dismissing.** `POST /v1/review/merges/:id/dismiss`, as a `user`.
 - **Merging.** `POST /v1/records/:id/merge` with `{ "recordId": "<B>",
-"values"?: {…} }`, as a `user` with the `write` scope; `values` overrides
+  "values"?: {…} }`, as a `user` with the `write` scope; `values` overrides
   any field. It takes an `Idempotency-Key`. Merging the record in the path
   into itself is `422`. If B is already merged into A it is a no-op
   (`merged: false`); if A was merged into B it is `409 record_merged`. On
@@ -1790,11 +1790,11 @@ and the original scaffold lacked. All of them landed in build step 1
 **New tables**
 
 - [x] `record_identifiers`: normalized identifier per record, with a canonical
-      value and a uniqueness claim; a partial unique index on
-      `(workspace_id, field_id, value)` over claims (1.2)
+  value and a uniqueness claim; a partial unique index on
+  `(workspace_id, field_id, value)` over claims (1.2)
 - [x] `merge_suggestions`: the two record IDs, reason, status (4.2)
 - [x] `idempotency_keys`: workspace, operation, key, request hash, result,
-      expiry (6.2)
+  expiry (6.2)
 - [x] Suppression list: workspace, keyed HMAC of a normalized email or phone
       (2.1)
 - [x] Deletion audit log: actor ID, time, counts only (2.1)
