@@ -1,7 +1,6 @@
 import { type EventQueryInput, isRecordId } from '@retainer/shared';
 import { addDays, format, isValid, parse } from 'date-fns';
-import { joined, list } from './record-timeline.js';
-import type { ViewSearch } from './state.js';
+import { joined, list, type ViewSearch } from './state.js';
 import { DAY } from './views-state.js';
 
 // The activity feed's state (5.2): its filters live in the URL only, and

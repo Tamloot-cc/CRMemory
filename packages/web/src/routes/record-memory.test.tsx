@@ -11,11 +11,22 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, WorkspaceContext } from '../api/client.js';
-import { defaultMemoryTab, MemoryTabs, memoryTabs, taskLinksTo } from './record-memory.js';
+import {
+  defaultMemoryTab,
+  MemoryTabs,
+  memoryTabs,
+  taskLinksTo,
+  taskStatusFilter,
+  taskStatusSearch,
+} from './record-memory.js';
 
 vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<typeof import('@tanstack/react-router')>()),
-  Link: ({ children }: { children: ReactNode }) => <a href="/">{children}</a>,
+  Link: ({ children, className }: { children: ReactNode; className?: string }) => (
+    <a href="/" className={className}>
+      {children}
+    </a>
+  ),
 }));
 
 const relation = (name: string, targets: string[]) =>
@@ -47,7 +58,14 @@ const task = object('task', {
       name: 'state',
       baseField: 'taskStatus',
       type: 'select',
-      settings: {},
+      settings: {
+        options: [
+          { value: 'todo', label: 'To do' },
+          { value: 'in_progress', label: 'In progress' },
+          { value: 'blocked', label: 'Blocked' },
+          { value: 'done', label: 'Done' },
+        ],
+      },
     } as unknown as FieldView,
     relation('regarding', ['company', 'person']),
   ],
@@ -77,19 +95,19 @@ describe('which tabs a record has', () => {
       'Comments',
       'Facts',
       'Activity',
-      'Timeline',
-      'Open tasks',
+      'History',
+      'Tasks',
     ]);
   });
 
-  it('shows Open tasks only where a task relation can point, found by role', () => {
+  it('shows Tasks only where a task relation can point, found by role', () => {
     expect(taskLinksTo(schema, 'company').links.map((f) => f.name)).toEqual(['regarding']);
     expect(taskLinksTo(schema, 'deal').links).toEqual([]);
     const renamed = { objects: [{ ...task, nameSingular: 'todo' }] };
     expect(taskLinksTo(renamed, 'person').task?.nameSingular).toBe('todo');
     expect(taskLinksTo(renamed, 'person').status?.name).toBe('state');
     expect(taskLinksTo({ objects: [object('company')] }, 'company').links).toEqual([]);
-    expect(labels(memoryTabs({ ...entity, hasTasks: false }))).not.toContain('Open tasks');
+    expect(labels(memoryTabs({ ...entity, hasTasks: false }))).not.toContain('Tasks');
   });
 
   it('gives an event comments, claims and history, and none of what an entity has (5.1)', () => {
@@ -128,8 +146,8 @@ describe('which tabs a record has', () => {
       ['Comments', 2],
       ['Facts', undefined],
       ['Activity', undefined],
-      ['Timeline', undefined],
-      ['Open tasks', 3],
+      ['History', undefined],
+      ['Tasks', 3],
     ]);
     expect(
       memoryTabs({
@@ -152,6 +170,37 @@ describe('which tabs a record has', () => {
   });
 });
 
+describe('which tasks the tab shows', () => {
+  const options = ['todo', 'in_progress', 'done'];
+  const open = ['todo', 'in_progress'];
+
+  it('defaults to not done, so a task with no status still shows', () => {
+    expect(taskStatusFilter(options, undefined)).toEqual({
+      open,
+      chosen: open,
+      condition: { neq: 'done' },
+      isDefault: true,
+    });
+  });
+
+  it('goes back to the default when the address names only statuses that are gone', () => {
+    expect(taskStatusFilter(options, 'archived').isDefault).toBe(true);
+    expect(taskStatusFilter(options, 'archived,done').condition).toEqual({ in: ['done'] });
+  });
+
+  it('asks in the options’ order, however the statuses were ticked', () => {
+    expect(taskStatusFilter(options, 'done,todo').condition).toEqual({ in: ['todo', 'done'] });
+  });
+
+  it('keeps nothing in the address for the default, and `all` when none is chosen', () => {
+    expect(taskStatusFilter(options, 'all')).toMatchObject({ chosen: [], condition: null });
+    expect(taskStatusSearch(open, [])).toBe('all');
+    expect(taskStatusSearch(open, ['in_progress', 'todo'])).toBeUndefined();
+    expect(taskStatusSearch(open, ['todo'])).toBe('todo');
+    expect(taskStatusSearch(open, ['todo', 'done'])).toBe('todo,done');
+  });
+});
+
 describe('MemoryTabs', () => {
   const record = (over: Partial<PresentedRecord>) =>
     ({
@@ -163,7 +212,12 @@ describe('MemoryTabs', () => {
       ...over,
     }) as unknown as PresentedRecord;
 
-  function show(r: PresentedRecord, tab?: string) {
+  /** The tabs, on a workspace whose task object has `taskFields` if given. */
+  function show(
+    r: PresentedRecord,
+    tab?: string,
+    { tasks, taskFields }: { tasks?: string; taskFields?: unknown[] } = {},
+  ) {
     const set = vi.fn();
     render(
       <QueryClientProvider client={new QueryClient()}>
@@ -174,10 +228,14 @@ describe('MemoryTabs', () => {
               actor: { type: 'user', id: 'dana' },
               scopes: ['read', 'write'],
             } as unknown as Session,
-            schema,
+            schema: taskFields
+              ? ({
+                  objects: [object('company'), { ...task, fields: taskFields }],
+                } as unknown as SchemaDescription)
+              : schema,
           }}
         >
-          <MemoryTabs record={r} nav={{ tab, set }} />
+          <MemoryTabs record={r} nav={{ tab, tasks, set }} />
         </WorkspaceContext.Provider>
       </QueryClientProvider>,
     );
@@ -192,7 +250,7 @@ describe('MemoryTabs', () => {
     );
     expect(screen.queryByRole('button', { name: 'Facts' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Activity' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Open tasks' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Tasks' })).toBeNull();
   });
 
   it('explains the current tab in plain words from its info button', async () => {
@@ -210,16 +268,15 @@ describe('MemoryTabs', () => {
     );
   });
 
-  it('asks for the new tab and clears the last tab’s timeline filters', async () => {
+  it('asks for the new tab and clears the last tab’s filters', async () => {
     vi.spyOn(api, 'facts').mockResolvedValue({ facts: [], nextCursor: null } as never);
     const set = show(record({ object: 'deal' }));
-    expect(screen.queryByRole('button', { name: 'Open tasks' })).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Timeline' }));
+    expect(screen.queryByRole('button', { name: 'Tasks' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'History' }));
     expect(set).toHaveBeenCalledWith({
-      tab: 'timeline',
-      kind: undefined,
+      tab: 'history',
       fields: undefined,
-      eventTypes: undefined,
+      tasks: undefined,
     });
   });
 
@@ -256,29 +313,76 @@ describe('MemoryTabs', () => {
       type: 'select',
       settings: { options: [{ value: 'in_progress', label: 'In progress' }] },
     } as unknown as FieldView;
-    const renamed = { ...task, fields: [status, relation('regarding', ['company', 'person'])] };
     vi.spyOn(api, 'queryRecords').mockResolvedValue({
       records: [{ id: 't1', object: 'task', label: 'Send deck', fields: { state: 'in_progress' } }],
       nextCursor: null,
     } as never);
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <WorkspaceContext.Provider
-          value={{
-            session: {
-              workspace: { id: 'w1' },
-              actor: { type: 'user', id: 'dana' },
-              scopes: ['read'],
-            } as unknown as Session,
-            schema: { objects: [object('company'), renamed] } as unknown as SchemaDescription,
-          }}
-        >
-          <MemoryTabs record={record({})} nav={{ tab: 'tasks', set: vi.fn() }} />
-        </WorkspaceContext.Provider>
-      </QueryClientProvider>,
-    );
+    show(record({}), 'tasks', {
+      taskFields: [status, relation('regarding', ['company', 'person'])],
+    });
     expect(await screen.findByText('Send deck')).toBeTruthy();
-    expect(screen.getByText('In progress')).toBeTruthy();
-    expect(screen.queryByText('in_progress')).toBeNull();
+    const row = screen.getByRole('list', { name: 'Tasks' });
+    expect(row.textContent).toContain('In progress');
+    expect(row.textContent).not.toContain('in_progress');
+  });
+
+  describe('Tasks', () => {
+    const tasks = (...rows: [string, string, string][]) =>
+      vi.spyOn(api, 'queryRecords').mockResolvedValue({
+        records: rows.map(([id, label, state]) => ({
+          id,
+          object: 'task',
+          label,
+          fields: { state },
+        })),
+        nextCursor: null,
+      } as never);
+    const lastQuery = (spy: ReturnType<typeof tasks>) => {
+      const call = spy.mock.calls.at(-1);
+      if (!call) throw new Error('no query was sent');
+      return call[1] as { filter: { and: unknown[] }; sort: unknown };
+    };
+    it('shows every status but done by default, from the workspace’s own options', async () => {
+      const spy = tasks(['t1', 'Send deck', 'todo']);
+      const set = show(record({}), 'tasks');
+      expect(await screen.findByText('Send deck')).toBeTruthy();
+      expect(lastQuery(spy).filter.and[0]).toEqual({ state: { neq: 'done' } });
+      const menu = screen.getByRole('button', { name: /^Status/ });
+      expect(menu.textContent).toBe('To doIn progressBlocked');
+      expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
+      await userEvent.click(menu);
+      await userEvent.click(screen.getByRole('option', { name: 'Done' }));
+      expect(set).toHaveBeenCalledWith({ tasks: 'todo,in_progress,blocked,done' });
+    });
+
+    it('asks for the chosen statuses, and for only done tasks latest due first', async () => {
+      const due = { name: 'due', baseField: 'taskDueDate', type: 'date', settings: {} };
+      const spy = tasks();
+      show(record({}), 'tasks', { tasks: 'done', taskFields: [...task.fields, due] });
+      expect(await screen.findByText('No tasks with these statuses')).toBeTruthy();
+      expect(lastQuery(spy).filter.and[0]).toEqual({ state: { in: ['done'] } });
+      expect(lastQuery(spy).sort).toEqual([{ field: 'due', direction: 'desc' }]);
+      cleanup();
+      show(record({}), 'tasks', { tasks: 'done,in_progress', taskFields: [...task.fields, due] });
+      await vi.waitFor(() =>
+        expect(lastQuery(spy).filter.and[0]).toEqual({ state: { in: ['in_progress', 'done'] } }),
+      );
+      expect(lastQuery(spy).sort).toEqual([{ field: 'due', direction: 'asc' }]);
+      cleanup();
+      show(record({}), 'tasks', { tasks: 'all', taskFields: [...task.fields, due] });
+      expect(await screen.findByText('No tasks')).toBeTruthy();
+      expect(lastQuery(spy).filter.and).toHaveLength(1);
+    });
+
+    it('sets done tasks apart from open ones', async () => {
+      tasks(['t1', 'Send deck', 'todo'], ['t2', 'Book room', 'done']);
+      show(record({}), 'tasks');
+      const open = await screen.findByText('Send deck');
+      const done = screen.getByText('Book room');
+      expect(open.className).not.toContain('line-through');
+      expect(done.className).toContain('line-through');
+      const icon = (el: Element) => el.closest('li')?.querySelector('svg')?.getAttribute('class');
+      expect(icon(done)).not.toEqual(icon(open));
+    });
   });
 });

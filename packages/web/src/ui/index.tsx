@@ -364,8 +364,8 @@ export function Empty({
  * view. Every label has one weight, so switching moves nothing. `sticky` keeps
  * the row on screen while what is under it scrolls; `--sticky-top` is the height
  * of what it sticks under (the page's header, unless a `Sheet` says otherwise).
- * A tab's `hint` says in plain words what it holds: an info button at the end of
- * the row shows the current tab's, and stays in view when the row scrolls.
+ * A tab's `hint` says in plain words what it holds: an info button beside the
+ * tabs shows the current tab's, in view however far they scroll.
  */
 export function Tabs({
   items,
@@ -380,8 +380,9 @@ export function Tabs({
   sticky?: boolean;
   ref?: Ref<HTMLElement>;
 }) {
-  const row = useRef<HTMLElement>(null);
-  useImperativeHandle(ref, () => row.current as HTMLElement);
+  const bar = useRef<HTMLDivElement>(null),
+    row = useRef<HTMLElement>(null);
+  useImperativeHandle(ref, () => bar.current as HTMLElement);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the current tab, read from the DOM, is what changed.
   useLayoutEffect(() => {
     const nav = row.current;
@@ -394,52 +395,65 @@ export function Tabs({
   }, [value]);
   const current = items.find((i) => i.value === value);
   return (
-    <nav
-      ref={row}
-      aria-label="Sections"
+    <div
+      ref={bar}
       className={cn(
-        'flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none]',
+        'flex border-b border-border',
         sticky && 'sticky top-[var(--sticky-top,3rem)] z-20 bg-background',
       )}
     >
-      {items.map((i) => (
-        <button
-          type="button"
-          key={i.value}
-          aria-current={value === i.value ? 'page' : undefined}
-          onClick={() => onChange(i.value)}
-          className={cn(
-            '-mb-px flex shrink-0 items-center gap-2 border-b-2 px-2.5 py-2 text-sm font-medium',
-            value === i.value
-              ? 'border-primary'
-              : 'border-transparent text-muted-foreground hover:text-foreground',
-          )}
-        >
-          {i.label}
-          {i.count !== undefined ? <Badge>{i.count}</Badge> : null}
-        </button>
-      ))}
+      <nav
+        ref={row}
+        aria-label="Sections"
+        className="flex min-w-0 flex-1 gap-1 overflow-x-auto [scrollbar-width:none]"
+      >
+        {items.map((i) => (
+          <button
+            type="button"
+            key={i.value}
+            aria-current={value === i.value ? 'page' : undefined}
+            onClick={() => onChange(i.value)}
+            className={cn(
+              '-mb-px flex shrink-0 items-center gap-2 border-b-2 px-2.5 py-2 text-sm font-medium',
+              value === i.value
+                ? 'border-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {i.label}
+            {i.count !== undefined ? <Badge>{i.count}</Badge> : null}
+          </button>
+        ))}
+      </nav>
       {current?.hint ? (
-        <span className="sticky right-0 ml-auto flex shrink-0 items-center bg-background pl-2 pr-1 text-muted-foreground hover:text-foreground">
+        <span className="flex shrink-0 items-center pl-2 pr-1 text-muted-foreground hover:text-foreground">
           <Tooltip content={current.hint}>
             <Info size={13} aria-label={`About ${current.label}`} />
           </Tooltip>
         </span>
       ) : null}
-    </nav>
+    </div>
   );
 }
-/** Links to the record page, or with `inSheet` opens it in the current list's sheet (`?record=`). */
+/**
+ * Links to the record page, or with `inSheet` opens it in the current list's sheet
+ * (`?record=`). `struck` is for a record that no longer needs doing, such as a done task.
+ */
 export function RecordLink({
   id,
   inSheet = false,
+  struck = false,
   children,
 }: {
   id: string;
   inSheet?: boolean;
+  struck?: boolean;
   children: ReactNode;
 }) {
-  const className = 'min-w-0 max-w-full truncate font-medium hover:underline';
+  const className = cn(
+    'min-w-0 max-w-full truncate font-medium',
+    struck ? 'text-muted-foreground line-through' : 'hover:underline',
+  );
   return inSheet ? (
     <Link
       to="."

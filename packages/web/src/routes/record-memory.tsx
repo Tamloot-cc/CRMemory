@@ -1,6 +1,7 @@
 import type {
   AssertionView,
   FieldView,
+  ObjectView,
   PresentedFact,
   PresentedRecord,
   RecordCounts,
@@ -8,9 +9,10 @@ import type {
 } from '@retainer/shared';
 import { isCollectionRelation, TASK_DONE_OPTION } from '@retainer/shared';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, CircleCheck, Lightbulb, PencilLine, Undo2 } from 'lucide-react';
+import { CalendarClock, Circle, CircleCheck, Lightbulb, PencilLine, Undo2 } from 'lucide-react';
 import { useState } from 'react';
 import { api, canMutate, useWorkspace } from '../api/client.js';
+import { selectOptions } from '../fields/common.js';
 import { fields } from '../fields/index.js';
 import { ActorBadge, FactSources } from '../provenance/index.js';
 import {
@@ -33,6 +35,7 @@ import {
   RecordLink,
   Row,
   Section,
+  SelectMenu,
   Stack,
   TabPanel,
   Tabs,
@@ -42,10 +45,12 @@ import { CommentsPanel } from './comments.js';
 import { useDeveloper } from './developer.js';
 import { REASONS, ViaLabel } from './event-details.js';
 import { CandidateRecord } from './record-actions.js';
-import { RecordTimeline, type TimelineSearch } from './record-timeline.js';
+import { RecordHistory } from './record-history.js';
 import {
   byCursor,
   eventTitle,
+  joined,
+  list,
   objectByName,
   objectLabel,
   QueryError,
@@ -63,20 +68,20 @@ export const pointsAt = (field: FieldView, id: string) =>
   isCollectionRelation(field) ? { containsAny: [id] } : { eq: id };
 
 /**
- * Where the memory tabs keep their tab and timeline filters: the URL on a
- * page, local state in the sheet.
+ * Where the memory tabs keep their tab and filters: the URL on a page, local
+ * state in the sheet.
  */
-export type MemoryState = { tab?: string } & TimelineSearch;
+export type MemoryState = { tab?: string; fields?: string; tasks?: string };
 export type MemoryNav = MemoryState & { set: (change: MemoryState) => void };
 
 /** The memory tabs' state in the address, for a page. */
 export function useMemoryNav(): MemoryNav {
   const { search, setSearch } = useView();
   return {
-    tab: search.tab,
-    kind: search.kind,
+    // An address saved when History was called Timeline still opens it.
+    tab: search.tab === 'timeline' ? 'history' : search.tab,
     fields: search.fields,
-    eventTypes: search.eventTypes,
+    tasks: search.tasks,
     set: (change) => void setSearch(change),
   };
 }
@@ -89,11 +94,10 @@ const TAB_HINTS = {
   comments: 'Notes your team wrote about this record.',
   facts: 'What is known about this record, in plain words. Each fact shows where it came from.',
   events: 'Meetings, calls, emails and other events linked to this record.',
-  timeline: 'Everything about this record over time: its events, field values and facts.',
-  tasks: 'Tasks linked to this record that are not done yet.',
+  tasks: 'Tasks linked to this record, by status. The number counts those not done yet.',
   claims:
     'What came out of this event: field values and facts saved on other records because of it. A value that is no longer current is marked.',
-  history: 'Changes to this event’s own fields.',
+  history: 'Values set on these fields over time, and who set them.',
   json: 'This record’s raw data, as the API returns it.',
 };
 
@@ -105,7 +109,7 @@ type MemoryTab = { value: keyof typeof TAB_HINTS; label: string; count?: number 
  * cites it and how its fields changed; an event has no activity of its own (5.1).
  * `remember` can still store a fact on an event, so an event that has some keeps
  * a Facts tab: memory stays reachable, and the usual event doesn't show the tab.
- * Open tasks shows only when a task relation can point at this type, and the
+ * Tasks shows only when a task relation can point at this type, and the
  * events tab keeps `events` in the address, where people read it as Activity.
  */
 export function memoryTabs({
@@ -137,9 +141,9 @@ export function memoryTabs({
         comments,
         { value: 'facts', label: 'Facts', ...counted(counts?.facts) },
         { value: 'events', label: 'Activity' },
-        { value: 'timeline', label: 'Timeline' },
+        { value: 'history', label: 'History' },
         ...(hasTasks
-          ? [{ value: 'tasks' as const, label: 'Open tasks', ...counted(counts?.openTasks) }]
+          ? [{ value: 'tasks' as const, label: 'Tasks', ...counted(counts?.openTasks) }]
           : []),
       ];
   const all: MemoryTab[] = developer ? [...tabs, { value: 'json', label: 'JSON' }] : tabs;
@@ -169,7 +173,8 @@ export function MemoryTabs({ record, nav }: { record: PresentedRecord; nav: Memo
   const { schema } = useWorkspace(),
     developer = useDeveloper();
   const isEvent = !!record.event;
-  const hasTasks = !isEvent && taskLinksTo(schema, record.object).links.length > 0;
+  const { task, status, due, links } = taskLinksTo(schema, record.object);
+  const hasTasks = !isEvent && links.length > 0;
   const tabs = memoryTabs({ isEvent, hasTasks, counts: record.counts, developer });
   // Chosen once: removing the last comment doesn't move anyone off the tab.
   const [opening] = useState(() => defaultMemoryTab(isEvent, record.counts));
@@ -184,24 +189,31 @@ export function MemoryTabs({ record, nav }: { record: PresentedRecord; nav: Memo
         sticky
         value={tab}
         items={tabs}
-        onChange={(next) =>
-          nav.set({ tab: next, kind: undefined, fields: undefined, eventTypes: undefined })
-        }
+        onChange={(next) => nav.set({ tab: next, fields: undefined, tasks: undefined })}
       />
       <TabPanel ref={anchor.panel}>
         {tab === 'comments' ? <CommentsPanel recordId={rid} /> : null}
         {tab === 'facts' ? <FactsPanel recordId={rid} /> : null}
         {tab === 'events' ? <ActivityPanel record={record} /> : null}
-        {tab === 'timeline' || tab === 'history' ? (
-          <RecordTimeline
+        {tab === 'history' ? (
+          <RecordHistory
             recordId={rid}
             object={object}
-            history={tab === 'history'}
-            search={{ kind: nav.kind, fields: nav.fields, eventTypes: nav.eventTypes }}
-            onSearchChange={(change) => nav.set(change)}
+            fields={nav.fields}
+            onFieldsChange={(fields) => nav.set({ fields })}
           />
         ) : null}
-        {tab === 'tasks' ? <TasksPanel record={record} /> : null}
+        {tab === 'tasks' && task && status ? (
+          <TasksPanel
+            record={record}
+            task={task}
+            status={status}
+            due={due}
+            links={links}
+            shown={nav.tasks}
+            onShownChange={(tasks) => nav.set({ tasks })}
+          />
+        ) : null}
         {tab === 'claims' ? <ClaimsPanel eventId={rid} /> : null}
         {tab === 'json' ? (
           <JsonBlock value={record} label={isEvent ? 'Event JSON' : 'Record JSON'} />
@@ -399,30 +411,79 @@ function ActivityPanel({ record }: { record: PresentedRecord }) {
   );
 }
 
-function TasksPanel({ record }: { record: PresentedRecord }) {
-  const { session, schema } = useWorkspace();
-  const { task, status, due, links } = taskLinksTo(schema, record.object);
+/**
+ * Which tasks the tab shows, from the address: by default every one that is not
+ * done, `all`, or a comma list of status values. Only `done` is a fixed status;
+ * a workspace can add, rename and remove the others, so they come from its
+ * schema. A default that names them would miss a task with no status at all,
+ * so it stays "not done".
+ */
+export function taskStatusFilter(options: string[], shown: string | undefined) {
+  const open = options.filter((o) => o !== TASK_DONE_OPTION);
+  if (shown === 'all') return { open, chosen: [], condition: null, isDefault: false };
+  // In the options' order, so the same statuses are the same query however they were ticked.
+  const wanted = list(shown);
+  const asked = options.filter((o) => wanted.includes(o));
+  return asked.length
+    ? { open, chosen: asked, condition: { in: asked }, isDefault: false }
+    : { open, chosen: open, condition: { neq: TASK_DONE_OPTION }, isDefault: true };
+}
+
+/** What to keep in the address for these statuses: none means all of them. */
+export function taskStatusSearch(open: string[], next: string[]) {
+  if (!next.length) return 'all';
+  const isOpen = next.length === open.length && open.every((o) => next.includes(o));
+  return isOpen ? undefined : joined(next);
+}
+
+/**
+ * A record's tasks by status, soonest due first; only done tasks, latest due
+ * first, since the recent ones are what people look back for.
+ */
+function TasksPanel({
+  record,
+  task,
+  status,
+  due,
+  links,
+  shown,
+  onShownChange,
+}: {
+  record: PresentedRecord;
+  task: ObjectView;
+  status: FieldView;
+  due?: FieldView;
+  links: FieldView[];
+  shown?: string;
+  onShownChange: (shown: string | undefined) => void;
+}) {
+  const { session } = useWorkspace();
+  const statusOptions = selectOptions(status);
+  const { open, chosen, condition, isDefault } = taskStatusFilter(
+    statusOptions.map((o) => o.value),
+    shown,
+  );
+  const onlyDone = chosen.length === 1 && chosen[0] === TASK_DONE_OPTION;
   const filter = {
     and: [
-      ...(status ? [{ [status.name]: { neq: TASK_DONE_OPTION } }] : []),
+      ...(condition ? [{ [status.name]: condition }] : []),
       { or: links.map((f) => ({ [f.name]: pointsAt(f, record.id) })) },
     ],
   };
   const tasks = useInfiniteQuery({
-    queryKey: [session.workspace.id, 'tasks', record.id],
+    queryKey: [session.workspace.id, 'tasks', record.id, condition],
     queryFn: ({ signal, pageParam }) =>
       api.queryRecords(
-        task?.nameSingular ?? 'task',
+        task.nameSingular,
         {
           filter,
           limit: 50,
           cursor: pageParam,
-          sort: due ? [{ field: due.name, direction: 'asc' }] : [],
+          sort: due ? [{ field: due.name, direction: onlyDone ? 'desc' : 'asc' }] : [],
         },
         signal,
       ),
     ...byCursor,
-    enabled: !!task && links.length > 0,
   });
   const items = tasks.data?.pages.flatMap((p) => p.records) ?? [];
   const value = (field: FieldView | undefined, row: PresentedRecord) => {
@@ -433,37 +494,64 @@ function TasksPanel({ record }: { record: PresentedRecord }) {
     );
   };
   return (
-    <>
+    <Stack>
+      <Row>
+        <SelectMenu
+          label="Status"
+          size="small"
+          multiple
+          placeholder={isDefault ? 'Not done' : 'All statuses'}
+          value={chosen}
+          options={statusOptions}
+          onChange={(next) => onShownChange(taskStatusSearch(open, next))}
+        />
+        {isDefault ? null : (
+          <Button size="small" variant="ghost" onClick={() => onShownChange(undefined)}>
+            Clear filters
+          </Button>
+        )}
+      </Row>
       {tasks.error ? <QueryError error={tasks.error} retry={() => void tasks.refetch()} /> : null}
       {tasks.isPending ? <EntryLoading label="Loading tasks…" /> : null}
       {tasks.data && !items.length ? (
         <Empty
           quiet
-          title="No open tasks"
-          description="Tasks linked to this record appear here until they are done."
+          title={
+            isDefault ? 'No open tasks' : condition ? 'No tasks with these statuses' : 'No tasks'
+          }
+          description={
+            isDefault
+              ? 'Tasks linked to this record appear here until they are done.'
+              : 'Tasks linked to this record appear here.'
+          }
         />
       ) : null}
       {items.length ? (
-        <EntryList label="Open tasks">
-          {items.map((t) => (
-            <Entry
-              key={t.id}
-              icon={CircleCheck}
-              title={
-                <>
-                  <RecordLink id={t.id}>{t.label || 'Untitled task'}</RecordLink>
-                  {value(status, t)}
-                </>
-              }
-              time={value(due, t)}
-            />
-          ))}
+        <EntryList label="Tasks">
+          {items.map((t) => {
+            const done = t.fields[status.name] === TASK_DONE_OPTION;
+            return (
+              <Entry
+                key={t.id}
+                icon={done ? CircleCheck : Circle}
+                title={
+                  <>
+                    <RecordLink id={t.id} struck={done}>
+                      {t.label || 'Untitled task'}
+                    </RecordLink>
+                    {value(status, t)}
+                  </>
+                }
+                time={value(due, t)}
+              />
+            );
+          })}
         </EntryList>
       ) : null}
       {tasks.hasNextPage ? (
         <LoadMore loading={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()} />
       ) : null}
-    </>
+    </Stack>
   );
 }
 

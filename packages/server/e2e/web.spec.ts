@@ -1525,8 +1525,8 @@ test('comments on a company: posted once despite a lost response, edited, delete
   await expect(comments).toContainText('Procurement is quick after all.');
   await expect(comments.getByText('edited')).toBeVisible();
 
-  // Not evidence: it is on no timeline or activity list, and in no event query.
-  await page.goto(`${r.url}/app/r/${acme.id}?tab=timeline`);
+  // Not evidence: it is on no history or activity list, and in no event query.
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=history`);
   await expect(page.getByText('Name set to')).toBeVisible();
   await expect(page.getByText('Procurement is quick after all.')).toHaveCount(0);
   await page.goto(`${r.url}/app/activity`);
@@ -1667,15 +1667,12 @@ test('an event page has comments, claims and history, and no memory of its own',
     /^Comments/,
     /^Facts/,
     'Activity',
-    'Timeline',
-    'Open tasks',
+    'History',
+    'Tasks',
   ]);
 });
 
-test('shows Open tasks only on types a task relation can point at', async ({
-  page,
-  retainer: r,
-}) => {
+test('shows Tasks only on types a task relation can point at', async ({ page, retainer: r }) => {
   await r.request(
     '/schema/changes',
     {
@@ -1704,7 +1701,7 @@ test('shows Open tasks only on types a task relation can point at', async ({
     'Comments',
     'Facts',
     'Activity',
-    'Timeline',
+    'History',
   ]);
   await expect(page.getByText('No facts yet')).toBeVisible();
 });
@@ -1793,7 +1790,7 @@ test('the record sheet keeps long text inside it, and its tabs still as they cha
       el.scrollTop = el.scrollHeight;
     });
     const stuck = (await place()).top;
-    for (const tab of [/^Comments/, /^Facts/, 'Timeline', /^Open tasks/, 'Activity']) {
+    for (const tab of [/^Comments/, /^Facts/, 'History', /^Tasks/, 'Activity']) {
       await nav.getByRole('button', { name: tab }).click();
       await page.waitForLoadState('networkidle');
       const now = await place();
@@ -1857,4 +1854,59 @@ test('shows API names, IDs, write paths and JSON in developer view, remembered p
   await expect(page.getByText('jobTitle', { exact: true })).toHaveCount(0);
   await page.goto(`${r.url}/app/r/${dana.id}`);
   await expect(page.getByText('upsert_record')).toHaveCount(0);
+});
+
+test('tasks on a record: not done by default, filtered by status, done ones set apart', async ({
+  page,
+  retainer: r,
+}) => {
+  const acme = (await r.request('/objects/company/records', { values: { name: 'Acme' } })).record;
+  const add = (title: string, status: string) =>
+    r.request('/objects/task/records', { values: { title, status, company: acme.id } });
+  await add('Send deck', 'todo');
+  await add('Draft contract', 'in_progress');
+  await add('Book room', 'done');
+
+  await signIn(page, r.url, r.keys.user);
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=tasks`);
+  const tasks = page.getByRole('list', { name: 'Tasks' });
+  await expect(tasks.getByRole('listitem')).toHaveCount(2);
+  await expect(tasks).toContainText('Send deck');
+  await expect(tasks).toContainText('Draft contract');
+  await expect(tasks).not.toContainText('Book room');
+  // The tab counts what is not done, whichever statuses are shown.
+  await expect(page.getByRole('button', { name: /^Tasks/ })).toContainText('2');
+
+  // Down to one status, then done ones as well.
+  await page.getByRole('button', { name: /^Status/ }).click();
+  await page.getByRole('option', { name: 'To do' }).click();
+  await expect(tasks.getByRole('listitem')).toHaveCount(1);
+  await expect(tasks).toContainText('Draft contract');
+  await expect(page).toHaveURL(/tasks=in_progress/);
+  await page.getByRole('option', { name: 'Done' }).click();
+  await expect(tasks.getByRole('listitem')).toHaveCount(2);
+  await page.keyboard.press('Escape');
+  await expect(tasks.getByRole('link', { name: 'Book room' })).toHaveCSS(
+    'text-decoration-line',
+    'line-through',
+  );
+  await expect(tasks.getByRole('link', { name: 'Draft contract' })).not.toHaveCSS(
+    'text-decoration-line',
+    'line-through',
+  );
+
+  // None chosen means all of them.
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=tasks&tasks=all`);
+  await expect(tasks.getByRole('listitem')).toHaveCount(3);
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(tasks.getByRole('listitem')).toHaveCount(2);
+
+  // An address saved when History was called Timeline still opens it.
+  await page.goto(`${r.url}/app/r/${acme.id}?tab=timeline`);
+  const sections = page.getByRole('navigation', { name: 'Sections' });
+  await expect(sections.getByRole('button', { name: 'History', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  await expect(page.getByText('Name set to')).toBeVisible();
 });

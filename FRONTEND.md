@@ -417,16 +417,16 @@ Three areas:
   inverse (one-to-many) field renders as a short list of linked records with
   a link to the filtered object list.
 - **Tabs** (`MemoryTabs`), the same on the record page, the event page and
-  the side sheet. An entity has Comments, Facts, Activity, Timeline and, only
-  when a relation field on the `task` object can point at its type, Open
-  tasks. An event has Comments, Claims and History: an event has no activity
+  the side sheet. An entity has Comments, Facts, Activity, History and, only
+  when a relation field on the `task` object can point at its type, Tasks.
+  An event has Comments, Claims and History: an event has no activity
   of its own, and no tasks. `remember` can still store a fact on an event, so
   one that has some also shows Facts. A record opens on Comments when it has
   any and an entity otherwise opens on Facts; an event opens on Comments.
   That is chosen once per visit, so deleting the last comment moves nobody.
-  Comments, Facts, Claims and Open tasks show a count from
-  `GET /v1/records/:id?include=counts` when above zero; Activity and Timeline
-  don't, since they fan out. An info button at the end of the row explains
+  Comments, Facts, Claims and Tasks show a count from
+  `GET /v1/records/:id?include=counts` when above zero; for Tasks it counts those
+  not done. Activity and History don't, since they fan out. An info button at the end of the row explains
   the current tab in plain words, in a tooltip; it stays in view when the row
   scrolls.
   - _Comments_: `GET /v1/records/:id/comments`. Oldest first, as a
@@ -445,18 +445,24 @@ Three areas:
     title, date, how the event is attached (participant, about, through one
     of its fields, or rolled up from a record pointing at this one, linked),
     summary, and participants, matched ones linked.
-  - _Timeline_: `GET /v1/records/:id/timeline`, grouped by day, newest
-    first. Events as in the Activity tab;
-    values asserted for a field read "<Field> set to <value>" with who set
-    it and the cited event, and one that is not the current value says so,
-    never as a change from an earlier value; facts with a superseded or
-    ended badge. Filters: item type, fields and event types, kept in the URL
-    (`kind`, `fields`, `eventTypes`); a stale cursor offers to start again.
-  - _Open tasks_: tasks linked to the record that are not done, with status
-    and due date read through their role fields, so a rename keeps working.
+  - _History_: `GET /v1/records/:id/timeline?types=field_change`, grouped by
+    day, newest first, on entities and events alike. Each value asserted for
+    a field reads "<Field> set to <value>" with who set it and the cited
+    event, and one that is not the current value says so, never as a change
+    from an earlier value. Events and facts have their own tabs, so they are
+    not repeated here. Filtered by field, kept in the URL (`fields`); a stale
+    cursor offers to start again. An address with the old `?tab=timeline`
+    opens History.
+  - _Tasks_: tasks linked to the record. A status menu, built from the status
+    field's options since a workspace can add, rename and remove all but
+    `done`, shows every task that is not done by default, and any statuses
+    chosen, kept in the URL (`tasks`: a comma list, or `all` when none is
+    chosen). Done tasks have a checked circle and a struck-through, muted
+    title; the rest have an empty circle. Soonest due first, or latest due
+    first when showing only done tasks. Each row has its status and due date
+    read through their role fields, so a rename keeps working.
   - _Claims_ (events): `GET /v1/events/:id/claims?own=false`. Values on
     records and facts that cite the event, not the values it logged itself.
-  - _History_ (events): the timeline's field changes only, filtered by field.
 
   One list style across every tab: `Entry` rows in `EntryList`, an icon, a
   title, the time at the far end, then the text and who or where it came

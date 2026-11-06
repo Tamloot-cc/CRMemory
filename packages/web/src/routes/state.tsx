@@ -23,11 +23,11 @@ export type ViewSearch = {
   field?: string;
   /** Schema page: the change-history status filter. */
   status?: string;
-  /** Record timeline: the one item kind shown; absent for all. */
-  kind?: string;
-  /** Record timeline: field API names to show changes of, comma-separated. */
+  /** Record history: field API names to show changes of, comma-separated. */
   fields?: string;
-  /** Record timeline and activity feed: event type API names to show, comma-separated. */
+  /** Record tasks: status values, comma-separated, or `all`; absent for those not done. */
+  tasks?: string;
+  /** Activity feed: event type API names to show, comma-separated. */
   eventTypes?: string;
   /** Activity feed: the one source (`channel`) shown. */
   channel?: string;
@@ -105,6 +105,10 @@ export function useView() {
   );
   return { search, setSearch };
 }
+/** A comma list from the address, empty parts dropped. */
+export const list = (raw: string | undefined) => (raw ? raw.split(',').filter(Boolean) : []);
+/** Values as a comma list for the address; none clears the parameter. */
+export const joined = (values: string[]) => (values.length ? values.join(',') : undefined);
 /** `useInfiniteQuery` options for a list paged by `nextCursor`. */
 export const byCursor = {
   initialPageParam: undefined as string | undefined,
