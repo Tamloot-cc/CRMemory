@@ -426,7 +426,9 @@ Three areas:
   That is chosen once per visit, so deleting the last comment moves nobody.
   Comments, Facts, Claims and Open tasks show a count from
   `GET /v1/records/:id?include=counts` when above zero; Activity and Timeline
-  don't, since they fan out.
+  don't, since they fan out. An info button at the end of the row explains
+  the current tab in plain words, in a tooltip; it stays in view when the row
+  scrolls.
   - _Comments_: `GET /v1/records/:id/comments`. Oldest first, as a
     conversation reads, with "Load earlier comments" above and the box below.
     Author, time, "edited", text with its line breaks. Enter adds a line and

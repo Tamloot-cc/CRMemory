@@ -195,6 +195,21 @@ describe('MemoryTabs', () => {
     expect(screen.queryByRole('button', { name: 'Open tasks' })).toBeNull();
   });
 
+  it('explains the current tab in plain words from its info button', async () => {
+    vi.spyOn(api, 'listComments').mockResolvedValue({ items: [], nextCursor: null } as never);
+    vi.spyOn(api, 'claims').mockResolvedValue({
+      assertions: [],
+      facts: [],
+      nextCursors: { assertions: null, facts: null },
+    } as never);
+    show(record({ object: 'conversation', event: {} as never }), 'claims');
+    expect(screen.queryByRole('button', { name: 'About Comments' })).toBeNull();
+    await userEvent.hover(screen.getByRole('button', { name: 'About Claims' }));
+    expect((await screen.findByRole('tooltip')).textContent).toContain(
+      'What came out of this event',
+    );
+  });
+
   it('asks for the new tab and clears the last tab’s timeline filters', async () => {
     vi.spyOn(api, 'facts').mockResolvedValue({ facts: [], nextCursor: null } as never);
     const set = show(record({ object: 'deal' }));

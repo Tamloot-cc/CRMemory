@@ -2,7 +2,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Slot } from '@radix-ui/react-slot';
 import { Link } from '@tanstack/react-router';
 import { cva } from 'class-variance-authority';
-import { ArrowUpRight, ChevronRight, Database, Inbox, Menu, X } from 'lucide-react';
+import { ArrowUpRight, ChevronRight, Database, Inbox, Info, Menu, X } from 'lucide-react';
 import {
   type ComponentProps,
   type HTMLAttributes,
@@ -17,6 +17,7 @@ import {
 } from 'react';
 import { cn, isPlainClick, NavigationContext, ROW_STATE, type Tone } from './core.js';
 import { ApiName } from './layout.js';
+import { Tooltip } from './tooltip.js';
 
 // Adapted from shadcn/ui Button (MIT); see THIRD_PARTY.md.
 const buttonVariants = cva(
@@ -363,6 +364,8 @@ export function Empty({
  * view. Every label has one weight, so switching moves nothing. `sticky` keeps
  * the row on screen while what is under it scrolls; `--sticky-top` is the height
  * of what it sticks under (the page's header, unless a `Sheet` says otherwise).
+ * A tab's `hint` says in plain words what it holds: an info button at the end of
+ * the row shows the current tab's, and stays in view when the row scrolls.
  */
 export function Tabs({
   items,
@@ -371,7 +374,7 @@ export function Tabs({
   sticky = false,
   ref,
 }: {
-  items: { value: string; label: string; count?: number }[];
+  items: { value: string; label: string; count?: number; hint?: string }[];
   value: string;
   onChange: (v: string) => void;
   sticky?: boolean;
@@ -389,6 +392,7 @@ export function Tabs({
     if (left < nav.scrollLeft) nav.scrollLeft = left;
     else if (right > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = right - nav.clientWidth;
   }, [value]);
+  const current = items.find((i) => i.value === value);
   return (
     <nav
       ref={row}
@@ -415,6 +419,13 @@ export function Tabs({
           {i.count !== undefined ? <Badge>{i.count}</Badge> : null}
         </button>
       ))}
+      {current?.hint ? (
+        <span className="sticky right-0 ml-auto flex shrink-0 items-center bg-background pl-2 pr-1 text-muted-foreground hover:text-foreground">
+          <Tooltip content={current.hint}>
+            <Info size={13} aria-label={`About ${current.label}`} />
+          </Tooltip>
+        </span>
+      ) : null}
     </nav>
   );
 }
@@ -514,7 +525,7 @@ export function ExternalLink({ href, children }: { href: string; children: React
     <span>{children}</span>
   );
 }
-export { Tooltip } from './tooltip.js';
+export { Tooltip };
 export function Sourced({ children }: { children: ReactNode }) {
   return <span className="underline decoration-dotted underline-offset-4">{children}</span>;
 }

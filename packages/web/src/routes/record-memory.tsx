@@ -84,6 +84,22 @@ export function useMemoryNav(): MemoryNav {
 /** A count on a tab only when there is something to count. */
 const counted = (count: number | undefined) => (count ? { count } : {});
 
+/** What each tab holds, in plain words, for its info button. */
+const TAB_HINTS = {
+  comments: 'Notes your team wrote about this record.',
+  facts: 'What is known about this record, in plain words. Each fact shows where it came from.',
+  events: 'Meetings, calls, emails and other events linked to this record.',
+  timeline: 'Everything about this record over time: its events, field values and facts.',
+  tasks: 'Tasks linked to this record that are not done yet.',
+  claims:
+    'What came out of this event: field values and facts saved on other records because of it. A value that is no longer current is marked.',
+  history: 'Changes to this event’s own fields.',
+  json: 'This record’s raw data, as the API returns it.',
+};
+
+/** One tab of a record's memory. Its value must have a hint, so a new tab can't skip one. */
+type MemoryTab = { value: keyof typeof TAB_HINTS; label: string; count?: number };
+
 /**
  * The tabs of a record's memory. An event's are what is written on it, what
  * cites it and how its fields changed; an event has no activity of its own (5.1).
@@ -103,13 +119,19 @@ export function memoryTabs({
   counts?: RecordCounts;
   developer: boolean;
 }) {
-  const comments = { value: 'comments', label: 'Comments', ...counted(counts?.comments) };
-  const tabs: { value: string; label: string; count?: number }[] = isEvent
+  const comments = {
+    value: 'comments' as const,
+    label: 'Comments',
+    ...counted(counts?.comments),
+  };
+  const tabs: MemoryTab[] = isEvent
     ? [
         comments,
         { value: 'claims', label: 'Claims', ...counted(counts?.claims) },
         { value: 'history', label: 'History' },
-        ...(counts?.facts ? [{ value: 'facts', label: 'Facts', count: counts.facts }] : []),
+        ...(counts?.facts
+          ? [{ value: 'facts' as const, label: 'Facts', count: counts.facts }]
+          : []),
       ]
     : [
         comments,
@@ -117,10 +139,11 @@ export function memoryTabs({
         { value: 'events', label: 'Activity' },
         { value: 'timeline', label: 'Timeline' },
         ...(hasTasks
-          ? [{ value: 'tasks', label: 'Open tasks', ...counted(counts?.openTasks) }]
+          ? [{ value: 'tasks' as const, label: 'Open tasks', ...counted(counts?.openTasks) }]
           : []),
       ];
-  return developer ? [...tabs, { value: 'json', label: 'JSON' }] : tabs;
+  const all: MemoryTab[] = developer ? [...tabs, { value: 'json', label: 'JSON' }] : tabs;
+  return all.map((t) => ({ ...t, hint: TAB_HINTS[t.value] }));
 }
 
 /** Where a record opens: what people wrote if there is any, else what agents remember. */
