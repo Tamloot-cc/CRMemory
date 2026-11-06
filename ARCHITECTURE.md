@@ -230,7 +230,7 @@ To keep what real tables give you:
 3. **Uniqueness without DDL**: `is_unique` is enforced through
    `record_identifiers`, not a per-field unique index.
 4. **Shared indexes in v1**: equality filters use JSONB containment (`data
-   @> …`) with the existing GIN index, scoped by workspace and object.
+@> …`) with the existing GIN index, scoped by workspace and object.
    `is_filterable` exposes a field to structured filters; it does not create
    an index. Range filters and sorts scan that object's rows with typed
    comparisons. Add expression indexes later only for measured workloads.
@@ -766,7 +766,7 @@ How this is built:
   forgets the handles it suppressed.
 - **Event identities.** A tombstone stores the workspace, the key's ID and
   a keyed HMAC of the JSON encoding of `(workspace_id, channel,
-  external_id)` under a domain separator of its own, so it never equals a
+external_id)` under a domain separator of its own, so it never equals a
   handle's HMAC. It is a retained suppression token, not anonymization.
   `log_event` checks it, under the identity's lock and the shared privacy
   lock, before creating an event or adding retry links, and returns
@@ -949,7 +949,8 @@ The same code also runs as AWS Lambda functions (`deploy/aws`,
 migrations and the operator CLI. What the container does on start
 (migrations, the first-boot key, the search rebuild) the deploy does once
 through `ops`, with the API stopped, so a cold start never migrates and no
-key is printed to the logs.
+key is printed to the logs. A `control` function for accounts is designed but
+not built (7.3).
 
 ### 4.1 How memory gets written
 
@@ -1042,7 +1043,7 @@ How this is built:
   records that gained a fact or changed since `compared_until`.
 - **Dismissing.** `POST /v1/review/merges/:id/dismiss`, as a `user`.
 - **Merging.** `POST /v1/records/:id/merge` with `{ "recordId": "<B>",
-  "values"?: {…} }`, as a `user` with the `write` scope; `values` overrides
+"values"?: {…} }`, as a `user` with the `write` scope; `values` overrides
   any field. It takes an `Idempotency-Key`. Merging the record in the path
   into itself is `422`. If B is already merged into A it is a no-op
   (`merged: false`); if A was merged into B it is `409 record_merged`. On
@@ -1284,7 +1285,8 @@ not built yet; docs/rest-api.md lists every route.
 ### 6.2 MCP
 
 Hosted on the API server at `/mcp` (Streamable HTTP). `@retainer/mcp` is a
-small stdio bridge for local clients that only speak stdio.
+small stdio bridge for local clients that only speak stdio. OAuth for clients
+that cannot use an API key is designed but not built (7.3).
 
 Tools are generic, not one per object. Custom objects would otherwise grow
 the tool list without limit and break clients' tool caching.
@@ -1534,6 +1536,9 @@ part of it.
 
 ## 7. Tenancy and auth
 
+This section describes what is built. Logging in with an account, organizations
+and roles are designed in 7.3.
+
 The optional web app signs in at `POST /auth/session`, which turns a person's
 API key into an HTTP-only `retainer_session` cookie (`SameSite=Strict`, path
 `/`, 30-day max age, Secure except on localhost). The cookie contains the key;
@@ -1579,8 +1584,8 @@ routes. They do not change the assertion-backed write rules.
   Key provisioning/rotation is a trusted administrative operation; agent
   credentials cannot mint a key claiming a `user` actor to bypass approval.
 - A self-hosted install starts with one default workspace and an admin key
-  printed on first boot. The hosted cloud runs the same image with many
-  workspaces. Billing, quotas and SSO live outside this repository.
+  printed on first boot. A hosted service runs the same code with many
+  workspaces. Accounts live in this repository (7.3); billing does not.
 
 ### 7.1 Managing workspaces and keys
 
@@ -1599,9 +1604,8 @@ docker compose exec retainer retainer key revoke <key-id>
 
 `--template` is optional; without it, the first agent chooses one (3.1).
 `--slug` overrides the slug made from the name; `--json` prints JSON.
-`key create` prints the key once and stores only its hash. The hosted cloud
-provisions workspaces and keys through its own service, outside this
-repository, using the same database operations. There is no instance-wide
+`key create` prints the key once and stores only its hash. Self-serve workspaces
+and keys for a hosted service are designed in 7.3. There is no instance-wide
 admin HTTP API in v1.
 
 ### 7.2 Per-record access (not in v1)
@@ -1627,6 +1631,88 @@ enforcement. Until then, new code keeps that path open:
 4. Identifier claims are unique per workspace. If audiences arrive, claims
    become per audience and promoting a record becomes a merge. That cost is
    accepted.
+
+### 7.3 Accounts (designed, not built)
+
+People log in, create workspaces, invite colleagues and connect agents, with no
+operator. The reasons and the test results are in
+[docs/accounts-and-access-spec.md](docs/accounts-and-access-spec.md). The workspace
+stays the security boundary: RLS stays keyed on `workspace_id`, records get no
+organization column, and a `Caller` still has exactly one workspace.
+
+**Two modes.** Key mode, today's behavior, stays the default. Accounts mode starts
+when `RETAINER_AUTH_SECRET` and a Google OAuth client are set. It turns off API key
+sign-in in the web app. Agents use API keys in both modes.
+
+**Signing in.** [Better Auth](https://www.better-auth.com), an MIT library, runs in
+our process and keeps its tables in our Postgres. People sign in with Google or a
+passkey. There are no passwords, and no email sign-in, so Retainer stores no password
+and needs no email provider. A person is identified by their Google account, and
+adds passkeys after a first Google sign-in. Passkeys are tied to the domain. MFA is
+not offered at launch, because Better Auth's plugin only challenges password
+sign-ins.
+
+**A session is a second way to build a `Caller`.** Everything after `authenticate`
+is unchanged:
+
+1. An `Authorization` header means an API key or an OAuth token, and never falls back
+   to the cookie.
+2. A session cookie needs `X-Retainer-Workspace`. The server verifies the cookie's
+   signature, then calls `retainer_session_access(session_token, workspace_id)`, which
+   returns the user and their role. An unknown session gets 401, and a workspace the
+   person cannot open gets 404.
+3. In key mode, the cookie holds the key, as above.
+
+Better Auth stores session tokens raw, so a token read from the database is not
+enough: a valid cookie also needs the signature. The client names the workspace on
+each request and never authorizes it, because a session holding an "active workspace"
+would let a switch in one tab change where another tab writes. Access is checked on
+every request, so removing someone applies at their next one.
+
+**Organizations and roles.** An organization owns workspaces and members, and stays
+hidden in the web app until someone needs it. Access is role-based at workspace level.
+Roles are bundles of the existing scopes, so routes keep calling `requireScope`, and
+the human-only rules stay a separate check.
+
+| Role                  | Means                                                      |
+| --------------------- | ---------------------------------------------------------- |
+| Workspace `viewer`    | `read`                                                     |
+| Workspace `editor`    | `read`, `write`                                            |
+| Workspace `admin`     | `read`, `write`, `schema:write`, `admin`                   |
+| Organization `member` | Only the workspaces they are added to, with the role there |
+| Organization `admin`  | `admin` in every workspace; creates workspaces and invites |
+| Organization `owner`  | Also billing and deleting the organization                 |
+
+Accepting an invitation needs a verified Google address that matches it. Account
+routes under `/account` take a session cookie only, so an agent's key can never
+create a key, a member or a workspace.
+
+**Where it runs.** On AWS, a `control` function loads Better Auth and serves
+`/account` and the OAuth metadata. It is the only function with internet, through a
+NAT gateway, because Google sign-in and OAuth client metadata need it. The `api` and
+`consolidate` functions keep no route to the internet, and `api` does not import
+Better Auth. In a container with `RETAINER_ROLE=all`, everything runs in one process.
+
+**Database roles.** Each function logs in with its own role: `ops` as the owner,
+`api` and `consolidate` as `retainer_app`, and `control` as `retainer_control`, which
+has the account tables, `workspaces` and `api_keys`, no `BYPASSRLS` and no DDL. It
+creates an organization, workspace and seed in one transaction, switching to
+`retainer_app` with `SET LOCAL ROLE` to seed under RLS. Account tables have RLS on,
+with no policy or grants for the runtime role. Three `SECURITY DEFINER` functions join
+the two in 7.2: `retainer_session_access`, `retainer_token_keys` and
+`retainer_token_access`.
+
+**MCP OAuth.** Better Auth's `mcp()` and `cimd()` plugins are the authorization
+server, so clients such as Claude's web app can connect. Access tokens are one-hour
+JWTs that name the workspace chosen at consent. Without internet, `api` reads the
+public signing keys through `retainer_token_keys`, verifies the token, then calls
+`retainer_token_access` for the person's current role and consent. The request's
+scopes are the token's scopes intersected with that role's, so a downgrade, removal or
+revoked consent applies at the next request. The actor is always an `agent`, with an
+ID made from the client and the person, so the human-only rules still apply.
+
+**Limits.** A per-workspace rate limit, quotas in `organizations.limits` (null means
+unlimited, as on a self-hosted install), and a statement timeout on the runtime role.
 
 ---
 
@@ -1704,57 +1790,57 @@ and the original scaffold lacked. All of them landed in build step 1
 **New tables**
 
 - [x] `record_identifiers`: normalized identifier per record, with a canonical
-  value and a uniqueness claim; a partial unique index on
-  `(workspace_id, field_id, value)` over claims (1.2)
+      value and a uniqueness claim; a partial unique index on
+      `(workspace_id, field_id, value)` over claims (1.2)
 - [x] `merge_suggestions`: the two record IDs, reason, status (4.2)
 - [x] `idempotency_keys`: workspace, operation, key, request hash, result,
-  expiry (6.2)
+      expiry (6.2)
 - [x] Suppression list: workspace, keyed HMAC of a normalized email or phone
-  (2.1)
+      (2.1)
 - [x] Deletion audit log: actor ID, time, counts only (2.1)
 
 **New columns**
 
 - [x] `workspaces.templates jsonb` (applied template names and versions) and
-  `workspaces.initialized_at` (3.1)
+      `workspaces.initialized_at` (3.1)
 - [x] `records.merged_into_id` (1.1, 4.2)
 - [x] `field_assertions.observed_at` (1.3, rule 2.2)
 - [x] `search tsvector` on `facts` and `interactions` (title and summary),
-  computed by the server like `records.search` (5.1)
+      computed by the server like `records.search` (5.1)
 - [x] `records.label text`: the label field as plain text, for fuzzy name
-  lookup (5.1)
+      lookup (5.1)
 - [x] `workspace_id` on `interaction_participants` and `fact_sources` (7)
 
 **Agent-written memory (4.1, 4.3)**
 
 - [x] `interactions`: replace `content`, `content_format`, `ingest_status`
-  and `ingest_error` with `summary text`
+      and `ingest_error` with `summary text`
 - [x] Drop the `record_cards` table
 
 **Changed constraints and defaults**
 
 - [x] Unique index on `record_links (source_record_id, field_id)`, so a
-  many-to-one field has at most one edge per record (1.1)
+      many-to-one field has at most one edge per record (1.1)
 - [x] `facts.valid_from`: no `now()` default; set from the source (1.3,
-  rule 2.6)
+      rule 2.6)
 - [x] Remove `proposed` from live `object_types` / `fields` status and from
-  `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
+      `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
 - [x] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
-  `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
+      `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
 
 **Extensions and search indexes**
 
 - [x] The migration runner creates `pg_trgm`, `btree_gin` and `unaccent` (5.1)
 - [x] Replace `records_search_gin` with a GIN index on
-  `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
+      `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
 - [x] Trigram GIN index on `records (workspace_id, label)` (5.1)
 
 **Security**
 
 - [x] Row-level security policies on every tenant table, keyed on the
-  per-transaction `app.workspace_id` setting (7)
+      per-transaction `app.workspace_id` setting (7)
 - [x] Separate migration and runtime roles; the runtime role does not own
-  tables and has no `BYPASSRLS` (7)
+      tables and has no `BYPASSRLS` (7)
 - [x] The `SECURITY DEFINER` function for API-key lookup (7)
 
 ## 12. Testing

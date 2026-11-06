@@ -1,7 +1,8 @@
 # Accounts, organizations and access: spec
 
 Status: **proposed** November 6, 2026. Nothing here is built. Better Auth is
-chosen for login after a throwaway test, whose results are in section 12.
+chosen for login after a throwaway test, whose results are in section 12. The
+design is summarized in `ARCHITECTURE.md` 7.3.
 
 This spec turns Retainer from a server an operator runs into a service people
 sign up for: they log in, create workspaces, invite colleagues and connect
@@ -56,22 +57,22 @@ when unsure, decide first.
 
 ## 3. Decisions
 
-| #   | Decision                                                                                                                 |
-| --- | ------------------------------------------------------------------------------------------------------------------------ |
-| A1  | Keep the backend and RLS. Clients never talk to the database (3.1).                                                      |
-| A2  | People log in through Better Auth, running in our control function: magic link, Google, passkeys. No passwords.          |
-| A3  | A session is a second way to build a `Caller`. Everything after `authenticate` is unchanged.                             |
-| A4  | Sessions are Better Auth's: a signed cookie and a raw token in the database. The cookie no longer holds an API key.      |
-| A5  | Organizations own workspaces and members. They are hidden in the UI until someone needs them.                            |
-| A6  | Access is RBAC at workspace level (3.2). Roles are named bundles of the existing scopes.                                 |
-| A7  | The client names the workspace on each request, and the server checks access each time.                                  |
-| A8  | A narrow `retainer_control` role does account work. Nothing reachable from the internet uses the owner role.             |
-| A9  | Only the control function has internet, through a NAT gateway. The api and consolidator functions stay without it (4.6). |
-| A10 | MCP OAuth uses Better Auth's `mcp()` and `cimd()` plugins. Each request rechecks the person's role and consent (4.7).    |
-| A11 | No third-party permission service for now, managed or self-hosted (3.3).                                                 |
-| A12 | Whole workspaces are the finest thing to hide at launch, because first customers are small teams (3.2).                  |
-| A13 | Passkeys ship in the first version. Multi-factor authentication does not (4.11).                                         |
-| A14 | Accounts live in the open repo (AGPL), so self-hosters get login. Billing stays private (4.10).                          |
+| #   | Decision                                                                                                                         |
+| --- | -------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | Keep the backend and RLS. Clients never talk to the database (3.1).                                                              |
+| A2  | People log in through Better Auth, running in our control function: Google and passkeys only. No passwords and no email sign-in. |
+| A3  | A session is a second way to build a `Caller`. Everything after `authenticate` is unchanged.                                     |
+| A4  | Sessions are Better Auth's: a signed cookie and a raw token in the database. The cookie no longer holds an API key.              |
+| A5  | Organizations own workspaces and members. They are hidden in the UI until someone needs them.                                    |
+| A6  | Access is RBAC at workspace level (3.2). Roles are named bundles of the existing scopes.                                         |
+| A7  | The client names the workspace on each request, and the server checks access each time.                                          |
+| A8  | A narrow `retainer_control` role does account work. Nothing reachable from the internet uses the owner role.                     |
+| A9  | Only the control function has internet, through a NAT gateway. The api and consolidator functions stay without it (4.6).         |
+| A10 | MCP OAuth uses Better Auth's `mcp()` and `cimd()` plugins. Each request rechecks the person's role and consent (4.7).            |
+| A11 | No third-party permission service for now, managed or self-hosted (3.3).                                                         |
+| A12 | Whole workspaces are the finest thing to hide at launch, because first customers are small teams (3.2).                          |
+| A13 | Passkeys ship in the first version. Multi-factor authentication does not (4.11).                                                 |
+| A14 | Accounts live in the open repo (AGPL), so self-hosters get login. Billing stays private (4.10).                                  |
 
 ### 3.1 Why not a Supabase-style design
 
@@ -144,8 +145,8 @@ first.
 ### 3.4 Why Better Auth rather than WorkOS
 
 Better Auth is an MIT library that runs in our process and keeps its data in our
-Postgres. First customers are small teams, self-hosters get login with no vendor,
-and it includes the OAuth server MCP needs. WorkOS would handle security fixes,
+Postgres. First customers are small teams, self-hosters keep all their account data
+themselves, and it includes the OAuth server MCP needs. WorkOS would handle security fixes,
 enforced MFA and enterprise SSO for us, and is the better fit if companies start
 requiring those.
 
@@ -168,14 +169,16 @@ hosted service outgrows Lambda, look at ECS Fargate first.
 
 ### 4.1 Two modes
 
-| Mode          | When                          | People sign in with           | Workspaces come from   |
-| ------------- | ----------------------------- | ----------------------------- | ---------------------- |
-| Key (default) | No `RETAINER_AUTH_SECRET`     | A personal API key            | The operator CLI       |
-| Accounts      | `RETAINER_AUTH_SECRET` is set | Magic link, Google or passkey | The CLI or the web app |
+| Mode          | When                          | People sign in with | Workspaces come from   |
+| ------------- | ----------------------------- | ------------------- | ---------------------- |
+| Key (default) | No `RETAINER_AUTH_SECRET`     | A personal API key  | The operator CLI       |
+| Accounts      | `RETAINER_AUTH_SECRET` is set | Google or a passkey | The CLI or the web app |
 
 A self-hosted install that upgrades sees no change unless it sets that value.
-Accounts mode also needs a way to send email. Google is optional. In accounts mode
-`POST /auth/session` returns 404. API keys work for agents in both modes.
+Accounts mode also needs a Google OAuth client, since Google is how a person first
+signs in, so a self-hoster sets up their own in Google Cloud or stays in key mode.
+In accounts mode `POST /auth/session` returns 404. API keys work for agents in both
+modes.
 
 ### 4.2 Data model
 
@@ -214,9 +217,10 @@ Changes to existing tables:
 a workspace of an organization they belong to, and leaving the organization
 removes those roles in the same statement.
 
-A person's identity is their verified email: a magic link proves it, and a Google
-sign-in for the same address reaches the same user. Whoever controls that inbox
-controls the account (4.11).
+A person's identity is their Google account, matched by Google's stable subject ID,
+not by email. We refuse a sign-in whose address Google has not verified, and
+invitations compare against the verified address. Passkeys attach to that user
+(4.11).
 
 **Existing data.** The migration creates one `Default` organization and moves
 every existing workspace into it. `bootstrap` does the same on a new container
@@ -333,8 +337,8 @@ add a member or create a workspace, as `ARCHITECTURE.md` 7.1 requires.
 **First workspace.** A person with no memberships and no pending invitation
 sees "Name your workspace". `POST /account/workspaces` then creates the
 organization, owner membership, workspace and seed in one transaction, so there
-are no empty organizations and nothing half-created. A magic-link signup has no
-name yet, so this screen also asks for one.
+are no empty organizations and nothing half-created. The person's name comes
+from Google.
 
 **One transaction.** `retainer_control` inserts the account rows and the
 workspace, then runs `SET LOCAL ROLE retainer_app` and sets `app.workspace_id`
@@ -346,9 +350,10 @@ would reveal another customer's workspace name, so self-serve creation adds a
 generated suffix, such as `sales-x7k2`. The CLI keeps exact slugs.
 
 **Invitations.** A token is stored hashed and expires after 7 days. Accepting
-requires a verified email that matches the invitation, so a forwarded link is
-useless to anyone else. Accepting twice is a no-op. The control function emails the
-link, and the web app also offers "Copy invite link".
+requires a verified Google address that matches the invitation, so a forwarded link
+is useless to anyone else. Accepting twice is a no-op. At launch the web app offers
+"Copy invite link" and Retainer sends no email at all, so it needs no email provider.
+Sending invitations by email can be added later.
 
 **Removing a member.** Web access ends at the next request, and so do OAuth tokens
 they granted (4.7). Agent keys belong to the workspace and keep working, and the
@@ -376,7 +381,7 @@ be a person. Keys with a `user` actor remain CLI-only.
    │                         │ /account, /.well-known/oauth-authorization-server,
    │                         │ /.well-known/openid-configuration
    │                         ▼
-   │                      control function ──► NAT ──► Google, email,
+   │                      control function ──► NAT ──► Google,
    │                      (Better Auth,                client metadata
    │                       retainer_control)
    │ /v1, /mcp, /app
@@ -389,7 +394,7 @@ be a person. Keys with a `user` actor remain CLI-only.
 - **Why the control function has internet.** Google sign-in and client metadata
   documents both need it, in the same process that writes to the database. Claude
   needs the second (4.7), so a design without internet would not serve it. A NAT
-  gateway costs roughly $35 a month.
+  gateway costs roughly $40 a month with its public IP address.
 - **What stays isolated.** The api and consolidator functions keep no route to the
   internet. `docs/aws.md` needs its promise narrowed to those two.
 - **Metadata routes.** OAuth clients look for the authorization server's metadata
@@ -404,8 +409,11 @@ be a person. Keys with a `user` actor remain CLI-only.
   Better Auth. Self-hosters who want the separation run `api` and `control` apart.
 - **Deploys.** `deploy.sh` also stops and starts `control`.
 
-The cookie stays `SameSite=Strict`. Tested in Chrome: a magic link opened from
-another site still sets it, and the app's own requests then send it.
+The session cookie stays `SameSite=Strict`. Tested in Chrome: a sign-in link opened
+from another site still sets it, and the app's own requests then send it. Set this on
+the session cookie alone. Google's callback is a redirect from another site, so
+Better Auth's OAuth state cookie probably must stay `Lax`, or sign-in will fail. The
+test applied `Strict` to all cookies and did not use Google, so check this first.
 
 ### 4.7 MCP OAuth
 
@@ -484,17 +492,20 @@ come from. Plans, prices and Stripe code stay out of the open repo.
 
 ### 4.11 Sign-in methods, passkeys and MFA
 
-| Method     | Protection                                                                 |
-| ---------- | -------------------------------------------------------------------------- |
-| Passkey    | Strongest: resists phishing, and uses the device plus a fingerprint or PIN |
-| Google     | As strong as the person's Google account                                   |
-| Magic link | As strong as their inbox                                                   |
+| Method  | Protection                                                                 |
+| ------- | -------------------------------------------------------------------------- |
+| Passkey | Strongest: resists phishing, and uses the device plus a fingerprint or PIN |
+| Google  | As strong as the person's Google account, including its two-step settings  |
+
+**No email sign-in.** Magic links would make an inbox a way into the account, and
+they would need an email provider. Without them there is one less route to protect
+and one less service to run. The cost is that a person needs a Google account to
+join (section 9).
 
 **Passkeys** use `@better-auth/passkey`.
 
-- A person adds one after a first sign-in by magic link or Google. Signing up with
-  only a passkey stays off, because that first sign-in proves the email, and
-  invitations rely on it.
+- A person adds one after a first sign-in with Google. Signing up with only a passkey
+  stays off, because Google proves the email, and invitations rely on it.
 - `userVerification` is `required`, so a device with no fingerprint, face or PIN is
   refused.
 - Passkeys are tied to the domain (`rpID`). **Choose the permanent domain before
@@ -502,18 +513,19 @@ come from. Plans, prices and Stripe code stay out of the open repo.
   API Gateway URL.
 - They make no outbound calls and add no need for internet.
 
-**Email sign-in stays on after someone adds a passkey.** Adding a passkey does not
-close the inbox as a way in. That keeps recovery simple for a lost device: sign in by
-magic link and remove the old passkey. A setting to turn email sign-in off can come
-later if teams ask, with a process for people locked out.
+**Recovery.** Someone who loses a device signs in with Google and removes the old
+passkey. Someone who loses access to Google still has their passkey. Someone who loses
+both needs an operator to verify them by hand, so encourage a second passkey.
+
+**Google sign-in stays on after someone adds a passkey.** That keeps recovery simple.
+A setting to turn it off can come later if teams ask.
 
 **No MFA at launch.** Better Auth's two-factor plugin only challenges password
-sign-ins. Its docs say magic link, social and passkey sign-ins "are not gated by 2FA
-by default", and its code confirms it. Turning it on would look like MFA and protect
-nothing. Gating those methods means custom hooks and a session state the api function
-must also check, which is security-critical code we should not own yet. A team that
-needs stricter rules can later get an organization setting such as "passkey or Google
-only".
+sign-ins. Its docs say social and passkey sign-ins "are not gated by 2FA by default",
+and its code confirms it, so turning it on would protect nothing here. A passkey
+already combines the device and a fingerprint or PIN, and Google applies its own
+two-step settings, which we cannot enforce. A team that needs stricter rules can later
+get an organization setting such as "passkey only".
 
 MFA does not protect API keys on any provider. Scopes and revocation do.
 
@@ -523,7 +535,7 @@ MFA does not protect API keys on any provider. Scopes and revocation do.
   must move together.
 - Follow its security advisories and update within days. Twelve advisories were
   published on one day, November 3, 2026.
-- Load only magic link, Google, JWT, passkey, `mcp()` and `cimd()`. SSO and SCIM have
+- Load only Google, JWT, passkey, `mcp()` and `cimd()`. SSO and SCIM have
   some of its worst advisories, so add them only when a customer needs them, and lock
   down who can register a provider.
 - Never install its `dash()` plugin, which calls Better Auth's own servers.
@@ -536,10 +548,10 @@ MFA does not protect API keys on any provider. Scopes and revocation do.
 Plain words throughout, per the web app's rule. No screen says "RBAC", "scope",
 "OAuth" or "tenant".
 
-- **Sign in.** "Continue with Google", an email box for a magic link, and "Use a
-  passkey". Key mode keeps today's screen.
-- **First run.** Your name, then "Name your workspace", then the existing flow. The
-  word organization does not appear.
+- **Sign in.** "Continue with Google" and "Use a passkey". Key mode keeps today's
+  screen.
+- **First run.** "Name your workspace", then the existing flow. The word organization
+  does not appear.
 - **URLs.** `/app/w/<slug>/...` in accounts mode, and `/app/...` as today in key
   mode. The router's base path is computed at startup from the location.
 - **Switching workspaces** is a full page load. It clears cached data and needs
@@ -548,7 +560,7 @@ Plain words throughout, per the web app's rule. No screen says "RBAC", "scope",
 - **Session state.** Inside a workspace, `Session` stays as it is, so scope checks
   and `canMutate` are unchanged. `GET /account` supplies the rest.
 - **Your account.** "Add a passkey", and a list of passkeys to rename or remove. After
-  a first sign-in, offer it once. Explain plainly that email sign-in still works.
+  a first sign-in, offer it once. Explain plainly that Google sign-in still works.
 - **Members** (workspace settings). Everyone with access and their role, each
   explained with the plain words in 4.3. While an organization has one workspace,
   inviting happens here too.
@@ -562,22 +574,33 @@ The Better Auth browser client with the passkey plugin adds about 16 KB gzipped.
 
 ## 6. Implementation order
 
-Each step lands with its tests and can ship alone.
+Three pull requests. Accounts mode stays off until its settings are present, so PR 2
+changes nothing for existing installs when it merges.
 
-1. **Credentials (4.9).** Separate logins for each function. This is worth doing
-   whether or not the rest goes ahead.
-2. **Model.** Our account tables, the `Default` organization, the role tables in
-   `shared`, the CLI.
-3. **Sign-in.** Better Auth with magic link and Google, the control function, the NAT
-   gateway, `authenticate`, the workspace header, URLs, Terraform. Choose the
-   permanent domain here.
-4. **Self-serve.** Workspace creation, members, invitations, keys in the web app.
-5. **Passkeys.** Then try real devices by hand.
-6. **MCP OAuth,** including the workspace picker.
-7. **Hardening.** Rate and quota limits, scheduled deletion, a staging deployment
-   (a second `name`), a larger instance with `db_multi_az` on, and a practised
-   restore. The legal items in section 9.
-8. **Private beta**, then billing when people want to pay.
+| PR                   | Contains                                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Credentials       | Separate database logins for each function (4.9)                                                                                                                      |
+| 2. Accounts          | Tables and roles, Better Auth with Google, AWS and NAT, sign-in and workspace URLs, self-serve workspaces, members and invitations, API keys in the web app, passkeys |
+| 3. Agents and launch | MCP OAuth with the workspace picker, rate and quota limits, the statement timeout, scheduled deletion                                                                 |
+
+**Why these stay apart.** PR 1 is the only one that changes the live deployment in
+every mode, so a problem there should be easy to trace and roll back, and it should
+not wait for the rest. PR 3 needs real sign-in underneath it, and it has to be
+retested by hand with Claude's web app on a real deployment.
+
+**Working through PR 2.** It is too large to review as a whole, and it is mostly
+security code, so:
+
+- Commit each step separately with its tests, so it can be read in order: model,
+  sign-in, self-serve, passkeys.
+- Start with real Google sign-in on a deployed URL, including the cookie check in 4.6,
+  because it is the one sign-in route the test did not cover.
+- Run a security review of the whole diff before merging.
+- Try passkeys on real devices by hand.
+
+**Not pull requests.** A staging deployment (a second `name`), a larger instance with
+`db_multi_az` on, a practised restore and the legal items in section 9 come before the
+private beta. Billing follows when people want to pay.
 
 ## 7. What can come later
 
@@ -635,32 +658,37 @@ In the layers of `ARCHITECTURE.md` section 12.
 | Agent       | An OAuth client registers both ways, is consented, connects and calls tools; its token ends when the person is removed or the consent is revoked                                                                                                                            |
 | Browser     | Sign up, name a workspace, invite someone who accepts, each role sees the right buttons, two tabs on two workspaces write to the right ones; passkeys through Chrome's virtual authenticator: add, sign in, replay fails, another site fails, another user cannot remove it |
 
-Every test uses real Postgres with a fresh cloned database. Tests capture magic links
-instead of sending email, and no test needs the internet.
+Every test uses real Postgres with a fresh cloned database. No test needs the
+internet, so they use a local fake of Google's OAuth endpoints, or create sessions
+directly through Better Auth. Choose between those when building.
 
-Claude's web app cannot run in CI. Repeat that connection by hand on staging before
-launch and after each Better Auth upgrade that touches OAuth.
+Real Google sign-in and Claude's web app cannot run in CI. Repeat both by hand on
+staging before launch and after each Better Auth upgrade that touches OAuth.
 
 ## 9. Open questions
 
-1. **Two sign-ins at once.** Two different magic links for a new email, opened at the
-   same instant, make one user as they should, but the second person gets a 500. It
-   should become a retry or a clear message.
-2. **Agent write formats.** In the test Claude called `upsert_record` twice, then
+1. **People without a Google account.** They cannot sign up, and an invitation only
+   works if it goes to the address of the Google account the person signs in with.
+   Teams on Microsoft 365 are the likely gap. Better Auth has a Microsoft provider,
+   which can be added without changing the design if they ask.
+2. **Two sign-ins at once.** In the test, two simultaneous first sign-ins for one
+   email made one user as they should, but the second person got a 500. That ran
+   on magic links. Check it with Google, and make it a retry or a clear message.
+3. **Agent write formats.** In the test Claude called `upsert_record` twice, then
    warned that names are `{first, last}` and emails `{primary, additional[]}`. The
    failed call's error was not logged, but the tool descriptions may need to state
    these formats more clearly.
-3. **Old personal keys.** Actors like `user:maya` stay separate from new user IDs,
+4. **Old personal keys.** Actors like `user:maya` stay separate from new user IDs,
    so a person cannot edit comments written under the old one. A mapping could
    be added if that matters.
-4. **Departed people's names** stay on past writes through the stored actor.
+5. **Departed people's names** stay on past writes through the stored actor.
    `forget` covers records, not actors. Erasing a former employee's name needs a
    decision.
-5. **Viewers and private views.** Creating a view needs `write`, so a viewer cannot
+6. **Viewers and private views.** Creating a view needs `write`, so a viewer cannot
    save a private view. That is acceptable at first.
-6. **Zero-downtime deploys.** Each deploy gives up to a minute of `503`s because one
+7. **Zero-downtime deploys.** Each deploy gives up to a minute of `503`s because one
    version runs at a time. Acceptable for a beta, not once customers rely on it.
-7. **Legal.** Retainer becomes a data processor for customers' contacts: terms, a
+8. **Legal.** Retainer becomes a data processor for customers' contacts: terms, a
    DPA and a sub-processor list are needed. Erased data stays in backups for up to
    14 days, and that must be stated. Private code that imports the AGPL server
    needs the rights to any outside contributions checked, so add a contributor
@@ -682,17 +710,15 @@ launch and after each Better Auth upgrade that touches OAuth.
 
 ## 11. Documents to update
 
-Update these when the work lands, not before:
+`ARCHITECTURE.md` 7.3 already holds the design. Update the rest when the work lands:
 
-- `ARCHITECTURE.md`: section 7 (sessions, organizations, roles, the new functions;
-  provisioning and SSO no longer sit outside the repository) and 7.1 (self-serve
-  alongside the CLI).
+- `ARCHITECTURE.md`: mark 7.3 as built, and fold it into section 7 and 7.1.
 - `CLAUDE.md`: "Every write carries an Actor, taken from the API key" becomes "from
   the credential".
 - `FRONTEND.md`: section 4.
 - `docs/aws.md`: the control function, NAT gateway, credentials, the narrower "no
   internet" promise, and the OAuth limit it lists.
-- `docs/self-hosting.md`: `RETAINER_AUTH_SECRET`, email and Google settings,
+- `docs/self-hosting.md`: `RETAINER_AUTH_SECRET`, Google settings,
   `RETAINER_RUNTIME_DATABASE_URL`, the new CLI commands.
 - `docs/rest-api.md`: `/account`, `X-Retainer-Workspace`.
 - `docs/agents.md`: connecting over OAuth.
@@ -700,24 +726,26 @@ Update these when the work lands, not before:
 ## 12. Test results
 
 A throwaway test on November 6, 2026 ran Better Auth 1.7.18 against real Postgres 17,
-real Retainer routes and MCP tools. It was deleted afterwards.
+real Retainer routes and MCP tools. It was deleted afterwards. It signed in by magic
+link, which was dropped after the test, so **Google sign-in, now the only first
+sign-in, is untested**. Everything after a session exists carries over.
 
 | Question                                | Result                                                                                                                                                                                      |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Does it fit our stack?                  | Yes: Drizzle with `postgres.js`, TypeScript 7 with the repo's settings, `pnpm db:generate`, and a login limited to its own tables                                                           |
 | Can the api function check a session?   | Yes, with no Better Auth import and no access to its tables, running real `/v1/me`, `/v1/schema` and scope checks under RLS                                                                 |
 | Are session tokens hashed?              | No (4.4). A raw token without the signature was refused by both Better Auth and the api function                                                                                            |
-| Can tokens be checked with no internet? | Yes. No outbound calls for magic link, sessions, dynamic registration, OAuth, MCP or passkeys                                                                                               |
+| Can tokens be checked with no internet? | Yes. No outbound calls for sessions, dynamic registration, OAuth, MCP or passkeys                                                                                                           |
 | Does access end immediately?            | Yes, for downgrade, removal and revoked consent, at the next request                                                                                                                        |
 | Do real clients work?                   | The official MCP client passed with dynamic registration and metadata documents (fetch stubbed). Claude's web app connected through metadata documents, then read schema and wrote a record |
-| Does `SameSite=Strict` work?            | Yes, in Chrome: a magic link and an OAuth flow opened from another site both succeeded                                                                                                      |
+| Does `SameSite=Strict` work?            | Yes, in Chrome: a sign-in link and an OAuth flow opened from another site both succeeded. Google's callback was not tried (4.6)                                                             |
 | Do passkeys work?                       | Yes, in Chrome's virtual authenticator: adding, signing in, replay refused, another site refused, another user refused, lost-device recovery                                                |
-| What did it fail?                       | Two different magic links opened at once: one user, but the second gets a 500 (section 9)                                                                                                   |
+| What did it fail?                       | Two simultaneous first sign-ins: one user, but the second gets a 500 (section 9)                                                                                                            |
 
 The server code loads in about 130 ms on a laptop and bundles to 3.3 MB (565 KB
 gzipped), so cold starts should not be a concern, though Lambda will be slower.
 
-**Not tested:** Google sign-in; real Lambda and API Gateway; passkeys on real devices
+**Not tested:** Google sign-in, including its OAuth state cookie; real Lambda and API Gateway; passkeys on real devices
 and synced passkeys; the rate-limit plugin; a workspace picker at consent;
 `SET LOCAL ROLE` seeding by `retainer_control`; whether Claude falls back to dynamic
 registration.
