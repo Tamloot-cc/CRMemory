@@ -65,12 +65,9 @@ let accounts:
   | undefined;
 if (accountsMode(config) && (role === 'all' || role === 'control')) {
   const { createAccountsServer } = await import('./accounts/index.js');
-  const control = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX });
-  const authControl = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX });
-  stops.push(
-    () => control.end({ timeout: 5 }),
-    () => authControl.end({ timeout: 5 }),
-  );
+  // Ended after every stop, so the purger finishes a removal first.
+  const control = pool(createControlSql(config, { max: config.RETAINER_DB_POOL_MAX }));
+  const authControl = pool(createControlSql(config, { max: config.RETAINER_DB_POOL_MAX }));
   accounts = createAccountsServer({
     config,
     sql: control,

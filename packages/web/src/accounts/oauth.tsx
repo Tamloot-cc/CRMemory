@@ -97,9 +97,18 @@ export function OAuthConsent({ account }: { account: Account }) {
       account={account}
     >
       {reachable.length === 0 ? (
-        <Notice>
-          You have no workspace yet. <a href="/app/">Create one</a>, then connect {name} again.
-        </Notice>
+        <Stack>
+          <Notice>
+            You have no workspace yet. <a href="/app/">Create one</a>, then connect {name} again.
+          </Notice>
+          {error ? <Notice error>{error}</Notice> : null}
+          <div>
+            {/* Tells the app no, so it stops waiting. */}
+            <Button disabled={busy} onClick={() => void answer(false)}>
+              Cancel
+            </Button>
+          </div>
+        </Stack>
       ) : (
         <Stack>
           <fieldset className="flex flex-col gap-2">

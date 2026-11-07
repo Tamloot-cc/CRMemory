@@ -139,3 +139,30 @@ test('a failed Google sign-in comes back to the connection, not the home page', 
     expect(url).not.toContain('error=');
   }
 });
+
+test('someone with no workspace can still say no, so the app stops waiting', async ({
+  page,
+  context,
+  accounts: a,
+}) => {
+  await a.signIn(context, { sub: 'google-newcomer', email: 'new@example.test', name: 'New' });
+  await page.route('https://claude.ai/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<p>Claude</p>' }),
+  );
+  const query = new URLSearchParams({
+    response_type: 'code',
+    client_id: CLAUDE_CLIENT_ID,
+    redirect_uri: CLAUDE_REDIRECT,
+    state: 'from-claude',
+    code_challenge: createHash('sha256').update('verifier').digest('base64url'),
+    code_challenge_method: 'S256',
+    resource: `${a.url}/mcp`,
+  });
+  await page.goto(`${a.url}/account/auth/oauth2/authorize?${query}`);
+  if (/\/app\/oauth\/sign-in\?/.test(page.url())) await page.reload();
+  await expect(page).toHaveURL(/\/app\/oauth\/consent\?/);
+  await expect(page.getByText('You have no workspace yet.')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page).toHaveURL(/^https:\/\/claude\.ai\/api\/mcp\/auth_callback\?/);
+  expect(new URL(page.url()).searchParams.get('error')).toBe('access_denied');
+});
