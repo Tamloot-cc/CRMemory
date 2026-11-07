@@ -152,7 +152,8 @@ consolidator fail, because they no longer have the owner's password and
 on the next `terraform apply`. RDS takes a snapshot and upgrades the database in
 place during the next maintenance window (`maintenance_window` in `database.tf`),
 with several minutes of downtime. The same apply moves the functions from the
-`nodejs22.x` runtime to `nodejs26.x`. To stay on 17 for now, set
+`nodejs22.x` runtime to `nodejs24.x` (Lambda's Node 26 runtime is still a
+preview). To stay on 17 for now, set
 `db_engine_version = "17"` in `terraform.tfvars`.
 
 Terraform creates the functions with the package and then leaves their code
