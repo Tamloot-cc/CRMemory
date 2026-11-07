@@ -3,10 +3,6 @@
     "cloudflare-api": {
       "type": "http",
       "url": "https://mcp.cloudflare.com/mcp"
-    },
-    "surrealdb": {
-      "type": "http",
-      "url": "https://mcp.surrealdb.com"
     }
   }
 }
