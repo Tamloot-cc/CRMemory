@@ -1771,7 +1771,7 @@ code.
 
 ## 9. Stack
 
-TypeScript on Node 22, pnpm workspaces, Hono, postgres.js with plain SQL,
+TypeScript on Node 26, pnpm workspaces, Hono, postgres.js with plain SQL,
 Drizzle for table definitions and drizzle-kit migrations, Zod, the
 official MCP TypeScript SDK, and Better Auth for signing people in (accounts
 mode only, in the `accounts` module). The job queue is Postgres itself (4.2), with

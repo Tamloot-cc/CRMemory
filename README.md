@@ -105,7 +105,8 @@ and [the SDK guide](docs/sdk.md) to call the REST API from code.
 
 ## Develop
 
-Requires Node 22 and pnpm 10.
+Requires Node 26 and pnpm 12 (run `npm install -g corepack`, then corepack
+picks pnpm from `package.json`).
 
 ```sh
 pnpm install

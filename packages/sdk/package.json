@@ -20,7 +20,7 @@
   "bugs": "https://github.com/Tamloot-cc/Retainer/issues",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

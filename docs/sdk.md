@@ -1,7 +1,7 @@
 # TypeScript SDK
 
 `@retainer/sdk` is a typed client for the [REST API](rest-api.md), one method
-per route. It runs anywhere `fetch` does (Node 22+, browsers, edge runtimes)
+per route. It runs anywhere `fetch` does (Node 24+, browsers, edge runtimes)
 and is MIT-licensed. Response and schema types come from `@retainer/shared`.
 
 ```sh

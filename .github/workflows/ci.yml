@@ -21,7 +21,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17
+        image: postgres:18
         env:
           POSTGRES_USER: retainer
           POSTGRES_PASSWORD: retainer
@@ -38,9 +38,9 @@ jobs:
       DATABASE_URL: postgres://retainer:retainer@localhost:5432/retainer
 
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -51,7 +51,7 @@ jobs:
       - run: pnpm test
       - run: pnpm --filter @retainer/server exec playwright install --with-deps chromium
       - run: pnpm test:web
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: web-browser-traces
@@ -66,8 +66,8 @@ jobs:
       run:
         working-directory: deploy/aws
     steps:
-      - uses: actions/checkout@v5
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ~1.17.0 # as in deploy-aws.yml
       # No AWS credentials: format, validate and test against mocked

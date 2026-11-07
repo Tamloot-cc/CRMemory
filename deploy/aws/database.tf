@@ -71,7 +71,9 @@ resource "aws_db_instance" "this" {
   final_snapshot_identifier = "${var.name}-final-${random_id.final_snapshot.hex}"
 
   auto_minor_version_upgrade = true
-  apply_immediately          = false
+  # Lets a change to db_engine_version upgrade the major version in place.
+  allow_major_version_upgrade = true
+  apply_immediately           = false
 }
 
 locals {

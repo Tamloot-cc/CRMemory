@@ -145,7 +145,7 @@ resource "aws_lambda_function" "this" {
 
   function_name = "${var.name}-${each.key}"
   role          = aws_iam_role.functions.arn
-  runtime       = "nodejs22.x"
+  runtime       = "nodejs26.x"
   architectures = ["arm64"]
   handler       = each.value.handler
   memory_size   = each.value.memory

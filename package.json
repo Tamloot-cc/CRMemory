@@ -2,9 +2,9 @@
   "name": "retainer",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@12.18.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "build": "pnpm -r build",
@@ -23,9 +23,9 @@
     "release:check": "node scripts/check-release.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.4",
-    "@types/node": "^22.20.5",
+    "@biomejs/biome": "^2.6.6",
+    "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   }
 }

@@ -165,8 +165,9 @@ describe('organizations and members', () => {
   it('never deletes an organization that still has workspaces', async () => {
     const org = await createOrganization(db.owner, { name: 'Keeps' });
     await createWorkspace(db.owner, { name: 'Kept', organization: org.id });
+    // ON DELETE RESTRICT: Postgres 18 reports restrict_violation, not foreign_key_violation.
     await expect(db.owner`delete from organizations where id = ${org.id}`).rejects.toMatchObject({
-      code: '23503',
+      code: '23001',
     });
   });
 

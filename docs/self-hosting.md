@@ -1,6 +1,6 @@
 # Self-hosting
 
-Retainer is one Docker image and Postgres 17. The image runs the REST API, the
+Retainer is one Docker image and Postgres 18. The image runs the REST API, the
 MCP endpoint, the background workers and, optionally, the web app. To run it
 on AWS Lambda and RDS instead, see [Deploying to AWS](aws.md).
 
@@ -179,6 +179,23 @@ them first, but not Postgres (for example
 docker compose -f docker/compose.yml exec postgres \
   pg_dump -U retainer retainer > retainer-$(date +%F).sql
 git pull && docker compose -f docker/compose.yml up --build -d
+```
+
+### From Postgres 17
+
+The compose file used Postgres 17 before it moved to 18, and Postgres 18
+cannot open a 17 data directory. Postgres 18 also keeps its data under
+`/var/lib/postgresql/18/docker`, so the volume now mounts at
+`/var/lib/postgresql`. To move, dump with the old file (the `pg_dump` line
+above), then remove the old volume, start Postgres 18 and restore:
+
+```sh
+docker compose -f docker/compose.yml down
+docker volume rm docker_pgdata
+git pull && docker compose -f docker/compose.yml up -d postgres
+docker compose -f docker/compose.yml exec -T postgres \
+  psql -U retainer retainer < retainer-YYYY-MM-DD.sql
+docker compose -f docker/compose.yml up --build -d
 ```
 
 ## Privacy requests
