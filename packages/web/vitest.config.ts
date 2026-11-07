@@ -10,7 +10,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['src/**/*.test.{ts,tsx}'],
-    setupFiles: ['src/test-setup.ts'],
+    setupFiles: ['src/test-animation-event.ts', 'src/test-setup.ts'],
     environmentOptions: { jsdom: { url: 'http://localhost:8787/app/' } },
   },
 });

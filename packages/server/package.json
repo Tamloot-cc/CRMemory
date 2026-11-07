@@ -28,12 +28,12 @@
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.16",
     "libphonenumber-js": "^1.13.15",
-    "postgres": "^4.0.0",
+    "postgres": "^4.1.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.4.0",
-    "@playwright/test": "^1.56.0",
+    "@playwright/test": "^1.65.0",
     "@retainer/sdk": "workspace:*",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15"

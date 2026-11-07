@@ -17,7 +17,7 @@ managed database with point-in-time recovery, and a bill that follows use.
 | Consolidator                                 | `<name>-consolidate` function, run by EventBridge every 15 minutes                                           |
 | Migrations and the operator CLI              | `<name>-ops` function, invoked by `deploy.sh` and `ops.sh`                                                   |
 | Sign-in and `/account` (accounts mode only)  | `<name>-control` function, with a NAT gateway for Google sign-in                                             |
-| Database                                     | RDS PostgreSQL 17, encrypted, private, 14 days of point-in-time backups                                      |
+| Database                                     | RDS PostgreSQL 18, encrypted, private, 14 days of point-in-time backups                                      |
 | Network                                      | A VPC of its own with two private subnets, no internet gateway or NAT, except for `control` in accounts mode |
 | Monitoring                                   | Log groups (30 days), alarms on 5xx, consolidator errors and the database                                    |
 | Custom domain (optional)                     | ACM certificate and an API Gateway domain                                                                    |
@@ -38,7 +38,7 @@ a NAT gateway and its public address, about $40 a month more.
 ## Before you start
 
 - An AWS account and credentials that can create the resources above.
-- Terraform 1.10 or later, AWS CLI v2, `jq`, Node 22 and pnpm.
+- Terraform 1.10 or later, AWS CLI v2, `jq`, Node 26 and pnpm.
 
 All commands run from the repository root unless noted, with `AWS_REGION`
 set:
@@ -147,6 +147,14 @@ functions had their own logins needs `terraform apply` once, then
 `deploy.sh` right away. Until `deploy.sh` has migrated, the API and the
 consolidator fail, because they no longer have the owner's password and
 `retainer_app` cannot log in yet.
+
+**Upgrading from PostgreSQL 17.** A deployment created with 17 moves to 18
+on the next `terraform apply`. RDS takes a snapshot and upgrades the database in
+place during the next maintenance window (`maintenance_window` in `database.tf`),
+with several minutes of downtime. The same apply moves the functions from the
+`nodejs22.x` runtime to `nodejs24.x` (Lambda's Node 26 runtime is still a
+preview). To stay on 17 for now, set
+`db_engine_version = "17"` in `terraform.tfvars`.
 
 Terraform creates the functions with the package and then leaves their code
 alone, so `terraform apply` never rolls a deployment back to an old package.

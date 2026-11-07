@@ -79,11 +79,8 @@ describe('logo-mark.css', () => {
 });
 
 const mood = (el: Element) => el.getAttribute('data-mood');
-/** jsdom has no AnimationEvent, so fireEvent would drop animationName. */
 function animation(el: Element, type: 'animationiteration' | 'animationend', name: string) {
-  const event = new Event(type, { bubbles: true });
-  Object.defineProperty(event, 'animationName', { value: name });
-  fireEvent(el, event);
+  fireEvent(el, new AnimationEvent(type, { bubbles: true, animationName: name }));
 }
 const mark = (container: HTMLElement) => container.querySelector('.retainer-mark') as HTMLElement;
 

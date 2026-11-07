@@ -91,6 +91,8 @@ test('an invited person accepts with the link and gets the role they were given'
   await expect(page.getByRole('button', { name: 'Organization', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Role for Ben Editor' }).click();
   await page.getByRole('option', { name: /^Viewer/ }).click();
+  // The picker shows the saved role, so this waits for the change to land.
+  await expect(page.getByRole('button', { name: 'Role for Ben Editor' })).toContainText('Viewer');
   await ben.goto(workspaceUrl);
   await expect(ben.getByRole('button', { name: 'Account: Ben Editor' })).toContainText('Viewer');
   await benContext.close();

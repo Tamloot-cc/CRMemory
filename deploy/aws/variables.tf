@@ -56,7 +56,7 @@ variable "db_instance_class" {
 variable "db_engine_version" {
   description = "PostgreSQL major version."
   type        = string
-  default     = "17"
+  default     = "18"
 }
 
 variable "db_allocated_storage_gb" {

@@ -1,18 +1,12 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
-    "includes": [
-      "**",
-      "!**/.agents",
-      "!**/.claude",
-      "!deploy/aws/.build",
-      "!deploy/aws/.terraform",
-      "!**/dist",
-      "!**/drizzle/meta",
-      "!**/node_modules",
-      "!**/playwright-report",
-      "!**/test-results"
-    ]
+    "includes": ["**", "!**/.agents", "!**/.claude", "!**/drizzle/meta"]
   },
   "formatter": {
     "indentStyle": "space",
