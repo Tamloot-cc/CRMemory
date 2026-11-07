@@ -10,17 +10,9 @@ import {
 import { BrandMark } from '../ui/brand.js';
 import { Button, Input, Label, Muted, Notice, SignInFrame, Stack } from '../ui/index.js';
 import { allWorkspaces, managed } from './context.js';
-import { roleWords } from './format.js';
+import { roleWords, signInError } from './format.js';
 
 /** Screens outside any workspace in accounts mode (accounts spec 5). */
-
-/** Plain words for what went wrong when Google or a passkey sign-in fails. */
-function signInError(code: string | null): string {
-  if (!code) return '';
-  if (code === 'unable_to_create_user' || code === 'email_not_verified')
-    return 'Google has not verified that email address, so it cannot be used to sign in.';
-  return 'Signing in did not work. Try again.';
-}
 
 export function AccountSignIn({ returnTo }: { returnTo?: string } = {}) {
   const [error, setError] = useState(() =>

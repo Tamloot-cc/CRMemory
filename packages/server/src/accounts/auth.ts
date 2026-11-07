@@ -6,6 +6,7 @@ import { oauthProviderAuthServerMetadata } from '@better-auth/oauth-provider';
 import { passkey } from '@better-auth/passkey';
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { APIError } from 'better-auth/api';
 import { jwt } from 'better-auth/plugins/jwt';
 import type { GoogleOptions } from 'better-auth/social-providers';
 import { drizzle } from 'drizzle-orm/postgres-js';
@@ -144,7 +145,7 @@ export function createAuth(options: AuthOptions): Auth {
   const auth = betterAuthFor(options);
   const metadata = oauthProviderAuthServerMetadata(auth);
   return {
-    handler: (request) => auth.handler(request),
+    handler: (request) => handle(auth, request),
     getSession: async (headers) => {
       const found = await auth.api.getSession({ headers });
       return found ? { user: found.user, session: found.session } : null;
@@ -153,6 +154,39 @@ export function createAuth(options: AuthOptions): Auth {
       pickedWorkspace.run(workspaceId, () => auth.handler(request)),
     authServerMetadata: (request) => metadata(request),
   };
+}
+
+/** Where a page signs in with Google, with an ID token or by starting the redirect. */
+const SOCIAL_SIGN_IN = `${AUTH_BASE_PATH}/sign-in/social`;
+
+/**
+ * Better Auth's answer when creating a person fails. The `user.create`
+ * hook refuses unverified addresses with its own code, so this means the
+ * database refused the new row.
+ */
+const CREATE_FAILED = 'unable to create user';
+
+/**
+ * Two first sign-ins for one Google account at the same moment (a double
+ * click, two tabs) both find no person and both create one. The database
+ * keeps one, and Better Auth answers the other "unable to create user"
+ * (accounts spec 9.2). A sign-in with a Google ID token runs once more: the
+ * second run finds the person the first created and signs in as them. A
+ * sign-in through Google's redirect cannot, because Google's code works only
+ * once; its tab returns to the sign-in page with `unable_to_create_user`,
+ * and the page says the account is ready and to sign in again.
+ */
+async function handle(auth: ReturnType<typeof betterAuthFor>, request: Request) {
+  const url = new URL(request.url);
+  const retry =
+    request.method === 'POST' && url.pathname === SOCIAL_SIGN_IN ? request.clone() : null;
+  const response = await auth.handler(request);
+  if (!retry || response.status !== 401) return response;
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as { message?: string } | null;
+  return body?.message === CREATE_FAILED ? auth.handler(retry) : response;
 }
 
 function betterAuthFor(options: AuthOptions) {
@@ -218,7 +252,12 @@ function betterAuthFor(options: AuthOptions) {
           // Invitations compare against the address, so it must be one
           // Google verified. Addresses are kept lowercase.
           before: async (user) => {
-            if (!user.emailVerified) return false;
+            if (!user.emailVerified) {
+              throw new APIError('UNAUTHORIZED', {
+                code: 'email_not_verified',
+                message: 'Google has not verified this email address.',
+              });
+            }
             return { data: { ...user, email: user.email.toLowerCase() } };
           },
         },

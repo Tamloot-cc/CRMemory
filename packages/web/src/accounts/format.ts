@@ -83,3 +83,21 @@ export const appScopes = (asked: readonly string[], role: WorkspaceRole): Scope[
   (['read', 'write', 'schema:write'] as const).filter(
     (scope) => asked.includes(scope) && WORKSPACE_ROLE_SCOPES[role].includes(scope),
   );
+
+/**
+ * Plain words for the error Google's sign-in sends back to the page in
+ * `?error=`. `unable_to_create_user` comes when two first sign-ins for one
+ * Google account meet (another tab, a double click): the other one made
+ * the account, so signing in again works (accounts spec 9.2).
+ */
+export function signInError(code: string | null): string {
+  if (!code) return '';
+  switch (code.toLowerCase()) {
+    case 'email_not_verified':
+      return 'Google has not verified that email address, so it cannot be used to sign in.';
+    case 'unable_to_create_user':
+      return 'Your account was just created in another tab or window. Continue with Google again to sign in.';
+    default:
+      return 'Signing in did not work. Try again.';
+  }
+}
