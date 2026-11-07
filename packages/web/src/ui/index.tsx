@@ -2,7 +2,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Slot } from '@radix-ui/react-slot';
 import { Link } from '@tanstack/react-router';
 import { cva } from 'class-variance-authority';
-import { ArrowUpRight, ChevronRight, Database, Inbox, Info, Menu, X } from 'lucide-react';
+import { ArrowUpRight, ChevronRight, Inbox, Info, Menu, X } from 'lucide-react';
 import {
   type ComponentProps,
   type HTMLAttributes,
@@ -15,6 +15,7 @@ import {
   useLayoutEffect,
   useRef,
 } from 'react';
+import { BrandMark } from './brand.js';
 import { cn, isPlainClick, NavigationContext, ROW_STATE, type Tone } from './core.js';
 import { ApiName } from './layout.js';
 import { Tooltip } from './tooltip.js';
@@ -757,7 +758,7 @@ export function SignInFrame({ children }: { children: ReactNode }) {
     <main className="flex min-h-screen items-center justify-center bg-muted/30 p-6">
       <section className="w-full max-w-sm rounded-lg border border-border bg-card p-8 shadow-xs">
         <div className="mb-8 flex items-center gap-2 text-lg font-semibold">
-          <Database size={22} className="text-primary" />
+          <BrandMark className="h-8 w-8" />
           Retainer
         </div>
         <h1 className="mb-2 text-2xl font-semibold tracking-tight">

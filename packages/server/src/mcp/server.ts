@@ -33,6 +33,7 @@ import {
 import { applyTemplateFor, templatesFor } from '../templates/service.js';
 import { VERSION } from '../version.js';
 import { GUIDE_NAMES, GUIDES } from './guides.js';
+import { SERVER_ICON } from './icon.js';
 
 /**
  * The MCP tools (6.2). They are generic, not one per object, and each calls
@@ -351,7 +352,7 @@ const noInput = z.strictObject({});
 /** Builds the MCP server for one authenticated caller. */
 export function createMcpServer(sql: Sql, caller: Caller): McpServer {
   const server = new McpServer(
-    { name: 'retainer', title: 'Retainer', version: VERSION },
+    { name: 'retainer', title: 'Retainer', version: VERSION, icons: [SERVER_ICON] },
     { instructions: INSTRUCTIONS },
   );
 

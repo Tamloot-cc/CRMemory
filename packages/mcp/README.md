@@ -1,3 +1,5 @@
+<p><img src="https://raw.githubusercontent.com/Tamloot-cc/Retainer/main/packages/web/public/favicon.svg" alt="Retainer logo" width="80" height="80" /></p>
+
 # @retainer/mcp
 
 stdio bridge to a [Retainer](https://github.com/Tamloot-cc/Retainer) server's
