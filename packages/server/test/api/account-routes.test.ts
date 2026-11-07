@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   createOrganization,
+  moveWorkspace,
   setOrganizationMember,
   setWorkspaceMember,
 } from '../../src/workspaces/organizations.js';
@@ -432,6 +433,27 @@ describe('invitations', () => {
         })
       ).status,
     ).toBe(404);
+  });
+
+  it('refuses a workspace listed twice, and leaves a moved workspace out of the preview', async () => {
+    const t = await team();
+    const path = `/account/organizations/${t.organizationId}/invitations`;
+    const twice = await call(path, t.owner, 'POST', {
+      email: 'twice@acme.test',
+      role: 'member',
+      workspaces: [
+        { workspaceId: t.workspaceId, role: 'viewer' },
+        { workspaceId: t.workspaceId, role: 'editor' },
+      ],
+    });
+    expect(twice.status).toBe(400);
+
+    const { token } = await invite(t, 'moved@acme.test');
+    const elsewhere = (await createOrganization(db.owner, { name: 'Elsewhere' })).id;
+    await moveWorkspace(db.owner, { workspace: t.workspaceId, organization: elsewhere });
+    const moved = await app.signIn({ email: 'moved@acme.test' });
+    const preview = await app.account(`/account/invitations/${token}`, { cookie: moved.cookie });
+    expect(await preview.json()).toMatchObject({ workspaces: [] });
   });
 
   it('lets only an owner invite an owner', async () => {

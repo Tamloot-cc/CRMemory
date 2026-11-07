@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
-import { type Account, authClient, workspaceHref } from '../api/account.js';
+import { type Account, authClient, signOutOfAccount, workspaceHref } from '../api/account.js';
 import { Button, Dialog, Input, Label, Muted, Notice, Panel, Stack } from '../ui/index.js';
 import { shortDate as date, roleWords } from './format.js';
 import { AccountFrame } from './screens.js';
@@ -56,6 +56,7 @@ export function YourAccount({ account }: { account: Account }) {
 function Passkeys() {
   const [passkeys, setPasskeys] = useState<Passkey[] | null>(null),
     [error, setError] = useState(''),
+    [stale, setStale] = useState(false),
     [renaming, setRenaming] = useState<Passkey | null>(null),
     [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
@@ -72,7 +73,11 @@ function Passkeys() {
     setError('');
     const client = await authClient();
     const result = await client.passkey.addPasskey({ name: defaultName() });
-    if (result.error) setError('The passkey was not added. Try again, or use another device.');
+    // Better Auth asks for a sign-in within the last day before adding one,
+    // so a stolen session cannot add a passkey of its own.
+    if (result.error && 'code' in result.error && result.error.code === 'SESSION_NOT_FRESH')
+      setStale(true);
+    else if (result.error) setError('The passkey was not added. Try again, or use another device.');
     await load();
     setBusy(false);
   }
@@ -120,6 +125,19 @@ function Passkeys() {
           </ul>
         )}
         {error ? <Notice error>{error}</Notice> : null}
+        {stale ? (
+          <Notice>
+            For your security, adding a passkey needs a recent sign-in.{' '}
+            <button
+              type="button"
+              className="underline"
+              onClick={() => void signOutOfAccount('/app/account')}
+            >
+              Sign in again
+            </button>{' '}
+            and you'll come back here.
+          </Notice>
+        ) : null}
         <div>
           <Button disabled={busy} onClick={() => void add()}>
             {busy ? 'Waiting for your device…' : 'Add a passkey'}
@@ -166,10 +184,17 @@ function defaultName(): string {
 }
 
 function SignOutEverywhere() {
-  const [confirm, setConfirm] = useState(false);
+  const [confirm, setConfirm] = useState(false),
+    [error, setError] = useState('');
   async function signOut() {
+    setError('');
     const client = await authClient();
-    await client.revokeSessions();
+    const revoked = await client.revokeSessions();
+    if (revoked.error) {
+      setConfirm(false);
+      setError('Your other sessions could not be ended. Nothing changed; try again.');
+      return;
+    }
     await client.signOut();
     window.location.assign('/app/');
   }
@@ -177,6 +202,7 @@ function SignOutEverywhere() {
     <Panel title="Sign out everywhere">
       <Stack>
         <Muted small>Ends every session you have, on every device, including this one.</Muted>
+        {error ? <Notice error>{error}</Notice> : null}
         <div>
           <Button variant="destructive" onClick={() => setConfirm(true)}>
             Sign out everywhere

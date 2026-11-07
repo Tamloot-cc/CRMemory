@@ -99,6 +99,31 @@ describe('signing in with Google', () => {
     expect(cookie).toMatch(/SameSite=Strict/i);
   });
 
+  it("extends an active session on the web app's POST, and never on a read", async () => {
+    const dana = await member('viewer');
+    const ageSession = () =>
+      db.owner`update sessions set expires_at = now() + interval '20 days', updated_at = now() - interval '10 days'
+        where user_id = ${dana.userId}`;
+    const expiry = async () =>
+      (
+        await db.owner<{ days: number }[]>`
+        select (extract(epoch from expires_at - now()) / 86400)::float8 as days from sessions
+        where user_id = ${dana.userId}`
+      )[0]?.days ?? 0;
+    await ageSession();
+    expect((await app.account('/account', { cookie: dana.cookie })).status).toBe(200);
+    expect(await app.v1('/v1/me', { cookie: dana.cookie, workspace: workspaceId })).toBeTruthy();
+    expect(await expiry()).toBeLessThan(21);
+
+    const res = await app.account('/account/auth/get-session', {
+      cookie: dana.cookie,
+      method: 'POST',
+      body: {},
+    });
+    expect(res.status).toBe(200);
+    expect(await expiry()).toBeGreaterThan(29);
+  });
+
   it('refuses a disabled person a new session', async () => {
     await app.signIn({ sub: 'disabled-sub', email: 'disabled@example.test' });
     await db.owner`update users set disabled_at = now() where email = 'disabled@example.test'`;

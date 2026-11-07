@@ -614,6 +614,9 @@ export async function createInvitation(
     return { workspaceId: w.workspaceId, role: w.role };
   });
   const ids = [...new Set(workspaces.map((w) => w.workspaceId))];
+  if (ids.length !== workspaces.length) {
+    throw new AppError(400, 'invalid_request', 'list each workspace once');
+  }
   if (ids.length) {
     const found = await sql`
       select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}`;
@@ -690,9 +693,11 @@ export async function previewInvitation(
   tokenOrId: string,
 ): Promise<InvitationPreview> {
   const row = await findInvitation(sql, person, tokenOrId);
+  // Only what accepting grants: a workspace moved to another organization is left out.
   const names = await sql<{ id: string; name: string }[]>`
     select id, name from workspaces
-    where id = any(${row.workspaces.map((w) => w.workspaceId)}::uuid[])`;
+    where id = any(${row.workspaces.map((w) => w.workspaceId)}::uuid[])
+      and organization_id = ${row.organization_id}`;
   return {
     id: row.id,
     organization: { id: row.organization_id, name: row.organization_name },

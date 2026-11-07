@@ -13,7 +13,12 @@ test('a new person signs in, names a workspace and lands in it as its admin', as
   await expect(page.getByRole('button', { name: 'Use a passkey' })).toBeVisible();
 
   await a.signIn(context, { email: 'ana@example.test', name: 'Ana Silva' });
+  // The app extends the session each time it loads, so active people stay signed in.
+  const refresh = page.waitForRequest(
+    (r) => r.method() === 'POST' && r.url().endsWith('/account/auth/get-session'),
+  );
   await page.goto(`${a.url}/app/`);
+  await refresh;
   await expect(page.getByRole('heading', { name: 'Welcome, Ana' })).toBeVisible();
   await expect(page.getByText('organization', { exact: false })).not.toBeVisible();
   await page.getByLabel('Name your workspace').fill('Ana Sales');
@@ -189,6 +194,12 @@ test('a person adds a passkey and signs in with it', async ({
 
   await page.goto(`${a.url}/app/account`);
   await expect(page.getByText('You have no passkeys yet.')).toBeVisible();
+  // A day after signing in, adding one asks for a fresh sign-in instead of failing.
+  await a.owner`update sessions set created_at = now() - interval '2 days'`;
+  await page.getByRole('button', { name: 'Add a passkey' }).click();
+  await expect(page.getByText('adding a passkey needs a recent sign-in')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sign in again' })).toBeVisible();
+  await a.owner`update sessions set created_at = now()`;
   await page.getByRole('button', { name: 'Add a passkey' }).click();
   await expect(page.getByText(/added/)).toBeVisible();
   await page.getByRole('button', { name: 'Rename' }).click();

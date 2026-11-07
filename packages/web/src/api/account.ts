@@ -158,13 +158,31 @@ export const account = {
     ),
 };
 
+/**
+ * Extends the session while the person uses the app. Better Auth writes
+ * session refreshes only on this POST (`deferSessionRefresh`), so reads stay
+ * free of writes (accounts spec 4.4); without it a session ends 30 days after
+ * sign-in however active the person is.
+ */
+export async function refreshSession(): Promise<void> {
+  await fetch('/account/auth/get-session', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+}
+
 /** Better Auth's browser client, loaded only in accounts mode. */
 export const authClient = () => import('./auth-client.js').then((m) => m.authClient);
 
-/** Ends this session, then starts the app again at the sign-in screen. */
-export async function signOutOfAccount(): Promise<void> {
+/**
+ * Ends this session, then starts the app again at the sign-in screen, which
+ * comes back to `then` after signing in.
+ */
+export async function signOutOfAccount(then = '/app/'): Promise<void> {
   await (await authClient()).signOut();
-  window.location.assign('/app/');
+  window.location.assign(then);
 }
 
 /** Where the app opens a workspace: a full page load, so nothing cached crosses over. */

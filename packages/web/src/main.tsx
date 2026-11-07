@@ -25,6 +25,7 @@ import { capital } from './accounts/format.js';
 import {
   type Account,
   account as accountApi,
+  refreshSession,
   signOutOfAccount,
   workspaceHref,
 } from './api/account.js';
@@ -477,7 +478,11 @@ function App() {
   }, []);
   useEffect(() => {
     accountApi.me().then(
-      (account) => setBoot({ mode: 'account', account }),
+      (account) => {
+        setBoot({ mode: 'account', account });
+        // Not awaited: a failed refresh only means the next load tries again.
+        void refreshSession().catch(() => {});
+      },
       (e: Error) =>
         setBoot(
           e instanceof RetainerApiError && e.status === 404
