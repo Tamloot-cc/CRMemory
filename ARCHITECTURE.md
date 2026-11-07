@@ -1641,7 +1641,9 @@ organization column, and a `Caller` still has exactly one workspace.
 
 **Two modes.** Key mode, today's behavior, stays the default. Accounts mode starts
 when `RETAINER_AUTH_SECRET` and a Google OAuth client are set. It turns off API key
-sign-in in the web app. Agents use API keys in both modes.
+sign-in in the web app, and signup is open: anyone with a verified Google account can
+create their own organization, on a self-hosted install too. Agents use API keys in
+both modes.
 
 **Signing in.** [Better Auth](https://www.better-auth.com), an MIT library, runs in
 our process and keeps its tables in our Postgres. People sign in with Google or a
@@ -1688,9 +1690,10 @@ create a key, a member or a workspace.
 
 **Where it runs.** On AWS, a `control` function loads Better Auth and serves
 `/account` and the OAuth metadata. It is the only function with internet, through a
-NAT gateway, because Google sign-in and OAuth client metadata need it. The `api` and
-`consolidate` functions keep no route to the internet, and `api` does not import
-Better Auth. In a container with `RETAINER_ROLE=all`, everything runs in one process.
+NAT gateway, because Google sign-in and OAuth client metadata need it. The `api`,
+`consolidate` and `ops` functions keep no route to the internet, and `api` does not
+import Better Auth: only an `accounts` module does, and only `index` and
+`lambda/control.ts` import that. In a container with `RETAINER_ROLE=all`, everything runs in one process.
 
 **Database roles.** Each function logs in with its own role: `ops` as the owner,
 `api` and `consolidate` as `retainer_app`, and `control` as `retainer_control`, which
@@ -1711,7 +1714,8 @@ revoked consent applies at the next request. The actor is always an `agent`, wit
 ID made from the client and the person, so the human-only rules still apply.
 
 **Limits.** A per-workspace rate limit, quotas in `organizations.limits` (null means
-unlimited, as on a self-hosted install), and a statement timeout on the runtime role.
+unlimited, as on a self-hosted install), and a statement timeout on the API's
+connection pool.
 
 ---
 

@@ -123,9 +123,9 @@ assertions and approvals must name the person who made them (rule 2.3).
 - The key is typed once on the sign-in screen and sent to `POST /auth/session`.
   The app never stores it in `localStorage`, `sessionStorage` or memory after
   that call.
-- The hosted cloud may sign people in through its own identity provider and
-  set the same cookie with a key it issues. That lives outside this
-  repository (7).
+- Signing in with an account instead of a key is designed but not built. It
+  lives in this repository
+  ([accounts spec](docs/specs/accounts-and-access.md)).
 
 For TLS termination at a reverse proxy, set `RETAINER_PUBLIC_ORIGIN` to the
 external origin (for example `https://retainer.example`). CSRF checks compare
