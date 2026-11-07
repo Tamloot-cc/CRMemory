@@ -1,4 +1,5 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 import { type Config, passwordOf } from '../config.js';
 import { RUNTIME_ROLE, type Sql } from './client.js';
 
@@ -22,16 +23,12 @@ export async function setRuntimeLogin(owner: Sql, password: string): Promise<voi
     // Two containers booting at once would otherwise update the role row
     // concurrently, which Postgres refuses ("tuple concurrently updated").
     await tx`select pg_advisory_xact_lock(${RUNTIME_LOGIN_LOCK})`;
-    // A login for a role that can become another would defeat the point.
-    const [membership] = await tx<{ roles: string[] }[]>`
-      select coalesce(array_agg(m.roleid::regrole::text), '{}') as roles
-      from pg_auth_members m
-      where m.member = ${RUNTIME_ROLE}::regrole`;
-    if (membership && membership.roles.length > 0) {
-      throw new Error(
-        `${RUNTIME_ROLE} is a member of ${membership.roles.join(', ')}; ` +
-          'revoke that before giving it a login.',
-      );
+    // A login for a role that is privileged, owns objects or can become
+    // another role would defeat the point. The migration only creates the
+    // role when it is missing, so one made or altered by hand gets here too.
+    const problems = await runtimeRoleProblems(tx);
+    if (problems.length > 0) {
+      throw new Error(`${RUNTIME_ROLE} ${problems.join('; ')}. Fix that before giving it a login.`);
     }
     // The verifier holds only base64, digits, `$` and `:`.
     await tx.unsafe(`alter role ${RUNTIME_ROLE} login password '${verifier}'`);
@@ -47,6 +44,39 @@ export async function applyRuntimeLogin(config: Config, owner: Sql): Promise<boo
   if (!url) return false;
   await setRuntimeLogin(owner, passwordOf(url));
   return true;
+}
+
+/** What makes the runtime role unsafe to log in as, in plain words. */
+async function runtimeRoleProblems(tx: TransactionSql): Promise<string[]> {
+  const [role] = await tx<
+    {
+      attributes: string[];
+      memberOf: string[];
+      owns: number;
+    }[]
+  >`
+    select
+      array_remove(array[
+        case when r.rolsuper then 'SUPERUSER' end,
+        case when r.rolbypassrls then 'BYPASSRLS' end,
+        case when r.rolcreaterole then 'CREATEROLE' end,
+        case when r.rolcreatedb then 'CREATEDB' end,
+        case when r.rolreplication then 'REPLICATION' end
+      ], null) as attributes,
+      array(
+        select m.roleid::regrole::text from pg_auth_members m where m.member = r.oid
+      ) as "memberOf",
+      (select count(*) from pg_class c where c.relowner = r.oid)::int
+        + (select count(*) from pg_namespace n where n.nspowner = r.oid)::int
+        + (select count(*) from pg_proc p where p.proowner = r.oid)::int as owns
+    from pg_roles r
+    where r.rolname = ${RUNTIME_ROLE}`;
+  if (!role) return ['does not exist; run the migrations first'];
+  const problems: string[] = [];
+  if (role.attributes.length > 0) problems.push(`has ${role.attributes.join(', ')}`);
+  if (role.memberOf.length > 0) problems.push(`is a member of ${role.memberOf.join(', ')}`);
+  if (role.owns > 0) problems.push(`owns ${role.owns} object(s) in this database`);
+  return problems;
 }
 
 /** "RTN" and a number, like the other advisory lock keys. */

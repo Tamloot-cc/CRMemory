@@ -127,6 +127,31 @@ describe('the runtime login', () => {
       await db.owner.unsafe(`drop role ${extra}`);
     }
   });
+
+  // CREATEDB stands in for every attribute: it changes nothing for the test
+  // files running alongside, which a cluster-wide BYPASSRLS would.
+  it('is not given while the runtime role has a privileged attribute', async () => {
+    await db.owner.unsafe(`alter role ${RUNTIME_ROLE} createdb`);
+    try {
+      await expect(setRuntimeLogin(db.owner, PASSWORD)).rejects.toThrow(
+        `${RUNTIME_ROLE} has CREATEDB`,
+      );
+    } finally {
+      await db.owner.unsafe(`alter role ${RUNTIME_ROLE} nocreatedb`);
+    }
+  });
+
+  it('is not given while the runtime role owns something', async () => {
+    await db.owner`create table runtime_owned (id int)`;
+    await db.owner.unsafe(`alter table runtime_owned owner to ${RUNTIME_ROLE}`);
+    try {
+      await expect(setRuntimeLogin(db.owner, PASSWORD)).rejects.toThrow(
+        `${RUNTIME_ROLE} owns 1 object(s) in this database`,
+      );
+    } finally {
+      await db.owner`drop table runtime_owned`;
+    }
+  });
 });
 
 describe('functions on separate logins', () => {
