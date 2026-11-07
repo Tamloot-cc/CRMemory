@@ -30,17 +30,20 @@ const MAY_SHARE_A_CYCLE = 'core';
 const layerOf = new Map(LAYERS.flatMap(([, modules], i) => modules.map((m) => [m, i])));
 const layerName = (module) => LAYERS[layerOf.get(module)][0];
 
-/** Where ARCHITECTURE.md's table of layers disagrees with LAYERS. */
+/** ARCHITECTURE.md lists the layers highest first; they must match LAYERS, in order. */
 function documentationProblems() {
   const doc = readFileSync(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
-  const table = doc.slice(doc.indexOf('### Server layers'));
-  return LAYERS.flatMap(([name, modules]) => {
-    const row = new RegExp(`^\\| ${name} +\\| (.+?) +\\|`, 'im').exec(table);
-    const listed = [...(row?.[1] ?? '').matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-    return listed.toSorted().join() === modules.toSorted().join()
-      ? []
-      : [`ARCHITECTURE.md lists ${name} as [${listed}], but this script has [${modules}]`];
+  const blocks = doc.slice(doc.indexOf('### Server layers')).split('\n\n');
+  const rows = (blocks.find((block) => block.startsWith('|')) ?? '').split('\n').slice(2);
+  const documented = rows.map((row) => {
+    const [, layer, modules] = row.split('|');
+    const names = [...modules.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+    return [layer.trim().toLowerCase(), names.toSorted()];
   });
+  const expected = LAYERS.map(([name, modules]) => [name, modules.toSorted()]).reverse();
+  return JSON.stringify(documented) === JSON.stringify(expected)
+    ? []
+    : [`ARCHITECTURE.md's layer table doesn't match LAYERS in scripts/check-layers.mjs`];
 }
 
 function sourceFiles(dir) {
