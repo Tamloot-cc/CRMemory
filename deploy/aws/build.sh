@@ -28,4 +28,7 @@ test -d "$out/package/drizzle"
 (cd "$out/package" && rm -rf src test e2e ./*.config.ts tsconfig*.json)
 # -y keeps pnpm's symlinks as links instead of copying their targets.
 (cd "$out/package" && zip -qry -X "$out/retainer.zip" .)
+# deploy.sh uploads the zip directly, which Lambda accepts up to 50 MB.
+test "$(wc -c <"$out/retainer.zip")" -le $((50 * 1024 * 1024)) ||
+  { echo "The package is over Lambda's 50 MB upload limit." >&2; exit 1; }
 echo "Built $out/retainer.zip ($(du -h "$out/retainer.zip" | cut -f1))"

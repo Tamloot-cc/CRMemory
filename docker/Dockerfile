@@ -6,7 +6,7 @@ FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-slim AS build
 # Node 25 and later no longer bundle corepack.
 RUN npm install --global corepack@0.36.0 && corepack enable
 WORKDIR /app
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml .pnpmfile.cjs package.json tsconfig.base.json ./
 # Fetches the pnpm in packageManager here, so source changes don't refetch it.
 RUN corepack install
 COPY packages ./packages
