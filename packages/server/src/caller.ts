@@ -2,8 +2,9 @@ import type { Actor } from '@retainer/shared';
 import type { ApiKeyScope } from './db/schema.js';
 
 /**
- * Who is making a request: taken from the credential (an API key, or a
- * person's session in accounts mode), never from the payload.
+ * Who is making a request: taken from the credential (an API key, or in
+ * accounts mode a person's session or an app's OAuth token), never from the
+ * payload.
  */
 export type Caller = {
   workspaceId: string;
