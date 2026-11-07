@@ -1,7 +1,8 @@
 # Retainer web app
 
-Status: web steps 1–5 are implemented and verified locally, including
-record creation, deletion, merges and suggested merges, `forget` and global
+Status: implemented, including record creation, deletion, merges and suggested
+merges, `forget` and global
+
 search, plus saved views with table, board and calendar layouts (5.3b), and
 the Records and Activity split: event type lists, the activity feed,
 comments and developer view
@@ -862,38 +863,7 @@ End-to-end tests run in CI after layers 1–4.
 
 ---
 
-## 11. Build order
-
-1. **Prerequisites.** Section 9: session cookie, `GET /v1/me`, static
-   serving, SDK methods and response contracts, shared field validation,
-   pagination and enrichment, and the provenance and history routes.
-2. **Shell and review inbox.** Sign-in, layout, schema cache, every field
-   type's `Display`, provenance components, and the review inbox (5.2).
-3. **Records.** Object lists, record page read-only, facts, events, event
-   page, schema page.
-4. **Editing.** Every field type's `Input`, inline editing, retracting facts
-   and events.
-5. **After search and merges on the server.** Search, record creation and deletion,
-   merges and suggested merges, `forget`.
-
-Each step lands with its tests (10).
-
----
-
-## 12. Documents to update when this is built
-
-All of these have been updated.
-
-- `CLAUDE.md` and `AGENTS.md`: "No UI" becomes "No UI except the optional web
-  app in `packages/web`", plus its commands.
-- `ARCHITECTURE.md`: the opening ("It has no UI"), section 6 (new routes),
-  section 7 (cookie sessions), section 8 (`packages/web`, MIT), section 9
-  (Vite, React, TanStack, Tailwind).
-- `README.md`: how to open the app and create a person's key.
-
----
-
-## 13. Open questions
+## 11. Open questions
 
 1. **Brand colour** and a name for the app, if it is not just "Retainer".
 2. **Cookie holds the key.** Simple and revocable, but a stolen cookie is a
@@ -901,6 +871,3 @@ All of these have been updated.
    short-lived tokens. Is the simple version enough for v1?
 3. **Schema editing in the UI.** v1 only approves what agents propose. Should
    people be able to propose changes from the schema page?
-
-Record creation and the web step 5 boundary were open questions; both are
-now decided and built (5.3, 5.4a, 5.5).
