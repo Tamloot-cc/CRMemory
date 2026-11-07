@@ -17,41 +17,75 @@ export const publicOriginSchema = z
   }, 'use an http(s) origin without credentials, a path, query or fragment')
   .transform((value) => new URL(value).origin);
 
-const configSchema = z.object({
-  RETAINER_PUBLIC_ORIGIN: z.preprocess(
-    (value) => (value === '' ? undefined : value),
-    publicOriginSchema.optional(),
-  ),
-  RETAINER_WEB_DIR: z.string().optional(),
-  DATABASE_URL: z.string().url(),
-  RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
-  PORT: z.coerce.number().int().positive().default(8787),
-  LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
-  /** How often the consolidator runs per workspace (4.2). */
-  RETAINER_CONSOLIDATE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
-  /**
-   * Database connections each API process opens. The container serves many
-   * requests at once; a Lambda instance serves one, so the AWS deployment
-   * sets this low to keep the total under the database's limit.
-   */
-  RETAINER_DB_POOL_MAX: z.coerce.number().int().positive().default(10),
-  /**
-   * Secret for the keyed HMAC of suppressed handles (2.1). Needed by
-   * `forget`; read from the environment where it is used.
-   */
-  RETAINER_SUPPRESSION_KEY: z.preprocess(
-    (value) => (value === '' ? undefined : value),
-    z.string().min(32, 'use at least 32 characters').optional(),
-  ),
-  /**
-   * Earlier suppression keys, comma-separated, still checked so a rotation
-   * keeps erased handles and event identities suppressed (6.4).
-   */
-  RETAINER_SUPPRESSION_PREVIOUS_KEYS: z.preprocess(
-    (value) => (value === '' ? undefined : value),
-    z.string().optional(),
-  ),
-});
+/**
+ * The role the API and workers run as (created by drizzle/0001_security.sql).
+ * It owns no tables and has no BYPASSRLS, so row-level security applies.
+ */
+export const RUNTIME_ROLE = 'retainer_app';
+
+const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
+
+/** The decoded password of a database URL. */
+export const passwordOf = (url: string) => decodeURIComponent(new URL(url).password);
+const userOf = (url: string) => decodeURIComponent(new URL(url).username);
+
+const configSchema = z
+  .object({
+    RETAINER_PUBLIC_ORIGIN: z.preprocess(emptyToUndefined, publicOriginSchema.optional()),
+    RETAINER_WEB_DIR: z.string().optional(),
+    /**
+     * The migration role, which owns the tables. Migrations, boot tasks and the
+     * operator CLI connect with it. Without RETAINER_RUNTIME_DATABASE_URL the
+     * API and workers connect with it too and switch to the runtime role.
+     */
+    DATABASE_URL: z.preprocess(emptyToUndefined, z.url().optional()),
+    /**
+     * A login as the runtime role itself, for the API and workers (accounts
+     * spec 4.9), so their connections can never act as the owner. The owner
+     * sets this password on boot or migration, so the database needs no
+     * separate setup. Printable ASCII only: SCRAM would otherwise normalize it.
+     */
+    RETAINER_RUNTIME_DATABASE_URL: z.preprocess(
+      emptyToUndefined,
+      z
+        .url()
+        .refine((value) => URL.canParse(value) && userOf(value) === RUNTIME_ROLE, {
+          message: `log in as ${RUNTIME_ROLE}`,
+        })
+        .refine((value) => URL.canParse(value) && /^[\x21-\x7e]+$/.test(passwordOf(value)), {
+          message: 'include a password of printable ASCII without spaces',
+        })
+        .optional(),
+    ),
+    RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
+    PORT: z.coerce.number().int().positive().default(8787),
+    LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
+    /** How often the consolidator runs per workspace (4.2). */
+    RETAINER_CONSOLIDATE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
+    /**
+     * Database connections each API process opens. The container serves many
+     * requests at once; a Lambda instance serves one, so the AWS deployment
+     * sets this low to keep the total under the database's limit.
+     */
+    RETAINER_DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+    /**
+     * Secret for the keyed HMAC of suppressed handles (2.1). Needed by
+     * `forget`; read from the environment where it is used.
+     */
+    RETAINER_SUPPRESSION_KEY: z.preprocess(
+      emptyToUndefined,
+      z.string().min(32, 'use at least 32 characters').optional(),
+    ),
+    /**
+     * Earlier suppression keys, comma-separated, still checked so a rotation
+     * keeps erased handles and event identities suppressed (6.4).
+     */
+    RETAINER_SUPPRESSION_PREVIOUS_KEYS: z.preprocess(emptyToUndefined, z.string().optional()),
+  })
+  .refine((config) => config.DATABASE_URL || config.RETAINER_RUNTIME_DATABASE_URL, {
+    path: ['DATABASE_URL'],
+    message: 'set DATABASE_URL, RETAINER_RUNTIME_DATABASE_URL or both',
+  });
 
 export type Config = z.infer<typeof configSchema>;
 
@@ -64,4 +98,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid configuration:\n${problems}`);
   }
   return parsed.data;
+}
+
+/**
+ * The migration role's URL, for code that owns the database: migrations,
+ * boot tasks and the operator CLI. The api and consolidate functions on AWS
+ * are not given it.
+ */
+export function ownerDatabaseUrl(config: Config): string {
+  if (!config.DATABASE_URL) {
+    throw new Error('DATABASE_URL is required here: migrations and operator commands need it.');
+  }
+  return config.DATABASE_URL;
 }

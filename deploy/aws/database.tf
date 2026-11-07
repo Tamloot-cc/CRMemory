@@ -1,11 +1,18 @@
 # PostgreSQL on RDS. The master user is Retainer's migration role: it owns
 # the tables, creates the pg_trgm, btree_gin and unaccent extensions and the
-# retainer_app runtime role (drizzle/0001_security.sql). The functions
-# connect with it and switch to retainer_app, as the container does.
+# retainer_app runtime role (drizzle/0001_security.sql). Only the ops
+# function connects with it. The api and consolidate functions log in as
+# retainer_app itself, with a password of their own that the ops function
+# sets when it migrates, so they hold no credential that can become the owner.
 
 resource "random_password" "database" {
   length  = 40
   special = false # used inside DATABASE_URL unencoded
+}
+
+resource "random_password" "runtime" {
+  length  = 40
+  special = false # used inside RETAINER_RUNTIME_DATABASE_URL unencoded
 }
 
 # Suffix for the final snapshot: RDS keeps it after the instance is deleted,
@@ -65,6 +72,14 @@ locals {
     "postgres://%s:%s@%s:%d/%s?sslmode=require",
     aws_db_instance.this.username,
     random_password.database.result,
+    aws_db_instance.this.address,
+    aws_db_instance.this.port,
+    aws_db_instance.this.db_name,
+  )
+
+  runtime_database_url = format(
+    "postgres://retainer_app:%s@%s:%d/%s?sslmode=require",
+    random_password.runtime.result,
     aws_db_instance.this.address,
     aws_db_instance.this.port,
     aws_db_instance.this.db_name,

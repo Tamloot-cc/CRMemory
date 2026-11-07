@@ -1,12 +1,9 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
+import { type Config, ownerDatabaseUrl, RUNTIME_ROLE } from '../config.js';
 import * as schema from './schema.js';
 
-/**
- * The role the API and workers run as (created by drizzle/0001_security.sql).
- * It owns no tables and has no BYPASSRLS, so row-level security applies.
- */
-export const RUNTIME_ROLE = 'retainer_app';
+export { RUNTIME_ROLE };
 
 export type SqlOptions = {
   /**
@@ -38,6 +35,22 @@ export function createDb(databaseUrl: string, options: SqlOptions = {}) {
   const sql = createSql(databaseUrl, options);
   const db = drizzle(sql, { schema });
   return { db, sql };
+}
+
+/**
+ * How the API and workers connect: as the runtime role itself when
+ * RETAINER_RUNTIME_DATABASE_URL is set, otherwise with the migration role's
+ * credentials, switching to the runtime role at connection startup.
+ */
+export function runtimeConnection(config: Config): { url: string; role?: string } {
+  const url = config.RETAINER_RUNTIME_DATABASE_URL;
+  return url ? { url } : { url: ownerDatabaseUrl(config), role: RUNTIME_ROLE };
+}
+
+/** A pool for the API or workers (see `runtimeConnection`). */
+export function createRuntimeSql(config: Config, options: Omit<SqlOptions, 'role'> = {}) {
+  const { url, role } = runtimeConnection(config);
+  return createSql(url, { ...options, role });
 }
 
 export type Db = ReturnType<typeof createDb>['db'];

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { loadConfig } from './config.js';
+import { loadConfig, ownerDatabaseUrl } from './config.js';
 import { createSql } from './db/client.js';
 import { runCli } from './operator/commands.js';
 
 /** `retainer`: the operator CLI (7.1). Talks to DATABASE_URL directly. */
 const config = loadConfig();
-const sql = createSql(config.DATABASE_URL, { max: 2 });
+const sql = createSql(ownerDatabaseUrl(config), { max: 2 });
 try {
   process.exitCode = await runCli(process.argv.slice(2), {
     sql,

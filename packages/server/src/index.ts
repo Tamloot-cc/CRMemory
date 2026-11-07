@@ -1,7 +1,8 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './api/app.js';
-import { loadConfig } from './config.js';
-import { createSql, RUNTIME_ROLE } from './db/client.js';
+import { loadConfig, ownerDatabaseUrl } from './config.js';
+import { createRuntimeSql, createSql } from './db/client.js';
+import { applyRuntimeLogin } from './db/runtime-login.js';
 import { log, setLogLevel } from './log.js';
 import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
 import { rebuildSearchText } from './records/rebuild-search.js';
@@ -13,8 +14,10 @@ setLogLevel(config.LOG_LEVEL);
 
 // Boot tasks run as the migration role: only it can create workspaces and keys,
 // and it rebuilds stale search text and upgrades workspaces across the database.
-const owner = createSql(config.DATABASE_URL, { max: 1 });
+const owner = createSql(ownerDatabaseUrl(config), { max: 1 });
 try {
+  // With RETAINER_RUNTIME_DATABASE_URL, the runtime role logs in itself.
+  await applyRuntimeLogin(config, owner);
   const firstBoot = await bootstrap(owner);
   // Printed whatever LOG_LEVEL is: it holds the only copy of the first key.
   if (firstBoot) console.log(firstBootBanner(firstBoot));
@@ -29,10 +32,7 @@ try {
 }
 
 // Everything else runs as the runtime role, so row-level security applies.
-const sql = createSql(config.DATABASE_URL, {
-  role: RUNTIME_ROLE,
-  max: config.RETAINER_DB_POOL_MAX,
-});
+const sql = createRuntimeSql(config, { max: config.RETAINER_DB_POOL_MAX });
 const stops: Array<() => Promise<void>> = [];
 
 if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {

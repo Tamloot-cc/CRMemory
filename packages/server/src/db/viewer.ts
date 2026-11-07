@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { loadConfig } from '../config.js';
+import { loadConfig, ownerDatabaseUrl } from '../config.js';
 import { AppError } from '../errors.js';
 import { createSql, type Sql } from './client.js';
 import { getWorkspace } from './workspaces.js';
@@ -74,9 +74,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     options: { workspace: { type: 'string' }, role: { type: 'string' } },
   });
   const config = loadConfig();
-  const sql = createSql(config.DATABASE_URL, { max: 1 });
+  const databaseUrl = ownerDatabaseUrl(config);
+  const sql = createSql(databaseUrl, { max: 1 });
   try {
-    const viewer = await grantViewer(sql, config.DATABASE_URL, {
+    const viewer = await grantViewer(sql, databaseUrl, {
       workspace: values.workspace ?? 'default',
       ...(values.role ? { role: values.role } : {}),
     });
