@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { api, useWorkspace } from '../api/client.js';
 import { Badge, Button, Dialog, Input, Muted, Notice, Stack, Truncate } from '../ui/index.js';
+import { groupRecordHits } from './records/write-model.js';
 import {
   eventTitle,
   objectLabel,
@@ -11,7 +12,6 @@ import {
   sortObjects,
   useDebounced,
 } from './state.js';
-import { groupRecordHits } from './write-model.js';
 
 /**
  * ⌘K: keyword search across the workspace (`POST /v1/search`), grouped as

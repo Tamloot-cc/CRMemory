@@ -78,7 +78,7 @@ packages/web/
     auth/               sign-in screen
     fields/             one folder per field type (6), shared code in common.tsx
     provenance/         actor badges, sourced values, pending markers
-    routes/             one file per screen (5), plus list, record and schema helpers
+    routes/             the screens (5), grouped: records/, views/, events/, schema/, review/
     ui/                 the only source of UI (8): shell, data grid, sheet, popovers
 ```
 
