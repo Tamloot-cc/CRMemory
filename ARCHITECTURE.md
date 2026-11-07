@@ -26,8 +26,7 @@ searchable. Full conversations stay with the agent.
 ## 1. Data model
 
 Three layers, all in one Postgres database. This document describes the
-design as of the first release (0.1.0). Section 11 records the schema
-checklist that build step 1 completed.
+design as of the first release (0.1.0).
 
 ### 1.1 Schema (metadata)
 
@@ -1772,36 +1771,7 @@ migration spec. If this is reopened, the deciding test is removing the shared
 workspace revision record from the write path and relying on unique indexes and
 per-record conflicts.
 
-## 10. Build order
-
-The order the first release was built in, kept as a record. Interactions
-were later replaced by events (1.3,
-[docs/specs/schema-events-and-history.md](docs/specs/schema-events-and-history.md)).
-
-1. Schema engine with base objects and templates, assertion-backed records
-   CRUD, REST, API keys and the workspace/key CLI (including direct-write
-   precedence and review).
-2. MCP endpoint with the tools whose data exists after step 1:
-   `describe_schema`, `list_templates`, `apply_template`, `query_records`,
-   `get_record`, `upsert_record` and `propose_schema_change`.
-   `upsert_record` has no `source` yet, and its description covers direct
-   writes only.
-3. Interaction log, participant matching and facts: `log_interaction`,
-   `remember`, and `source` on `upsert_record`. `source` waits for this step
-   because nothing can be cited before interactions can be logged. The tool
-   descriptions gain the workflow in 4.1.
-4. Keyword search and context packs (`search`, `get_context`).
-5. Consolidator (fact dedupe and supersession, merge suggestions), review
-   queue, `forget`.
-6. SDK, stdio bridge, docs, first release.
-
-All six steps are merged. The 0.1.0 release tooling is in place
-(`.github/workflows/release.yml`, docs/releasing.md); the release itself is
-not cut yet.
-
-Each step lands with its tests (12). Step 1 also sets up the test harness:
-fresh database per test file, a helper that starts the server, and the CI
-workflow.
+## 10. Scope
 
 Not planned: embeddings and semantic search, and any language model inside
 Retainer (server-side extraction, generated summaries, an `ask` endpoint).
@@ -1814,71 +1784,9 @@ automatic record merges, stale-field flags, exact historical belief
 snapshots, versioned re-logging of edited sources, partial redaction on
 `forget`, and agents connected to more than one workspace.
 
-## 11. Schema checklist for build step 1
+## 11. Testing
 
-Changes to `packages/server/src/db/schema.ts` that this document required
-and the original scaffold lacked. All of them landed in build step 1
-(`drizzle/0000_init.sql` and `0001_security.sql`).
-
-**New tables**
-
-- [x] `record_identifiers`: normalized identifier per record, with a canonical
-  value and a uniqueness claim; a partial unique index on
-  `(workspace_id, field_id, value)` over claims (1.2)
-- [x] `merge_suggestions`: the two record IDs, reason, status (4.2)
-- [x] `idempotency_keys`: workspace, operation, key, request hash, result,
-  expiry (6.2)
-- [x] Suppression list: workspace, keyed HMAC of a normalized email or phone
-  (2.1)
-- [x] Deletion audit log: actor ID, time, counts only (2.1)
-
-**New columns**
-
-- [x] `workspaces.templates jsonb` (applied template names and versions) and
-  `workspaces.initialized_at` (3.1)
-- [x] `records.merged_into_id` (1.1, 4.2)
-- [x] `field_assertions.observed_at` (1.3, rule 2.2)
-- [x] `search tsvector` on `facts` and `interactions` (title and summary),
-  computed by the server like `records.search` (5.1)
-- [x] `records.label text`: the label field as plain text, for fuzzy name
-  lookup (5.1)
-- [x] `workspace_id` on `interaction_participants` and `fact_sources` (7)
-
-**Agent-written memory (4.1, 4.3)**
-
-- [x] `interactions`: replace `content`, `content_format`, `ingest_status`
-  and `ingest_error` with `summary text`
-- [x] Drop the `record_cards` table
-
-**Changed constraints and defaults**
-
-- [x] Unique index on `record_links (source_record_id, field_id)`, so a
-  many-to-one field has at most one edge per record (1.1)
-- [x] `facts.valid_from`: no `now()` default; set from the source (1.3,
-  rule 2.6)
-- [x] Remove `proposed` from live `object_types` / `fields` status and from
-  `SCHEMA_STATUSES` in `@retainer/shared` (1.1)
-- [x] Composite foreign keys `(workspace_id, parent_id)` referencing a unique
-  `(workspace_id, id)` on each parent, instead of plain ID foreign keys (7)
-
-**Extensions and search indexes**
-
-- [x] The migration runner creates `pg_trgm`, `btree_gin` and `unaccent` (5.1)
-- [x] Replace `records_search_gin` with a GIN index on
-  `(workspace_id, search)`; add the same on `facts` and `interactions` (5.1)
-- [x] Trigram GIN index on `records (workspace_id, label)` (5.1)
-
-**Security**
-
-- [x] Row-level security policies on every tenant table, keyed on the
-  per-transaction `app.workspace_id` setting (7)
-- [x] Separate migration and runtime roles; the runtime role does not own
-  tables and has no `BYPASSRLS` (7)
-- [x] The `SECURITY DEFINER` function for API-key lookup (7)
-
-## 12. Testing
-
-Every build step lands with its tests. Nothing is "done" until the layers
+Every feature lands with its tests. Nothing is "done" until the layers
 below that apply to it pass locally and in CI. Retainer has no language
 model inside it, so every layer except 5 is deterministic.
 

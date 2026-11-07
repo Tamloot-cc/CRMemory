@@ -19,7 +19,7 @@ rules.
 
 ## Testing
 
-See `ARCHITECTURE.md` section 12 for the six test layers.
+See `ARCHITECTURE.md` section 11 for the six test layers.
 
 - Every feature lands with unit tests and, if it touches the database,
   integration tests against real Postgres. Never mock the database.

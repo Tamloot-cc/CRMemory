@@ -645,7 +645,7 @@ change is additive. Keeping the table current becomes the new work.
 
 ## 8. Tests
 
-In the layers of `ARCHITECTURE.md` section 12.
+In the layers of `ARCHITECTURE.md` section 11.
 
 | Layer       | Proves                                                                                                                                                                                                                                                                      |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -530,7 +530,7 @@ describe('deleted and merged records', () => {
   it('resolves a merged record ID to the surviving record', async () => {
     const survivor = await createRecord(app, as(AGENT), 'person', { emails: email() });
     const merged = await createRecord(app, as(AGENT), 'person', { emails: email() });
-    // Merging is build step 5; set the outcome directly to test resolution.
+    // Set a merge's outcome directly to test resolution.
     await db.owner`update records set merged_into_id = ${survivor.id}, deleted_at = now()
       where id = ${merged.id}`;
     expect((await readRecord(app, as(AGENT), merged.id)).id).toBe(survivor.id);

@@ -598,7 +598,7 @@ not prerequisites silently added to these phases.
 
 ## 12. Acceptance and verification
 
-Apply ARCHITECTURE.md section 12: unit, real-Postgres integration, API, agent
+Apply ARCHITECTURE.md section 11: unit, real-Postgres integration, API, agent
 scenario and browser checks as applicable, plus a manual live-agent milestone.
 Each database test file uses its own fresh database. Never mock Postgres.
 
