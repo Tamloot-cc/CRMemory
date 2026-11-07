@@ -1,7 +1,7 @@
 import { handle, type LambdaContext, type LambdaEvent } from 'hono/aws-lambda';
 import { createApp } from '../api/app.js';
 import { type Config, loadConfig } from '../config.js';
-import { createRuntimeSql, type Sql } from '../db/client.js';
+import { createApiSql, type Sql } from '../db/client.js';
 import { setLogLevel } from '../log.js';
 
 /**
@@ -16,7 +16,7 @@ export function createApiHandler(
   config: Config,
   // One request at a time per instance; a small pool keeps the total number
   // of connections bounded by the function's concurrency.
-  sql: Sql = createRuntimeSql(config, { max: config.RETAINER_DB_POOL_MAX }),
+  sql: Sql = createApiSql(config, { max: config.RETAINER_DB_POOL_MAX }),
 ) {
   setLogLevel(config.LOG_LEVEL);
   const app = createApp({

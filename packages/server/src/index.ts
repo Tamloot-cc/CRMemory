@@ -2,7 +2,13 @@ import { serve } from '@hono/node-server';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { createApp } from './api/app.js';
 import { accountsMode, loadConfig, ownerDatabaseUrl } from './config.js';
-import { createControlSql, createRuntimeSql, createSql } from './db/client.js';
+import {
+  createApiSql,
+  createControlSql,
+  createRuntimeSql,
+  createSql,
+  type Sql,
+} from './db/client.js';
 import { applyLogins } from './db/logins.js';
 import { log, setLogLevel } from './log.js';
 import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
@@ -33,9 +39,16 @@ try {
 }
 
 // Everything else runs as the runtime role, so row-level security applies.
-const sql = createRuntimeSql(config, { max: config.RETAINER_DB_POOL_MAX });
+// The API and the worker each get their own pool: only the API's has the
+// statement timeout, and a long consolidator pass does not take the API's
+// connections (accounts spec 4.8).
 const stops: Array<() => Promise<void>> = [];
+const pools: Sql[] = [];
 const role = config.RETAINER_ROLE;
+const pool = (sql: Sql) => {
+  pools.push(sql);
+  return sql;
+};
 
 // Accounts mode (accounts spec 4.1): /account runs as the control role, in
 // this process with `all` or alone with `control`. Loaded only then, so key
@@ -64,7 +77,7 @@ if (role === 'api' || role === 'all' || role === 'control') {
     role === 'control'
       ? undefined
       : createApp({
-          sql,
+          sql: pool(createApiSql(config, { max: config.RETAINER_DB_POOL_MAX })),
           webDir: config.RETAINER_WEB_DIR,
           publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
           accountsSecret: config.RETAINER_AUTH_SECRET,
@@ -92,7 +105,7 @@ if (role === 'api' || role === 'all' || role === 'control') {
 
 if (config.RETAINER_ROLE === 'worker' || config.RETAINER_ROLE === 'all') {
   const worker = await startWorker({
-    sql,
+    sql: pool(createRuntimeSql(config, { max: config.RETAINER_DB_POOL_MAX })),
     intervalMinutes: config.RETAINER_CONSOLIDATE_INTERVAL_MINUTES,
   });
   stops.push(worker.stop);
@@ -101,7 +114,7 @@ if (config.RETAINER_ROLE === 'worker' || config.RETAINER_ROLE === 'all') {
 async function shutdown(signal: string) {
   log.info(`${signal} received, shutting down.`);
   await Promise.allSettled(stops.map((stop) => stop()));
-  await sql.end({ timeout: 5 });
+  await Promise.allSettled(pools.map((sql) => sql.end({ timeout: 5 })));
   process.exit(0);
 }
 
