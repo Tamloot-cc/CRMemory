@@ -160,5 +160,12 @@ describe('retainer org limit', () => {
       select limits from organizations where id = ${id}`;
     expect(row?.limits).toEqual({ workspaces: 3 });
     expect(await cli('org', 'limit', '--org', id, '--members', 'lots')).toMatchObject({ code: 1 });
+    // Postgres reads limits as an int, so a larger one is refused, not stored.
+    expect(await cli('org', 'limit', '--org', id, '--members', '2147483648')).toMatchObject({
+      code: 1,
+    });
+    expect(await cli('org', 'limit', '--org', id, '--members', '2147483647')).toMatchObject({
+      code: 0,
+    });
   });
 });

@@ -146,6 +146,9 @@ export async function assertWithinLimit(
   }
 }
 
+/** The largest quota: `assertWithinLimit` reads limits as a Postgres `int`. */
+const MAX_LIMIT = 2_147_483_647;
+
 /**
  * Sets an organization's quotas (4.10): a number, or null for none. Fields
  * left out keep their value. The billing seam: whatever decides plans writes
@@ -156,11 +159,15 @@ export async function setOrganizationLimits(
   input: { organization: string; limits: { [K in keyof OrganizationLimits]?: number | null } },
 ): Promise<{ organization: Organization; limits: OrganizationLimits }> {
   for (const [kind, value] of Object.entries(input.limits)) {
-    if (value !== null && value !== undefined && !(Number.isInteger(value) && value >= 0)) {
+    if (
+      value !== null &&
+      value !== undefined &&
+      !(Number.isInteger(value) && value >= 0 && value <= MAX_LIMIT)
+    ) {
       throw new AppError(
         400,
         'invalid_request',
-        `the ${kind} limit must be a whole number or none`,
+        `the ${kind} limit must be a whole number up to ${MAX_LIMIT}, or none`,
       );
     }
   }
