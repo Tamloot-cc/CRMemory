@@ -4,7 +4,7 @@ variable "region" {
 }
 
 variable "name" {
-  description = "Prefix for every resource name. Function names start with it, and the GitHub deploy role may only touch functions named <name>-*. Unique per AWS account: IAM role names are account-wide, so a deployment in a second region needs a name of its own."
+  description = "Prefix for every resource name. Function names start with it, and the GitHub deploy role is limited to resources named with it where AWS names them in ARNs. Unique per AWS account: IAM role names are account-wide, so a deployment in a second region needs a name of its own."
   type        = string
   default     = "retainer"
 
@@ -186,13 +186,25 @@ variable "alarm_email" {
 }
 
 variable "github_repository" {
-  description = "owner/repo whose deploy workflow may ship code (assume the deploy role). Null creates no role."
+  description = "owner/repo whose Deploy to AWS workflow may apply this stack and ship code (assume the deploy role). Null creates no role."
   type        = string
   default     = null
 }
 
 variable "github_subject_prefix" {
   description = "The repository part of the OIDC subject GitHub signs for its jobs. Null means repo:<github_repository>. A repository with immutable subject claims uses repo:<owner>@<owner-id>/<repo>@<repo-id>: see docs/aws.md."
+  type        = string
+  default     = null
+}
+
+variable "state_bucket" {
+  description = "S3 bucket of this deployment's Terraform state, which the GitHub deploy role may read and write. Null means the one state-bucket.sh creates."
+  type        = string
+  default     = null
+}
+
+variable "state_key" {
+  description = "Key of this deployment's Terraform state in state_bucket. Null means the one state-bucket.sh prints: <name>/<region>/terraform.tfstate."
   type        = string
   default     = null
 }

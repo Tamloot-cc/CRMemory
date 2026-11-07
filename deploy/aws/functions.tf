@@ -42,8 +42,12 @@ resource "aws_iam_role_policy_attachment" "functions_vpc" {
 }
 
 locals {
-  accounts    = var.google_client_id != null
-  auth_secret = one(random_id.auth_secret[*].hex)
+  accounts = var.google_client_id != null
+
+  # random_id does not mark its values sensitive; these do, so no plan or
+  # apply prints them.
+  suppression_key = sensitive(random_id.suppression_key.hex)
+  auth_secret     = sensitive(one(random_id.auth_secret[*].hex))
 
   public_origin = (
     var.domain_name != null && var.domain_certificate_validated
@@ -72,7 +76,7 @@ locals {
       env = merge({
         RETAINER_RUNTIME_DATABASE_URL = local.runtime_database_url
         RETAINER_PUBLIC_ORIGIN        = local.public_origin
-        RETAINER_SUPPRESSION_KEY      = random_id.suppression_key.hex
+        RETAINER_SUPPRESSION_KEY      = local.suppression_key
         RETAINER_WEB_DIR              = "/var/task/web"
         RETAINER_DB_POOL_MAX          = tostring(var.api_db_pool_max)
         }, local.accounts ? {
