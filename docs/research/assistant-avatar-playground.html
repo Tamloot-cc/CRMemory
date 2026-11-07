@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Logo Avatar Modes</title>
+<style>
+  :root { --bg: #f6f7f8; --fg: #111B21; --muted: #5b6770; --tile: #111B21; --card: #fff; --border: #e3e6e8; --accent: #111B21; --bubble: #eef1f3;
+    --ring-page: transparent; --ring-page-fixed: url(#g-lime-forest-fixed); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #0b1216; --fg: #e8eef1; --muted: #93a1a9; --card: #111B21; --border: #22303a; --accent: #D4FA38; --bubble: #1a262e; --ring-page: #D4FA38; --ring-page-fixed: none; }
+  }
+  :root[data-theme="dark"] { --bg: #0b1216; --fg: #e8eef1; --muted: #93a1a9; --card: #111B21; --border: #22303a; --accent: #D4FA38; --bubble: #1a262e; --ring-page: #D4FA38; --ring-page-fixed: none; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px 16px; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; display: grid; gap: 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0; }
+  p { margin: 0; color: var(--muted); }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; display: grid; gap: 14px; min-width: 0; align-content: start; }
+  .top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 720px) { .top { grid-template-columns: minmax(0, 1fr); } }
+  .stage { display: grid; place-items: center; gap: 10px; padding: 8px 0; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+  button { font: inherit; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; }
+  button[aria-pressed="true"] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  .status { color: var(--muted); min-height: 1.5em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+  .cell { display: grid; align-content: start; justify-items: center; gap: 6px; padding: 10px 4px; border: 1px solid var(--border); border-radius: 10px; }
+  .cell b { font-weight: 600; font-size: 13px; }
+  .cell span { color: var(--muted); font-size: 12px; text-align: center; }
+  .sizes { display: flex; align-items: center; gap: 8px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+  .controls .group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .controls .group > span { color: var(--muted); margin-right: 2px; }
+
+  /* Comparison: fixed light and dark panels, whatever the page theme. */
+  .compare { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  @media (max-width: 720px) { .compare { grid-template-columns: minmax(0, 1fr); } }
+  .panel { border-radius: 10px; padding: 14px; display: grid; gap: 10px; border: 1px solid var(--border); }
+  .panel.light { background: #ffffff; color: #111B21; }
+  .panel.dark { background: #0b1216; color: #e8eef1; }
+  .panel h3 { margin: 0; font-size: 13px; }
+  .panel .row { display: flex; align-items: center; gap: 10px; }
+  .panel .row .name { width: 132px; font-size: 12px; opacity: .75; }
+  .panel .row .name code { font-size: 11px; }
+
+  /* Light-mode options: always on white, whatever the page theme. */
+  .options { background: #ffffff; color: #111B21; border-radius: 10px; border: 1px solid var(--border); padding: 14px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .option { border: 1px solid #e3e6e8; border-radius: 10px; padding: 12px; display: grid; gap: 8px; }
+  .option .head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .option b { font-size: 13px; display: inline-flex; align-items: center; gap: 8px; }
+  .option .num { display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 0 6px; border-radius: 999px; background: #111B21; color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .option .ratio { font-size: 11px; color: #5b6770; white-space: nowrap; }
+  .option p { color: #5b6770; font-size: 12px; }
+  .option .marks { display: flex; align-items: center; gap: 10px; }
+  .option .chat { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+  .option .chat .bubble { background: #eef1f3; color: #111B21; padding: 4px 10px; border-radius: 10px; }
+  .options .tile.badge { background: var(--badge-bg, #111B21); border-radius: var(--badge-r, 50%); }
+  .options .tile.badge svg { width: 64%; height: 64%; }
+
+  /* Chat mock */
+  .chat { display: grid; gap: 12px; }
+  .msg { display: flex; gap: 8px; align-items: flex-start; }
+  .msg.user { justify-content: flex-end; }
+  .bubble { background: var(--bubble); padding: 8px 12px; border-radius: 12px; max-width: 80%; }
+  .msg.user .bubble { background: var(--accent); color: var(--bg); }
+  .botline { display: grid; gap: 2px; }
+  .botline small { color: var(--muted); }
+
+  /* ---------- The avatar ---------- */
+  .tile { background: var(--tile); border-radius: 22%; display: grid; place-items: center; flex-shrink: 0; }
+  .avatar { --ring-now: #D4FA38; --ring-fixed: none; }
+  .avatar svg { display: block; overflow: visible; width: 64%; height: 64%; filter: var(--mark-filter, none); }
+  .no-tile .tile, .tile.bare { background: transparent; }
+  .no-tile .avatar { --ring-now: var(--ring-page); --ring-fixed: var(--ring-page-fixed); }
+  .no-tile .avatar svg, .tile.bare svg { width: 92%; height: 92%; }
+  .avatar g, .avatar rect { transform-box: view-box; }
+  /* Layers, outermost first, so each mode animates its own transform without fighting another:
+     .breathe  scale around the ring's centre (whole mark)
+     .turn     rotation around the ring's centre (whole mark)
+     .move     translation of the square
+     .pop      scale around the square's centre
+     .upright  counter-rotation that keeps the square level while .turn spins */
+  .breathe, .turn { transform-origin: 400px 400px; }
+  .pop, .upright { transform-origin: 613px 177px; }
+
+  /* idle: nearly still; the square drifts out of the gap and back. */
+  .m-idle .move { animation: drift 3.2s ease-in-out infinite; }
+  @keyframes drift { 0%, 100% { transform: none; } 50% { transform: translate(14px, -14px); } }
+
+  /* listening: the whole mark breathes in, attentive. */
+  .m-listening .breathe { animation: breathe 1.6s ease-in-out infinite; }
+  @keyframes breathe { 0%, 100% { transform: none; } 50% { transform: scale(1.06); } }
+
+  /* thinking: steady spin, square upright (E). */
+  .m-thinking .turn { animation: spin 1.4s linear infinite; }
+  .m-thinking .upright { animation: unspin 1.4s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes unspin { to { transform: rotate(-360deg); } }
+
+  /* working: one eased turn, then a beat at rest, again and again (F). */
+  .m-working .turn { animation: step 1.6s cubic-bezier(.65,0,.35,1) infinite; }
+  .m-working .upright { animation: unstep 1.6s cubic-bezier(.65,0,.35,1) infinite; }
+  @keyframes step { 0% { transform: none; } 70%, 100% { transform: rotate(360deg); } }
+  @keyframes unstep { 0% { transform: none; } 70%, 100% { transform: rotate(-360deg); } }
+
+  /* reading: the gap scans back and forth, pausing at each end, square upright. */
+  .m-reading .turn { animation: scan 2.4s ease-in-out infinite; }
+  .m-reading .upright { animation: unscan 2.4s ease-in-out infinite; }
+  @keyframes scan { 0%, 8% { transform: none; } 30%, 42% { transform: rotate(-35deg); } 70%, 82% { transform: rotate(25deg); } 100% { transform: none; } }
+  @keyframes unscan { 0%, 8% { transform: none; } 30%, 42% { transform: rotate(35deg); } 70%, 82% { transform: rotate(-25deg); } 100% { transform: none; } }
+
+  /* saving: the square goes into the ring, the ring takes it in, then a new one comes back out. */
+  .m-saving .move { animation: stash 2.2s cubic-bezier(.5,0,.3,1) infinite; }
+  .m-saving .pop { animation: stash-size 2.2s ease-in-out infinite; }
+  .m-saving .breathe { animation: gulp 2.2s ease-out infinite; }
+  @keyframes stash {
+    0%, 12% { transform: none; }
+    45%, 62% { transform: translate(-213px, 223px); }
+    63% { transform: translate(-213px, 223px); }
+    64%, 72% { transform: none; }
+    100% { transform: none; }
+  }
+  @keyframes stash-size {
+    0% { transform: none; }
+    12% { transform: scale(1.12); }
+    45%, 55% { transform: scale(.75); }
+    62%, 63% { transform: scale(0); }
+    64%, 66% { transform: scale(0); }
+    84% { transform: scale(1.1); }
+    92%, 100% { transform: none; }
+  }
+  @keyframes gulp { 0%, 52% { transform: none; } 58% { transform: scale(1.06); } 70%, 100% { transform: none; } }
+
+  /* done (once): a quick turn and a pop of the square, then rest. */
+  .m-done .turn { animation: spin .9s cubic-bezier(.2,.8,.2,1) 1; }
+  .m-done .upright { animation: unspin .9s cubic-bezier(.2,.8,.2,1) 1; }
+  .m-done .pop { animation: pop .9s ease-out 1; }
+  @keyframes pop { 0%, 55% { transform: none; } 75% { transform: scale(1.3); } 100% { transform: none; } }
+
+  /* error (once): the square shakes in the gap. */
+  .m-error .move { animation: shake .6s ease-in-out 1; }
+  @keyframes shake { 0%, 100% { transform: none; } 15% { transform: translateX(-28px); } 35% { transform: translateX(24px); } 55% { transform: translateX(-16px); } 75% { transform: translateX(10px); } }
+
+  /* Reduced motion: no animation, a still pose per mode. The label carries the rest. */
+  .still .avatar * { animation: none !important; }
+  .still .m-saving .move { transform: translate(-213px, 223px); }
+  .still .m-saving .pop { transform: scale(.75); }
+  .still .m-thinking .turn, .still .m-working .turn { transform: rotate(-90deg); }
+  .still .m-thinking .upright, .still .m-working .upright { transform: rotate(90deg); }
+  .still .m-reading .turn { transform: rotate(-35deg); }
+  .still .m-reading .upright { transform: rotate(35deg); }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>The logo as the assistant's avatar</h1>
+    <p>No eyes: each mode is a motion of the ring (the memory) and the square (the thing kept). Switching waits for the current cycle to finish, so it never jumps.</p>
+  </div>
+
+  <section>
+    <div class="controls">
+      <div class="group" id="themeGroup"><span>Theme</span></div>
+      <div class="group" id="bgGroup"><span>Background</span></div>
+    </div>
+  </section>
+
+  <div class="top">
+    <section>
+      <h2>Try a mode</h2>
+      <div class="stage" id="stage"></div>
+      <div class="status" id="stageStatus"></div>
+      <div class="buttons" id="modeButtons"></div>
+      <label><input type="checkbox" id="still"> Reduce motion (still pose per mode)</label>
+    </section>
+
+    <section>
+      <h2>In a chat</h2>
+      <div class="chat">
+        <div class="msg user"><div class="bubble">What did we agree with Acme last week?</div></div>
+        <div class="msg">
+          <div id="chatAvatar"></div>
+          <div class="botline">
+            <div class="bubble" id="chatBubble">…</div>
+            <small id="chatStatus"></small>
+          </div>
+        </div>
+      </div>
+      <div class="buttons"><button type="button" id="play">Play a sample turn</button></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Without a background, light and dark</h2>
+    <p>On light pages the ring fades from lime to forest green, fixed to the page (11b); on dark pages it is lime. The coral square stays the same on both.</p>
+    <div class="compare" id="compare"></div>
+  </section>
+
+  <section>
+    <h2>More options for light mode</h2>
+    <p>The shortlist, numbered as before. 11b and 12b keep the gradient fixed to the page instead of turning with the ring; 11b is now the light-mode default. 31 is the ink ring that was the default before. Each shows thinking, reading and saving at 28px, thinking at 56px, and a chat line.</p>
+    <div class="options" id="options"></div>
+  </section>
+
+  <section>
+    <h2>All modes at once</h2>
+    <p>At 28px (chat size) and 64px. Done and error play once; click a cell to replay.</p>
+    <div class="grid" id="grid"></div>
+  </section>
+</main>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="g-lime-forest" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D4FA38"/><stop offset=".55" stop-color="#1F5E3A"/>
+    </linearGradient>
+    <linearGradient id="g-split" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D4FA38"/><stop offset=".42" stop-color="#D4FA38"/><stop offset=".42" stop-color="#134A6B"/><stop offset="1" stop-color="#134A6B"/>
+    </linearGradient>
+    <linearGradient id="g-plum-coral" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4B1D3F"/><stop offset="1" stop-color="#FF603F"/>
+    </linearGradient>
+    <!-- Fixed versions: same direction, in the 800 viewBox's own space (the ring spans about 100..700). -->
+    <linearGradient id="g-lime-forest-fixed" gradientUnits="userSpaceOnUse" x1="700" y1="100" x2="100" y2="700">
+      <stop offset="0" stop-color="#D4FA38"/><stop offset=".55" stop-color="#1F5E3A"/>
+    </linearGradient>
+    <linearGradient id="g-lime-ink-fixed" gradientUnits="userSpaceOnUse" x1="700" y1="100" x2="100" y2="700">
+      <stop offset="0" stop-color="#D4FA38"/><stop offset=".6" stop-color="#134A6B"/>
+    </linearGradient>
+    <linearGradient id="g-lime-ink" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D4FA38"/><stop offset=".6" stop-color="#134A6B"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<template id="mark">
+  <svg viewBox="0 0 800 800" fill="none" aria-hidden="true">
+    <g class="breathe">
+      <circle class="inner" cx="400" cy="400" r="160" style="fill: none; stroke: var(--inner-stroke, none); stroke-width: var(--inner-w, 0)"/>
+      <g class="turn">
+      <path class="ring" style="fill: var(--ring-now); stroke: var(--ring-stroke, none); stroke-width: var(--ring-stroke-w, 0); stroke-linejoin: round; stroke-dasharray: var(--ring-dash, none); paint-order: stroke" d="M 528 128.67731389 A 300 300 0 1 0 665.32998323 260 L 549.74979132 260 A 205 205 0 1 1 528 239.87192626 Z"/>
+      <g class="move"><g class="pop"><rect class="upright" x="565" y="129" width="96" height="96" style="fill: var(--square-now, #FF603F); stroke: var(--square-stroke, none); stroke-width: var(--square-stroke-w, 0); paint-order: stroke"/></g></g>
+    </g></g>
+  </svg>
+</template>
+
+<script>
+  const MODES = {
+    idle:      { label: 'Idle',      note: 'Square drifts in the gap', loop: true,  drives: '.move' },
+    listening: { label: 'Listening', note: 'Whole mark breathes',      loop: true,  drives: '.breathe' },
+    thinking:  { label: 'Thinking',  note: 'Steady spin (E)',           loop: true,  drives: '.turn' },
+    reading:   { label: 'Reading',   note: 'Gap scans back and forth', loop: true,  drives: '.turn' },
+    saving:    { label: 'Saving',    note: 'Square goes into the ring', loop: true, drives: '.move' },
+    working:   { label: 'Working',   note: 'Turn and settle (F)',       loop: true,  drives: '.turn' },
+    done:      { label: 'Done',      note: 'Quick turn, square pops',   loop: false, drives: '.turn' },
+    error:     { label: 'Error',     note: 'Square shakes',             loop: false, drives: '.move' },
+  };
+
+  function makeTile(size) {
+    const tile = document.createElement('div');
+    tile.className = 'tile avatar';
+    tile.style.width = tile.style.height = size + 'px';
+    tile.appendChild(document.getElementById('mark').content.firstElementChild.cloneNode(true));
+    addFixedLayer(tile.querySelector('svg'));
+    return tile;
+  }
+
+  // A ring whose gradient stays put on the page: a rect filled with --ring-fixed, masked by a
+  // copy of the ring that turns exactly like the visible one (same classes, same animations).
+  // With --ring-fixed: none it draws nothing and the ring's own fill (--ring-now) shows.
+  function addFixedLayer(svg) {
+    addFixedLayer.seq = (addFixedLayer.seq ?? 0) + 1;
+    const NS = 'http://www.w3.org/2000/svg';
+    const id = 'ring-mask-' + addFixedLayer.seq;
+    const box = (el) => { el.setAttribute('x', '-100'); el.setAttribute('y', '-100'); el.setAttribute('width', '1000'); el.setAttribute('height', '1000'); };
+    const mask = document.createElementNS(NS, 'mask');
+    mask.setAttribute('id', id);
+    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    box(mask);
+    const copy = svg.querySelector('.breathe').cloneNode(true);
+    copy.querySelector('.move')?.remove();
+    copy.querySelector('.inner')?.remove();
+    copy.querySelector('.ring').setAttribute('style', 'fill: #fff');
+    mask.appendChild(copy);
+    const fill = document.createElementNS(NS, 'rect');
+    box(fill);
+    fill.setAttribute('style', 'fill: var(--ring-fixed, none)');
+    fill.setAttribute('mask', `url(#${id})`);
+    svg.prepend(mask, fill);
+  }
+
+  /** One avatar: the mark on a tile (or not), and a mode that changes without a jump. */
+  function createAvatar(size, { onSettle } = {}) {
+    const tile = makeTile(size);
+
+    let mode = 'idle', pending = null, waiting = null;
+    const apply = (m) => {
+      tile.classList.remove('m-' + mode);
+      void tile.offsetWidth; // restart one-shot animations when the same mode is set again
+      mode = m;
+      tile.classList.add('m-' + m);
+      if (!MODES[m].loop) {
+        const el = tile.querySelector(MODES[m].drives);
+        const finish = () => { if (mode === m) set(pending ?? 'idle'); };
+        el.addEventListener('animationend', finish, { once: true });
+        if (document.body.classList.contains('still')) setTimeout(finish, 900);
+      }
+      onSettle?.(m);
+    };
+    // Loops end each cycle at rest, so the next mode starts from the same pose.
+    const set = (next) => {
+      pending = null;
+      if (waiting) { waiting.abort(); waiting = null; }
+      const cur = MODES[mode];
+      if (next === mode && cur.loop) return;
+      const el = tile.querySelector(cur.drives);
+      const running = el.getAnimations().length > 0;
+      if (!running || document.body.classList.contains('still')) return apply(next);
+      pending = next;
+      waiting = new AbortController();
+      const go = () => { waiting?.abort(); waiting = null; const n = pending; pending = null; if (n) apply(n); };
+      el.addEventListener(cur.loop ? 'animationiteration' : 'animationend', go, { once: true, signal: waiting.signal });
+    };
+    tile.classList.add('m-idle');
+    return { el: tile, set, get mode() { return mode; }, get pending() { return pending; } };
+  }
+
+  // Stage
+  const stageStatus = document.getElementById('stageStatus');
+  const stage = createAvatar(160, { onSettle: (m) => { stageStatus.textContent = 'Now: ' + MODES[m].label; render(); } });
+  document.getElementById('stage').appendChild(stage.el);
+  const btns = document.getElementById('modeButtons');
+  const render = () => {
+    for (const b of btns.children) b.setAttribute('aria-pressed', String(b.dataset.mode === stage.mode));
+    if (stage.pending) stageStatus.textContent = `Now: ${MODES[stage.mode].label} → ${MODES[stage.pending].label} after this cycle`;
+  };
+  for (const [key, m] of Object.entries(MODES)) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = m.label; b.dataset.mode = key;
+    b.onclick = () => { stage.set(key); render(); };
+    btns.appendChild(b);
+  }
+  render();
+
+  // Grid
+  const grid = document.getElementById('grid');
+  for (const [key, m] of Object.entries(MODES)) {
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    const sizes = document.createElement('div');
+    sizes.className = 'sizes';
+    const replay = [];
+    for (const size of [28, 64]) {
+      const tile = makeTile(size);
+      tile.classList.add('m-' + key);
+      sizes.appendChild(tile);
+      replay.push(tile);
+    }
+    cell.append(sizes);
+    cell.insertAdjacentHTML('beforeend', `<b>${m.label}</b><span>${m.note}</span>`);
+    cell.onclick = () => replay.forEach((t) => { t.classList.remove('m-' + key); void t.offsetWidth; t.classList.add('m-' + key); });
+    grid.appendChild(cell);
+  }
+
+  // Chat
+  const chatStatus = document.getElementById('chatStatus');
+  const chatBubble = document.getElementById('chatBubble');
+  const chat = createAvatar(28);
+  document.getElementById('chatAvatar').appendChild(chat.el);
+  chatBubble.textContent = 'Ask me about a customer.';
+  let run = 0;
+  document.getElementById('play').onclick = async () => {
+    const id = ++run;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const steps = [
+      ['listening', 'Listening…', '…', 1600],
+      ['thinking', 'Thinking…', '…', 2800],
+      ['reading', 'Reading Acme’s memory…', '…', 4800],
+      ['working', 'Writing the answer…', 'On Oct 30 you agreed to a 12-month renewal at the current price, with onboarding for two new teams.', 3200],
+      ['saving', 'Saving a note to Acme…', 'On Oct 30 you agreed to a 12-month renewal at the current price, with onboarding for two new teams.', 4400],
+      ['done', 'Done', 'On Oct 30 you agreed to a 12-month renewal at the current price, with onboarding for two new teams.', 1200],
+    ];
+    for (const [mode, status, text, ms] of steps) {
+      if (id !== run) return;
+      chat.set(mode); chatStatus.textContent = status; chatBubble.textContent = text;
+      await wait(ms);
+    }
+    if (id === run) chatStatus.textContent = '';
+  };
+
+  // Comparison panels: the fixed lime-to-forest gradient (11b) on a light page, lime on a dark one.
+  const LIME = ['Lime', '#D4FA38'], FOREST = ['Lime → forest (11b)', 'fixed', 'g-lime-forest-fixed'];
+  const SHOW = ['thinking', 'reading', 'saving'];
+  const compare = document.getElementById('compare');
+  const panel = (cls, title, rings) => {
+    const el = document.createElement('div');
+    el.className = 'panel ' + cls;
+    el.innerHTML = `<h3>${title}</h3>`;
+    for (const [name, hex, fixed] of rings) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<div class="name">${name} <code>${hex}</code></div>`;
+      for (const [mode, size] of [[SHOW[0], 28], [SHOW[1], 28], [SHOW[2], 28], ['thinking', 56]]) {
+        const t = makeTile(size);
+        t.classList.add('bare', 'm-' + mode);
+        t.style.setProperty('--ring-now', fixed ? 'transparent' : hex);
+        t.style.setProperty('--ring-fixed', fixed ? `url(#${fixed})` : 'none');
+        t.title = MODES[mode].label;
+        row.appendChild(t);
+      }
+      el.appendChild(row);
+    }
+    compare.appendChild(el);
+  };
+  panel('light', 'Light page', [FOREST]);
+  panel('dark', 'Dark page', [LIME]);
+
+  // Light-mode options. vars: CSS variables on each mark; cls: extra tile class.
+  const OPTIONS = [
+    { id: '2', name: 'Lime in a round ink badge', ratio: 'lime on ink 14.6:1', note: 'The dark-mode look, carried on a circle instead of a square tile.',
+      cls: 'badge', vars: { '--ring-now': '#D4FA38' } },
+    { id: '11', name: 'Lime fading to forest', ratio: 'forest end 7.7:1', note: 'Gradient turns with the ring: the lime end follows the gap.',
+      vars: { '--ring-now': 'url(#g-lime-forest)' } },
+    { id: '11b', name: 'Lime fading to forest, fixed', ratio: 'forest end 7.7:1', note: 'Same gradient, fixed to the page: lime stays top right while the ring turns through it.',
+      fixed: 'g-lime-forest-fixed' },
+    { id: '12', name: 'Lime fading to petrol', ratio: 'petrol end 9.5:1', note: 'Gradient turns with the ring: the lime end follows the gap.',
+      vars: { '--ring-now': 'url(#g-lime-ink)' } },
+    { id: '12b', name: 'Lime fading to petrol, fixed', ratio: 'petrol end 9.5:1', note: 'Same gradient, fixed to the page: lime stays top right while the ring turns through it.',
+      fixed: 'g-lime-ink-fixed' },
+    { id: '13', name: 'Lime sticker', ratio: 'shadow 17.5:1', note: 'Lime with a hard ink shadow offset to one side, like a sticker.',
+      vars: { '--ring-now': '#D4FA38', '--mark-filter': 'drop-shadow(1.5px 1.5px 0 #111B21)' } },
+    { id: '14', name: 'Ink ring, lime square', ratio: '17.5:1', note: 'Brings lime back as the square, with an ink edge so it shows.',
+      vars: { '--ring-now': '#111B21', '--square-now': '#D4FA38', '--square-stroke': '#111B21', '--square-stroke-w': '28px' } },
+    { id: '21', name: 'Lime on a slate tile', ratio: 'lime on slate 6.4:1', note: 'The tile, but a lighter gray, so it weighs less on a white page.',
+      cls: 'badge', vars: { '--ring-now': '#D4FA38', '--badge-bg': '#4A5560', '--badge-r': '22%' } },
+    { id: '22', name: 'Lime in a teal badge', ratio: 'lime on teal 7.7:1', note: 'A round badge in deep teal instead of ink.',
+      cls: 'badge', vars: { '--ring-now': '#D4FA38', '--badge-bg': '#0E4F57' } },
+    { id: '31', name: 'Ink', ratio: '17.5:1', note: 'The previous light-mode choice: a near-black ring with the coral square.',
+      vars: { '--ring-now': '#111B21' } },
+  ];
+
+  const options = document.getElementById('options');
+  for (const o of OPTIONS) {
+    const card = document.createElement('div');
+    card.className = 'option';
+    card.innerHTML = `<div class="head"><b><span class="num">${o.id}</span>${o.name}</b><span class="ratio">${o.ratio}</span></div><p>${o.note}</p>`;
+    const style = (t) => {
+      t.classList.add(o.cls ?? 'bare');
+      t.style.setProperty('--ring-fixed', 'none');
+      for (const [k, v] of Object.entries(o.vars ?? {})) t.style.setProperty(k, v);
+      if (o.fixed) { t.style.setProperty('--ring-now', 'transparent'); t.style.setProperty('--ring-fixed', `url(#${o.fixed})`); }
+      return t;
+    };
+    const marks = document.createElement('div');
+    marks.className = 'marks';
+    for (const [mode, size] of [['thinking', 28], ['reading', 28], ['saving', 28], ['thinking', 56]]) {
+      const t = style(makeTile(size));
+      t.classList.add('m-' + mode);
+      t.title = MODES[mode].label;
+      marks.appendChild(t);
+    }
+    const line = document.createElement('div');
+    line.className = 'chat';
+    const a = style(makeTile(28)); a.classList.add('m-thinking');
+    line.append(a);
+    line.insertAdjacentHTML('beforeend', '<span class="bubble">Reading Acme’s memory…</span>');
+    card.append(marks, line);
+    options.appendChild(card);
+  }
+
+  // Theme, background and ring choices
+  const choice = (groupId, options, initial, onPick) => {
+    const g = document.getElementById(groupId);
+    const buttons = options.map(([label, value]) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = label;
+      b.onclick = () => { for (const x of buttons) x.setAttribute('aria-pressed', String(x === b)); onPick(value); };
+      b.setAttribute('aria-pressed', String(value === initial));
+      g.appendChild(b);
+      return b;
+    });
+    onPick(initial);
+  };
+  choice('themeGroup', [['System', null], ['Light', 'light'], ['Dark', 'dark']], null, (v) => {
+    if (v) document.documentElement.dataset.theme = v; else delete document.documentElement.dataset.theme;
+  });
+  choice('bgGroup', [['None', true], ['Tile', false]], true, (v) => document.body.classList.toggle('no-tile', v));
+
+  // Reduced motion
+  const still = document.getElementById('still');
+  still.checked = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const applyStill = () => document.body.classList.toggle('still', still.checked);
+  still.onchange = applyStill; applyStill();
+</script>
+</body>
+</html>

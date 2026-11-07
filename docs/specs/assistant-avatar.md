@@ -5,6 +5,11 @@ Status: **implemented** November 7, 2026 as `LogoMark` in
 agent chat that will use it as the assistant's avatar is not built yet.
 Open questions are in section 7.
 
+The moods and colors were worked out in a standalone page,
+[`assistant-avatar-playground.html`](../research/assistant-avatar-playground.html).
+Open it in a browser to try each mood, the chat timing and the light-mode
+options that were set aside. It is a design tool, not the shipped code.
+
 ## 1. Why
 
 The web app needs two things that move: a loading indicator, and an avatar

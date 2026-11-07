@@ -36,10 +36,11 @@ hold the design, the data model, the write rules and the web app's design.
 
 ## Research
 
-| Research                                                                     | About                                                             |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| [Retainer and Twenty](research/twenty-comparison.md)                         | How Retainer's schema differs from Twenty's CRM schema            |
-| [Schema expressiveness coverage](research/schema-expressiveness-coverage.md) | How well Retainer models ten CRMs, plus Affinity. Predates PR #26 |
+| Research                                                                     | About                                                                                |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [Retainer and Twenty](research/twenty-comparison.md)                         | How Retainer's schema differs from Twenty's CRM schema                               |
+| [Schema expressiveness coverage](research/schema-expressiveness-coverage.md) | How well Retainer models ten CRMs, plus Affinity. Predates PR #26                    |
+| [Animated mark playground](research/assistant-avatar-playground.html)        | The page used to design the mark's moods and light-mode colors; open it in a browser |
 
 ## Concepts in one minute
 
