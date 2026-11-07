@@ -1,8 +1,9 @@
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { queryInputSchema } from '../../src/records/query.js';
-import { type Caller, createRecord, deleteRecord, findRecords } from '../../src/records/service.js';
+import { createRecord, deleteRecord, findRecords } from '../../src/records/service.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
 

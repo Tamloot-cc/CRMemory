@@ -3,8 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { loadConfig } from '../config.js';
 import { AppError } from '../errors.js';
-import { getWorkspace } from '../workspaces/workspaces.js';
 import { createSql, type Sql } from './client.js';
+import { getWorkspace } from './workspaces.js';
 
 /**
  * A read-only login role for browsing the database with Drizzle Studio or

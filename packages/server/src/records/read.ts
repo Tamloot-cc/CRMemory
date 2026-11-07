@@ -2,7 +2,7 @@ import { type Actor, isCollectionRelation, type PresentedRecord } from '@retaine
 import type { Tx } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { eventDetails } from '../memory/event-links.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import type { CompiledSchema } from '../schema/compiled.js';
 import { resolveRecordId } from './write.js';
 
 export type { PresentedRecord } from '@retainer/shared';

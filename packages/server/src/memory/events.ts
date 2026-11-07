@@ -33,8 +33,8 @@ import {
   type CompiledSchema,
   eventText,
   objectNamed,
-} from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+} from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 import {
   type AddLinksInput,
   addLinks,

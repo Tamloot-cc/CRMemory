@@ -12,7 +12,7 @@ import {
   writeDeveloperView,
   writePath,
 } from './developer.js';
-import { RecordView } from './record-view.js';
+import { RecordView } from './records/record-view.js';
 
 vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<typeof import('@tanstack/react-router')>()),

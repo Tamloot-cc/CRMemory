@@ -1,6 +1,6 @@
+import type { SchemaState } from '../schema/types.js';
 import { applyOperations } from './apply.js';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
-import type { SchemaState } from './types.js';
 import { issueKey, validateSchema } from './validate.js';
 
 /** A built-in element an upgrade could not add, and why. */

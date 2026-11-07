@@ -1,6 +1,8 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { idParam, readBody } from '../../http/request.js';
+import type { AppEnv } from '../../http/response.js';
 import { addLinksInputSchema } from '../../memory/event-links.js';
 import { logEventInputSchema } from '../../memory/events.js';
 import { rememberInputSchema } from '../../memory/facts.js';
@@ -17,8 +19,6 @@ import {
 } from '../../memory/service.js';
 import { queryInputSchema } from '../../records/query.js';
 import { findEvents } from '../../records/service.js';
-import type { AppEnv } from '../http.js';
-import { idParam, readBody } from '../request.js';
 
 /** Events and facts (6.2, 6.4), on the same services as the MCP tools. */
 export function memoryRoutes(app: Hono<AppEnv>, sql: Sql) {

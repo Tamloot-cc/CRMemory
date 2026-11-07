@@ -1,5 +1,6 @@
 import { type Actor, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
 import { type LogEventInput, logEventInputSchema } from '../../src/memory/events.js';
@@ -11,8 +12,8 @@ import {
   retractEventFor,
   retractFactFor,
 } from '../../src/memory/service.js';
+import { reviewPage } from '../../src/reads/review.js';
 import {
-  type Caller,
   createRecord,
   decideAssertion,
   deleteRecord,
@@ -24,7 +25,6 @@ import {
 } from '../../src/records/service.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import type { SchemaOperation } from '../../src/schema-engine/operations.js';
-import { reviewPage } from '../../src/web/review.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
 import { addNoteType } from '../helpers/note-type.js';

@@ -1,5 +1,6 @@
 import { BASE_EVENT_TYPE_IDS, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
+import type { SchemaState } from '../schema/types.js';
 import {
   BASE_EVENT_OPERATIONS,
   BASE_OBJECT_IDS,
@@ -10,7 +11,6 @@ import {
 import { applyOperations, coreFieldUniversalId, deriveUuid } from './apply.js';
 import { classifyOp, diffSchemas, isDestructive } from './diff.js';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
-import type { SchemaState } from './types.js';
 import { validateSchema } from './validate.js';
 
 const EMPTY: SchemaState = { objects: [] };

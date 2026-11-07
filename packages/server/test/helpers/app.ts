@@ -4,7 +4,8 @@ import { type AppDeps, createApp } from '../../src/api/app.js';
 import { createApiKey } from '../../src/auth/keys.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
 import type { ApiKeyScope } from '../../src/db/schema.js';
-import { createWorkspace, type Workspace } from '../../src/workspaces/workspaces.js';
+import type { Workspace } from '../../src/db/workspaces.js';
+import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import type { TestDatabase } from './db.js';
 
 export type TestResponse<T = any> = {

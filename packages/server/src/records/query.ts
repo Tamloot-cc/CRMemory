@@ -17,15 +17,11 @@ import { z } from 'zod';
 import { jsonValue, type Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { directAttachments } from '../memory/events.js';
-import {
-  type CompiledObject,
-  type CompiledSchema,
-  objectNamed,
-} from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
-import { relationReferences } from '../web/reads.js';
+import { type CompiledObject, type CompiledSchema, objectNamed } from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 import { normalizeDomain, normalizeEmail, normalizePhone } from './derive.js';
 import { presentRecords, RECORD_COLUMNS, type RecordRow } from './read.js';
+import { relationReferences } from './references.js';
 import { plainPrefixQuery } from './search-sql.js';
 import { normalizeFieldValue } from './values.js';
 

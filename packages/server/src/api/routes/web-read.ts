@@ -3,13 +3,13 @@ import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
 import { AppError, notFound } from '../../errors.js';
+import { idParam, limitParam } from '../../http/request.js';
+import type { AppEnv } from '../../http/response.js';
 import { attachedEventPage } from '../../memory/events.js';
+import { assertionById, assertions, enrichedRecord } from '../../reads/records.js';
+import { factsPage, reviewPage } from '../../reads/review.js';
 import { findLiveRecord, getRecord } from '../../records/read.js';
 import { withRead } from '../../records/service.js';
-import { assertionById, assertions, enrichedRecord } from '../../web/reads.js';
-import { factsPage, reviewPage } from '../../web/review.js';
-import type { AppEnv } from '../http.js';
-import { idParam, limitParam } from '../request.js';
 
 export function webReadRoutes(app: Hono<AppEnv>, sql: Sql) {
   app.get('/review', requireScope('read'), (c) =>

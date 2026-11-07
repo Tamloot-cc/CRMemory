@@ -6,7 +6,7 @@ import type {
   ObjectProps,
   ObjectState,
   SchemaState,
-} from './types.js';
+} from '../schema/types.js';
 
 function objectProps({
   id: _id,

@@ -2,13 +2,13 @@ import type { Actor, Session } from '@retainer/shared';
 import type { Context, Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
-import type { AppEnv } from '../api/http.js';
-import { readBody } from '../api/request.js';
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { inWorkspace } from '../db/tx.js';
 import { AppError } from '../errors.js';
-import type { Caller } from '../records/service.js';
+import { readBody } from '../http/request.js';
+import type { AppEnv } from '../http/response.js';
 import { hashApiKey } from './keys.js';
 export const SESSION_COOKIE = 'retainer_session';
 export async function lookupKey(sql: Sql, raw: string): Promise<Caller> {

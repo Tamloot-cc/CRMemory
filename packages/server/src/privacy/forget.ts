@@ -12,7 +12,7 @@ import {
   resolveRecordId,
   type WriteContext,
 } from '../records/write.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import type { CompiledSchema } from '../schema/compiled.js';
 import {
   requireSuppressionKey,
   suppress,

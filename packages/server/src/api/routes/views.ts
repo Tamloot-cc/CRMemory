@@ -1,6 +1,8 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { idParam, readBody } from '../../http/request.js';
+import type { AppEnv } from '../../http/response.js';
 import {
   createView,
   createViewSchema,
@@ -10,8 +12,6 @@ import {
   updateView,
   updateViewSchema,
 } from '../../views/service.js';
-import type { AppEnv } from '../http.js';
-import { idParam, readBody } from '../request.js';
 
 /** Saved views of an object's records (ARCHITECTURE.md 1.4). */
 export function viewRoutes(app: Hono<AppEnv>, sql: Sql) {

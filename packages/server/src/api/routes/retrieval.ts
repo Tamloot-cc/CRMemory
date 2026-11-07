@@ -1,12 +1,12 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import { idParam, readBody, zodError } from '../../http/request.js';
+import type { AppEnv } from '../../http/response.js';
 import { contextInputSchema } from '../../retrieval/context.js';
 import { searchInputSchema } from '../../retrieval/search.js';
 import { contextFor, searchFor, timelineFor } from '../../retrieval/service.js';
 import { timelineInputSchema } from '../../retrieval/timeline.js';
-import type { AppEnv } from '../http.js';
-import { idParam, readBody, zodError } from '../request.js';
 
 /** Query parameters that take a list, as comma-separated values. */
 const LIST_PARAMS = new Set(['types', 'fields', 'eventTypes']);

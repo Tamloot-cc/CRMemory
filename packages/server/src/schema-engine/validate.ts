@@ -5,7 +5,7 @@ import {
   relationTargetIds,
   type SchemaIssue,
   type SchemaState,
-} from './types.js';
+} from '../schema/types.js';
 
 const NAME_PATTERN = /^[a-z][a-zA-Z0-9]{0,62}$/;
 

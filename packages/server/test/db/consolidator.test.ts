@@ -1,15 +1,15 @@
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { factsOf, logEventFor, remember, retractFactFor } from '../../src/memory/service.js';
+import { reviewPage } from '../../src/reads/review.js';
 import {
-  type Caller,
   createRecord,
   dismissSuggestion,
   mergeRecord,
   withRead,
 } from '../../src/records/service.js';
-import { reviewPage } from '../../src/web/review.js';
 import { consolidateWorkspace } from '../../src/worker/consolidate.js';
 import { startWorker } from '../../src/worker/index.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';

@@ -298,7 +298,7 @@ It changes what is displayed, never what is sent.
 
 Phases 1 and 2 are web-only and fix most of what people see. Writing notes
 needs only the existing `POST /v1/events`. Phase 1 alone
-is a small change to `main.tsx`, `ui/shell.tsx` and `routes/objects.tsx`.
+is a small change to `main.tsx`, `ui/shell.tsx` and `routes/views/objects.tsx`.
 
 ## 7. Open questions
 

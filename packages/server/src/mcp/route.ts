@@ -1,10 +1,10 @@
 import { type AuthInfo, createMcpHandler } from '@modelcontextprotocol/server';
 import type { Hono } from 'hono';
-import type { AppEnv } from '../api/http.js';
 import { authenticate } from '../auth/middleware.js';
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
+import type { AppEnv } from '../http/response.js';
 import { log } from '../log.js';
-import type { Caller } from '../records/service.js';
 import { createMcpServer } from './server.js';
 
 /**

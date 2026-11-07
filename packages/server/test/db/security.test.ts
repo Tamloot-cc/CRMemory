@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
 import { logEventFor } from '../../src/memory/service.js';
-import { type Caller, createRecord } from '../../src/records/service.js';
+import { createRecord } from '../../src/records/service.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
 

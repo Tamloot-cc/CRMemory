@@ -7,6 +7,7 @@ import {
   sameActor,
 } from '@retainer/shared';
 import { z } from 'zod';
+import { type Caller, canApproveDestructive } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import { after, page } from '../db/pagination.js';
 import type { Tx } from '../db/tx.js';
@@ -14,10 +15,9 @@ import { AppError, forbidden, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';
 import { lockLinkTargets } from '../memory/event-links.js';
 import { findLiveRecord, getRecord } from '../records/read.js';
-import { type Caller, withRead, withWrite } from '../records/service.js';
+import { withRead, withWrite } from '../records/service.js';
 import type { WriteContext } from '../records/write.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
-import { canApproveDestructive } from '../schema-engine/engine.js';
+import type { CompiledSchema } from '../schema/compiled.js';
 
 /**
  * Comments (1.3): what people tell each other about a record. They sit

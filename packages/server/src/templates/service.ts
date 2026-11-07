@@ -1,6 +1,6 @@
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import { inWorkspace } from '../db/tx.js';
-import type { Caller } from '../records/service.js';
 import { type ApplyTemplateResult, applyTemplate } from './apply.js';
 import { listTemplates, type TemplateView } from './catalog.js';
 

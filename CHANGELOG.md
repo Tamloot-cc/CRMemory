@@ -6,8 +6,7 @@ include breaking changes.
 
 ## 0.1.0
 
-The first release: the whole of build order steps 1 to 6 in
-[ARCHITECTURE.md](ARCHITECTURE.md#10-build-order).
+The first release.
 
 ### Server (`@retainer/server`, Docker image)
 

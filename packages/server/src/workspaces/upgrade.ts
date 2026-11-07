@@ -3,8 +3,8 @@ import type { Sql } from '../db/client.js';
 import type { AppliedTemplate } from '../db/schema.js';
 import { inWorkspace, lockSchemaExclusive } from '../db/tx.js';
 import { log } from '../log.js';
+import { loadSchemaState } from '../schema/load.js';
 import { runSchemaChange, SYSTEM_ACTOR } from '../schema-engine/engine.js';
-import { loadSchemaState } from '../schema-engine/load.js';
 import type { SchemaOperation } from '../schema-engine/operations.js';
 import {
   PROTECTED_FIELD_IDS,

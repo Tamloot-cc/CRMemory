@@ -173,37 +173,37 @@ const routeTree = rootRoute.addChildren([
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
-    component: lazyRouteComponent(() => import('./routes/review.js'), 'ReviewPage'),
+    component: lazyRouteComponent(() => import('./routes/review/review.js'), 'ReviewPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/sign-in',
-    component: lazyRouteComponent(() => import('./routes/review.js'), 'ReviewPage'),
+    component: lazyRouteComponent(() => import('./routes/review/review.js'), 'ReviewPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/o/$object',
-    component: lazyRouteComponent(() => import('./routes/objects.js'), 'ObjectPage'),
+    component: lazyRouteComponent(() => import('./routes/views/objects.js'), 'ObjectPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/activity',
-    component: lazyRouteComponent(() => import('./routes/activity.js'), 'ActivityPage'),
+    component: lazyRouteComponent(() => import('./routes/events/activity.js'), 'ActivityPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/r/$id',
-    component: lazyRouteComponent(() => import('./routes/record.js'), 'RecordPage'),
+    component: lazyRouteComponent(() => import('./routes/records/record.js'), 'RecordPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/e/$id',
-    component: lazyRouteComponent(() => import('./routes/event.js'), 'EventPage'),
+    component: lazyRouteComponent(() => import('./routes/events/event.js'), 'EventPage'),
   }),
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/schema',
-    component: lazyRouteComponent(() => import('./routes/schema.js'), 'SchemaPage'),
+    component: lazyRouteComponent(() => import('./routes/schema/schema.js'), 'SchemaPage'),
   }),
 ]);
 const router = createRouter({ routeTree, basepath: '/app' });

@@ -7,9 +7,9 @@ import {
   type FieldSettings,
   type ObjectView,
 } from '@retainer/shared';
-import type { CompiledSchema } from './compiled.js';
+import type { CompiledSchema } from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 import { PROTECTED_OPTIONS } from './protection.js';
-import type { FieldState } from './types.js';
 
 export type { FieldView, ObjectView } from '@retainer/shared';
 

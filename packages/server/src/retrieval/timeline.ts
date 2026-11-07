@@ -12,10 +12,10 @@ import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { eventHistory, liveFactSource, presentSource, viaOf } from '../memory/events.js';
+import { factsPage } from '../reads/review.js';
 import { findLiveRecord } from '../records/read.js';
 import { references } from '../records/references.js';
-import { type CompiledObject, type CompiledSchema, eventText } from '../schema-engine/compiled.js';
-import { factsPage } from '../web/review.js';
+import { type CompiledObject, type CompiledSchema, eventText } from '../schema/compiled.js';
 
 /**
  * A record's unified timeline (8): its event history, the values asserted

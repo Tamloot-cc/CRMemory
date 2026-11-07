@@ -10,16 +10,16 @@ import {
   type ViewColumns,
 } from '@retainer/shared';
 import { z } from 'zod';
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import type { StoredViewConfig } from '../db/schema.js';
 import { inWorkspace, jsonValue, lockSchemaShared, type Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { checkAggregateOp } from '../records/aggregate.js';
 import { builtInNames, compileFilter, compileSort, queryInputSchema } from '../records/query.js';
-import type { Caller } from '../records/service.js';
 import { requireObject } from '../records/service.js';
-import { type CompiledObject, type CompiledSchema, getSchema } from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+import { type CompiledObject, type CompiledSchema, getSchema } from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 
 // ---------------------------------------------------------------------------
 // Input shapes. Fields are named as in the schema; semantic checks follow.

@@ -1,16 +1,11 @@
 import type { Actor, Via } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
 import { attachedEventPage, eventHistory, type LogEventInput } from '../../src/memory/events.js';
 import { logEventFor } from '../../src/memory/service.js';
-import {
-  type Caller,
-  createRecord,
-  deleteRecord,
-  patchRecord,
-  withRead,
-} from '../../src/records/service.js';
+import { createRecord, deleteRecord, patchRecord, withRead } from '../../src/records/service.js';
 import { contextFor } from '../../src/retrieval/service.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import type { SchemaOperation } from '../../src/schema-engine/operations.js';

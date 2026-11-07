@@ -1,11 +1,11 @@
 import { type Actor, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import type { LogEventInput } from '../../src/memory/events.js';
 import { factsOf, logEventFor, readEvent, remember } from '../../src/memory/service.js';
 import { keyId, PREVIOUS_KEYS_ENV, SUPPRESSION_KEY_ENV } from '../../src/privacy/suppression.js';
 import {
-  type Caller,
   createRecord,
   deleteRecord,
   forget,

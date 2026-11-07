@@ -1,10 +1,11 @@
 import type { Actor } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { inWorkspace, lockSchemaShared } from '../../src/db/tx.js';
 import { AppError } from '../../src/errors.js';
+import { reviewPage } from '../../src/reads/review.js';
 import {
-  type Caller,
   createRecord,
   decideAssertion,
   deleteRecord,
@@ -14,10 +15,9 @@ import {
   withRead,
 } from '../../src/records/service.js';
 import { lockRecord, UniqueConflictError, writeFields } from '../../src/records/write.js';
-import { getSchema } from '../../src/schema-engine/compiled.js';
+import { getSchema } from '../../src/schema/compiled.js';
 import { runSchemaChange } from '../../src/schema-engine/engine.js';
 import type { SchemaOperation } from '../../src/schema-engine/operations.js';
-import { reviewPage } from '../../src/web/review.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 
 const reviewQueue = (sql: Sql, caller: Caller, limit: number) =>
@@ -530,7 +530,7 @@ describe('deleted and merged records', () => {
   it('resolves a merged record ID to the surviving record', async () => {
     const survivor = await createRecord(app, as(AGENT), 'person', { emails: email() });
     const merged = await createRecord(app, as(AGENT), 'person', { emails: email() });
-    // Merging is build step 5; set the outcome directly to test resolution.
+    // Set a merge's outcome directly to test resolution.
     await db.owner`update records set merged_into_id = ${survivor.id}, deleted_at = now()
       where id = ${merged.id}`;
     expect((await readRecord(app, as(AGENT), merged.id)).id).toBe(survivor.id);

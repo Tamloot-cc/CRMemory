@@ -1,6 +1,7 @@
 import type { ContextPack, SearchResult, TimelinePage } from '@retainer/shared';
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
-import { type Caller, withRead } from '../records/service.js';
+import { withRead } from '../records/service.js';
 import { type ContextInput, contextPack } from './context.js';
 import { type SearchInput, search } from './search.js';
 import { type TimelineInput, timelinePage } from './timeline.js';

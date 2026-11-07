@@ -1,5 +1,6 @@
 import { BASE_EVENT_TYPE_IDS, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { describe, expect, it } from 'vitest';
+import type { SchemaState } from '../schema/types.js';
 import { SEED_OPERATIONS } from '../templates/base.js';
 import { BASE_OBJECT_IDS, BASE_OPERATIONS, TEMPLATES } from '../templates/index.js';
 import { definitionsFor } from '../workspaces/upgrade.js';
@@ -7,7 +8,6 @@ import { applyOperations } from './apply.js';
 import { classifyOp, diffSchemas } from './diff.js';
 import type { FieldDefinitionInput, ObjectDefinitionInput, SchemaOperation } from './operations.js';
 import { applyProtection } from './protection.js';
-import type { SchemaState } from './types.js';
 import { planUpgrade } from './upgrade.js';
 import { validateSchema } from './validate.js';
 

@@ -18,7 +18,7 @@ import {
 } from '../memory/events.js';
 import { getRecord } from '../records/read.js';
 import { references } from '../records/references.js';
-import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema/compiled.js';
 import { CHARS_PER_TOKEN, estimateTokens, fitSections, jsonLength } from './budget.js';
 
 /**

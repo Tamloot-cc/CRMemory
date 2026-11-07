@@ -1,6 +1,7 @@
 import type { RecordReference } from '@retainer/shared';
 import type { Tx } from '../db/tx.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import type { CompiledSchema } from '../schema/compiled.js';
+import type { PresentedRecord } from './read.js';
 
 /**
  * Labels of records a response mentions: relation targets, conflict holders,
@@ -30,4 +31,38 @@ export async function references(
       },
     ]),
   );
+}
+
+/**
+ * Labels for every record a page names: relation values and, for events,
+ * participants, their candidates and `about` records.
+ */
+export async function relationReferences(
+  tx: Tx,
+  schema: CompiledSchema,
+  records: PresentedRecord[],
+) {
+  const ids = records.flatMap((r) => {
+    const object = schema.objectsByName.get(r.object);
+    const related = (object?.activeFields.filter((f) => f.type === 'relation') ?? []).flatMap(
+      (f) => {
+        const value = r.fields[f.name];
+        return typeof value === 'string'
+          ? [value]
+          : Array.isArray(value)
+            ? (value as string[])
+            : [];
+      },
+    );
+    const event = r.event;
+    return event
+      ? [
+          ...related,
+          ...event.participants.matched.map((p) => p.recordId),
+          ...event.participants.unmatched.flatMap((p) => p.candidates ?? []),
+          ...event.about,
+        ]
+      : related;
+  });
+  return references(tx, schema, [...new Set(ids)]);
 }

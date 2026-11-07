@@ -1,7 +1,7 @@
 import type { Sql } from '../db/client.js';
 import { lockSchemaShared, type Tx } from '../db/tx.js';
-import { getSchema } from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+import { getSchema } from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 import { searchTextOf } from './derive.js';
 import { searchVector } from './search-sql.js';
 

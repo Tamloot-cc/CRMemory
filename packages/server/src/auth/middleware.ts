@@ -1,10 +1,10 @@
 import type { MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
-import { type AppEnv, errorResponse } from '../api/http.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
+import { type AppEnv, errorResponse } from '../http/response.js';
 import { lookupKey, requireWebHeader, SESSION_COOKIE } from './session.js';
 
 const BEARER = /^Bearer\s+(\S+)$/i;

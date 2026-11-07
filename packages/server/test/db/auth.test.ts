@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { AppEnv } from '../../src/api/http.js';
 import { createApiKey, listApiKeys, revokeApiKey } from '../../src/auth/keys.js';
 import { authenticate, requireScope } from '../../src/auth/middleware.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
+import type { AppEnv } from '../../src/http/response.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
 

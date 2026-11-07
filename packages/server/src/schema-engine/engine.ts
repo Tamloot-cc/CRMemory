@@ -1,14 +1,20 @@
 import type { Actor, SchemaChange as SchemaChangeView, SchemaOwner } from '@retainer/shared';
+import { canApproveDestructive } from '../caller.js';
 import type { ApiKeyScope, SchemaChangeStatus } from '../db/schema.js';
 import { jsonValue, lockSchemaExclusive, type Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
+import { loadSchemaState } from '../schema/load.js';
+import {
+  type DiffOp,
+  type SchemaIssue,
+  type SchemaState,
+  SchemaValidationError,
+} from '../schema/types.js';
 import { applyOperations } from './apply.js';
 import { diffSchemas, isDestructive } from './diff.js';
-import { loadSchemaState } from './load.js';
 import type { SchemaOperation } from './operations.js';
 import { checkExistingRecords, persistSchema, SchemaCheckError } from './persist.js';
 import { applyProtection } from './protection.js';
-import { type DiffOp, type SchemaIssue, type SchemaState, SchemaValidationError } from './types.js';
 import { issueKey, validateSchema } from './validate.js';
 
 /** The server's own actor, for seeding and upgrades. */
@@ -44,11 +50,6 @@ export function ownerFor(actor: Actor): SchemaOwner {
   if (actor.type === 'system') return 'system';
   if (actor.type === 'agent') return 'agent';
   return 'workspace';
-}
-
-/** Only a `user` actor with `admin` scope is a human approval (3). */
-export function canApproveDestructive(actor: Actor, scopes: readonly ApiKeyScope[]): boolean {
-  return actor.type === 'user' && scopes.includes('admin');
 }
 
 /**

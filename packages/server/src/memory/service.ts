@@ -5,13 +5,13 @@ import type {
   PresentedRecord,
   RetractEventResult,
 } from '@retainer/shared';
+import { type Caller, canApproveDestructive } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { claimIdempotencyKey, storeIdempotentResult } from '../idempotency.js';
 import { getRecord } from '../records/read.js';
-import { type Caller, eventsAmong, withRead, withWrite } from '../records/service.js';
+import { eventsAmong, withRead, withWrite } from '../records/service.js';
 import { softDeleteRecord } from '../records/write.js';
-import { canApproveDestructive } from '../schema-engine/engine.js';
 import type { AddLinksInput } from './event-links.js';
 import {
   addEventLinks,

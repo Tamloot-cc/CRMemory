@@ -3,7 +3,7 @@ import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import type { Handle } from '../memory/handles.js';
 import { identifiersFor } from '../records/derive.js';
-import type { FieldState } from '../schema-engine/types.js';
+import type { FieldState } from '../schema/types.js';
 
 /**
  * The suppression list (2.1): emails and phones erased by `forget`, and the

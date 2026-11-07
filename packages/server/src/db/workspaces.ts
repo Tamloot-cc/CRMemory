@@ -1,0 +1,55 @@
+import { AppError } from '../errors.js';
+import type { Sql } from './client.js';
+import type { Tx } from './tx.js';
+
+export type Workspace = {
+  id: string;
+  slug: string;
+  name: string;
+  schemaVersion: number;
+  templates: { name: string; version: number; appliedAt: string }[];
+  initializedAt: string | null;
+  createdAt: string;
+};
+
+type WorkspaceRow = {
+  id: string;
+  slug: string;
+  name: string;
+  schema_version: number;
+  templates: Workspace['templates'];
+  initialized_at: Date | null;
+  created_at: Date;
+};
+
+function toWorkspace(row: WorkspaceRow): Workspace {
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    schemaVersion: row.schema_version,
+    templates: row.templates,
+    initializedAt: row.initialized_at?.toISOString() ?? null,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+export async function getWorkspace(sql: Sql, idOrSlug: string): Promise<Workspace> {
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug);
+  const [row] = await sql<WorkspaceRow[]>`
+    select * from workspaces where ${isUuid ? sql`id = ${idOrSlug}` : sql`slug = ${idOrSlug}`}`;
+  if (!row) throw new AppError(404, 'not_found', `workspace "${idOrSlug}" not found`);
+  return toWorkspace(row);
+}
+
+/** The workspace of a workspace transaction (RLS shows only that one). */
+export async function readWorkspace(tx: Tx, id: string): Promise<Workspace> {
+  const [row] = await tx<WorkspaceRow[]>`select * from workspaces where id = ${id}`;
+  if (!row) throw new AppError(404, 'not_found', `workspace "${id}" not found`);
+  return toWorkspace(row);
+}
+
+export async function listWorkspaces(sql: Sql): Promise<Workspace[]> {
+  const rows = await sql<WorkspaceRow[]>`select * from workspaces order by created_at, id`;
+  return rows.map(toWorkspace);
+}
