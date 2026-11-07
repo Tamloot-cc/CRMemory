@@ -11,6 +11,11 @@ export type Caller = {
   scopes: readonly ApiKeyScope[];
   /** The signed-in person, in accounts mode. */
   userId?: string;
+  /**
+   * The person who connected the app, for an MCP OAuth token (accounts spec
+   * 4.7). The caller is still an agent: `userId` stays unset.
+   */
+  connectedBy?: string;
 };
 
 /** Only a `user` actor with `admin` scope is a human approval (3). */

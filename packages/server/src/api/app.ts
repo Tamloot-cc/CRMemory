@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { authenticate } from '../auth/middleware.js';
+import { OAUTH_SCOPES, oauthSettings } from '../auth/oauth-token.js';
 import { meRoute, sessionRoutes } from '../auth/session.js';
 import { publicOriginSchema } from '../config.js';
 import type { Sql } from '../db/client.js';
@@ -68,7 +69,30 @@ export function createApp(deps: AppDeps) {
   viewRoutes(v1, deps.sql);
   app.route('/v1', v1);
 
-  mcpRoute(app, deps.sql, { publicOrigin, rateLimit: limit });
+  // Accounts mode: apps connect to /mcp over OAuth as well as with API keys
+  // (accounts spec 4.7). The authorization server is Better Auth, under
+  // /account; this function only checks its tokens.
+  const oauth = deps.accountsSecret && publicOrigin ? oauthSettings(publicOrigin) : undefined;
+  if (oauth) {
+    // RFC 9728 protected resource metadata: static, so the API serves it.
+    const metadata = {
+      resource: oauth.resource,
+      authorization_servers: [oauth.issuer],
+      bearer_methods_supported: ['header'],
+      scopes_supported: [...OAUTH_SCOPES],
+      resource_name: 'Retainer',
+    };
+    for (const path of [
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+    ]) {
+      app.get(path, (c) => {
+        c.header('Cache-Control', 'public, max-age=3600');
+        return c.json(metadata);
+      });
+    }
+  }
+  mcpRoute(app, deps.sql, { publicOrigin, oauth, rateLimit: limit });
 
   if (deps.webDir) {
     const root = resolve(deps.webDir);

@@ -82,14 +82,22 @@ if (role === 'api' || role === 'all' || role === 'control') {
       : createApp({
           sql: pool(createApiSql(config, { max: config.RETAINER_DB_POOL_MAX })),
           webDir: config.RETAINER_WEB_DIR,
-          publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
+          // /account falls back to this origin too, so OAuth tokens it
+          // issues name the resource this app checks them for.
+          publicOrigin:
+            config.RETAINER_PUBLIC_ORIGIN ??
+            (accounts ? `http://localhost:${config.PORT}` : undefined),
           accountsSecret: config.RETAINER_AUTH_SECRET,
           rateLimit: { limit: rateLimitPerMinute(config) },
         });
   const fetch = (request: Request, env: Record<string, unknown>) => {
     if (accounts) {
       const { pathname } = new URL(request.url);
-      if (pathname === '/account' || pathname.startsWith('/account/')) {
+      if (
+        pathname === '/account' ||
+        pathname.startsWith('/account/') ||
+        pathname.startsWith('/.well-known/oauth-authorization-server')
+      ) {
         return accounts.fetch(request, env);
       }
     }

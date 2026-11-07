@@ -48,6 +48,11 @@ run "key_mode_has_no_purge_schedule" {
     condition     = length(aws_cloudwatch_event_rule.purge) == 0
     error_message = "Key mode has no control function and nothing to purge."
   }
+
+  assert {
+    condition     = length(aws_apigatewayv2_route.oauth_metadata) == 0
+    error_message = "Key mode has no OAuth authorization server."
+  }
 }
 
 run "accounts_mode_purges_deleted_workspaces_hourly" {
@@ -66,5 +71,13 @@ run "accounts_mode_purges_deleted_workspaces_hourly" {
   assert {
     condition     = aws_lambda_function.this["control"].timeout >= 300
     error_message = "The control function's timeout allows a long purge, as consolidate's does."
+  }
+
+  assert {
+    condition = alltrue([
+      for route in aws_apigatewayv2_route.oauth_metadata :
+      route.target == "integrations/${aws_apigatewayv2_integration.control[0].id}"
+    ]) && length(aws_apigatewayv2_route.oauth_metadata) == 2
+    error_message = "The authorization server's metadata goes to the control function."
   }
 }

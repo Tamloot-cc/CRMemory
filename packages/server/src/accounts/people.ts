@@ -66,7 +66,11 @@ type WorkspaceAccess = {
  * The person's access to a workspace, in one query. No role is a 404, the
  * same answer as a workspace that does not exist (4.4).
  */
-async function workspaceAccess(tx: Tx | Sql, person: Person, id: string): Promise<WorkspaceAccess> {
+export async function workspaceAccess(
+  tx: Tx | Sql,
+  person: Person,
+  id: string,
+): Promise<WorkspaceAccess> {
   const [row] = await tx<
     {
       organization_id: string;
@@ -399,6 +403,9 @@ export async function removeFromWorkspace(
     const target = await organizationRole(tx, workspace.organizationId, userId);
     if (target && isOrganizationManager(target)) throw organizationAdminConflict();
     await tx`delete from workspace_members where workspace_id = ${workspace.id} and user_id = ${userId}`;
+    // Apps they connected here stop working too, and stay disconnected if
+    // they are added back (4.5).
+    await endGrants(tx, tx`oc.user_id = ${userId} and oc.reference_id = ${workspace.id}`);
   });
 }
 
@@ -618,6 +625,11 @@ export async function removeFromOrganization(
     await tx`
       delete from organization_members
       where organization_id = ${organizationId} and user_id = ${userId}`;
+    await endGrants(
+      tx,
+      tx`oc.user_id = ${userId} and oc.reference_id in
+        (select id from workspaces where organization_id = ${organizationId})`,
+    );
   });
 }
 
@@ -868,4 +880,25 @@ export async function invitationsFor(sql: Sql, person: Person) {
     invitedBy: row.invited_by,
     expiresAt: row.expires_at.toISOString(),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// OAuth grants (4.7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Deletes consents and revokes their refresh tokens, so their apps lose
+ * access at the next request and cannot regain it without consenting again.
+ */
+export async function endGrants(tx: Tx, where: ReturnType<Sql>): Promise<number> {
+  const ended = await tx<{ client_id: string; user_id: string; reference_id: string }[]>`
+    delete from oauth_consents oc where ${where}
+    returning oc.client_id, oc.user_id, oc.reference_id`;
+  for (const grant of ended) {
+    await tx`
+      update oauth_refresh_tokens set revoked = now()
+      where client_id = ${grant.client_id} and user_id = ${grant.user_id}
+        and reference_id = ${grant.reference_id} and revoked is null`;
+  }
+  return ended.length;
 }
