@@ -29,3 +29,9 @@ test -d "$out/package/drizzle"
 # -y keeps pnpm's symlinks as links instead of copying their targets.
 (cd "$out/package" && zip -qry -X "$out/retainer.zip" .)
 echo "Built $out/retainer.zip ($(du -h "$out/retainer.zip" | cut -f1))"
+
+# deploy.sh uploads the zip directly, which Lambda accepts up to 50 MB.
+if [ "$(wc -c <"$out/retainer.zip")" -gt $((50 * 1024 * 1024)) ]; then
+  echo "The package is over Lambda's 50 MB upload limit." >&2
+  exit 1
+fi

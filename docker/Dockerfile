@@ -4,7 +4,7 @@
 FROM --platform=$BUILDPLATFORM node:22-slim AS build
 RUN corepack enable
 WORKDIR /app
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml .pnpmfile.cjs package.json tsconfig.base.json ./
 COPY packages ./packages
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @retainer/shared build && pnpm --filter @retainer/sdk build && pnpm --filter @retainer/web build && pnpm --filter @retainer/server build
