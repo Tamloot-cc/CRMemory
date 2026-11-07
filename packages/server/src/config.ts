@@ -17,15 +17,21 @@ export const publicOriginSchema = z
   }, 'use an http(s) origin without credentials, a path, query or fragment')
   .transform((value) => new URL(value).origin);
 
+/**
+ * The role the API and workers run as (created by drizzle/0001_security.sql).
+ * It owns no tables and has no BYPASSRLS, so row-level security applies.
+ */
+export const RUNTIME_ROLE = 'retainer_app';
+
 const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
-const passwordOf = (url: string) => decodeURIComponent(new URL(url).password);
+
+/** The decoded password of a database URL. */
+export const passwordOf = (url: string) => decodeURIComponent(new URL(url).password);
+const userOf = (url: string) => decodeURIComponent(new URL(url).username);
 
 const configSchema = z
   .object({
-    RETAINER_PUBLIC_ORIGIN: z.preprocess(
-      (value) => (value === '' ? undefined : value),
-      publicOriginSchema.optional(),
-    ),
+    RETAINER_PUBLIC_ORIGIN: z.preprocess(emptyToUndefined, publicOriginSchema.optional()),
     RETAINER_WEB_DIR: z.string().optional(),
     /**
      * The migration role, which owns the tables. Migrations, boot tasks and the
@@ -34,16 +40,21 @@ const configSchema = z
      */
     DATABASE_URL: z.preprocess(emptyToUndefined, z.url().optional()),
     /**
-     * A login as the runtime role itself (`retainer_app`), for the API and
-     * workers (accounts spec 4.9). With it they hold no credential that can
-     * become the owner. The owner sets this password on boot or migration,
-     * so the database needs no separate setup.
+     * A login as the runtime role itself, for the API and workers (accounts
+     * spec 4.9), so their connections can never act as the owner. The owner
+     * sets this password on boot or migration, so the database needs no
+     * separate setup. Printable ASCII only: SCRAM would otherwise normalize it.
      */
     RETAINER_RUNTIME_DATABASE_URL: z.preprocess(
       emptyToUndefined,
       z
         .url()
-        .refine((value) => URL.canParse(value) && passwordOf(value) !== '', 'include the password')
+        .refine((value) => URL.canParse(value) && userOf(value) === RUNTIME_ROLE, {
+          message: `log in as ${RUNTIME_ROLE}`,
+        })
+        .refine((value) => URL.canParse(value) && /^[\x21-\x7e]+$/.test(passwordOf(value)), {
+          message: 'include a password of printable ASCII without spaces',
+        })
         .optional(),
     ),
     RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
@@ -62,17 +73,14 @@ const configSchema = z
      * `forget`; read from the environment where it is used.
      */
     RETAINER_SUPPRESSION_KEY: z.preprocess(
-      (value) => (value === '' ? undefined : value),
+      emptyToUndefined,
       z.string().min(32, 'use at least 32 characters').optional(),
     ),
     /**
      * Earlier suppression keys, comma-separated, still checked so a rotation
      * keeps erased handles and event identities suppressed (6.4).
      */
-    RETAINER_SUPPRESSION_PREVIOUS_KEYS: z.preprocess(
-      (value) => (value === '' ? undefined : value),
-      z.string().optional(),
-    ),
+    RETAINER_SUPPRESSION_PREVIOUS_KEYS: z.preprocess(emptyToUndefined, z.string().optional()),
   })
   .refine((config) => config.DATABASE_URL || config.RETAINER_RUNTIME_DATABASE_URL, {
     path: ['DATABASE_URL'],

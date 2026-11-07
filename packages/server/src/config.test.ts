@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { loadConfig, ownerDatabaseUrl, publicOriginSchema } from './config.js';
-import { RUNTIME_ROLE, runtimeConnection } from './db/client.js';
+import { loadConfig, ownerDatabaseUrl, publicOriginSchema, RUNTIME_ROLE } from './config.js';
+import { runtimeConnection } from './db/client.js';
 
 describe('public browser origin configuration', () => {
   it('normalizes an explicit origin and allows an unset Compose variable', () => {
@@ -47,13 +47,14 @@ describe('database URLs', () => {
     });
   });
 
-  it('refuses a runtime URL without a password or for another role', () => {
-    expect(() =>
-      loadConfig({ RETAINER_RUNTIME_DATABASE_URL: 'postgres://retainer_app@localhost/test' }),
-    ).toThrow('include the password');
-    const owner = loadConfig({
-      RETAINER_RUNTIME_DATABASE_URL: 'postgres://retainer:pw@localhost/test',
-    });
-    expect(() => runtimeConnection(owner)).toThrow('must log in as retainer_app, not "retainer"');
+  it('refuses a runtime URL for another role, or without a usable password', () => {
+    const load = (url: string) => () => loadConfig({ RETAINER_RUNTIME_DATABASE_URL: url });
+    expect(load('postgres://retainer:pw@localhost/test')).toThrow('log in as retainer_app');
+    for (const url of [
+      'postgres://retainer_app@localhost/test',
+      'postgres://retainer_app:two%20words@localhost/test',
+      'postgres://retainer_app:p%C3%A4ss@localhost/test',
+    ])
+      expect(load(url)).toThrow('include a password of printable ASCII');
   });
 });

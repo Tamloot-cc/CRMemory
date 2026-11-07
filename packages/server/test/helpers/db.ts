@@ -19,6 +19,12 @@ export type TestDatabase = {
   owner: Sql;
   /** Opens another pool on this database; closed by `drop`. */
   connect: (options?: SqlOptions) => Sql;
+  /**
+   * Opens a one-connection pool on another URL, such as another role's
+   * login; closed by `drop`. Each call connects afresh, so it picks up the
+   * role's current password and defaults.
+   */
+  connectUrl: (url: string) => Sql;
   drop: () => Promise<void>;
 };
 
@@ -60,6 +66,11 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     owner,
     connect: (options) => {
       const sql = createSql(url, options);
+      pools.push(sql);
+      return sql;
+    },
+    connectUrl: (other) => {
+      const sql = createSql(other, { max: 1 });
       pools.push(sql);
       return sql;
     },

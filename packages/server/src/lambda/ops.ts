@@ -48,6 +48,8 @@ export type OpsResult =
 
 export function createOpsHandler(config: Config) {
   setLogLevel(config.LOG_LEVEL);
+  // Every operator task needs the owner; fail at init without it.
+  const databaseUrl = ownerDatabaseUrl(config);
   return async (event: unknown): Promise<OpsResult> => {
     const parsed = opsEvent.safeParse(event);
     if (!parsed.success) {
@@ -59,7 +61,6 @@ export function createOpsHandler(config: Config) {
     // Operator commands connect as the migration role, like the CLI.
     // `max: 1`, because the deploy lock and the search rebuild are session
     // locks; the workspace upgrade runs on the same connection.
-    const databaseUrl = ownerDatabaseUrl(config);
     if (parsed.data.command === 'migrate') {
       const sql = createSql(databaseUrl, { max: 1, keepConnections: true });
       try {

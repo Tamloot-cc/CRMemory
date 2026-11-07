@@ -1,4 +1,3 @@
-import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApiKey } from '../../src/auth/keys.js';
 import { loadConfig } from '../../src/config.js';
@@ -9,6 +8,7 @@ import { createApiHandler } from '../../src/lambda/api.js';
 import { createOpsHandler } from '../../src/lambda/ops.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
 import { useTestDatabase } from '../helpers/db.js';
+import { context, httpEvent } from '../helpers/lambda.js';
 
 // Credentials (accounts spec 4.9, 8): the API and workers log in as the
 // runtime role itself and can never become the owner. The role is
@@ -16,7 +16,6 @@ import { useTestDatabase } from '../helpers/db.js';
 // again at the end.
 
 const db = useTestDatabase();
-const pools: postgres.Sql[] = [];
 let ownerRole: string;
 let workspaceId: string;
 
@@ -25,12 +24,6 @@ function runtimeUrl(password: string) {
   url.username = RUNTIME_ROLE;
   url.password = password;
   return url.toString();
-}
-
-function connectAs(url: string) {
-  const sql = postgres(url, { max: 1, onnotice: false });
-  pools.push(sql);
-  return sql;
 }
 
 const PASSWORD = 'runtime-test-password-1';
@@ -43,13 +36,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await Promise.all(pools.map((sql) => sql.end()));
   await db.owner.unsafe(`alter role ${RUNTIME_ROLE} nologin password null`);
 });
 
 describe('the runtime login', () => {
   it('logs in as the runtime role, with no other role to become', async () => {
-    const sql = connectAs(runtimeUrl(PASSWORD));
+    const sql = db.connectUrl(runtimeUrl(PASSWORD));
     const [who] = await sql<{ user: string }[]>`select current_user as user`;
     expect(who?.user).toBe(RUNTIME_ROLE);
     const [flags] = await db.owner`
@@ -67,7 +59,7 @@ describe('the runtime login', () => {
   });
 
   it('cannot become the owner', async () => {
-    const sql = connectAs(runtimeUrl(PASSWORD));
+    const sql = db.connectUrl(runtimeUrl(PASSWORD));
     await expect(sql.unsafe(`set role "${ownerRole}"`)).rejects.toMatchObject({ code: '42501' });
     await expect(sql.unsafe(`set session authorization "${ownerRole}"`)).rejects.toMatchObject({
       code: '42501',
@@ -75,7 +67,7 @@ describe('the runtime login', () => {
   });
 
   it('cannot change the schema', async () => {
-    const sql = connectAs(runtimeUrl(PASSWORD));
+    const sql = db.connectUrl(runtimeUrl(PASSWORD));
     const denied = { code: '42501' };
     await expect(sql`create table public.intruder (id int)`).rejects.toMatchObject(denied);
     await expect(sql`create schema intruder`).rejects.toMatchObject(denied);
@@ -85,7 +77,7 @@ describe('the runtime login', () => {
   });
 
   it('stays under row-level security and cannot read keys', async () => {
-    const sql = connectAs(runtimeUrl(PASSWORD));
+    const sql = db.connectUrl(runtimeUrl(PASSWORD));
     const [none] = await sql<{ count: number }[]>`select count(*)::int as count from object_types`;
     expect(none?.count).toBe(0);
     const [own] = await inWorkspace(
@@ -99,11 +91,11 @@ describe('the runtime login', () => {
 
   it('refuses the old password once a new one is set', async () => {
     await setRuntimeLogin(db.owner, 'runtime-test-password-2');
-    await expect(connectAs(runtimeUrl(PASSWORD))`select 1`).rejects.toMatchObject({
+    await expect(db.connectUrl(runtimeUrl(PASSWORD))`select 1`).rejects.toMatchObject({
       code: '28P01',
     });
     await setRuntimeLogin(db.owner, PASSWORD);
-    const [ok] = await connectAs(runtimeUrl(PASSWORD))`select 1 as ok`;
+    const [ok] = await db.connectUrl(runtimeUrl(PASSWORD))`select 1 as ok`;
     expect(ok?.ok).toBe(1);
   });
 
@@ -114,7 +106,7 @@ describe('the runtime login', () => {
       setRuntimeLogin(second, PASSWORD),
       setRuntimeLogin(db.owner, PASSWORD),
     ]);
-    const [ok] = await connectAs(runtimeUrl(PASSWORD))`select 1 as ok`;
+    const [ok] = await db.connectUrl(runtimeUrl(PASSWORD))`select 1 as ok`;
     expect(ok?.ok).toBe(1);
   });
 
@@ -153,7 +145,6 @@ describe('functions on separate logins', () => {
       LOG_LEVEL: 'error',
     });
     const sql = createRuntimeSql(config, { max: 1 });
-    pools.push(sql);
     const [who] = await sql<{ user: string }[]>`select current_user as user`;
     expect(who?.user).toBe(RUNTIME_ROLE);
 
@@ -165,41 +156,30 @@ describe('functions on separate logins', () => {
     });
     const api = createApiHandler(config, sql);
     const res = await api(
-      {
-        version: '2.0',
-        routeKey: '$default',
-        rawPath: '/v1/me',
-        rawQueryString: '',
-        headers: { host: 'localhost', authorization: `Bearer ${key}` },
-        requestContext: {
-          http: { method: 'GET', path: '/v1/me', protocol: 'HTTP/1.1', sourceIp: '192.0.2.1' },
-          stage: '$default',
-        },
-        isBase64Encoded: false,
-      } as never,
-      {} as never,
+      httpEvent('GET', '/v1/me', { headers: { authorization: `Bearer ${key}` } }),
+      context,
     );
     expect(res).toMatchObject({ statusCode: 200 });
+    await sql.end();
     await setRuntimeLogin(db.owner, PASSWORD);
   });
 
-  it('cannot run operator commands without the owner URL', async () => {
-    const ops = createOpsHandler(
-      loadConfig({ RETAINER_RUNTIME_DATABASE_URL: runtimeUrl(PASSWORD), LOG_LEVEL: 'error' }),
-    );
-    await expect(ops({ command: 'cli', args: ['workspace', 'list'] })).rejects.toThrow(
-      'DATABASE_URL is required',
-    );
+  it('cannot run operator commands without the owner URL', () => {
+    const config = loadConfig({
+      RETAINER_RUNTIME_DATABASE_URL: runtimeUrl(PASSWORD),
+      LOG_LEVEL: 'error',
+    });
+    expect(() => createOpsHandler(config)).toThrow('DATABASE_URL is required');
   });
 });
 
 describe('scramVerifier', () => {
   it('builds the verifier Postgres stores', () => {
     const salt = Buffer.alloc(16, 1);
-    const verifier = scramVerifier('pencil', salt, 4096);
+    const verifier = scramVerifier('pencil', salt);
     expect(verifier).toMatch(
       /^SCRAM-SHA-256\$4096:AQEBAQEBAQEBAQEBAQEBAQ==\$[A-Za-z0-9+/]{43}=:[A-Za-z0-9+/]{43}=$/,
     );
-    expect(scramVerifier('pencil', salt, 4096)).toBe(verifier);
+    expect(scramVerifier('pencil', salt)).toBe(verifier);
   });
 });

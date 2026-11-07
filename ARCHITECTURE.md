@@ -1565,8 +1565,9 @@ routes. They do not change the assertion-backed write rules.
   behind the application's own checks. Runtime roles must not own tables or
   have `BYPASSRLS`; migrations use a separate role. On AWS the API and
   workers log in as `retainer_app` itself and are never given the owner's
-  password. A container does the same when `RETAINER_RUNTIME_DATABASE_URL`
-  is set, and otherwise switches to it from the owner's login. Tenant
+  password. In a container, which needs the owner for its startup tasks,
+  `RETAINER_RUNTIME_DATABASE_URL` gives the API's and workers' connections
+  that login; without it they switch to it from the owner's login. Tenant
   foreign keys must include `workspace_id` (or equivalent enforced checks),
   since independent UUID foreign keys do not prevent cross-workspace
   references. Validate field/object compatibility in addition to tenant
