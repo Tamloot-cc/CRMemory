@@ -1,4 +1,5 @@
-# Key mode and accounts mode against mocked providers: no AWS account needed.
+# Key mode, accounts mode and the GitHub deploy role against mocked
+# providers: no AWS account needed.
 # Run with `terraform test` from deploy/aws.
 
 mock_provider "aws" {
@@ -62,6 +63,19 @@ run "key_mode_keeps_every_function_without_internet" {
     condition     = length(aws_apigatewayv2_route.control) == 0
     error_message = "Key mode has no /account route."
   }
+
+  assert {
+    condition = alltrue([
+      for key, variable in {
+        api_suppression_key  = aws_lambda_function.this["api"].environment[0].variables["RETAINER_SUPPRESSION_KEY"]
+        api_database_url     = aws_lambda_function.this["api"].environment[0].variables["RETAINER_RUNTIME_DATABASE_URL"]
+        consolidate_database = aws_lambda_function.this["consolidate"].environment[0].variables["RETAINER_RUNTIME_DATABASE_URL"]
+        ops_owner_database   = aws_lambda_function.this["ops"].environment[0].variables["DATABASE_URL"]
+        ops_runtime_database = aws_lambda_function.this["ops"].environment[0].variables["RETAINER_RUNTIME_DATABASE_URL"]
+      } : issensitive(variable)
+    ])
+    error_message = "Generated secrets in the functions' environment are sensitive, so no plan prints them."
+  }
 }
 
 run "accounts_mode_gives_only_control_a_route_out" {
@@ -122,5 +136,52 @@ run "accounts_mode_gives_only_control_a_route_out" {
   assert {
     condition     = toset(keys(aws_apigatewayv2_route.control)) == toset(["ANY /account", "ANY /account/{proxy+}"])
     error_message = "/account and everything under it go to the control function."
+  }
+
+  assert {
+    condition = alltrue([
+      issensitive(aws_lambda_function.this["api"].environment[0].variables["RETAINER_AUTH_SECRET"]),
+      issensitive(aws_lambda_function.this["control"].environment[0].variables["RETAINER_AUTH_SECRET"]),
+      issensitive(aws_lambda_function.this["control"].environment[0].variables["RETAINER_GOOGLE_CLIENT_SECRET"]),
+      issensitive(aws_lambda_function.this["control"].environment[0].variables["RETAINER_CONTROL_DATABASE_URL"]),
+      issensitive(aws_lambda_function.this["ops"].environment[0].variables["RETAINER_CONTROL_DATABASE_URL"]),
+    ])
+    error_message = "Accounts mode's secrets are sensitive, so no plan prints them."
+  }
+}
+
+run "github_role_cannot_change_its_own_permissions" {
+  command = apply
+
+  variables {
+    github_repository = "example/retainer"
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for statement in jsondecode(aws_iam_role_policy.github_deploy[0].policy).Statement : [
+        for action in flatten([statement.Action]) :
+        !contains(["*", "iam:*", "iam:PutRolePolicy", "iam:CreatePolicy", "iam:CreatePolicyVersion", "iam:CreateUser"], action)
+      ]
+    ]))
+    error_message = "The deploy role grants no wildcard and no way to write IAM policies."
+  }
+
+  assert {
+    condition = alltrue([
+      for statement in jsondecode(aws_iam_role_policy.github_deploy[0].policy).Statement :
+      statement.Resource == aws_iam_role.functions.arn
+      if contains(flatten([statement.Action]), "iam:PassRole")
+    ])
+    error_message = "The deploy role passes only the functions' role."
+  }
+
+  assert {
+    condition = alltrue([
+      for statement in jsondecode(aws_iam_role_policy.github_deploy[0].policy).Statement :
+      statement.Condition["ArnEquals"]["iam:PolicyARN"] == aws_iam_role_policy_attachment.functions_vpc.policy_arn
+      if contains(flatten([statement.Action]), "iam:AttachRolePolicy")
+    ])
+    error_message = "The deploy role attaches only the functions' VPC policy."
   }
 }
