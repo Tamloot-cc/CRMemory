@@ -391,6 +391,11 @@ describe('invitations', () => {
     expect(
       await db.owner`select 1 from organization_members where user_id = ${invitee.userId}`,
     ).toHaveLength(1);
+
+    // An accepted link still expires after its seven days.
+    await db.owner`update invitations set expires_at = now() - interval '1 minute' where id = ${id}`;
+    const expired = await app.account(`/account/invitations/${token}`, { cookie: invitee.cookie });
+    expect(expired.status).toBe(404);
   });
 
   it('refuses someone signed in with another address, and a withdrawn invitation', async () => {

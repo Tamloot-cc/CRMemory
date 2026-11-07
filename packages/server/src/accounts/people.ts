@@ -681,7 +681,8 @@ async function findInvitation(sql: Sql | Tx, person: Person, tokenOrId: string) 
     join organizations o on o.id = i.organization_id
     left join users u on u.id = i.invited_by
     where ${byId ? sql`i.id = ${tokenOrId} and i.email = ${person.email.toLowerCase()}` : sql`i.token_hash = ${hashToken(tokenOrId)}`}`;
-  if (!row || row.revoked_at || (!row.accepted_at && row.expires_at <= new Date())) {
+  // Accepted or not, a link stops working after its seven days (accounts spec 4.5).
+  if (!row || row.revoked_at || row.expires_at <= new Date()) {
     throw new AppError(404, 'not_found', 'This invitation has expired or was withdrawn.');
   }
   return row;
