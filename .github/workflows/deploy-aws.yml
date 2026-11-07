@@ -1,9 +1,9 @@
 name: Deploy to AWS
 
 # Applies deploy/aws with Terraform, then ships the current commit with
-# deploy/aws/deploy.sh (docs/aws.md, From GitHub Actions). Runs by hand from
-# main only, in the GitHub Environment "production", whose variables and
-# secrets hold Terraform's inputs and where the state lives.
+# deploy/aws/deploy.sh (docs/aws.md, From GitHub Actions). Runs by hand, in
+# the GitHub Environment "production", which only main may use; its
+# variables and secrets hold Terraform's inputs and where the state lives.
 #
 # Terraform's output stays in files on the runner. The log shows the plan's
 # summary line, and on failure only the error lines.
@@ -21,18 +21,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  branch:
-    name: Check the branch
-    runs-on: ubuntu-latest
-    steps:
-      - if: github.ref != 'refs/heads/main'
-        run: |
-          echo "::error::Deploy from main only."
-          exit 1
-
   ci:
     name: CI
-    needs: branch
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/ci.yml
 
   deploy:
@@ -47,13 +38,13 @@ jobs:
     env:
       TF_IN_AUTOMATION: "1"
       TF_INPUT: "0"
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
     steps:
       - name: Check the environment's variables
         env:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
-          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
         run: |
           err=0
           for var in AWS_ROLE_ARN AWS_REGION TF_STATE_BUCKET TF_STATE_KEY; do
@@ -80,8 +71,6 @@ jobs:
       - name: Terraform init
         working-directory: deploy/aws
         env:
-          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
           TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
         run: |
           terraform init -no-color \
@@ -103,6 +92,8 @@ jobs:
           TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
           TF_VAR_google_client_id: ${{ vars.GOOGLE_CLIENT_ID }}
           TF_VAR_google_client_secret: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          TF_VAR_state_bucket: ${{ vars.TF_STATE_BUCKET }}
+          TF_VAR_state_key: ${{ vars.TF_STATE_KEY }}
           ALLOW_DESTROY: ${{ inputs.allow_destroy }}
         run: |
           # Unset environment values arrive empty: leave those to the defaults.
@@ -117,14 +108,21 @@ jobs:
             exit 1
           fi
           grep -E '^(Plan: |No changes\.)' plan.log || echo "Only output values change."
-          echo "changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          [ "$code" -eq 2 ] || exit 0
 
-          destroyed="$(terraform show -json tfplan | jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | .address')"
+          terraform show -json tfplan > plan.json
+          own="$(jq -r '.resource_changes[]? | select(.address | test("^aws_iam_role(_policy)?\\.github_deploy\\b")) | select(.change.actions != ["no-op"]) | .address' plan.json)"
+          if [ -n "$own" ]; then
+            echo "::error::The plan changes this workflow's own role, which only an operator can apply: run terraform apply locally first."
+            exit 1
+          fi
+          destroyed="$(jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | .address' plan.json)"
           if [ -n "$destroyed" ] && [ "$ALLOW_DESTROY" != true ]; then
             echo "::error::The plan destroys or replaces resources. Run again with allow_destroy to apply it."
             echo "$destroyed"
             exit 1
           fi
+          echo "changes=true" >> "$GITHUB_OUTPUT"
 
       - name: Terraform apply
         if: steps.plan.outputs.changes == 'true'

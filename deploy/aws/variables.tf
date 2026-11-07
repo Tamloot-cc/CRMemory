@@ -196,3 +196,15 @@ variable "github_subject_prefix" {
   type        = string
   default     = null
 }
+
+variable "state_bucket" {
+  description = "S3 bucket of this deployment's Terraform state, which the GitHub deploy role may read and write. Null means the one state-bucket.sh creates."
+  type        = string
+  default     = null
+}
+
+variable "state_key" {
+  description = "Key of this deployment's Terraform state in state_bucket. Null means the one state-bucket.sh prints: <name>/<region>/terraform.tfstate."
+  type        = string
+  default     = null
+}

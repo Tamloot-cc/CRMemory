@@ -157,14 +157,35 @@ run "github_role_cannot_change_its_own_permissions" {
     github_repository = "example/retainer"
   }
 
+  override_resource {
+    target = aws_iam_role.github_deploy
+    values = { arn = "arn:aws:iam::123456789012:role/retainer-github-deploy" }
+  }
+
   assert {
     condition = alltrue(flatten([
       for statement in jsondecode(aws_iam_role_policy.github_deploy[0].policy).Statement : [
         for action in flatten([statement.Action]) :
-        !contains(["*", "iam:*", "iam:PutRolePolicy", "iam:CreatePolicy", "iam:CreatePolicyVersion", "iam:CreateUser"], action)
+        !startswith(action, "iam:") || contains([
+          "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:UpdateRole",
+          "iam:UpdateAssumeRolePolicy", "iam:TagRole", "iam:UntagRole", "iam:ListRoleTags",
+          "iam:ListRolePolicies", "iam:GetRolePolicy", "iam:ListAttachedRolePolicies",
+          "iam:ListInstanceProfilesForRole", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+          "iam:PassRole", "iam:ListOpenIDConnectProviders", "iam:GetOpenIDConnectProvider",
+        ], action)
       ]
+    ])) && !contains(flatten([for statement in jsondecode(aws_iam_role_policy.github_deploy[0].policy).Statement : statement.Action]), "*")
+    error_message = "The deploy role grants no wildcard action and only the IAM actions this stack needs."
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for statement in jsondecode(aws_iam_role_policy.github_deploy[0].policy).Statement : [
+        for action in flatten([statement.Action]) :
+        startswith(action, "iam:Get") || startswith(action, "iam:List")
+      ] if contains(flatten([statement.Resource]), aws_iam_role.github_deploy[0].arn)
     ]))
-    error_message = "The deploy role grants no wildcard and no way to write IAM policies."
+    error_message = "The deploy role can read itself but not change itself."
   }
 
   assert {

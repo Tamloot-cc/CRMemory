@@ -43,13 +43,12 @@ resource "aws_iam_role" "github_deploy" {
 }
 
 locals {
-  github_deploy = var.github_repository == null ? null : {
-    account = data.aws_caller_identity.current.account_id
-    region  = var.region
-    # The bucket and key state-bucket.sh creates and prints.
-    state_bucket = "${var.name}-terraform-state-${data.aws_caller_identity.current.account_id}"
-    state_key    = "${var.name}/${var.region}/terraform.tfstate"
-  }
+  # <region>:<account> in ARNs.
+  arn_scope = "${var.region}:${data.aws_caller_identity.current.account_id}"
+  # Where the state lives: the bucket and key state-bucket.sh creates, unless
+  # set otherwise.
+  state_bucket = coalesce(var.state_bucket, "${var.name}-terraform-state-${data.aws_caller_identity.current.account_id}")
+  state_key    = coalesce(var.state_key, "${var.name}/${var.region}/terraform.tfstate")
 }
 
 resource "aws_iam_role_policy" "github_deploy" {
@@ -64,15 +63,15 @@ resource "aws_iam_role_policy" "github_deploy" {
         Sid      = "TerraformState"
         Effect   = "Allow"
         Action   = ["s3:ListBucket"]
-        Resource = "arn:aws:s3:::${local.github_deploy.state_bucket}"
+        Resource = "arn:aws:s3:::${local.state_bucket}"
       },
       {
         Sid    = "TerraformStateAndLock"
         Effect = "Allow"
         Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
         Resource = [
-          "arn:aws:s3:::${local.github_deploy.state_bucket}/${local.github_deploy.state_key}",
-          "arn:aws:s3:::${local.github_deploy.state_bucket}/${local.github_deploy.state_key}.tflock",
+          "arn:aws:s3:::${local.state_bucket}/${local.state_key}",
+          "arn:aws:s3:::${local.state_bucket}/${local.state_key}.tflock",
         ]
       },
       {
@@ -87,7 +86,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "cloudwatch:DescribeAlarms",
         ]
         Resource  = "*"
-        Condition = { StringEquals = { "aws:RequestedRegion" = local.github_deploy.region } }
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.region } }
       },
       {
         Sid    = "Functions"
@@ -107,7 +106,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "lambda:RemovePermission",
           "lambda:InvokeFunction",
         ]
-        Resource = "arn:aws:lambda:${local.github_deploy.region}:${local.github_deploy.account}:function:${var.name}-*"
+        Resource = "arn:aws:lambda:${local.arn_scope}:function:${var.name}-*"
       },
       {
         Sid    = "FunctionRole"
@@ -204,7 +203,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "ec2:DeleteTags",
         ]
         Resource  = "*"
-        Condition = { StringEquals = { "aws:RequestedRegion" = local.github_deploy.region } }
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.region } }
       },
       {
         Sid    = "Database"
@@ -222,12 +221,12 @@ resource "aws_iam_role_policy" "github_deploy" {
           "rds:ListTagsForResource",
         ]
         Resource = [
-          "arn:aws:rds:${local.github_deploy.region}:${local.github_deploy.account}:db:${var.name}",
-          "arn:aws:rds:${local.github_deploy.region}:${local.github_deploy.account}:subgrp:${var.name}",
-          "arn:aws:rds:${local.github_deploy.region}:${local.github_deploy.account}:snapshot:${var.name}-final-*",
+          "arn:aws:rds:${local.arn_scope}:db:${var.name}",
+          "arn:aws:rds:${local.arn_scope}:subgrp:${var.name}",
+          "arn:aws:rds:${local.arn_scope}:snapshot:${var.name}-final-*",
           # The default parameter and option groups a new instance uses.
-          "arn:aws:rds:${local.github_deploy.region}:${local.github_deploy.account}:pg:default.*",
-          "arn:aws:rds:${local.github_deploy.region}:${local.github_deploy.account}:og:default:*",
+          "arn:aws:rds:${local.arn_scope}:pg:default.*",
+          "arn:aws:rds:${local.arn_scope}:og:default:*",
         ]
       },
       {
@@ -238,14 +237,14 @@ resource "aws_iam_role_policy" "github_deploy" {
         Action = ["apigateway:GET", "apigateway:POST", "apigateway:PUT", "apigateway:PATCH", "apigateway:DELETE"]
         Resource = concat(
           [
-            "arn:aws:apigateway:${local.github_deploy.region}::/apis",
-            "arn:aws:apigateway:${local.github_deploy.region}::/apis/*",
-            "arn:aws:apigateway:${local.github_deploy.region}::/tags/*",
+            "arn:aws:apigateway:${var.region}::/apis",
+            "arn:aws:apigateway:${var.region}::/apis/*",
+            "arn:aws:apigateway:${var.region}::/tags/*",
           ],
           var.domain_name == null ? [] : [
-            "arn:aws:apigateway:${local.github_deploy.region}::/domainnames",
-            "arn:aws:apigateway:${local.github_deploy.region}::/domainnames/${var.domain_name}",
-            "arn:aws:apigateway:${local.github_deploy.region}::/domainnames/${var.domain_name}/*",
+            "arn:aws:apigateway:${var.region}::/domainnames",
+            "arn:aws:apigateway:${var.region}::/domainnames/${var.domain_name}",
+            "arn:aws:apigateway:${var.region}::/domainnames/${var.domain_name}/*",
           ],
         )
       },
@@ -266,8 +265,8 @@ resource "aws_iam_role_policy" "github_deploy" {
         ]
         Resource = flatten([
           for group in ["/aws/lambda/${var.name}-*", "/aws/apigateway/${var.name}"] : [
-            "arn:aws:logs:${local.github_deploy.region}:${local.github_deploy.account}:log-group:${group}",
-            "arn:aws:logs:${local.github_deploy.region}:${local.github_deploy.account}:log-group:${group}:*",
+            "arn:aws:logs:${local.arn_scope}:log-group:${group}",
+            "arn:aws:logs:${local.arn_scope}:log-group:${group}:*",
           ]
         ])
       },
@@ -285,7 +284,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "acm:RequestCertificate",
         ]
         Resource  = "*"
-        Condition = { StringEquals = { "aws:RequestedRegion" = local.github_deploy.region } }
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.region } }
       },
       {
         Sid    = "Alarms"
@@ -297,7 +296,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "cloudwatch:UntagResource",
           "cloudwatch:ListTagsForResource",
         ]
-        Resource = "arn:aws:cloudwatch:${local.github_deploy.region}:${local.github_deploy.account}:alarm:${var.name}-*"
+        Resource = "arn:aws:cloudwatch:${local.arn_scope}:alarm:${var.name}-*"
       },
       {
         Sid    = "AlarmTopic"
@@ -317,7 +316,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "sns:ListSubscriptionsByTopic",
         ]
         # The topic, and its subscriptions (<topic ARN>:<id>).
-        Resource = "arn:aws:sns:${local.github_deploy.region}:${local.github_deploy.account}:${var.name}-*"
+        Resource = "arn:aws:sns:${local.arn_scope}:${var.name}-*"
       },
       {
         Sid    = "Schedule"
@@ -335,7 +334,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "events:UntagResource",
           "events:ListTagsForResource",
         ]
-        Resource = "arn:aws:events:${local.github_deploy.region}:${local.github_deploy.account}:rule/${var.name}-*"
+        Resource = "arn:aws:events:${local.arn_scope}:rule/${var.name}-*"
       },
       {
         Sid    = "Certificate"
@@ -347,7 +346,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "acm:RemoveTagsFromCertificate",
           "acm:ListTagsForCertificate",
         ]
-        Resource = "arn:aws:acm:${local.github_deploy.region}:${local.github_deploy.account}:certificate/*"
+        Resource = "arn:aws:acm:${local.arn_scope}:certificate/*"
       },
     ]
   })

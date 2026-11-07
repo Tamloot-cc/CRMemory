@@ -74,31 +74,30 @@ resource "aws_db_instance" "this" {
   apply_immediately          = false
 }
 
-# The URLs hold the passwords: sensitive, like random_password itself.
 locals {
   # rds.force_ssl is on by default for PostgreSQL 15 and later.
-  database_url = sensitive(format(
+  database_url = format(
     "postgres://%s:%s@%s:%d/%s?sslmode=require",
     aws_db_instance.this.username,
     random_password.database.result,
     aws_db_instance.this.address,
     aws_db_instance.this.port,
     aws_db_instance.this.db_name,
-  ))
+  )
 
-  control_database_url = local.accounts ? sensitive(format(
+  control_database_url = local.accounts ? format(
     "postgres://retainer_control:%s@%s:%d/%s?sslmode=require",
     one(random_password.control[*].result),
     aws_db_instance.this.address,
     aws_db_instance.this.port,
     aws_db_instance.this.db_name,
-  )) : null
+  ) : null
 
-  runtime_database_url = sensitive(format(
+  runtime_database_url = format(
     "postgres://retainer_app:%s@%s:%d/%s?sslmode=require",
     random_password.runtime.result,
     aws_db_instance.this.address,
     aws_db_instance.this.port,
     aws_db_instance.this.db_name,
-  ))
+  )
 }

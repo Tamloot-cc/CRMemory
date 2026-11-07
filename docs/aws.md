@@ -160,11 +160,12 @@ the [first deployment](#first-deployment):
 
 1. Set `github_repository = "<owner>/<repo>"` in `terraform.tfvars` and
    apply. This creates a role the workflow assumes. It can manage the
-   resources this deployment creates, read and write its Terraform state
-   at the bucket and key `state-bucket.sh` printed, and ship code to its
-   functions. It cannot change its own permissions: when an update changes
-   `deploy/aws/github.tf`, run `terraform apply` yourself before the next
-   workflow run. The role trusts the account's OIDC provider for GitHub
+   resources this deployment creates, read and write its Terraform state,
+   and ship code to its functions. The state is where `state-bucket.sh`
+   put it; if yours is elsewhere, set `state_bucket` and `state_key` too.
+   The role cannot change its own permissions: when an update changes
+   them, the workflow stops before applying, and you run `terraform apply`
+   yourself. The role trusts the account's OIDC provider for GitHub
    Actions. An account holds one, shared by every repository's roles, so
    this deployment uses it but never creates or deletes it. If
    `aws iam list-open-id-connect-providers` shows none for
