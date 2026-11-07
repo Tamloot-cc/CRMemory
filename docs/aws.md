@@ -134,6 +134,12 @@ is migrated and the deploy fails, to be run again.
 deploy/aws/build.sh && deploy/aws/deploy.sh
 ```
 
+**Upgrading to separate database logins.** A deployment created before the
+functions had their own logins needs `terraform apply` once, then
+`deploy.sh` right away. Until `deploy.sh` has migrated, the API and the
+consolidator fail, because they no longer have the owner's password and
+`retainer_app` cannot log in yet.
+
 Terraform creates the functions with the package and then leaves their code
 alone, so `terraform apply` never rolls a deployment back to an old package.
 
@@ -192,9 +198,12 @@ instance by hand, replace the suffix with it, so the new instance's final
 snapshot gets a new name:
 `terraform apply -replace=aws_db_instance.this -replace=random_id.final_snapshot`.
 
-**Secrets.** Terraform generates the database password and
+**Secrets.** Terraform generates two database passwords and
 `RETAINER_SUPPRESSION_KEY` and keeps them in its state, so treat the state
-bucket as secret. Never let Terraform replace `random_id.suppression_key`:
+bucket as secret. Only the ops function gets the password of the role that
+owns the tables. The api and consolidate functions log in as `retainer_app`
+with a password of their own, which the ops function sets on that role each
+time it migrates, so neither can change the schema or become the owner. Never let Terraform replace `random_id.suppression_key`:
 erased emails and phones are stored only as an HMAC under that key, so a new
 key lets them back in.
 

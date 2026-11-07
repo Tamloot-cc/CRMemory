@@ -5,7 +5,8 @@
 # One version runs at a time (docs/self-hosting.md, Upgrading), so this:
 #   1. updates the ops function, which runs migrations,
 #   2. stops the api and consolidate functions (reserved concurrency 0),
-#   3. migrates and upgrades existing workspaces to the new definitions,
+#   3. migrates, sets the api and consolidate functions' database login and
+#      upgrades existing workspaces to the new definitions,
 #   4. updates api and consolidate,
 #   5. starts them again with the concurrency Terraform set.
 # Requests during steps 2-5 get 503 from API Gateway, usually for well under

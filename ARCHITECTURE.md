@@ -1563,10 +1563,14 @@ routes. They do not change the assertion-backed write rules.
 - Every row has `workspace_id`. Postgres row-level security uses a
   per-transaction `app.workspace_id` setting as a second line of defense
   behind the application's own checks. Runtime roles must not own tables or
-  have `BYPASSRLS`; migrations use a separate role. Tenant foreign keys must
-  include `workspace_id` (or equivalent enforced checks), since independent
-  UUID foreign keys do not prevent cross-workspace references. Validate
-  field/object compatibility in addition to tenant membership.
+  have `BYPASSRLS`; migrations use a separate role. On AWS the API and
+  workers log in as `retainer_app` itself and are never given the owner's
+  password. A container does the same when `RETAINER_RUNTIME_DATABASE_URL`
+  is set, and otherwise switches to it from the owner's login. Tenant
+  foreign keys must include `workspace_id` (or equivalent enforced checks),
+  since independent UUID foreign keys do not prevent cross-workspace
+  references. Validate field/object compatibility in addition to tenant
+  membership.
   `event_records`, `event_links` and `fact_sources` carry `workspace_id`, and
   tenant tables use composite foreign keys `(workspace_id, parent_id)`
   referencing a unique `(workspace_id, id)` on each parent.

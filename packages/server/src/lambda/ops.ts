@@ -1,7 +1,8 @@
 import { z } from 'zod';
-import { type Config, loadConfig } from '../config.js';
+import { type Config, loadConfig, ownerDatabaseUrl } from '../config.js';
 import { createSql } from '../db/client.js';
 import { runMigrations } from '../db/migrate.js';
+import { applyRuntimeLogin } from '../db/runtime-login.js';
 import { setLogLevel } from '../log.js';
 import { runCli } from '../operator/commands.js';
 import { rebuildSearchText } from '../records/rebuild-search.js';
@@ -13,9 +14,10 @@ import { withMigrationLock } from './deploy-lock.js';
  * (docs/aws.md). It is the deployment's replacement for running the CLI in
  * the container, since the database is not reachable from outside the VPC.
  *
- * - `{ "command": "migrate" }` applies pending migrations, rebuilds stale
- *   search text and upgrades workspaces to the built-in definitions: what
- *   the container does on every start. The deploy runs it
+ * - `{ "command": "migrate" }` applies pending migrations, sets the runtime
+ *   role's login from RETAINER_RUNTIME_DATABASE_URL, rebuilds stale search
+ *   text and upgrades workspaces to the built-in definitions: what the
+ *   container does on every start. The deploy runs it
  *   once, with the API and the consolidator stopped. It first waits, up to
  *   `waitSeconds` (default 330, past the consolidator's 300-second timeout),
  *   for consolidator passes still running on the old version (deploy-lock.ts).
@@ -36,7 +38,12 @@ const opsEvent = z.discriminatedUnion('command', [
 
 export type OpsEvent = z.input<typeof opsEvent>;
 export type OpsResult =
-  | { command: 'migrate'; rebuiltSearchText: number; workspaceUpgrade: UpgradeReport }
+  | {
+      command: 'migrate';
+      runtimeLogin: boolean;
+      rebuiltSearchText: number;
+      workspaceUpgrade: UpgradeReport;
+    }
   | { command: 'cli'; exitCode: number; stdout: string; stderr: string };
 
 export function createOpsHandler(config: Config) {
@@ -52,20 +59,23 @@ export function createOpsHandler(config: Config) {
     // Operator commands connect as the migration role, like the CLI.
     // `max: 1`, because the deploy lock and the search rebuild are session
     // locks; the workspace upgrade runs on the same connection.
+    const databaseUrl = ownerDatabaseUrl(config);
     if (parsed.data.command === 'migrate') {
-      const sql = createSql(config.DATABASE_URL, { max: 1, keepConnections: true });
+      const sql = createSql(databaseUrl, { max: 1, keepConnections: true });
       try {
         return await withMigrationLock(sql, parsed.data.waitSeconds, async () => {
-          await runMigrations(config.DATABASE_URL);
+          await runMigrations(databaseUrl);
+          // Before the api and consolidate functions start with the new login.
+          const runtimeLogin = await applyRuntimeLogin(config, sql);
           const rebuiltSearchText = await rebuildSearchText(sql);
           const workspaceUpgrade = await upgradeWorkspaces(sql);
-          return { command: 'migrate', rebuiltSearchText, workspaceUpgrade };
+          return { command: 'migrate', runtimeLogin, rebuiltSearchText, workspaceUpgrade };
         });
       } finally {
         await sql.end({ timeout: 5 });
       }
     }
-    const sql = createSql(config.DATABASE_URL, { max: 1 });
+    const sql = createSql(databaseUrl, { max: 1 });
     const stdout: string[] = [];
     const stderr: string[] = [];
     try {

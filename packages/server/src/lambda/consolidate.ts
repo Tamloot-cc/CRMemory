@@ -1,5 +1,5 @@
 import { type Config, loadConfig } from '../config.js';
-import { createSql, RUNTIME_ROLE, type Sql } from '../db/client.js';
+import { createRuntimeSql, type Sql } from '../db/client.js';
 import { setLogLevel } from '../log.js';
 import { type ConsolidatePass, consolidateDue } from '../worker/index.js';
 import { withPassLock } from './deploy-lock.js';
@@ -16,11 +16,7 @@ import { withPassLock } from './deploy-lock.js';
  */
 export function createConsolidateHandler(
   config: Config,
-  sql: Sql = createSql(config.DATABASE_URL, {
-    role: RUNTIME_ROLE,
-    max: 1,
-    keepConnections: true,
-  }),
+  sql: Sql = createRuntimeSql(config, { max: 1, keepConnections: true }),
 ) {
   setLogLevel(config.LOG_LEVEL);
   return async (): Promise<ConsolidatePass> => {

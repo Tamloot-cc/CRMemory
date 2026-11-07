@@ -39,8 +39,8 @@ locals {
     : aws_apigatewayv2_api.this.api_endpoint
   )
 
+  # Each function gets only the database login it needs (database.tf).
   common_env = {
-    DATABASE_URL = local.database_url
     LOG_LEVEL    = var.log_level
     NODE_OPTIONS = "--enable-source-maps"
   }
@@ -52,10 +52,11 @@ locals {
       timeout     = 29 # API Gateway's own limit is 30 seconds
       concurrency = var.api_reserved_concurrency
       env = {
-        RETAINER_PUBLIC_ORIGIN   = local.public_origin
-        RETAINER_SUPPRESSION_KEY = random_id.suppression_key.hex
-        RETAINER_WEB_DIR         = "/var/task/web"
-        RETAINER_DB_POOL_MAX     = tostring(var.api_db_pool_max)
+        RETAINER_RUNTIME_DATABASE_URL = local.runtime_database_url
+        RETAINER_PUBLIC_ORIGIN        = local.public_origin
+        RETAINER_SUPPRESSION_KEY      = random_id.suppression_key.hex
+        RETAINER_WEB_DIR              = "/var/task/web"
+        RETAINER_DB_POOL_MAX          = tostring(var.api_db_pool_max)
       }
     }
     consolidate = {
@@ -64,6 +65,7 @@ locals {
       timeout     = 300
       concurrency = 1
       env = {
+        RETAINER_RUNTIME_DATABASE_URL         = local.runtime_database_url
         RETAINER_CONSOLIDATE_INTERVAL_MINUTES = tostring(var.consolidate_interval_minutes)
       }
     }
@@ -72,7 +74,11 @@ locals {
       memory      = 512
       timeout     = 900 # a migration may rewrite large tables
       concurrency = 1   # never two migrations at once
-      env         = {}
+      env = {
+        DATABASE_URL = local.database_url
+        # Read only to set retainer_app's password when migrating.
+        RETAINER_RUNTIME_DATABASE_URL = local.runtime_database_url
+      }
     }
   }
 }
