@@ -29,7 +29,8 @@ export function AccountSignIn({ returnTo }: { returnTo?: string } = {}) {
     const result = await client.signIn.social({
       provider: 'google',
       callbackURL: here,
-      errorCallbackURL: '/app/',
+      // Connecting an app: come back here, so its request is not lost.
+      errorCallbackURL: returnTo ?? '/app/',
     });
     if (result.error) {
       setError('Google sign-in could not start. Try again.');

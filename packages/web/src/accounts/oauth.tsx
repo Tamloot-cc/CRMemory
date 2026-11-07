@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { type Account, account as accountApi } from '../api/account.js';
 import { Button, Muted, Notice, Stack } from '../ui/index.js';
 import { allWorkspaces } from './context.js';
-import { APP_SCOPE_WORDS, capital } from './format.js';
+import { APP_SCOPE_WORDS, capital, withoutSignInError } from './format.js';
 import { AccountFrame } from './screens.js';
 
 /**
@@ -22,7 +22,7 @@ const SIGNED = ['sig', 'exp', 'ba_iat', 'ba_pl', 'ba_param'];
 
 /** The original authorization request, without Better Auth's signature. */
 function authorizeUrl(search: string): string {
-  const query = new URLSearchParams(search);
+  const query = new URLSearchParams(withoutSignInError(search));
   for (const name of SIGNED) query.delete(name);
   return `/account/auth/oauth2/authorize?${query}`;
 }

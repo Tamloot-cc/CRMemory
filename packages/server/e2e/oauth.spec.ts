@@ -101,3 +101,41 @@ test('a person connects Claude to the workspace they pick, then disconnects it',
   await expect(page.getByText('No connected apps')).toBeVisible();
   expect((await mcp(access_token)).status).toBe(401);
 });
+
+test('a failed Google sign-in comes back to the connection, not the home page', async ({
+  page,
+  accounts: a,
+}) => {
+  const query = new URLSearchParams({
+    response_type: 'code',
+    client_id: CLAUDE_CLIENT_ID,
+    redirect_uri: CLAUDE_REDIRECT,
+    state: 'from-claude',
+    code_challenge: createHash('sha256').update('verifier').digest('base64url'),
+    code_challenge_method: 'S256',
+    resource: `${a.url}/mcp`,
+  });
+  await page.route('https://claude.ai/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<p>Elsewhere</p>' }),
+  );
+  await page.goto(`${a.url}/account/auth/oauth2/authorize?${query}`);
+  await expect(page).toHaveURL(/\/app\/oauth\/sign-in\?/);
+
+  // Google sent the person back with an error: the page says so.
+  await page.goto(`${page.url()}&error=access_denied`);
+  await expect(page.getByText('Signing in did not work. Try again.')).toBeVisible();
+
+  // Trying again keeps the app's request, both for success and for failure.
+  let started: { callbackURL?: string; errorCallbackURL?: string } = {};
+  await page.route('**/account/auth/sign-in/social', async (route) => {
+    started = route.request().postDataJSON() as typeof started;
+    await route.fulfill({ json: { url: 'https://claude.ai/google-stand-in', redirect: true } });
+  });
+  await page.getByRole('button', { name: 'Continue with Google' }).click();
+  await expect(page).toHaveURL(/google-stand-in/);
+  for (const url of [started.callbackURL, started.errorCallbackURL]) {
+    expect(url).toMatch(/^\/app\/oauth\/sign-in\?/);
+    expect(url).toContain(`client_id=${encodeURIComponent(CLAUDE_CLIENT_ID)}`);
+    expect(url).not.toContain('error=');
+  }
+});

@@ -21,7 +21,7 @@ import {
   rememberWorkspace,
   useAccount,
 } from './accounts/context.js';
-import { capital } from './accounts/format.js';
+import { capital, withoutSignInError } from './accounts/format.js';
 import {
   type Account,
   account as accountApi,
@@ -524,10 +524,11 @@ function App() {
     <QueryClientProvider client={accountClient}>
       <Suspense fallback={loading}>
         {boot.mode === 'signed-out' ? (
-          // Connecting an app keeps its whole address, signed parameters and all.
+          // Connecting an app keeps its whole address, signed parameters and
+          // all, but not the error of a sign-in that failed.
           <LazySignIn
             {...(window.location.pathname.startsWith('/app/oauth/')
-              ? { returnTo: window.location.pathname + window.location.search }
+              ? { returnTo: window.location.pathname + withoutSignInError(window.location.search) }
               : {})}
           />
         ) : (

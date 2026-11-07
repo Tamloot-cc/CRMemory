@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { signInError } from './format.js';
+import { signInError, withoutSignInError } from './format.js';
 
 describe('signInError', () => {
   it('says nothing without an error', () => {
@@ -18,5 +18,14 @@ describe('signInError', () => {
 
   it('falls back to a plain retry', () => {
     expect(signInError('state_not_found')).toBe('Signing in did not work. Try again.');
+  });
+});
+
+describe('withoutSignInError', () => {
+  it("drops Google's error and keeps an OAuth request's parameters", () => {
+    expect(withoutSignInError('?client_id=c&sig=s&error=access_denied&error_description=no')).toBe(
+      '?client_id=c&sig=s',
+    );
+    expect(withoutSignInError('?error=access_denied')).toBe('');
   });
 });

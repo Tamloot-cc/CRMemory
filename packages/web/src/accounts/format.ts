@@ -95,3 +95,16 @@ export function signInError(code: string | null): string {
       return 'Signing in did not work. Try again.';
   }
 }
+
+/**
+ * A query string without the `error` Google's sign-in adds when it fails,
+ * so a failed sign-in can be retried and an OAuth request resumed with the
+ * parameters it started with.
+ */
+export function withoutSignInError(search: string): string {
+  const query = new URLSearchParams(search);
+  query.delete('error');
+  query.delete('error_description');
+  const rest = query.toString();
+  return rest ? `?${rest}` : '';
+}
