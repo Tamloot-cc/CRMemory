@@ -179,11 +179,14 @@ modes.
 These tables are not tenant tables. Like `api_keys`, they have RLS enabled, no
 policy for the runtime role and no grants to it.
 
-**Owned by Better Auth.** `user`, `session`, `account`, `verification`, `passkey`,
-`jwks` and the `oauth_*` tables, generated with its CLI into a Drizzle schema, then
-through `pnpm db:generate` like any other table. IDs are UUIDs. The `user` table
-gains `disabled_at` as an additional field. Its generated timestamps have no time
-zone, so convert them to `timestamptz` to match the rest of the schema.
+**Owned by Better Auth.** Its `user`, `session`, `account`, `verification`,
+`passkey` and `rateLimit` models, named `users`, `sessions`, `auth_accounts`,
+`auth_verifications`, `passkeys` and `auth_rate_limits` through its `modelName`
+option, since `user` is a reserved word in Postgres. PR 3 adds `jwks` and the
+`oauth_*` tables. They are written from its table definitions (`getAuthTables`)
+in this schema's style, with snake_case columns and `timestamptz`, then go through
+`pnpm db:generate` like any other table. IDs are UUIDs. `users` gains
+`disabled_at` as an additional field.
 
 **Ours.**
 

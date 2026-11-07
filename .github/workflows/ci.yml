@@ -68,7 +68,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
-      # No AWS credentials: format and validate only, no backend.
+      # No AWS credentials: format, validate and test against mocked
+      # providers, no backend.
       - run: terraform fmt -check -recursive
       - run: terraform init -backend=false -input=false
       - run: terraform validate
+      - run: terraform test

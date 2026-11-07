@@ -45,3 +45,8 @@ output "github_deploy_role_arn" {
   description = "Set as the AWS_ROLE_ARN variable of the GitHub Environment."
   value       = one(aws_iam_role.github_deploy[*].arn)
 }
+
+output "google_redirect_uri" {
+  description = "Accounts mode: the authorized redirect URI to add to the Google OAuth client."
+  value       = local.accounts ? "${local.public_origin}/account/auth/callback/google" : null
+}

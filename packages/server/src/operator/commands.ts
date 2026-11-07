@@ -1,16 +1,30 @@
 import { parseArgs } from 'node:util';
 import { createApiKey, listApiKeys, parseActor, parseScopes, revokeApiKey } from '../auth/keys.js';
 import type { Sql } from '../db/client.js';
+import { listOrganizations } from '../db/organizations.js';
 import { listWorkspaces } from '../db/workspaces.js';
 import { AppError } from '../errors.js';
 import { TEMPLATE_NAMES } from '../templates/index.js';
+import {
+  createOrganization,
+  moveWorkspace,
+  setOrganizationMember,
+  setWorkspaceMember,
+} from '../workspaces/organizations.js';
 import { createWorkspace } from '../workspaces/workspaces.js';
 
 export const USAGE = `Usage: retainer <command>
 
 Workspaces
-  retainer workspace create --name <name> [--slug <slug>] [--template <template>]
+  retainer workspace create --name <name> [--slug <slug>] [--template <template>] [--org <id|name>]
   retainer workspace list
+  retainer workspace move <slug|id> --org <id|name>
+
+Organizations and people (accounts mode)
+  retainer org create --name <name>
+  retainer org list
+  retainer member add --org <id|name> --email <email> --role <owner|admin|member>
+  retainer member add --workspace <slug|id> --email <email> --role <viewer|editor|admin>
 
 API keys
   retainer key create --workspace <slug|id> --name <name> --actor <type:id> --scopes <list>
@@ -67,6 +81,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
           name: required(values.name, 'name'),
           ...(values.slug ? { slug: values.slug } : {}),
           ...(values.template ? { template: values.template } : {}),
+          ...(values.org ? { organization: values.org } : {}),
         });
         const template =
           workspace.templates.map((t) => t.name).join(', ') || 'none (the first agent picks one)';
@@ -89,6 +104,65 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
                 .join('\n'),
           workspaces,
         );
+        return 0;
+      }
+      case 'workspace move': {
+        const moved = await moveWorkspace(io.sql, {
+          workspace: required(rest[0] ?? values.workspace, 'workspace'),
+          organization: required(values.org, 'org'),
+        });
+        print(
+          `Moved to "${moved.organization.name}" (${moved.organization.id}).` +
+            (moved.removedMembers > 0
+              ? ` Removed ${moved.removedMembers} member role(s) from the old organization.`
+              : ''),
+          moved,
+        );
+        return 0;
+      }
+      case 'org create': {
+        const organization = await createOrganization(io.sql, {
+          name: required(values.name, 'name'),
+        });
+        print(
+          `Created organization "${organization.name}"\n  id: ${organization.id}\n` +
+            'Add its first owner with: retainer member add --org <id> --email <email> --role owner',
+          organization,
+        );
+        return 0;
+      }
+      case 'org list': {
+        const organizations = await listOrganizations(io.sql);
+        print(
+          organizations
+            .map(
+              (o) =>
+                `${o.id}\t${o.name}\t${o.workspaces} workspace(s)\t${o.members} member(s)` +
+                (o.owners === 0 ? '\tno owner' : ''),
+            )
+            .join('\n') || 'No organizations.',
+          organizations,
+        );
+        return 0;
+      }
+      case 'member add': {
+        const email = required(values.email, 'email');
+        const role = required(values.role, 'role');
+        if (values.workspace) {
+          const member = await setWorkspaceMember(io.sql, {
+            workspace: values.workspace,
+            email,
+            role,
+          });
+          print(`${email} is now ${member.role} in the workspace.`, member);
+        } else {
+          const member = await setOrganizationMember(io.sql, {
+            organization: required(values.org, 'org'),
+            email,
+            role,
+          });
+          print(`${email} is now ${member.role} of "${member.organization.name}".`, member);
+        }
         return 0;
       }
       case 'key create': {
@@ -160,6 +234,9 @@ function parse(argv: string[]) {
       slug: { type: 'string' },
       template: { type: 'string' },
       workspace: { type: 'string' },
+      org: { type: 'string' },
+      email: { type: 'string' },
+      role: { type: 'string' },
       actor: { type: 'string' },
       scopes: { type: 'string' },
       id: { type: 'string' },

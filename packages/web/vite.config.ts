@@ -12,6 +12,7 @@ export default defineConfig({
     proxy: {
       '/v1': api,
       '/auth': api,
+      '/account': api,
       '/health': api,
     },
   },

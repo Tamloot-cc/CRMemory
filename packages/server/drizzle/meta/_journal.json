@@ -169,6 +169,62 @@
       "when": 1793918294300,
       "tag": "0023_comments_security",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794057051193,
+      "tag": "0024_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794057057541,
+      "tag": "0025_accounts_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794057066201,
+      "tag": "0026_accounts_members",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1794057076264,
+      "tag": "0027_accounts_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1794058484662,
+      "tag": "0028_session_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794058822536,
+      "tag": "0029_auth_ids",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1794060912898,
+      "tag": "0030_invitations_email",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794062566662,
+      "tag": "0031_session_access_by_id",
+      "breakpoints": true
     }
   ]
 }

@@ -21,11 +21,13 @@ const LAYERS = [
   ['core', ['records', 'memory', 'privacy']],
   ['features', ['views', 'comments', 'retrieval', 'reads']],
   ['admin', ['schema-engine', 'templates', 'workspaces']],
-  ['interfaces', ['http', 'auth', 'api', 'mcp', 'worker', 'operator']],
+  ['interfaces', ['http', 'auth', 'api', 'mcp', 'worker', 'operator', 'accounts']],
   ['entry', ['index', 'cli', 'lambda']],
 ];
 // Events are records, so these modules depend on each other by design.
 const MAY_SHARE_A_CYCLE = 'core';
+/** The only files that load the accounts module, and with it Better Auth. */
+const ACCOUNTS_ENTRIES = ['packages/server/src/index.ts', 'packages/server/src/lambda/control.ts'];
 
 const layerOf = new Map(LAYERS.flatMap(([, modules], i) => modules.map((m) => [m, i])));
 const layerName = (module) => LAYERS[layerOf.get(module)][0];
@@ -114,11 +116,20 @@ for (const file of sourceFiles(SERVER)) {
   }
   fileGraph.set(file, new Set());
   for (const specifier of importsOf(file)) {
+    // Better Auth runs only where people sign in (accounts spec 4.13).
+    if (/^(better-auth|@better-auth\/)/.test(specifier) && from !== 'accounts') {
+      problems.push(`${name}: only the accounts module may import ${specifier}`);
+    }
     if (!specifier.startsWith('.')) continue;
     const target = resolve(file, specifier);
     if (!target?.startsWith(SERVER)) continue;
     edge(fileGraph, file, target);
     const to = moduleOf(target);
+    // The API never loads Better Auth: only the container entry and the
+    // control function reach the accounts module.
+    if (to === 'accounts' && from !== 'accounts' && !ACCOUNTS_ENTRIES.includes(name)) {
+      problems.push(`${name}: only ${ACCOUNTS_ENTRIES.join(' and ')} may import accounts`);
+    }
     if (to === from) continue;
     if (layerOf.get(to) > layerOf.get(from)) {
       problems.push(

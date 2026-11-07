@@ -38,8 +38,11 @@ let workspaceB: string;
 
 beforeAll(async () => {
   app = db.connect({ role: RUNTIME_ROLE });
+  const [organization] = await db.owner<{ id: string }[]>`
+    insert into organizations (name) values ('Security') returning id`;
   const rows = await db.owner<{ id: string }[]>`
-    insert into workspaces (slug, name) values ('a', 'A'), ('b', 'B') returning id`;
+    insert into workspaces (organization_id, slug, name)
+    values (${organization?.id ?? ''}, 'a', 'A'), (${organization?.id ?? ''}, 'b', 'B') returning id`;
   [workspaceA, workspaceB] = rows.map((r) => r.id) as [string, string];
 });
 
@@ -71,7 +74,8 @@ describe('row-level security', () => {
     const rows = await db.owner<{ tablename: string; rowsecurity: boolean; policies: number }[]>`
       select t.tablename, t.rowsecurity,
         (select count(*)::int from pg_policies p
-          where p.schemaname = 'public' and p.tablename = t.tablename) as policies
+          where p.schemaname = 'public' and p.tablename = t.tablename
+            and p.roles = '{public}') as policies
       from pg_tables t where t.schemaname = 'public'`;
     const byTable = new Map(rows.map((r) => [r.tablename, r]));
     for (const table of [...TENANT_TABLES, 'workspaces']) {
@@ -288,5 +292,26 @@ describe('API-key lookup', () => {
     const names = grantees.map((g) => g.grantee);
     expect(names).toContain(RUNTIME_ROLE);
     expect(names).not.toContain('-'); // PUBLIC (grantee 0) shows as "-"
+  });
+});
+
+describe('SECURITY DEFINER functions', () => {
+  // Every way around RLS is listed here (ARCHITECTURE.md 7.2, accounts spec
+  // 7.4). Adding one means adding it here, on purpose, with a review.
+  const ALLOWED = ['retainer_lookup_api_key', 'retainer_session_access', 'retainer_workspaces_due'];
+
+  it('exist only on the list, each fixing its search_path, runnable only by the runtime role', async () => {
+    const rows = await db.owner<{ name: string; config: string[] | null; grantees: string[] }[]>`
+      select p.proname as name, p.proconfig as config,
+        array(select a.grantee::regrole::text from aclexplode(p.proacl) a
+          where a.privilege_type = 'EXECUTE' and a.grantee <> p.proowner) as grantees
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where p.prosecdef and n.nspname = 'public'
+      order by p.proname`;
+    expect(rows.map((r) => r.name)).toEqual(ALLOWED);
+    for (const row of rows) {
+      expect(row.config, row.name).toContain('search_path=pg_catalog, pg_temp');
+      expect(row.grantees, row.name).toEqual([RUNTIME_ROLE]);
+    }
   });
 });

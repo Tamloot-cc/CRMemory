@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApiKey } from '../../src/auth/keys.js';
-import { loadConfig } from '../../src/config.js';
+import { CONTROL_ROLE, loadConfig } from '../../src/config.js';
 import { createRuntimeSql, RUNTIME_ROLE } from '../../src/db/client.js';
-import { scramVerifier, setRuntimeLogin } from '../../src/db/runtime-login.js';
+import { scramVerifier, setRoleLogin, setRuntimeLogin } from '../../src/db/logins.js';
 import { inWorkspace } from '../../src/db/tx.js';
 import { createApiHandler } from '../../src/lambda/api.js';
 import { createOpsHandler } from '../../src/lambda/ops.js';
@@ -163,7 +163,9 @@ describe('functions on separate logins', () => {
         LOG_LEVEL: 'error',
       }),
     );
-    expect(await ops({ command: 'migrate' })).toMatchObject({ runtimeLogin: true });
+    expect(await ops({ command: 'migrate' })).toMatchObject({
+      logins: { runtime: true, control: false },
+    });
 
     const config = loadConfig({
       RETAINER_RUNTIME_DATABASE_URL: runtimeUrl('runtime-test-password-3'),
@@ -206,5 +208,29 @@ describe('scramVerifier', () => {
       /^SCRAM-SHA-256\$4096:AQEBAQEBAQEBAQEBAQEBAQ==\$[A-Za-z0-9+/]{43}=:[A-Za-z0-9+/]{43}=$/,
     );
     expect(scramVerifier('pencil', salt)).toBe(verifier);
+  });
+});
+
+describe('the control login', () => {
+  it('may switch to the runtime role, but read nothing itself or become the owner', async () => {
+    const password = 'control-test-password-1';
+    await setRoleLogin(db.owner, CONTROL_ROLE, password);
+    try {
+      const url = new URL(db.url);
+      url.username = CONTROL_ROLE;
+      url.password = password;
+      const control = db.connectUrl(url.toString());
+      const [who] = await control<{ user: string }[]>`select current_user as user`;
+      expect(who?.user).toBe(CONTROL_ROLE);
+      await expect(control`select 1 from records`).rejects.toMatchObject({ code: '42501' });
+      await expect(control.unsafe(`set role "${ownerRole}"`)).rejects.toMatchObject({
+        code: '42501',
+      });
+      await control.unsafe(`set role ${RUNTIME_ROLE}`);
+      const [now] = await control<{ user: string }[]>`select current_user as user`;
+      expect(now?.user).toBe(RUNTIME_ROLE);
+    } finally {
+      await db.owner.unsafe(`alter role ${CONTROL_ROLE} nologin password null`);
+    }
   });
 });

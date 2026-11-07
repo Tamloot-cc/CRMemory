@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { type Config, loadConfig, ownerDatabaseUrl } from '../config.js';
 import { createSql } from '../db/client.js';
+import { applyLogins } from '../db/logins.js';
 import { runMigrations } from '../db/migrate.js';
-import { applyRuntimeLogin } from '../db/runtime-login.js';
 import { setLogLevel } from '../log.js';
 import { runCli } from '../operator/commands.js';
 import { rebuildSearchText } from '../records/rebuild-search.js';
@@ -15,7 +15,7 @@ import { withMigrationLock } from './deploy-lock.js';
  * the container, since the database is not reachable from outside the VPC.
  *
  * - `{ "command": "migrate" }` applies pending migrations, sets the runtime
- *   role's login from RETAINER_RUNTIME_DATABASE_URL, rebuilds stale search
+ *   and control roles' logins from their URLs, rebuilds stale search
  *   text and upgrades workspaces to the built-in definitions: what the
  *   container does on every start. The deploy runs it
  *   once, with the API and the consolidator stopped. It first waits, up to
@@ -40,7 +40,7 @@ export type OpsEvent = z.input<typeof opsEvent>;
 export type OpsResult =
   | {
       command: 'migrate';
-      runtimeLogin: boolean;
+      logins: { runtime: boolean; control: boolean };
       rebuiltSearchText: number;
       workspaceUpgrade: UpgradeReport;
     }
@@ -67,10 +67,10 @@ export function createOpsHandler(config: Config) {
         return await withMigrationLock(sql, parsed.data.waitSeconds, async () => {
           await runMigrations(databaseUrl);
           // Before the api and consolidate functions start with the new login.
-          const runtimeLogin = await applyRuntimeLogin(config, sql);
+          const logins = await applyLogins(config, sql);
           const rebuiltSearchText = await rebuildSearchText(sql);
           const workspaceUpgrade = await upgradeWorkspaces(sql);
-          return { command: 'migrate', runtimeLogin, rebuiltSearchText, workspaceUpgrade };
+          return { command: 'migrate', logins, rebuiltSearchText, workspaceUpgrade };
         });
       } finally {
         await sql.end({ timeout: 5 });

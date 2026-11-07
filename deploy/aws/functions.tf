@@ -1,7 +1,9 @@
-# Three functions from one package (build.sh):
+# Functions from one package (build.sh):
 #   api          REST, MCP and the web app, behind API Gateway
 #   consolidate  one consolidator pass, on a schedule
 #   ops          migrations and the operator CLI, invoked by deploy.sh and ops.sh
+#   control      accounts mode only: /account, where people sign in and
+#                manage members and keys (accounts spec 4.6)
 #
 # Terraform creates them with the package at package_path and then ignores
 # their code and their reserved concurrency: deploy.sh ships new versions and
@@ -11,6 +13,13 @@
 
 resource "random_id" "suppression_key" {
   byte_length = 32 # 64 hex characters; RETAINER_SUPPRESSION_KEY needs 32+
+}
+
+# Accounts mode: signs session cookies. The control function issues them and
+# the api function checks them, so both hold it.
+resource "random_id" "auth_secret" {
+  count       = local.accounts ? 1 : 0
+  byte_length = 32 # 64 hex characters; RETAINER_AUTH_SECRET needs 32+
 }
 
 resource "aws_iam_role" "functions" {
@@ -33,6 +42,9 @@ resource "aws_iam_role_policy_attachment" "functions_vpc" {
 }
 
 locals {
+  accounts    = var.google_client_id != null
+  auth_secret = one(random_id.auth_secret[*].hex)
+
   public_origin = (
     var.domain_name != null && var.domain_certificate_validated
     ? "https://${var.domain_name}"
@@ -45,19 +57,29 @@ locals {
     NODE_OPTIONS = "--enable-source-maps"
   }
 
-  functions = {
+  # Where each function runs: control alone has a route out (network.tf).
+  isolated = {
+    subnets         = aws_subnet.private[*].id
+    security_groups = [aws_security_group.functions.id]
+  }
+
+  functions = merge({
     api = {
       handler     = "dist/lambda/api.handler"
       memory      = var.api_memory_mb
       timeout     = 29 # API Gateway's own limit is 30 seconds
       concurrency = var.api_reserved_concurrency
-      env = {
+      env = merge({
         RETAINER_RUNTIME_DATABASE_URL = local.runtime_database_url
         RETAINER_PUBLIC_ORIGIN        = local.public_origin
         RETAINER_SUPPRESSION_KEY      = random_id.suppression_key.hex
         RETAINER_WEB_DIR              = "/var/task/web"
         RETAINER_DB_POOL_MAX          = tostring(var.api_db_pool_max)
-      }
+        }, local.accounts ? {
+        # Checks people's session cookies.
+        RETAINER_AUTH_SECRET = local.auth_secret
+      } : {})
+      network = local.isolated
     }
     consolidate = {
       handler     = "dist/lambda/consolidate.handler"
@@ -68,19 +90,44 @@ locals {
         RETAINER_RUNTIME_DATABASE_URL         = local.runtime_database_url
         RETAINER_CONSOLIDATE_INTERVAL_MINUTES = tostring(var.consolidate_interval_minutes)
       }
+      network = local.isolated
     }
     ops = {
       handler     = "dist/lambda/ops.handler"
       memory      = 512
       timeout     = 900 # a migration may rewrite large tables
       concurrency = 1   # never two migrations at once
-      env = {
+      env = merge({
         DATABASE_URL = local.database_url
-        # Read only to set retainer_app's password when migrating.
+        # Read only to set the logins' passwords when migrating.
         RETAINER_RUNTIME_DATABASE_URL = local.runtime_database_url
-      }
+        }, local.accounts ? {
+        RETAINER_CONTROL_DATABASE_URL = local.control_database_url
+      } : {})
+      network = local.isolated
     }
-  }
+    }, {
+    # Accounts mode only; null references while it is off are never used.
+    for key, value in {
+      control = {
+        handler     = "dist/lambda/control.handler"
+        memory      = 512
+        timeout     = 29
+        concurrency = var.control_reserved_concurrency
+        env = {
+          RETAINER_CONTROL_DATABASE_URL = local.control_database_url
+          RETAINER_PUBLIC_ORIGIN        = local.public_origin
+          RETAINER_AUTH_SECRET          = local.auth_secret
+          RETAINER_GOOGLE_CLIENT_ID     = var.google_client_id
+          RETAINER_GOOGLE_CLIENT_SECRET = var.google_client_secret
+          RETAINER_DB_POOL_MAX          = tostring(var.control_db_pool_max)
+        }
+        network = {
+          subnets         = aws_subnet.control[*].id
+          security_groups = aws_security_group.control[*].id
+        }
+    } } : key => value if local.accounts
+  })
 }
 
 resource "aws_cloudwatch_log_group" "functions" {
@@ -108,8 +155,8 @@ resource "aws_lambda_function" "this" {
   reserved_concurrent_executions = each.value.concurrency
 
   vpc_config {
-    subnet_ids         = aws_subnet.private[*].id
-    security_group_ids = [aws_security_group.functions.id]
+    subnet_ids         = each.value.network.subnets
+    security_group_ids = each.value.network.security_groups
   }
 
   environment {

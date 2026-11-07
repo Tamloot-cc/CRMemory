@@ -34,7 +34,7 @@ export async function run(
   fn: () => Promise<object | string>,
   isFailure: (result: object | string) => boolean = () => false,
 ): Promise<CallToolResult> {
-  const missing = missingScope(caller.scopes, scope);
+  const missing = missingScope(caller, scope);
   if (missing) return failure(missing);
   try {
     const result = await fn();

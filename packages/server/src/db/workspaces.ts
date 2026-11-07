@@ -1,9 +1,11 @@
 import { AppError } from '../errors.js';
 import type { Sql } from './client.js';
+import { isUuid } from './ids.js';
 import type { Tx } from './tx.js';
 
 export type Workspace = {
   id: string;
+  organizationId: string;
   slug: string;
   name: string;
   schemaVersion: number;
@@ -14,6 +16,7 @@ export type Workspace = {
 
 type WorkspaceRow = {
   id: string;
+  organization_id: string;
   slug: string;
   name: string;
   schema_version: number;
@@ -25,6 +28,7 @@ type WorkspaceRow = {
 function toWorkspace(row: WorkspaceRow): Workspace {
   return {
     id: row.id,
+    organizationId: row.organization_id,
     slug: row.slug,
     name: row.name,
     schemaVersion: row.schema_version,
@@ -34,10 +38,9 @@ function toWorkspace(row: WorkspaceRow): Workspace {
   };
 }
 
-export async function getWorkspace(sql: Sql, idOrSlug: string): Promise<Workspace> {
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug);
+export async function getWorkspace(sql: Sql | Tx, idOrSlug: string): Promise<Workspace> {
   const [row] = await sql<WorkspaceRow[]>`
-    select * from workspaces where ${isUuid ? sql`id = ${idOrSlug}` : sql`slug = ${idOrSlug}`}`;
+    select * from workspaces where ${isUuid(idOrSlug) ? sql`id = ${idOrSlug}` : sql`slug = ${idOrSlug}`}`;
   if (!row) throw new AppError(404, 'not_found', `workspace "${idOrSlug}" not found`);
   return toWorkspace(row);
 }

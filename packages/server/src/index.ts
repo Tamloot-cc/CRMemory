@@ -1,8 +1,9 @@
 import { serve } from '@hono/node-server';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { createApp } from './api/app.js';
-import { loadConfig, ownerDatabaseUrl } from './config.js';
-import { createRuntimeSql, createSql } from './db/client.js';
-import { applyRuntimeLogin } from './db/runtime-login.js';
+import { accountsMode, loadConfig, ownerDatabaseUrl } from './config.js';
+import { createControlSql, createRuntimeSql, createSql } from './db/client.js';
+import { applyLogins } from './db/logins.js';
 import { log, setLogLevel } from './log.js';
 import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
 import { rebuildSearchText } from './records/rebuild-search.js';
@@ -16,8 +17,8 @@ setLogLevel(config.LOG_LEVEL);
 // and it rebuilds stale search text and upgrades workspaces across the database.
 const owner = createSql(ownerDatabaseUrl(config), { max: 1 });
 try {
-  // With RETAINER_RUNTIME_DATABASE_URL, the runtime role logs in itself.
-  await applyRuntimeLogin(config, owner);
+  // The runtime and control roles log in themselves when their URLs are set.
+  await applyLogins(config, owner);
   const firstBoot = await bootstrap(owner);
   // Printed whatever LOG_LEVEL is: it holds the only copy of the first key.
   if (firstBoot) console.log(firstBootBanner(firstBoot));
@@ -34,15 +35,52 @@ try {
 // Everything else runs as the runtime role, so row-level security applies.
 const sql = createRuntimeSql(config, { max: config.RETAINER_DB_POOL_MAX });
 const stops: Array<() => Promise<void>> = [];
+const role = config.RETAINER_ROLE;
 
-if (config.RETAINER_ROLE === 'api' || config.RETAINER_ROLE === 'all') {
-  const app = createApp({
-    sql,
-    webDir: config.RETAINER_WEB_DIR,
-    publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
+// Accounts mode (accounts spec 4.1): /account runs as the control role, in
+// this process with `all` or alone with `control`. Loaded only then, so key
+// mode never loads Better Auth.
+let accounts:
+  | { fetch: (request: Request, env: Record<string, unknown>) => Response | Promise<Response> }
+  | undefined;
+if (accountsMode(config) && (role === 'all' || role === 'control')) {
+  const { createAccountsServer } = await import('./accounts/index.js');
+  const control = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX });
+  const authControl = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX });
+  stops.push(
+    () => control.end({ timeout: 5 }),
+    () => authControl.end({ timeout: 5 }),
+  );
+  accounts = createAccountsServer({
+    config,
+    sql: control,
+    authSql: authControl,
+    clientIp: (c) => getConnInfo(c).remote.address,
   });
-  const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {
-    log.info(`Retainer API listening on http://localhost:${info.port}`);
+}
+
+if (role === 'api' || role === 'all' || role === 'control') {
+  const app =
+    role === 'control'
+      ? undefined
+      : createApp({
+          sql,
+          webDir: config.RETAINER_WEB_DIR,
+          publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
+          accountsSecret: config.RETAINER_AUTH_SECRET,
+        });
+  const fetch = (request: Request, env: Record<string, unknown>) => {
+    if (accounts) {
+      const { pathname } = new URL(request.url);
+      if (pathname === '/account' || pathname.startsWith('/account/')) {
+        return accounts.fetch(request, env);
+      }
+    }
+    if (app) return app.fetch(request, env);
+    return Response.json({ error: { code: 'not_found', message: 'not found' } }, { status: 404 });
+  };
+  const server = serve({ fetch, port: config.PORT }, (info) => {
+    log.info(`Retainer ${role} listening on http://localhost:${info.port}`);
   });
   stops.push(
     () =>

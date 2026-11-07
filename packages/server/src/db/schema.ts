@@ -4,13 +4,16 @@ import type {
   FieldSettings,
   FieldType,
   ObjectClass,
+  OrganizationRole,
   SchemaChangeStatus,
   SchemaOwner,
   SchemaStatus,
+  WorkspaceRole,
 } from '@retainer/shared';
 import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
+  bigint,
   boolean,
   check,
   customType,
@@ -74,26 +77,245 @@ export type WorkspaceSettings = {
   confidenceThreshold?: number;
 };
 
-export const workspaces = pgTable('workspaces', {
+// ---------------------------------------------------------------------------
+// People and organizations (docs/specs/accounts-and-access.md 4.2)
+//
+// Not tenant tables. Like api_keys they have row-level security on, with no
+// policy and no grants for the runtime role (drizzle/0025_accounts_security).
+// ---------------------------------------------------------------------------
+
+const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
+
+/**
+ * Better Auth's tables, as plain Drizzle definitions that import nothing from
+ * it. The keys are Better Auth's field names; the `accounts` module maps its
+ * models onto these tables. Columns follow this schema's naming instead of
+ * its generated camelCase and naive timestamps.
+ */
+export const users = pgTable('users', {
   id: id(),
-  slug: text('slug').notNull().unique(),
   name: text('name').notNull(),
-  /** Increments on every applied schema change. API/MCP schemas cache on it. */
-  schemaVersion: integer('schema_version').notNull().default(0),
-  settings: jsonb('settings').$type<WorkspaceSettings>().notNull().default({}),
-  /** Templates applied to this workspace, with their versions (3.1). */
-  templates: jsonb('templates').$type<AppliedTemplate[]>().notNull().default([]),
-  /** Set when a template (including `blank`) is first applied. */
-  initializedAt: timestamp('initialized_at', { withTimezone: true }),
-  /**
-   * Digest of the built-in definitions (base, protection, applied templates)
-   * the workspace was last fully upgraded to (3). Null until the first
-   * upgrade run; a mismatch makes the next run plan an upgrade.
-   */
-  definitionsDigest: text('definitions_digest'),
+  email: text('email').notNull().unique(),
+  emailVerified: boolean('email_verified').notNull().default(false),
+  image: text('image'),
+  /** Set by an operator. A disabled person has no session and no access. */
+  disabledAt: timestamptz('disabled_at'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
+
+/** Sessions hold Better Auth's raw token; the signed cookie protects it (4.4). */
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: id(),
+    token: text('token').notNull().unique(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamptz('expires_at').notNull(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('sessions_user_idx').on(t.userId)],
+);
+
+/** A sign-in method linked to a person: their Google account, by subject ID. */
+export const authAccounts = pgTable(
+  'auth_accounts',
+  {
+    id: id(),
+    /** The provider's stable ID for the person (Google's subject). */
+    accountId: text('account_id').notNull(),
+    providerId: text('provider_id').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    accessToken: text('access_token'),
+    refreshToken: text('refresh_token'),
+    idToken: text('id_token'),
+    accessTokenExpiresAt: timestamptz('access_token_expires_at'),
+    refreshTokenExpiresAt: timestamptz('refresh_token_expires_at'),
+    scope: text('scope'),
+    /** Unused: there are no passwords. Better Auth's model has the column. */
+    password: text('password'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('auth_accounts_user_idx').on(t.userId),
+    unique('auth_accounts_provider_account_uq').on(t.providerId, t.accountId),
+  ],
+);
+
+/** Short-lived values Better Auth checks once, such as OAuth state. */
+export const authVerifications = pgTable(
+  'auth_verifications',
+  {
+    id: id(),
+    identifier: text('identifier').notNull(),
+    value: text('value').notNull(),
+    expiresAt: timestamptz('expires_at').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('auth_verifications_identifier_idx').on(t.identifier)],
+);
+
+export const passkeys = pgTable(
+  'passkeys',
+  {
+    id: id(),
+    name: text('name'),
+    publicKey: text('public_key').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    credentialID: text('credential_id').notNull().unique(),
+    counter: integer('counter').notNull(),
+    deviceType: text('device_type').notNull(),
+    backedUp: boolean('backed_up').notNull(),
+    transports: text('transports'),
+    aaguid: text('aaguid'),
+    createdAt: timestamptz('created_at').defaultNow(),
+  },
+  (t) => [index('passkeys_user_idx').on(t.userId)],
+);
+
+/** Sign-in rate limits, shared by every function instance (4.6). */
+export const authRateLimits = pgTable('auth_rate_limits', {
+  id: id(),
+  key: text('key').notNull().unique(),
+  count: integer('count').notNull(),
+  lastRequest: bigint('last_request', { mode: 'number' }).notNull(),
+});
+
+/** Quotas an organization may use; null means unlimited (4.10). */
+export type OrganizationLimits = { workspaces?: number; members?: number };
+
+export const organizations = pgTable('organizations', {
+  id: id(),
+  name: text('name').notNull(),
+  limits: jsonb('limits').$type<OrganizationLimits>(),
+  createdAt: createdAt(),
+});
+
+export const organizationMembers = pgTable(
+  'organization_members',
+  {
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: text('role').$type<OrganizationRole>().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.organizationId, t.userId] }),
+    index('organization_members_user_idx').on(t.userId),
+    check('organization_members_role', sql`${t.role} in ('owner', 'admin', 'member')`),
+  ],
+);
+
+/**
+ * A person's role in one workspace. The composite foreign keys mean a role
+ * exists only in a workspace of an organization the person belongs to, and
+ * leaving the organization removes it in the same statement.
+ */
+export const workspaceMembers = pgTable(
+  'workspace_members',
+  {
+    organizationId: uuid('organization_id').notNull(),
+    workspaceId: uuid('workspace_id').notNull(),
+    userId: uuid('user_id').notNull(),
+    role: text('role').$type<WorkspaceRole>().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.userId] }),
+    index('workspace_members_user_idx').on(t.userId),
+    foreignKey({
+      name: 'workspace_members_member_fk',
+      columns: [t.organizationId, t.userId],
+      foreignColumns: [organizationMembers.organizationId, organizationMembers.userId],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'workspace_members_workspace_fk',
+      columns: [t.organizationId, t.workspaceId],
+      foreignColumns: [workspaces.organizationId, workspaces.id],
+    }).onDelete('cascade'),
+    check('workspace_members_role', sql`${t.role} in ('viewer', 'editor', 'admin')`),
+  ],
+);
+
+/** A workspace and the role an invitation grants in it. */
+export type InvitedWorkspace = { workspaceId: string; role: WorkspaceRole };
+
+export const invitations = pgTable(
+  'invitations',
+  {
+    id: id(),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    /** Lowercased; accepting needs a verified Google address that matches. */
+    email: text('email').notNull(),
+    role: text('role').$type<OrganizationRole>().notNull(),
+    workspaces: jsonb('workspaces').$type<InvitedWorkspace[]>().notNull().default([]),
+    /** SHA-256 of the token in the link. The token itself is never stored. */
+    tokenHash: text('token_hash').notNull().unique(),
+    invitedBy: uuid('invited_by').references(() => users.id, { onDelete: 'set null' }),
+    expiresAt: timestamptz('expires_at').notNull(),
+    acceptedAt: timestamptz('accepted_at'),
+    revokedAt: timestamptz('revoked_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('invitations_organization_idx').on(t.organizationId),
+    // GET /account looks up the invitations sent to the person's address.
+    index('invitations_email_idx').on(t.email),
+    check('invitations_role', sql`${t.role} in ('owner', 'admin', 'member')`),
+    check('invitations_email_lower', sql`${t.email} = lower(${t.email})`),
+  ],
+);
+
+export const workspaces = pgTable(
+  'workspaces',
+  {
+    id: id(),
+    /**
+     * Owns the workspace and its members. Never cascades: an organization is
+     * deleted only once it has no workspaces.
+     */
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
+    slug: text('slug').notNull().unique(),
+    name: text('name').notNull(),
+    /** Set when someone deletes it; a scheduled run removes it 7 days later (4.5). */
+    deletionScheduledAt: timestamptz('deletion_scheduled_at'),
+    /** Increments on every applied schema change. API/MCP schemas cache on it. */
+    schemaVersion: integer('schema_version').notNull().default(0),
+    settings: jsonb('settings').$type<WorkspaceSettings>().notNull().default({}),
+    /** Templates applied to this workspace, with their versions (3.1). */
+    templates: jsonb('templates').$type<AppliedTemplate[]>().notNull().default([]),
+    /** Set when a template (including `blank`) is first applied. */
+    initializedAt: timestamp('initialized_at', { withTimezone: true }),
+    /**
+     * Digest of the built-in definitions (base, protection, applied templates)
+     * the workspace was last fully upgraded to (3). Null until the first
+     * upgrade run; a mismatch makes the next run plan an upgrade.
+     */
+    definitionsDigest: text('definitions_digest'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [unique('workspaces_organization_id_uq').on(t.organizationId, t.id)],
+);
 
 export const API_KEY_SCOPES = ['read', 'write', 'schema:write', 'admin'] as const;
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
@@ -115,6 +337,8 @@ export const apiKeys = pgTable(
     scopes: text('scopes').array().$type<ApiKeyScope[]>().notNull(),
     /** The actor every write made with this key is attributed to. */
     actor: jsonb('actor').$type<Actor>().notNull(),
+    /** The person who created it in the web app; null for CLI keys. */
+    createdByUser: uuid('created_by_user').references(() => users.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),

@@ -1,28 +1,46 @@
 import type { MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
 import { type AppEnv, errorResponse } from '../http/response.js';
+import {
+  accountSessionCookie,
+  lookupAccountSession,
+  requestedWorkspace,
+  WORKSPACE_HEADER,
+} from './account-session.js';
 import { lookupKey, requireWebHeader, SESSION_COOKIE } from './session.js';
 
 const BEARER = /^Bearer\s+(\S+)$/i;
 
+export type AuthOptions = {
+  publicOrigin?: string | undefined;
+  /** RETAINER_AUTH_SECRET: accounts mode, where people sign in (4.1). */
+  accountsSecret?: string | undefined;
+};
+
 /**
- * Authenticates `Authorization: Bearer <key>` (7). The key is looked up by
- * its hash through `retainer_lookup_api_key`, the runtime role's only way
- * into api_keys. The caller's workspace, scopes and actor come from the
- * key, never from the request.
+ * Authenticates a request (7, accounts spec 4.4), in this order:
+ *
+ * 1. `Authorization: Bearer <key>`: an API key, looked up by its hash
+ *    through `retainer_lookup_api_key`. It never falls back to a cookie.
+ * 2. In accounts mode, a person's signed session cookie, for the workspace
+ *    `X-Retainer-Workspace` names, checked on every request.
+ * 3. The key-mode cookie, which holds a personal API key.
+ *
+ * The caller's workspace, scopes and actor come from the credential, never
+ * from the request body.
  */
-export function authenticate(sql: Sql, publicOrigin?: string): MiddlewareHandler<AppEnv> {
+export function authenticate(sql: Sql, options: AuthOptions = {}): MiddlewareHandler<AppEnv> {
+  const { publicOrigin, accountsSecret } = options;
   return createMiddleware<AppEnv>(async (c, next) => {
     const authorization = c.req.header('authorization');
-    const match = BEARER.exec(authorization ?? '');
-    const cookie = getCookie(c, SESSION_COOKIE);
-    // An explicitly supplied invalid header must not fall back to a cookie.
-    const raw = authorization !== undefined ? match?.[1] : cookie;
-    if (!raw) {
+    const accountCookie = accountsSecret ? accountSessionCookie(c) : undefined;
+    const keyCookie = getCookie(c, SESSION_COOKIE);
+    if (authorization === undefined && !accountCookie && !keyCookie) {
       c.header('www-authenticate', 'Bearer');
       return errorResponse(
         c,
@@ -34,9 +52,32 @@ export function authenticate(sql: Sql, publicOrigin?: string): MiddlewareHandler
       );
     }
     try {
-      if (authorization === undefined && !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method))
-        requireWebHeader(c, publicOrigin);
-      c.set('caller', await lookupKey(sql, raw));
+      let caller: Caller;
+      if (authorization !== undefined) {
+        const key = BEARER.exec(authorization)?.[1];
+        if (!key) throw new AppError(401, 'unauthorized', 'send "Authorization: Bearer <key>"');
+        caller = await lookupKey(sql, key);
+        // A key belongs to one workspace; naming another is a client mistake.
+        const named = c.req.header(WORKSPACE_HEADER);
+        if (named !== undefined && named !== caller.workspaceId) {
+          throw new AppError(
+            400,
+            'invalid_request',
+            `${WORKSPACE_HEADER} names a workspace this API key does not belong to`,
+          );
+        }
+      } else {
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) requireWebHeader(c, publicOrigin);
+        caller =
+          accountCookie && accountsSecret
+            ? await lookupAccountSession(sql, {
+                cookie: accountCookie,
+                secret: accountsSecret,
+                workspace: requestedWorkspace(c),
+              })
+            : await lookupKey(sql, keyCookie ?? '');
+      }
+      c.set('caller', caller);
     } catch (error) {
       if (!(error instanceof AppError)) throw error;
       if (error.status === 401) c.header('www-authenticate', 'Bearer error="invalid_token"');
@@ -50,20 +91,30 @@ export function authenticate(sql: Sql, publicOrigin?: string): MiddlewareHandler
 /** Requires a scope; `admin` implies every other scope. */
 export function requireScope(scope: ApiKeyScope): MiddlewareHandler<AppEnv> {
   return createMiddleware<AppEnv>(async (c, next) => {
-    const missing = missingScope(c.get('caller').scopes, scope);
+    const missing = missingScope(c.get('caller'), scope);
     if (missing) return errorResponse(c, missing);
     await next();
   });
 }
 
-/** The 403 for a key without `scope`, or undefined when it has it (REST and MCP). */
+const PERSON_NEEDS: Record<ApiKeyScope, string> = {
+  read: 'You need access to this workspace to see this.',
+  write: 'Your role in this workspace lets you look but not make changes; ask an admin.',
+  'schema:write': "Only a workspace admin can change the workspace's structure.",
+  admin: 'Only a workspace admin can do this.',
+};
+
+/**
+ * The 403 for a caller without `scope`, or undefined when it has it (REST
+ * and MCP). A signed-in person is told about their role, an agent about its
+ * key.
+ */
 export function missingScope(
-  scopes: readonly ApiKeyScope[],
+  caller: Pick<Caller, 'scopes' | 'userId'>,
   scope: ApiKeyScope,
 ): AppError | undefined {
+  const { scopes } = caller;
   if (scopes.includes(scope) || scopes.includes('admin')) return undefined;
-  return new AppError(403, 'forbidden', `this API key needs the "${scope}" scope`, {
-    required: scope,
-    scopes,
-  });
+  const message = caller.userId ? PERSON_NEEDS[scope] : `this API key needs the "${scope}" scope`;
+  return new AppError(403, 'forbidden', message, { required: scope, scopes });
 }

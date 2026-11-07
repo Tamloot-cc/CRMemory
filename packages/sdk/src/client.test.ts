@@ -18,6 +18,24 @@ describe('REST transport', () => {
     expect(init?.signal).toBe(controller.signal);
     expect(init?.headers).toMatchObject({ 'X-Retainer-Client': 'web' });
     expect(init?.headers).not.toHaveProperty('authorization');
+    expect(init?.headers).not.toHaveProperty('X-Retainer-Workspace');
+  });
+  it('names the workspace on cookie requests, and not with a key', async () => {
+    const seen: RequestInit[] = [];
+    const fetch = async (_url: unknown, options?: RequestInit) => {
+      if (options) seen.push(options);
+      return Response.json({ records: [], nextCursor: null });
+    };
+    const workspace = '11111111-1111-4111-8111-111111111111';
+    await new RetainerClient({ baseUrl: 'http://x', workspace, fetch }).queryRecords('company', {});
+    await new RetainerClient({
+      baseUrl: 'http://x',
+      workspace,
+      apiKey: 'rtn_k',
+      fetch,
+    }).queryRecords('company', {});
+    expect(seen[0]?.headers).toMatchObject({ 'X-Retainer-Workspace': workspace });
+    expect(seen[1]?.headers).not.toHaveProperty('X-Retainer-Workspace');
   });
   it('preserves typed API errors and bearer clients', async () => {
     let headers: RequestInit['headers'] | undefined;

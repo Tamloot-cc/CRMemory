@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
 import { createApiKey } from '../../src/auth/keys.js';
-import { loadConfig } from '../../src/config.js';
+import { CONTROL_ROLE, loadConfig } from '../../src/config.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
 import { createApiHandler } from '../../src/lambda/api.js';
 import { createConsolidateHandler } from '../../src/lambda/consolidate.js';
+import { createControlHandler } from '../../src/lambda/control.js';
 import { DEPLOY_LOCK, withPassLock } from '../../src/lambda/deploy-lock.js';
 import { createOpsHandler } from '../../src/lambda/ops.js';
 import { createWorkspace } from '../../src/workspaces/workspaces.js';
@@ -17,6 +18,27 @@ import { bodyOf, context, httpEvent } from '../helpers/lambda.js';
 const db = useTestDatabase();
 const config = () => loadConfig({ DATABASE_URL: db.url, LOG_LEVEL: 'error' });
 const NOTHING_UPGRADED = { upgraded: [], conflicts: [], failed: [], aboutEventLinks: [] };
+
+describe('control function', () => {
+  it('serves /account behind API Gateway, and only to a signed-in person', async () => {
+    const handler = createControlHandler(
+      loadConfig({
+        DATABASE_URL: db.url,
+        RETAINER_AUTH_SECRET: 'lambda-auth-secret-0123456789abcdef0123',
+        RETAINER_GOOGLE_CLIENT_ID: 'lambda-client',
+        RETAINER_GOOGLE_CLIENT_SECRET: 'lambda-secret',
+        RETAINER_PUBLIC_ORIGIN: 'https://retainer.example',
+        LOG_LEVEL: 'error',
+      }),
+      db.connect({ role: CONTROL_ROLE, max: 1 }),
+      db.connect({ role: CONTROL_ROLE, max: 1 }),
+    );
+    const ok = await handler(httpEvent('GET', '/account/auth/ok'), context);
+    expect(ok.statusCode).toBe(200);
+    const res = await handler(httpEvent('GET', '/account'), context);
+    expect(res.statusCode).toBe(401);
+  });
+});
 
 describe('API function', () => {
   let webDir: string;
@@ -180,13 +202,13 @@ describe('ops function', () => {
       const ops = createOpsHandler(loadConfig({ DATABASE_URL: url, LOG_LEVEL: 'error' }));
       expect(await ops({ command: 'migrate' })).toEqual({
         command: 'migrate',
-        runtimeLogin: false,
+        logins: { runtime: false, control: false },
         rebuiltSearchText: 0,
         workspaceUpgrade: NOTHING_UPGRADED,
       });
       expect(await ops({ command: 'migrate' })).toEqual({
         command: 'migrate',
-        runtimeLogin: false,
+        logins: { runtime: false, control: false },
         rebuiltSearchText: 0,
         workspaceUpgrade: NOTHING_UPGRADED,
       });
@@ -232,7 +254,7 @@ describe('deploy lock: one version at a time', () => {
     await pass`select pg_advisory_unlock_shared(${DEPLOY_LOCK})`;
     await expect(migration).resolves.toEqual({
       command: 'migrate',
-      runtimeLogin: false,
+      logins: { runtime: false, control: false },
       rebuiltSearchText: 0,
       workspaceUpgrade: NOTHING_UPGRADED,
     });

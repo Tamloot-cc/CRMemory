@@ -30,7 +30,8 @@ See `ARCHITECTURE.md` section 11 for the six test layers.
 
 ## Rules
 
-- Every write carries an `Actor`, taken from the API key, never from the payload.
+- Every write carries an `Actor`, taken from the credential (an API key or a
+  person's session), never from the payload.
 - `records.data` is keyed by `fields.key`, never by field name.
 - `records.data` is derived from `field_assertions`; write assertions, not data.
 - All schema changes go through the schema engine; never write to

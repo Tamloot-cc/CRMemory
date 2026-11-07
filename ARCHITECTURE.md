@@ -937,7 +937,8 @@ The workspace records which templates it has applied, with their versions
                             └─ consolidate (scheduled)
 ```
 
-One Docker image, started with a role: `api`, `worker`, or `all`.
+One Docker image, started with a role: `api`, `worker`, `control` (accounts
+mode, 7.3) or `all`.
 Postgres is the only dependency, with the standard `pg_trgm`, `btree_gin`
 and `unaccent` extensions for search (5.1); the job queue runs on Postgres
 too. Retainer calls no language model and needs no model API key.
@@ -948,8 +949,8 @@ The same code also runs as AWS Lambda functions (`deploy/aws`,
 migrations and the operator CLI. What the container does on start
 (migrations, the first-boot key, the search rebuild) the deploy does once
 through `ops`, with the API stopped, so a cold start never migrates and no
-key is printed to the logs. A `control` function for accounts is designed but
-not built (7.3).
+key is printed to the logs. In accounts mode a `control` function serves
+`/account` (7.3).
 
 ### 4.1 How memory gets written
 
@@ -1535,8 +1536,8 @@ part of it.
 
 ## 7. Tenancy and auth
 
-This section describes what is built. Logging in with an account, organizations
-and roles are designed in 7.3.
+This section describes key mode, the default. Accounts mode, where people sign
+in and have roles, is in 7.3.
 
 The optional web app signs in at `POST /auth/session`, which turns a person's
 API key into an HTTP-only `retainer_session` cookie (`SameSite=Strict`, path
@@ -1608,9 +1609,11 @@ docker compose exec retainer retainer key revoke <key-id>
 
 `--template` is optional; without it, the first agent chooses one (3.1).
 `--slug` overrides the slug made from the name; `--json` prints JSON.
-`key create` prints the key once and stores only its hash. Self-serve workspaces
-and keys for a hosted service are designed in 7.3. There is no instance-wide
-admin HTTP API in v1.
+`key create` prints the key once and stores only its hash. In accounts mode
+people create workspaces and agent keys in the web app (7.3), and the CLI also
+manages organizations and members (`org create`, `org list`, `member add`,
+`workspace move`, and `--org` on `workspace create`). There is no instance-wide
+admin HTTP API.
 
 ### 7.2 Per-record access (not in v1)
 
@@ -1623,9 +1626,10 @@ code would only add clearer errors and pre-checks; it is never the
 enforcement. Until then, new code keeps that path open:
 
 1. Every read and write runs as `retainer_app` under RLS. The only
-   `SECURITY DEFINER` functions are the API-key lookup and
-   `retainer_workspaces_due` (4.2), which returns workspace IDs only; no read
-   takes a shortcut around RLS, including search and context.
+   `SECURITY DEFINER` functions are the API-key lookup,
+   `retainer_session_access` (7.3), which returns a person's role in one
+   workspace, and `retainer_workspaces_due` (4.2), which returns workspace IDs
+   only; no read takes a shortcut around RLS, including search and context.
 2. Per-request database context is set in one place (`inWorkspace`).
 3. A response mentions another record (conflict errors, merge candidates,
    relation labels, review items, context) only through one shared
@@ -1636,10 +1640,16 @@ enforcement. Until then, new code keeps that path open:
    become per audience and promoting a record becomes a merge. That cost is
    accepted.
 
-### 7.3 Accounts (designed, not built)
+### 7.3 Accounts
 
 People log in, create workspaces, invite colleagues and connect agents, with no
-operator. The reasons and the test results are in
+operator.
+
+**What is built.** Signing in with Google or a passkey, organizations, roles,
+self-serve workspaces, invitations, agent keys in the web app, the settings pages,
+and the `control` function with its NAT gateway on AWS. Still designed, not built:
+MCP OAuth (and with it `retainer_token_keys` and `retainer_token_access`), deleting a
+workspace from the web app, connected apps, and the per-workspace limits. The reasons and the test results are in
 [docs/specs/accounts-and-access.md](docs/specs/accounts-and-access.md). The workspace
 stays the security boundary: RLS stays keyed on `workspace_id`, records get no
 organization column, and a `Caller` still has exactly one workspace.
@@ -1742,14 +1752,14 @@ connection pool.
 Each server module in `packages/server/src` belongs to a layer and imports only
 from its own layer and the ones below it:
 
-| Layer      | Modules                                                                                      | Holds                                                          |
-| ---------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Entry      | `index`, `cli`, `lambda`                                                                     | Starting the server, the CLI and the Lambda functions          |
-| Interfaces | `api`, `mcp`, `worker`, `operator`, `auth`, `http`                                           | The ways in: REST, MCP, jobs, operators, and handling requests |
-| Admin      | `schema-engine`, `templates`, `workspaces`                                                   | Changing a schema and creating workspaces                      |
-| Features   | `views`, `comments`, `retrieval`, `reads`                                                    | Built on records and memory                                    |
-| Core       | `records`, `memory`, `privacy`                                                               | The write rules                                                |
-| Foundation | `db`, `schema`, `caller`, `idempotency`, `stable-json`, `config`, `errors`, `log`, `version` | The database and reading a schema                              |
+| Layer      | Modules                                                                                      | Holds                                                                             |
+| ---------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Entry      | `index`, `cli`, `lambda`                                                                     | Starting the server, the CLI and the Lambda functions                             |
+| Interfaces | `api`, `mcp`, `worker`, `operator`, `auth`, `http`, `accounts`                               | The ways in: REST, MCP, jobs, operators, people signing in, and handling requests |
+| Admin      | `schema-engine`, `templates`, `workspaces`                                                   | Changing a schema and creating workspaces                                         |
+| Features   | `views`, `comments`, `retrieval`, `reads`                                                    | Built on records and memory                                                       |
+| Core       | `records`, `memory`, `privacy`                                                               | The write rules                                                                   |
+| Foundation | `db`, `schema`, `caller`, `idempotency`, `stable-json`, `config`, `errors`, `log`, `version` | The database and reading a schema                                                 |
 
 The schema engine sits above the records because a schema change rewrites
 records and views, while records only need to read a schema: `schema` holds the
@@ -1762,8 +1772,9 @@ code.
 ## 9. Stack
 
 TypeScript on Node 22, pnpm workspaces, Hono, postgres.js with plain SQL,
-Drizzle for table definitions and drizzle-kit migrations, Zod, and the
-official MCP TypeScript SDK. The job queue is Postgres itself (4.2), with
+Drizzle for table definitions and drizzle-kit migrations, Zod, the
+official MCP TypeScript SDK, and Better Auth for signing people in (accounts
+mode only, in the `accounts` module). The job queue is Postgres itself (4.2), with
 no queue library. No LLM SDK.
 The optional web package uses Vite, React 19, TanStack Router/Query, Tailwind
 CSS 4 and shadcn-style UI primitives. Static files are served by Hono at

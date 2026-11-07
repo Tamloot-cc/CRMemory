@@ -13,41 +13,49 @@ let sessionEpoch = 0;
 export function resetSessionTransport() {
   sessionEpoch++;
 }
-export const api = new RetainerClient({
-  baseUrl: window.location.origin,
-  credentials: 'include',
-  fetch: async (input, init) => {
-    const epoch = sessionEpoch;
-    let response = await window.fetch(input, init);
-    const url = new URL(
-      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
-    );
-    // POST reads take a body: queries, totals and delete impact.
-    const read =
-      !init?.method ||
-      init.method === 'GET' ||
-      /\/(query|aggregate|delete-impact)$/.test(url.pathname);
-    // A 404 may mean the cached schema names an object that no longer exists;
-    // a deleted record is a plain answer, so it skips the schema refresh.
-    if (
-      response.status === 404 &&
-      read &&
-      url.pathname.startsWith('/v1/') &&
-      url.pathname !== '/v1/schema' &&
-      (await errorCode(response)) !== 'record_deleted'
-    ) {
-      const refreshed = await api.schema(init?.signal ?? undefined);
+const makeClient = (workspace?: string) =>
+  new RetainerClient({
+    baseUrl: window.location.origin,
+    credentials: 'include',
+    ...(workspace ? { workspace } : {}),
+    fetch: async (input, init) => {
+      const epoch = sessionEpoch;
+      let response = await window.fetch(input, init);
+      const url = new URL(
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+      );
+      // POST reads take a body: queries, totals and delete impact.
+      const read =
+        !init?.method ||
+        init.method === 'GET' ||
+        /\/(query|aggregate|delete-impact)$/.test(url.pathname);
+      // A 404 may mean the cached schema names an object that no longer exists;
+      // a deleted record is a plain answer, so it skips the schema refresh.
+      if (
+        response.status === 404 &&
+        read &&
+        url.pathname.startsWith('/v1/') &&
+        url.pathname !== '/v1/schema' &&
+        (await errorCode(response)) !== 'record_deleted'
+      ) {
+        const refreshed = await api.schema(init?.signal ?? undefined);
+        if (epoch !== sessionEpoch)
+          throw new DOMException('Previous session response discarded', 'AbortError');
+        window.dispatchEvent(new CustomEvent('retainer:schema-refreshed', { detail: refreshed }));
+        response = await window.fetch(input, init);
+      }
       if (epoch !== sessionEpoch)
         throw new DOMException('Previous session response discarded', 'AbortError');
-      window.dispatchEvent(new CustomEvent('retainer:schema-refreshed', { detail: refreshed }));
-      response = await window.fetch(input, init);
-    }
-    if (epoch !== sessionEpoch)
-      throw new DOMException('Previous session response discarded', 'AbortError');
-    return response;
-  },
-  onUnauthorized: () => window.dispatchEvent(new Event('retainer:unauthorized')),
-});
+      return response;
+    },
+    onUnauthorized: () => window.dispatchEvent(new Event('retainer:unauthorized')),
+  });
+/** The API client; in accounts mode, `openWorkspace` names the workspace it talks to. */
+export let api = makeClient();
+/** Accounts mode: send every request to this workspace (`X-Retainer-Workspace`). */
+export function openWorkspace(id: string) {
+  api = makeClient(id);
+}
 export const WorkspaceContext = createContext<{
   session: Session;
   schema: SchemaDescription;

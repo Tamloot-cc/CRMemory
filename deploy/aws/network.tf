@@ -1,7 +1,12 @@
-# A VPC of its own with two private subnets and no internet gateway or NAT:
-# the database is reachable only from the functions, and Retainer makes no
-# outbound calls (it never calls a model or any other service), so the
-# functions need no route out. API Gateway reaches them through Lambda.
+# A VPC of its own. The api, consolidate and ops functions run in two private
+# subnets with no route out: the database is reachable only from the
+# functions, and they make no outbound calls (Retainer never calls a model or
+# any other service). API Gateway reaches them through Lambda.
+#
+# In accounts mode the control function signs people in with Google, which
+# needs the internet. It runs in private subnets of its own whose only route
+# out is a NAT gateway in a public subnet, so the other functions still have
+# none (accounts spec 4.6).
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -62,4 +67,120 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_functions" {
   from_port                    = 5432
   to_port                      = 5432
   description                  = "Postgres from the functions"
+}
+
+# ─── Accounts mode: the control function's way out ───────────────────────────
+
+resource "aws_security_group" "control" {
+  count       = local.accounts ? 1 : 0
+  name        = "${var.name}-control"
+  description = "Retainer control function: the database, and HTTPS out for Google sign-in"
+  vpc_id      = aws_vpc.this.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "control_to_database" {
+  count                        = local.accounts ? 1 : 0
+  security_group_id            = aws_security_group.control[0].id
+  referenced_security_group_id = aws_security_group.database.id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  description                  = "Postgres"
+}
+
+resource "aws_vpc_security_group_egress_rule" "control_https" {
+  count             = local.accounts ? 1 : 0
+  security_group_id = aws_security_group.control[0].id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  description       = "HTTPS: Google sign-in"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "database_from_control" {
+  count                        = local.accounts ? 1 : 0
+  security_group_id            = aws_security_group.database.id
+  referenced_security_group_id = aws_security_group.control[0].id
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  description                  = "Postgres from the control function"
+}
+
+resource "aws_internet_gateway" "this" {
+  count  = local.accounts ? 1 : 0
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = var.name }
+}
+
+# One NAT gateway, in the first zone: if that zone fails, signing in stops
+# and the rest of Retainer keeps working.
+resource "aws_subnet" "public" {
+  count             = local.accounts ? 1 : 0
+  vpc_id            = aws_vpc.this.id
+  availability_zone = local.azs[0]
+  cidr_block        = cidrsubnet(aws_vpc.this.cidr_block, 8, 100)
+
+  tags = { Name = "${var.name}-public-${local.azs[0]}" }
+}
+
+resource "aws_route_table" "public" {
+  count  = local.accounts ? 1 : 0
+  vpc_id = aws_vpc.this.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.this[0].id
+  }
+
+  tags = { Name = "${var.name}-public" }
+}
+
+resource "aws_route_table_association" "public" {
+  count          = local.accounts ? 1 : 0
+  subnet_id      = aws_subnet.public[0].id
+  route_table_id = aws_route_table.public[0].id
+}
+
+resource "aws_eip" "nat" {
+  count  = local.accounts ? 1 : 0
+  domain = "vpc"
+  tags   = { Name = "${var.name}-nat" }
+}
+
+resource "aws_nat_gateway" "this" {
+  count         = local.accounts ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public[0].id
+  tags          = { Name = var.name }
+
+  depends_on = [aws_internet_gateway.this]
+}
+
+resource "aws_subnet" "control" {
+  count             = local.accounts ? length(local.azs) : 0
+  vpc_id            = aws_vpc.this.id
+  availability_zone = local.azs[count.index]
+  cidr_block        = cidrsubnet(aws_vpc.this.cidr_block, 8, 10 + count.index)
+
+  tags = { Name = "${var.name}-control-${local.azs[count.index]}" }
+}
+
+resource "aws_route_table" "control" {
+  count  = local.accounts ? 1 : 0
+  vpc_id = aws_vpc.this.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.this[0].id
+  }
+
+  tags = { Name = "${var.name}-control" }
+}
+
+resource "aws_route_table_association" "control" {
+  count          = length(aws_subnet.control)
+  subnet_id      = aws_subnet.control[count.index].id
+  route_table_id = aws_route_table.control[0].id
 }

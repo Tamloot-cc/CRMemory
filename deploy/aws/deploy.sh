@@ -4,10 +4,11 @@
 #
 # One version runs at a time (docs/self-hosting.md, Upgrading), so this:
 #   1. updates the ops function, which runs migrations,
-#   2. stops the api and consolidate functions (reserved concurrency 0),
-#   3. migrates, sets the api and consolidate functions' database login and
-#      upgrades existing workspaces to the new definitions,
-#   4. updates api and consolidate,
+#   2. stops the api, consolidate and, in accounts mode, control functions
+#      (reserved concurrency 0),
+#   3. migrates, sets their database logins and upgrades existing
+#      workspaces to the new definitions,
+#   4. updates them,
 #   5. starts them again with the concurrency Terraform set.
 # Requests during steps 2-5 get 503 from API Gateway, usually for well under
 # a minute. If the migration fails, the functions stay stopped and the
@@ -48,10 +49,18 @@ start() {
     --reserved-concurrent-executions "$concurrency" >/dev/null
 }
 
+# Accounts mode adds the control function (functions.tf).
+services=("$name-api" "$name-consolidate")
+if found="$(aws lambda get-function --function-name "$name-control" 2>&1)"; then
+  services+=("$name-control")
+elif ! grep -q ResourceNotFoundException <<<"$found"; then
+  echo "$found" >&2
+  exit 1
+fi
+
 update "$name-ops"
 
-stop "$name-api"
-stop "$name-consolidate"
+for service in "${services[@]}"; do stop "$service"; done
 # Stopping only blocks new invocations. Let API requests already running on
 # the old version finish (the function times out after 29 seconds); the
 # migration itself waits for a consolidator pass in flight (deploy-lock.ts).
@@ -64,7 +73,7 @@ error="$(aws lambda invoke --function-name "$name-ops" \
   --cli-binary-format raw-in-base64-out --payload '{"command":"migrate"}' \
   --cli-read-timeout 900 "$result" --query FunctionError --output text)"
 if [ "$error" != "None" ]; then
-  echo "Migration failed; $name-api and $name-consolidate stay stopped:" >&2
+  echo "Migration failed; ${services[*]} stay stopped:" >&2
   cat "$result" >&2
   echo >&2
   exit 1
@@ -72,8 +81,6 @@ fi
 cat "$result"
 echo
 
-update "$name-api"
-update "$name-consolidate"
-start "$name-api"
-start "$name-consolidate"
+for service in "${services[@]}"; do update "$service"; done
+for service in "${services[@]}"; do start "$service"; done
 echo "Deployed."

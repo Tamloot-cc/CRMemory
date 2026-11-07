@@ -17,7 +17,7 @@ function shell(collapsed: boolean) {
   render(
     <Shell
       workspace="Acme"
-      user={{ name: 'Dana Levi', type: 'user' }}
+      user={{ name: 'Dana Levi', detail: 'User' }}
       objects={[
         { name: 'company', label: 'Companies', class: 'entity' },
         { name: 'conversation', label: 'Conversations', class: 'event' },

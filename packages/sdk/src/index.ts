@@ -50,6 +50,12 @@ export type RetainerClientOptions = {
   baseUrl: string;
   apiKey?: string;
   credentials?: 'omit' | 'same-origin' | 'include';
+  /**
+   * The workspace ID a signed-in person's cookie requests go to. A person
+   * can reach several workspaces with one session; an API key belongs to
+   * one, so key requests ignore this.
+   */
+  workspace?: string;
   fetch?: typeof fetch;
   onUnauthorized?: () => void;
 };
@@ -93,8 +99,9 @@ export class RetainerClient {
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
   protected headers(): Record<string, string> {
-    return this.options.apiKey
-      ? { authorization: `Bearer ${this.options.apiKey}` }
+    if (this.options.apiKey) return { authorization: `Bearer ${this.options.apiKey}` };
+    return this.options.workspace
+      ? { 'X-Retainer-Client': 'web', 'X-Retainer-Workspace': this.options.workspace }
       : { 'X-Retainer-Client': 'web' };
   }
   /** `isResult` lets an error status whose body is a result come back as one. */

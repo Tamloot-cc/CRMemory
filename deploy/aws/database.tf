@@ -2,8 +2,9 @@
 # the tables, creates the pg_trgm, btree_gin and unaccent extensions and the
 # retainer_app runtime role (drizzle/0001_security.sql). Only the ops
 # function connects with it. The api and consolidate functions log in as
-# retainer_app itself, with a password of their own that the ops function
-# sets when it migrates, so they hold no credential that can become the owner.
+# retainer_app itself, and in accounts mode the control function as
+# retainer_control, each with a password of its own that the ops function
+# sets when it migrates, so none holds a credential that can become the owner.
 
 resource "random_password" "database" {
   length  = 40
@@ -13,6 +14,13 @@ resource "random_password" "database" {
 resource "random_password" "runtime" {
   length  = 40
   special = false # used inside RETAINER_RUNTIME_DATABASE_URL unencoded
+}
+
+# Accounts mode: the control function's login, as retainer_control.
+resource "random_password" "control" {
+  count   = local.accounts ? 1 : 0
+  length  = 40
+  special = false # used inside RETAINER_CONTROL_DATABASE_URL unencoded
 }
 
 # Suffix for the final snapshot: RDS keeps it after the instance is deleted,
@@ -76,6 +84,14 @@ locals {
     aws_db_instance.this.port,
     aws_db_instance.this.db_name,
   )
+
+  control_database_url = local.accounts ? format(
+    "postgres://retainer_control:%s@%s:%d/%s?sslmode=require",
+    one(random_password.control[*].result),
+    aws_db_instance.this.address,
+    aws_db_instance.this.port,
+    aws_db_instance.this.db_name,
+  ) : null
 
   runtime_database_url = format(
     "postgres://retainer_app:%s@%s:%d/%s?sslmode=require",
