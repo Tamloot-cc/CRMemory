@@ -167,7 +167,7 @@ export const account = {
     call<void>(`${org(id)}/invitations/${invitationId}`, { method: 'DELETE' }),
   connections: () => call<{ connections: Connection[] }>('/account/connections'),
   workspaceConnections: (id: string) =>
-    call<{ role: WorkspaceRole; connections: Connection[] }>(`${ws(id)}/connections`),
+    call<{ connections: Connection[] }>(`${ws(id)}/connections`),
   disconnect: (connectionId: string) =>
     call<void>(`/account/connections/${encodeURIComponent(connectionId)}`, { method: 'DELETE' }),
   /** The app asking to connect, for the consent page. */

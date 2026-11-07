@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { cappedScopes } from '@retainer/shared';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { cappedScopes, oauthActorId } from '../../src/auth/oauth-token.js';
+import { oauthActorId } from '../../src/auth/oauth-token.js';
 import { RUNTIME_ROLE } from '../../src/db/client.js';
 import {
   createOrganization,
+  moveWorkspace,
   setOrganizationMember,
   setWorkspaceMember,
 } from '../../src/workspaces/organizations.js';
@@ -276,6 +278,21 @@ describe('access ends at the next request', () => {
       },
     );
     expect(res.status).toBe(204);
+    expect(await status(tokens.access_token)).toBe(401);
+  });
+
+  it('when an operator moves the workspace, even for someone who keeps access', async () => {
+    const t = await setup();
+    const tokens = await connect(app.accounts, { cookie: t.dana.cookie, workspaceId: t.sales.id });
+    expect(await status(tokens.access_token)).toBe(200);
+    // Dana is an admin of the new organization, so she can still open it.
+    const moved = await createOrganization(db.owner, { name: 'New home' });
+    await setOrganizationMember(db.owner, {
+      organization: moved.id,
+      email: t.dana.email,
+      role: 'admin',
+    });
+    await moveWorkspace(db.owner, { workspace: t.sales.id, organization: moved.id });
     expect(await status(tokens.access_token)).toBe(401);
   });
 

@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
-import { WORKSPACE_ROLE_SCOPES, type WorkspaceRole } from '@retainer/shared';
+import { cappedScopes, type WorkspaceRole } from '@retainer/shared';
 import { decodeProtectedHeader, importJWK, type JWK, jwtVerify } from 'jose';
 import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
-import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
 
 /**
@@ -23,12 +22,6 @@ export const AUTH_BASE_PATH = '/account/auth';
 /** The access token claim naming the workspace the person picked at consent. */
 export const WORKSPACE_CLAIM = 'workspace_id';
 
-/**
- * What an app may ask for over OAuth: the scopes an agent's key can have.
- * Never `admin`, so an app can never manage people or keys (4.3).
- */
-export const OAUTH_SCOPES = ['read', 'write', 'schema:write'] as const;
-
 export type OAuthSettings = { issuer: string; resource: string; resourceMetadata: string };
 
 /** The issuer, the protected resource and its metadata URL, from the public origin. */
@@ -44,15 +37,6 @@ export function oauthSettings(publicOrigin: string): OAuthSettings {
 /** A bearer value shaped like a JWT, as opposed to a Retainer API key. */
 export const looksLikeJwt = (value: string) =>
   /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
-
-/**
- * The scopes a request may use: the token's, capped by the person's role
- * now. Downgrading someone applies at their app's next request.
- */
-export function cappedScopes(tokenScopes: readonly string[], role: WorkspaceRole): ApiKeyScope[] {
-  const allowed = WORKSPACE_ROLE_SCOPES[role];
-  return OAUTH_SCOPES.filter((scope) => tokenScopes.includes(scope) && allowed.includes(scope));
-}
 
 /** A stable actor ID for one app acting for one person (4.7). */
 export function oauthActorId(clientId: string, userId: string): string {

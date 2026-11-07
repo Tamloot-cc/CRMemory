@@ -9,17 +9,15 @@ import { purgeDeletedWorkspaces } from '../workspaces/deletion.js';
  */
 export const PURGE_TASK = 'purge-deleted-workspaces';
 
-export const isPurgeEvent = (event: unknown): boolean =>
+export type PurgeEvent = { task: typeof PURGE_TASK };
+
+export const isPurgeEvent = (event: unknown): event is PurgeEvent =>
   typeof event === 'object' && event !== null && (event as { task?: unknown }).task === PURGE_TASK;
 
-/**
- * Runs the purge every `intervalMinutes`, first a minute after starting.
- * `sql` connects as the control role.
- */
-export function startPurger(options: { sql: Sql; intervalMinutes?: number }): {
-  stop: () => Promise<void>;
-} {
-  const intervalMs = (options.intervalMinutes ?? 60) * 60_000;
+const PURGE_INTERVAL_MS = 60 * 60_000;
+
+/** Runs the purge every hour, first a minute after starting. `sql` connects as the control role. */
+export function startPurger(options: { sql: Sql }): { stop: () => Promise<void> } {
   let running: Promise<unknown> = Promise.resolve();
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
@@ -30,7 +28,7 @@ export function startPurger(options: { sql: Sql; intervalMinutes?: number }): {
         .catch((error: unknown) => {
           log.error(`Removing deleted workspaces failed: ${(error as Error).message}`);
         })
-        .then(() => schedule(intervalMs));
+        .then(() => schedule(PURGE_INTERVAL_MS));
     }, delay);
   };
   schedule(60_000);

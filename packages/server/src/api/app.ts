@@ -1,8 +1,9 @@
 import { resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { OAUTH_SCOPES } from '@retainer/shared';
 import { Hono } from 'hono';
 import { authenticate } from '../auth/middleware.js';
-import { OAUTH_SCOPES, oauthSettings } from '../auth/oauth-token.js';
+import { oauthSettings } from '../auth/oauth-token.js';
 import { meRoute, sessionRoutes } from '../auth/session.js';
 import { publicOriginSchema } from '../config.js';
 import type { Sql } from '../db/client.js';

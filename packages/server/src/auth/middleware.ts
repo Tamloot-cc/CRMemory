@@ -44,16 +44,13 @@ export type AuthOptions = {
 export function authenticate(sql: Sql, options: AuthOptions = {}): MiddlewareHandler<AppEnv> {
   const { publicOrigin, accountsSecret, oauth } = options;
   // RFC 9728: tells an OAuth client where to learn how to get a token.
-  const challenge = (error?: string) =>
-    [
-      'Bearer',
-      [
-        ...(error ? [`error="${error}"`] : []),
-        ...(oauth ? [`resource_metadata="${oauth.resourceMetadata}"`] : []),
-      ].join(', '),
-    ]
-      .filter(Boolean)
-      .join(' ');
+  const challenge = (error?: string) => {
+    const params = [
+      ...(error ? [`error="${error}"`] : []),
+      ...(oauth ? [`resource_metadata="${oauth.resourceMetadata}"`] : []),
+    ];
+    return params.length > 0 ? `Bearer ${params.join(', ')}` : 'Bearer';
+  };
   return createMiddleware<AppEnv>(async (c, next) => {
     const authorization = c.req.header('authorization');
     const accountCookie = accountsSecret ? accountSessionCookie(c) : undefined;

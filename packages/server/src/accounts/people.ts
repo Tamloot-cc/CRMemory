@@ -24,6 +24,7 @@ import {
   assertKeepsAnOwner,
   assertWithinLimit,
   createOrganization,
+  endGrants,
   lockOrganization,
   lockWorkspaceOrganization,
 } from '../workspaces/organizations.js';
@@ -885,20 +886,3 @@ export async function invitationsFor(sql: Sql, person: Person) {
 // ---------------------------------------------------------------------------
 // OAuth grants (4.7)
 // ---------------------------------------------------------------------------
-
-/**
- * Deletes consents and revokes their refresh tokens, so their apps lose
- * access at the next request and cannot regain it without consenting again.
- */
-export async function endGrants(tx: Tx, where: ReturnType<Sql>): Promise<number> {
-  const ended = await tx<{ client_id: string; user_id: string; reference_id: string }[]>`
-    delete from oauth_consents oc where ${where}
-    returning oc.client_id, oc.user_id, oc.reference_id`;
-  for (const grant of ended) {
-    await tx`
-      update oauth_refresh_tokens set revoked = now()
-      where client_id = ${grant.client_id} and user_id = ${grant.user_id}
-        and reference_id = ${grant.reference_id} and revoked is null`;
-  }
-  return ended.length;
-}

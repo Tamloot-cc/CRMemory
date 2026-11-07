@@ -4,7 +4,7 @@ import { createAccountsServer } from '../accounts/index.js';
 import { type Config, loadConfig } from '../config.js';
 import { createControlSql, type Sql } from '../db/client.js';
 import { setLogLevel } from '../log.js';
-import { isPurgeEvent } from '../worker/purge.js';
+import { isPurgeEvent, type PurgeEvent } from '../worker/purge.js';
 import { type PurgeReport, purgeDeletedWorkspaces } from '../workspaces/deletion.js';
 import { withPassLock } from './deploy-lock.js';
 
@@ -37,11 +37,10 @@ export function createControlHandler(
         ?.requestContext?.http?.sourceIp,
   });
   const http = handle(app as unknown as Hono);
-  function control(event: { task: string }, context?: LambdaContext): Promise<PurgeReport>;
+  function control(event: PurgeEvent, context?: LambdaContext): Promise<PurgeReport>;
   function control(event: LambdaEvent, context: LambdaContext): ReturnType<typeof http>;
-  function control(event: LambdaEvent | { task: string }, context?: LambdaContext) {
-    if (isPurgeEvent(event)) return purge(purgeSql);
-    return http(event as LambdaEvent, context as LambdaContext);
+  function control(event: LambdaEvent | PurgeEvent, context?: LambdaContext) {
+    return isPurgeEvent(event) ? purge(purgeSql) : http(event, context as LambdaContext);
   }
   return control;
 }
@@ -60,9 +59,7 @@ async function purge(sql: Sql): Promise<PurgeReport> {
 let cached: ReturnType<typeof createControlHandler> | undefined;
 
 /** The Lambda entry point (`dist/lambda/control.handler`). */
-export const handler = (event: LambdaEvent | { task: string }, context: LambdaContext) => {
+export const handler = (event: LambdaEvent | PurgeEvent, context: LambdaContext) => {
   cached ??= createControlHandler(loadConfig());
-  return isPurgeEvent(event)
-    ? cached(event as { task: string })
-    : cached(event as LambdaEvent, context);
+  return isPurgeEvent(event) ? cached(event) : cached(event, context);
 };

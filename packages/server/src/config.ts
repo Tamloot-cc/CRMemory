@@ -185,6 +185,15 @@ export function rateLimitPerMinute(config: Config): number {
   );
 }
 
+/**
+ * Where people reach Retainer in accounts mode: `RETAINER_PUBLIC_ORIGIN`, or
+ * this machine's port. `/account` issues OAuth tokens for this origin's `/mcp`
+ * and the API checks them for it, so both must use this one function.
+ */
+export function accountsOrigin(config: Config): string {
+  return config.RETAINER_PUBLIC_ORIGIN ?? `http://localhost:${config.PORT}`;
+}
+
 /** Accounts mode: people sign in with Google or a passkey (accounts spec 4.1). */
 export function accountsMode(config: Config): boolean {
   return config.RETAINER_AUTH_SECRET !== undefined;

@@ -78,12 +78,6 @@ export const APP_SCOPE_WORDS: Partial<Record<Scope, string>> = {
   'schema:write': "Add objects and fields to the workspace's structure",
 };
 
-/** The scopes an app gets in a workspace: what it asked for, capped by the person's role. */
-export const appScopes = (asked: readonly string[], role: WorkspaceRole): Scope[] =>
-  (['read', 'write', 'schema:write'] as const).filter(
-    (scope) => asked.includes(scope) && WORKSPACE_ROLE_SCOPES[role].includes(scope),
-  );
-
 /**
  * Plain words for the error Google's sign-in sends back to the page in
  * `?error=`. `unable_to_create_user` comes when two first sign-ins for one

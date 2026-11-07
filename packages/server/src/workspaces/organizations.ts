@@ -261,8 +261,31 @@ export async function moveWorkspace(
     if (organization.id === from) return { organization, removedMembers: 0 };
     const removed = await tx`
       delete from workspace_members where workspace_id = ${workspace.id} returning 1`;
+    // Who may use it changes, so apps connected to it must be connected again.
+    await endGrants(tx, tx`oc.reference_id = ${workspace.id}`);
     await tx`
       update workspaces set organization_id = ${organization.id} where id = ${workspace.id}`;
     return { organization, removedMembers: removed.length };
   });
+}
+
+/**
+ * Ends apps' access to a workspace (accounts spec 4.7): deletes the consents
+ * `where` matches (on `oauth_consents oc`) and revokes their refresh tokens,
+ * so the apps lose access at their next request and cannot regain it
+ * without the person consenting again. Returns how many were ended.
+ */
+export async function endGrants(tx: Tx, where: ReturnType<Sql>): Promise<number> {
+  const [row] = await tx<{ ended: number }[]>`
+    with ended as (
+      delete from oauth_consents oc where ${where}
+      returning oc.client_id, oc.user_id, oc.reference_id
+    ), revoked as (
+      update oauth_refresh_tokens r set revoked = now()
+      from ended e
+      where r.client_id = e.client_id and r.user_id = e.user_id
+        and r.reference_id = e.reference_id and r.revoked is null
+    )
+    select count(*)::int as ended from ended`;
+  return row?.ended ?? 0;
 }

@@ -1,9 +1,7 @@
-import type { WorkspaceRole } from '@retainer/shared';
 import type { Sql } from '../db/client.js';
-import type { Tx } from '../db/tx.js';
 import { forbidden, notFound } from '../errors.js';
-import { lockWorkspaceOrganization } from '../workspaces/organizations.js';
-import { endGrants, type Person, workspaceAccess } from './people.js';
+import { endGrants, lockWorkspaceOrganization } from '../workspaces/organizations.js';
+import { type Person, workspaceAccess } from './people.js';
 
 /**
  * Connected apps (accounts spec 4.7, 5.1): apps people connected to a
@@ -45,7 +43,7 @@ const toConnection = (row: ConnectionRow): Connection => ({
   connectedAt: row.created_at.toISOString(),
 });
 
-function connections(sql: Sql | Tx, where: ReturnType<Sql>) {
+function connections(sql: Sql, where: ReturnType<Sql>) {
   return sql<ConnectionRow[]>`
     select oc.id, coalesce(c.name, c.client_id) as app_name, c.uri as app_uri,
       w.id as workspace_id, w.slug as workspace_slug, w.name as workspace_name,
@@ -64,7 +62,7 @@ export async function listWorkspaceConnections(
   sql: Sql,
   person: Person,
   workspaceId: string,
-): Promise<{ role: WorkspaceRole; connections: Connection[] }> {
+): Promise<{ connections: Connection[] }> {
   const { role } = await workspaceAccess(sql, person, workspaceId);
   const rows = await connections(
     sql,
@@ -72,7 +70,7 @@ export async function listWorkspaceConnections(
       ? sql`oc.reference_id = ${workspaceId}`
       : sql`oc.reference_id = ${workspaceId} and oc.user_id = ${person.id}`,
   );
-  return { role, connections: rows.map(toConnection) };
+  return { connections: rows.map(toConnection) };
 }
 
 /** The apps a person connected, in every workspace (Your account). */

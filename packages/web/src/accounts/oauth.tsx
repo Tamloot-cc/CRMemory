@@ -1,9 +1,10 @@
+import { cappedScopes, OAUTH_SCOPES } from '@retainer/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { type Account, account as accountApi } from '../api/account.js';
 import { Button, Muted, Notice, Stack } from '../ui/index.js';
 import { allWorkspaces } from './context.js';
-import { APP_SCOPE_WORDS, appScopes, capital } from './format.js';
+import { APP_SCOPE_WORDS, capital } from './format.js';
 import { AccountFrame } from './screens.js';
 
 /**
@@ -42,7 +43,7 @@ export function OAuthContinue() {
 export function OAuthConsent({ account }: { account: Account }) {
   const query = new URLSearchParams(window.location.search);
   const clientId = query.get('client_id') ?? '';
-  const asked = (query.get('scope') ?? 'read write schema:write').split(' ');
+  const asked = query.get('scope')?.split(' ') ?? [...OAUTH_SCOPES];
   const client = useQuery({
     queryKey: ['oauth-client', clientId],
     queryFn: () => accountApi.oauthClient(clientId),
@@ -54,7 +55,7 @@ export function OAuthConsent({ account }: { account: Account }) {
     [error, setError] = useState('');
   const name = client.data?.name ?? 'This app';
   const choice = reachable.find(({ workspace }) => workspace.id === picked);
-  const can = choice ? appScopes(asked, choice.workspace.role) : [];
+  const can = choice ? cappedScopes(asked, choice.workspace.role) : [];
 
   async function answer(accept: boolean) {
     setBusy(true);

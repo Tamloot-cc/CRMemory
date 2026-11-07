@@ -4,6 +4,7 @@ import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { mcp } from '@better-auth/mcp';
 import { oauthProviderAuthServerMetadata } from '@better-auth/oauth-provider';
 import { passkey } from '@better-auth/passkey';
+import { OAUTH_SCOPES } from '@retainer/shared';
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { APIError } from 'better-auth/api';
@@ -11,12 +12,7 @@ import { jwt } from 'better-auth/plugins/jwt';
 import type { GoogleOptions } from 'better-auth/social-providers';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { ACCOUNT_COOKIE_PREFIX } from '../auth/account-session.js';
-import {
-  AUTH_BASE_PATH,
-  OAUTH_SCOPES,
-  oauthSettings,
-  WORKSPACE_CLAIM,
-} from '../auth/oauth-token.js';
+import { AUTH_BASE_PATH, oauthSettings, WORKSPACE_CLAIM } from '../auth/oauth-token.js';
 import type { AccountsConfig } from '../config.js';
 import type { Sql } from '../db/client.js';
 import { isUuid } from '../db/ids.js';
@@ -143,7 +139,6 @@ export type Auth = {
 
 export function createAuth(options: AuthOptions): Auth {
   const auth = betterAuthFor(options);
-  const metadata = oauthProviderAuthServerMetadata(auth);
   return {
     handler: (request) => handle(auth, request),
     getSession: async (headers) => {
@@ -152,7 +147,7 @@ export function createAuth(options: AuthOptions): Auth {
     },
     consent: (request, workspaceId) =>
       pickedWorkspace.run(workspaceId, () => auth.handler(request)),
-    authServerMetadata: (request) => metadata(request),
+    authServerMetadata: oauthProviderAuthServerMetadata(auth),
   };
 }
 

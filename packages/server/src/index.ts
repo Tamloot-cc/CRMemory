@@ -1,7 +1,13 @@
 import { serve } from '@hono/node-server';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { createApp } from './api/app.js';
-import { accountsMode, loadConfig, ownerDatabaseUrl, rateLimitPerMinute } from './config.js';
+import {
+  accountsMode,
+  accountsOrigin,
+  loadConfig,
+  ownerDatabaseUrl,
+  rateLimitPerMinute,
+} from './config.js';
 import {
   createApiSql,
   createControlSql,
@@ -82,11 +88,7 @@ if (role === 'api' || role === 'all' || role === 'control') {
       : createApp({
           sql: pool(createApiSql(config, { max: config.RETAINER_DB_POOL_MAX })),
           webDir: config.RETAINER_WEB_DIR,
-          // /account falls back to this origin too, so OAuth tokens it
-          // issues name the resource this app checks them for.
-          publicOrigin:
-            config.RETAINER_PUBLIC_ORIGIN ??
-            (accounts ? `http://localhost:${config.PORT}` : undefined),
+          publicOrigin: accounts ? accountsOrigin(config) : config.RETAINER_PUBLIC_ORIGIN,
           accountsSecret: config.RETAINER_AUTH_SECRET,
           rateLimit: { limit: rateLimitPerMinute(config) },
         });

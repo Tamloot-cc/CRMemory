@@ -23,8 +23,8 @@ export type RateLimit = {
  */
 export function rateLimit(sql: Sql, options: RateLimit): MiddlewareHandler<AppEnv> {
   const { limit, windowSeconds = 60 } = options;
+  if (limit <= 0) return (_c, next) => next();
   return createMiddleware<AppEnv>(async (c, next) => {
-    if (limit <= 0) return next();
     const { workspaceId } = c.get('caller');
     const { count, resetIn } = await countRequest(sql, workspaceId, windowSeconds);
     if (count > limit) {
@@ -50,7 +50,7 @@ export function rateLimit(sql: Sql, options: RateLimit): MiddlewareHandler<AppEn
  * started just before a boundary that another request already crossed is
  * counted in the newer window rather than resetting it.
  */
-export async function countRequest(
+async function countRequest(
   sql: Sql,
   workspaceId: string,
   windowSeconds: number,

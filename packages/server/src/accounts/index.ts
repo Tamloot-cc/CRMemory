@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { accountsConfig, type Config } from '../config.js';
+import { accountsConfig, accountsOrigin, type Config } from '../config.js';
 import type { Sql } from '../db/client.js';
 import { type AuthOptions, createAuth, type GoogleOverrides } from './auth.js';
 import { createAccountsApp } from './routes.js';
@@ -27,7 +27,7 @@ export function createAccountsServer(input: {
   fetchClientMetadata?: AuthOptions['fetchClientMetadata'];
 }) {
   const { config } = input;
-  const publicOrigin = config.RETAINER_PUBLIC_ORIGIN ?? `http://localhost:${config.PORT}`;
+  const publicOrigin = accountsOrigin(config);
   const auth = createAuth({
     sql: input.authSql,
     config: accountsConfig(config),

@@ -43,20 +43,18 @@ export type PurgeReport = { purged: number; failed: number };
  * condition, so a workspace restored meanwhile is kept. `sql` connects as
  * the control role, which may delete workspaces; their rows cascade.
  */
-export async function purgeDeletedWorkspaces(
-  sql: Sql,
-  graceDays: number = DELETION_GRACE_DAYS,
-): Promise<PurgeReport> {
+export async function purgeDeletedWorkspaces(sql: Sql): Promise<PurgeReport> {
   const due = await sql<{ id: string }[]>`
     select id from workspaces
-    where deletion_scheduled_at <= now() - make_interval(days => ${graceDays})
+    where deletion_scheduled_at <= now() - make_interval(days => ${DELETION_GRACE_DAYS})
     order by deletion_scheduled_at, id`;
   const report: PurgeReport = { purged: 0, failed: 0 };
   for (const { id } of due) {
     try {
       const deleted = await sql`
         delete from workspaces
-        where id = ${id} and deletion_scheduled_at <= now() - make_interval(days => ${graceDays})
+        where id = ${id}
+          and deletion_scheduled_at <= now() - make_interval(days => ${DELETION_GRACE_DAYS})
         returning 1`;
       report.purged += deleted.length;
     } catch (error) {

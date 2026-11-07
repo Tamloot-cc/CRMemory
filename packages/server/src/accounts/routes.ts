@@ -197,15 +197,11 @@ export function createAccountsApp(deps: AccountsDeps) {
         workspaceId: z.uuid().optional(),
       }),
     );
-    let workspaceId = '';
-    if (body.accept) {
-      if (!body.workspaceId) {
-        throw new AppError(400, 'invalid_request', 'pick the workspace to connect');
-      }
+    const { accept, workspaceId } = body;
+    if (accept) {
+      if (!workspaceId) throw new AppError(400, 'invalid_request', 'pick the workspace to connect');
       // A workspace the person cannot reach is a 404, as everywhere (4.4).
-      ({ id: workspaceId } = (
-        await people.workspaceAccess(sql, c.get('person'), body.workspaceId)
-      ).workspace);
+      await people.workspaceAccess(sql, c.get('person'), workspaceId);
     }
     const headers = forwarded(c);
     headers.set('content-type', 'application/json');
@@ -213,9 +209,12 @@ export function createAccountsApp(deps: AccountsDeps) {
     const request = new Request(`${deps.publicOrigin}/account/auth/oauth2/consent`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ accept: body.accept, oauth_query: body.oauth_query }),
+      body: JSON.stringify({ accept, oauth_query: body.oauth_query }),
     });
-    return body.accept ? deps.auth.consent(request, workspaceId) : deps.auth.handler(request);
+    // Accepting without a workspace was refused above.
+    return accept && workspaceId
+      ? deps.auth.consent(request, workspaceId)
+      : deps.auth.handler(request);
   });
 
   // Connected apps (5.1)

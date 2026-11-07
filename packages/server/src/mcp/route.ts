@@ -21,8 +21,8 @@ export function mcpRoute(
     publicOrigin?: string | undefined;
     /** Accepts MCP OAuth access tokens too (accounts spec 4.7). */
     oauth?: OAuthSettings | undefined;
-    rateLimit?: MiddlewareHandler<AppEnv>;
-  } = {},
+    rateLimit: MiddlewareHandler<AppEnv>;
+  },
 ) {
   const { publicOrigin, oauth } = options;
   const handler = createMcpHandler(
@@ -36,7 +36,7 @@ export function mcpRoute(
   );
 
   app.use('/mcp', authenticate(sql, { publicOrigin, oauth }));
-  if (options.rateLimit) app.use('/mcp', options.rateLimit);
+  app.use('/mcp', options.rateLimit);
   app.all('/mcp', (c) => {
     const caller = c.get('caller');
     const authInfo: AuthInfo = {
