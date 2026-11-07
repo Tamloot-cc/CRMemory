@@ -330,6 +330,33 @@ describe('keys', () => {
     expect(after.status).toBe(401);
   });
 
+  it('creates no key for an admin whose workspace is moved away at the same moment', async () => {
+    const t = await team();
+    const elsewhere = (await createOrganization(db.owner, { name: 'Elsewhere' })).id;
+    let created: Response | undefined;
+    let request: Promise<void> | undefined;
+    // Hold a move open, the way moveWorkspace does it, while the admin asks for a key.
+    await db.owner.begin(async (tx) => {
+      await tx`select 1 from organizations where id = ${t.organizationId} for update`;
+      await tx`delete from workspace_members where workspace_id = ${t.workspaceId}`;
+      await tx`update workspaces set organization_id = ${elsewhere} where id = ${t.workspaceId}`;
+      request = call(`/account/workspaces/${t.workspaceId}/keys`, t.admin, 'POST', {
+        name: 'Late Bot',
+        access: 'read',
+      }).then((res) => {
+        created = res;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Still waiting on the move: the admin check has not run yet.
+      expect(created).toBeUndefined();
+    });
+    await request;
+    expect(created?.status).toBe(404);
+    expect(
+      await db.owner`select 1 from api_keys where workspace_id = ${t.workspaceId} and name = 'Late Bot'`,
+    ).toHaveLength(0);
+  });
+
   it('refuses unknown access, and a key from another workspace', async () => {
     const t = await team();
     const keys = `/account/workspaces/${t.workspaceId}/keys`;

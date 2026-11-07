@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { type Actor, actorSchema } from '@retainer/shared';
 import type { Sql } from '../db/client.js';
 import { API_KEY_SCOPES, type ApiKeyScope } from '../db/schema.js';
+import type { Tx } from '../db/tx.js';
 import { getWorkspace } from '../db/workspaces.js';
 import { AppError, notFound } from '../errors.js';
 
@@ -86,7 +87,7 @@ export type CreatedApiKey = {
  * api_keys, so no agent credential can mint a key.
  */
 export async function createApiKey(
-  sql: Sql,
+  sql: Sql | Tx,
   input: {
     workspace: string;
     name: string;

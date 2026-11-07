@@ -88,6 +88,28 @@ async function requireWorkspaceAdmin(tx: Tx | Sql, person: Person, id: string) {
   return access;
 }
 
+/**
+ * Runs a workspace admin's change in one transaction that holds the lock on
+ * the workspace's organization, the lock `moveWorkspace` and role changes
+ * also take. The admin check comes after the lock, so a concurrent move or
+ * role change lands before the check, never between the check and the write.
+ */
+async function asWorkspaceAdmin<T>(
+  sql: Sql,
+  person: Person,
+  workspaceId: string,
+  write: (tx: Tx, workspace: WorkspaceAccess['workspace']) => Promise<T>,
+): Promise<T> {
+  return (await sql.begin(async (tx) => {
+    await tx`
+      select 1 from organizations
+      where id = (select organization_id from workspaces where id = ${workspaceId})
+      for update`;
+    const { workspace } = await requireWorkspaceAdmin(tx, person, workspaceId);
+    return write(tx, workspace);
+  })) as T;
+}
+
 async function requireOrganizationManager(
   tx: Tx | Sql,
   person: Person,
@@ -191,10 +213,11 @@ export async function renameWorkspace(
 ): Promise<Workspace> {
   const trimmed = name.trim();
   if (!trimmed) throw new AppError(400, 'invalid_request', 'a workspace needs a name');
-  const { workspace } = await requireWorkspaceAdmin(sql, person, workspaceId);
-  // The slug stays, so links and agents keep working (5.1).
-  await sql`update workspaces set name = ${trimmed}, updated_at = now() where id = ${workspace.id}`;
-  return getWorkspace(sql, workspace.id);
+  return asWorkspaceAdmin(sql, person, workspaceId, async (tx, workspace) => {
+    // The slug stays, so links and agents keep working (5.1).
+    await tx`update workspaces set name = ${trimmed}, updated_at = now() where id = ${workspace.id}`;
+    return getWorkspace(tx, workspace.id);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -293,14 +316,7 @@ export async function setWorkspaceRole(
   if (!isWorkspaceRole(role)) {
     throw new AppError(400, 'invalid_request', 'role must be viewer, editor or admin');
   }
-  await sql.begin(async (tx) => {
-    // The lock comes first, so the person's own role is read after any
-    // concurrent change to it.
-    await tx`
-      select 1 from organizations
-      where id = (select organization_id from workspaces where id = ${workspaceId})
-      for update`;
-    const { workspace } = await requireWorkspaceAdmin(tx, person, workspaceId);
+  await asWorkspaceAdmin(sql, person, workspaceId, async (tx, workspace) => {
     const target = await organizationRole(tx, workspace.organizationId, userId);
     if (!target) {
       throw new AppError(409, 'not_a_member', 'invite them to the organization first');
@@ -323,10 +339,11 @@ export async function removeFromWorkspace(
   workspaceId: string,
   userId: string,
 ): Promise<void> {
-  const { workspace } = await requireWorkspaceAdmin(sql, person, workspaceId);
-  const target = await organizationRole(sql, workspace.organizationId, userId);
-  if (target && isOrganizationManager(target)) throw organizationAdminConflict();
-  await sql`delete from workspace_members where workspace_id = ${workspace.id} and user_id = ${userId}`;
+  await asWorkspaceAdmin(sql, person, workspaceId, async (tx, workspace) => {
+    const target = await organizationRole(tx, workspace.organizationId, userId);
+    if (target && isOrganizationManager(target)) throw organizationAdminConflict();
+    await tx`delete from workspace_members where workspace_id = ${workspace.id} and user_id = ${userId}`;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -346,15 +363,17 @@ export async function createWorkspaceKey(
   if (!isKeyAccess(input.access)) {
     throw new AppError(400, 'invalid_request', 'access must be read, write or schema');
   }
-  const { workspace } = await requireWorkspaceAdmin(sql, person, workspaceId);
-  return createApiKey(sql, {
-    workspace: workspace.id,
-    name,
-    // Always an agent: a key from the web app never speaks for a person.
-    actor: { type: 'agent', id: slugify(name) || 'agent', name },
-    scopes: [...KEY_ACCESS[input.access]],
-    createdByUser: person.id,
-  });
+  const scopes = [...KEY_ACCESS[input.access]];
+  return asWorkspaceAdmin(sql, person, workspaceId, (tx, workspace) =>
+    createApiKey(tx, {
+      workspace: workspace.id,
+      name,
+      // Always an agent: a key from the web app never speaks for a person.
+      actor: { type: 'agent', id: slugify(name) || 'agent', name },
+      scopes,
+      createdByUser: person.id,
+    }),
+  );
 }
 
 export async function listWorkspaceKeys(
@@ -391,11 +410,12 @@ export async function revokeWorkspaceKey(
   workspaceId: string,
   keyId: string,
 ): Promise<void> {
-  const { workspace } = await requireWorkspaceAdmin(sql, person, workspaceId);
-  const rows = await sql`
-    update api_keys set revoked_at = coalesce(revoked_at, now())
-    where id = ${keyId} and workspace_id = ${workspace.id} returning 1`;
-  if (rows.length === 0) throw notFound('key');
+  await asWorkspaceAdmin(sql, person, workspaceId, async (tx, workspace) => {
+    const rows = await tx`
+      update api_keys set revoked_at = coalesce(revoked_at, now())
+      where id = ${keyId} and workspace_id = ${workspace.id} returning 1`;
+    if (rows.length === 0) throw notFound('key');
+  });
 }
 
 // ---------------------------------------------------------------------------
