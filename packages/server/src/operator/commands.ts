@@ -8,6 +8,7 @@ import { TEMPLATE_NAMES } from '../templates/index.js';
 import {
   createOrganization,
   moveWorkspace,
+  setOrganizationLimits,
   setOrganizationMember,
   setWorkspaceMember,
 } from '../workspaces/organizations.js';
@@ -23,6 +24,7 @@ Workspaces
 Organizations and people (accounts mode)
   retainer org create --name <name>
   retainer org list
+  retainer org limit --org <id|name> [--workspaces <n|none>] [--members <n|none>]
   retainer member add --org <id|name> --email <email> --role <owner|admin|member>
   retainer member add --workspace <slug|id> --email <email> --role <viewer|editor|admin>
 
@@ -145,6 +147,27 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         );
         return 0;
       }
+      case 'org limit': {
+        const limits: { workspaces?: number | null; members?: number | null } = {};
+        for (const kind of ['workspaces', 'members'] as const) {
+          const value = values[kind];
+          if (value !== undefined) limits[kind] = parseLimit(value, kind);
+        }
+        if (Object.keys(limits).length === 0) {
+          throw new AppError(400, 'invalid_request', 'give --workspaces, --members or both');
+        }
+        const set = await setOrganizationLimits(io.sql, {
+          organization: required(values.org, 'org'),
+          limits,
+        });
+        const limitLine = (kind: 'workspaces' | 'members') =>
+          `${kind}: ${set.limits[kind] ?? 'no limit'}`;
+        print(
+          `Limits of "${set.organization.name}"\n  ${limitLine('workspaces')}\n  ${limitLine('members')}`,
+          set,
+        );
+        return 0;
+      }
       case 'member add': {
         const email = required(values.email, 'email');
         const role = required(values.role, 'role');
@@ -225,6 +248,15 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   }
 }
 
+/** A quota from the command line: a whole number, or `none` for no limit. */
+function parseLimit(value: string, kind: string): number | null {
+  if (value === 'none') return null;
+  if (!/^\d+$/.test(value)) {
+    throw new AppError(400, 'invalid_request', `--${kind} must be a whole number or none`);
+  }
+  return Number(value);
+}
+
 function parse(argv: string[]) {
   return parseArgs({
     args: argv,
@@ -240,6 +272,8 @@ function parse(argv: string[]) {
       actor: { type: 'string' },
       scopes: { type: 'string' },
       id: { type: 'string' },
+      workspaces: { type: 'string' },
+      members: { type: 'string' },
       json: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },

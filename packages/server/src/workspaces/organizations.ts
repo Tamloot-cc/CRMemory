@@ -6,6 +6,7 @@ import {
 } from '@retainer/shared';
 import type { Sql } from '../db/client.js';
 import { DEFAULT_ORGANIZATION, getOrganization, type Organization } from '../db/organizations.js';
+import type { OrganizationLimits } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
 import { getWorkspace } from '../db/workspaces.js';
 import { AppError } from '../errors.js';
@@ -107,6 +108,78 @@ export async function assertKeepsAnOwner(tx: Tx, organizationId: string, userId:
       'An organization always keeps an owner; make someone else an owner first.',
     );
   }
+}
+
+const QUOTA_WORDS: Record<keyof OrganizationLimits, string> = {
+  workspaces: 'workspaces',
+  members: 'people',
+};
+
+/**
+ * Refuses to go past an organization's quota (accounts spec 4.8, 4.10): its
+ * workspaces, not counting those being deleted, or its people. A null limit
+ * means none, which is every organization unless an operator sets one. Call
+ * it holding the organization's lock, so two creations racing for the last
+ * place see each other.
+ */
+export async function assertWithinLimit(
+  tx: Tx,
+  organizationId: string,
+  kind: keyof OrganizationLimits,
+): Promise<void> {
+  const [row] = await tx<{ limit: number | null; used: number }[]>`
+    select (o.limits ->> ${kind})::int as limit,
+      ${
+        kind === 'workspaces'
+          ? tx`(select count(*)::int from workspaces w
+              where w.organization_id = o.id and w.deletion_scheduled_at is null)`
+          : tx`(select count(*)::int from organization_members m where m.organization_id = o.id)`
+      } as used
+    from organizations o where o.id = ${organizationId}`;
+  if (row?.limit != null && row.used >= row.limit) {
+    throw new AppError(
+      409,
+      'limit_reached',
+      `This organization can have at most ${row.limit} ${QUOTA_WORDS[kind]}.`,
+      { limit: row.limit, kind },
+    );
+  }
+}
+
+/**
+ * Sets an organization's quotas (4.10): a number, or null for none. Fields
+ * left out keep their value. The billing seam: whatever decides plans writes
+ * here, and Retainer only enforces it.
+ */
+export async function setOrganizationLimits(
+  sql: Sql,
+  input: { organization: string; limits: { [K in keyof OrganizationLimits]?: number | null } },
+): Promise<{ organization: Organization; limits: OrganizationLimits }> {
+  for (const [kind, value] of Object.entries(input.limits)) {
+    if (value !== null && value !== undefined && !(Number.isInteger(value) && value >= 0)) {
+      throw new AppError(
+        400,
+        'invalid_request',
+        `the ${kind} limit must be a whole number or none`,
+      );
+    }
+  }
+  return sql.begin(async (tx) => {
+    const organization = await getOrganization(tx, input.organization);
+    await lockOrganization(tx, organization.id);
+    const [row] = await tx<{ limits: OrganizationLimits | null }[]>`
+      select limits from organizations where id = ${organization.id}`;
+    const limits: OrganizationLimits = { ...(row?.limits ?? {}) };
+    for (const kind of ['workspaces', 'members'] as const) {
+      const value = input.limits[kind];
+      if (value === null) delete limits[kind];
+      else if (value !== undefined) limits[kind] = value;
+    }
+    const stored = Object.keys(limits).length > 0 ? limits : null;
+    await tx`update organizations set limits = ${stored ? tx.json(stored) : null}
+      where id = ${organization.id}`;
+    return { organization, limits };
+  });
 }
 
 /** Adds a person who has signed in to an organization, or changes their role. */

@@ -30,6 +30,7 @@ const TENANT_TABLES = [
   'suppressions',
   'deletion_audit_log',
   'views',
+  'workspace_request_counts',
 ];
 
 let app: Sql;

@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { createApp } from './api/app.js';
-import { accountsMode, loadConfig, ownerDatabaseUrl } from './config.js';
+import { accountsMode, loadConfig, ownerDatabaseUrl, rateLimitPerMinute } from './config.js';
 import {
   createApiSql,
   createControlSql,
@@ -81,6 +81,7 @@ if (role === 'api' || role === 'all' || role === 'control') {
           webDir: config.RETAINER_WEB_DIR,
           publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
           accountsSecret: config.RETAINER_AUTH_SECRET,
+          rateLimit: { limit: rateLimitPerMinute(config) },
         });
   const fetch = (request: Request, env: Record<string, unknown>) => {
     if (accounts) {

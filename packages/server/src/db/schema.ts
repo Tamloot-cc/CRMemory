@@ -1075,3 +1075,17 @@ export const consolidatorRuns = pgTable('consolidator_runs', {
   /** Counts from the last run: superseded facts, new suggestions. */
   stats: jsonb('stats').$type<Record<string, number>>().notNull().default({}),
 });
+
+/**
+ * Requests each workspace made in the current window, for its rate limit
+ * (accounts spec 4.8). One row per workspace, overwritten as windows pass.
+ * Unlogged (drizzle/0033_rate_limits_security.sql): it writes no WAL, and a
+ * crash only forgets the current window's counts.
+ */
+export const workspaceRequestCounts = pgTable('workspace_request_counts', {
+  workspaceId: uuid('workspace_id')
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  windowStart: timestamptz('window_start').notNull(),
+  count: integer('count').notNull(),
+});

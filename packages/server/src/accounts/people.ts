@@ -21,6 +21,7 @@ import { SYSTEM_ACTOR } from '../schema-engine/engine.js';
 import { applyTemplate, seedBaseObjects } from '../templates/apply.js';
 import {
   assertKeepsAnOwner,
+  assertWithinLimit,
   createOrganization,
   lockOrganization,
   lockWorkspaceOrganization,
@@ -170,9 +171,10 @@ export async function createWorkspaceFor(
   const id = await sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(${FIRST_WORKSPACE_LOCK}, hashtext(${person.id}))`;
     const organizationId = input.organizationId ?? (await organizationForPerson(tx, person));
-    // The lock, then the check, as in asOrganizationManager.
+    // The lock, then the checks, as in asOrganizationManager.
     await lockOrganization(tx, organizationId);
     await requireOrganizationManager(tx, person, organizationId);
+    await assertWithinLimit(tx, organizationId, 'workspaces');
 
     let workspaceId: string | undefined;
     for (let attempt = 0; !workspaceId && attempt < 5; attempt++) {
@@ -642,6 +644,8 @@ export async function createInvitation(
     if (role === 'owner' && mine !== 'owner') {
       throw forbidden('Only an owner can invite an owner.');
     }
+    // Accepting checks again; this only spares sending a link that cannot work.
+    await assertWithinLimit(tx, organizationId, 'members');
     if (ids.length) {
       const found = await tx`
         select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}`;
@@ -776,6 +780,11 @@ export async function acceptInvitation(
       // Withdrawn or expired since the read: this throws 404. Otherwise it was just accepted.
       await findInvitation(tx, person, tokenOrId);
       return { organizationId: row.organization_id };
+    }
+    // Under the organization's lock, so two accepts racing for the last place
+    // see each other. Refusing rolls the claim back.
+    if (!(await organizationRole(tx, row.organization_id, person.id))) {
+      await assertWithinLimit(tx, row.organization_id, 'members');
     }
     await tx`
       insert into organization_members (organization_id, user_id, role)

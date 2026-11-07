@@ -1,5 +1,5 @@
 import { type AuthInfo, createMcpHandler } from '@modelcontextprotocol/server';
-import type { Hono } from 'hono';
+import type { Hono, MiddlewareHandler } from 'hono';
 import { authenticate } from '../auth/middleware.js';
 import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
@@ -13,7 +13,12 @@ import { createMcpServer } from './server.js';
  * the handler's auth info, never through the request body. Serving is
  * stateless: each request gets a server built for its caller.
  */
-export function mcpRoute(app: Hono<AppEnv>, sql: Sql, publicOrigin?: string) {
+export function mcpRoute(
+  app: Hono<AppEnv>,
+  sql: Sql,
+  options: { publicOrigin?: string | undefined; rateLimit?: MiddlewareHandler<AppEnv> } = {},
+) {
+  const { publicOrigin } = options;
   const handler = createMcpHandler(
     ({ authInfo }) => {
       const caller = authInfo?.extra?.caller as Caller | undefined;
@@ -25,6 +30,7 @@ export function mcpRoute(app: Hono<AppEnv>, sql: Sql, publicOrigin?: string) {
   );
 
   app.use('/mcp', authenticate(sql, { publicOrigin }));
+  if (options.rateLimit) app.use('/mcp', options.rateLimit);
   app.all('/mcp', (c) => {
     const caller = c.get('caller');
     const authInfo: AuthInfo = {

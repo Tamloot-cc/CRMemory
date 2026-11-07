@@ -6,6 +6,7 @@ import { meRoute, sessionRoutes } from '../auth/session.js';
 import { publicOriginSchema } from '../config.js';
 import type { Sql } from '../db/client.js';
 import { AppError } from '../errors.js';
+import { type RateLimit, rateLimit } from '../http/rate-limit.js';
 import { type AppEnv, errorResponse, toAppError } from '../http/response.js';
 import { mcpRoute } from '../mcp/route.js';
 import { VERSION } from '../version.js';
@@ -28,6 +29,8 @@ export type AppDeps = {
    * reach /v1, and the key-mode sign-in at /auth/session is gone (4.1).
    */
   accountsSecret?: string;
+  /** The per-workspace rate limit on /v1 and /mcp (accounts spec 4.8); none if unset. */
+  rateLimit?: RateLimit;
 };
 
 export function createApp(deps: AppDeps) {
@@ -51,7 +54,9 @@ export function createApp(deps: AppDeps) {
 
   if (!deps.accountsSecret) sessionRoutes(app, deps.sql, publicOrigin);
   const v1 = new Hono<AppEnv>();
+  const limit = rateLimit(deps.sql, deps.rateLimit ?? { limit: 0 });
   v1.use('*', authenticate(deps.sql, { publicOrigin, accountsSecret: deps.accountsSecret }));
+  v1.use('*', limit);
   meRoute(v1, deps.sql);
   webReadRoutes(v1, deps.sql);
   schemaRoutes(v1, deps.sql);
@@ -63,7 +68,7 @@ export function createApp(deps: AppDeps) {
   viewRoutes(v1, deps.sql);
   app.route('/v1', v1);
 
-  mcpRoute(app, deps.sql, publicOrigin);
+  mcpRoute(app, deps.sql, { publicOrigin, rateLimit: limit });
 
   if (deps.webDir) {
     const root = resolve(deps.webDir);

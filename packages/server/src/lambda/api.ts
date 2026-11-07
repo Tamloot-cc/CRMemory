@@ -1,6 +1,6 @@
 import { handle, type LambdaContext, type LambdaEvent } from 'hono/aws-lambda';
 import { createApp } from '../api/app.js';
-import { type Config, loadConfig } from '../config.js';
+import { type Config, loadConfig, rateLimitPerMinute } from '../config.js';
 import { createApiSql, type Sql } from '../db/client.js';
 import { setLogLevel } from '../log.js';
 
@@ -25,6 +25,7 @@ export function createApiHandler(
     publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
     // Checks people's session cookies; never loads Better Auth (4.4).
     accountsSecret: config.RETAINER_AUTH_SECRET,
+    rateLimit: { limit: rateLimitPerMinute(config) },
   });
   return handle(app);
 }
