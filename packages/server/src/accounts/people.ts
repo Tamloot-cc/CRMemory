@@ -123,6 +123,24 @@ async function requireOrganizationManager(
   return role;
 }
 
+/**
+ * Runs an organization owner's or admin's change in one transaction that
+ * holds the organization's lock, the one every membership change takes. The
+ * role is read after the lock, so a concurrent demotion or removal lands
+ * before the check, never between the check and the write.
+ */
+async function asOrganizationManager<T>(
+  sql: Sql,
+  person: Person,
+  organizationId: string,
+  write: (tx: Tx, role: OrganizationRole) => Promise<T>,
+): Promise<T> {
+  return (await sql.begin(async (tx) => {
+    await lockOrganization(tx, organizationId);
+    return write(tx, await requireOrganizationManager(tx, person, organizationId));
+  })) as T;
+}
+
 // ---------------------------------------------------------------------------
 // Workspaces
 // ---------------------------------------------------------------------------
@@ -153,13 +171,10 @@ export async function createWorkspaceFor(
   if (!name) throw new AppError(400, 'invalid_request', 'a workspace needs a name');
   const id = await sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(${FIRST_WORKSPACE_LOCK}, hashtext(${person.id}))`;
-    let organizationId: string;
-    if (input.organizationId) {
-      await requireOrganizationManager(tx, person, input.organizationId);
-      organizationId = input.organizationId;
-    } else {
-      organizationId = await organizationForPerson(tx, person);
-    }
+    const organizationId = input.organizationId ?? (await organizationForPerson(tx, person));
+    // The lock, then the check, as in asOrganizationManager.
+    await lockOrganization(tx, organizationId);
+    await requireOrganizationManager(tx, person, organizationId);
 
     let workspaceId: string | undefined;
     for (let attempt = 0; !workspaceId && attempt < 5; attempt++) {
@@ -490,9 +505,10 @@ export async function renameOrganization(
 ): Promise<void> {
   const trimmed = name.trim();
   if (!trimmed) throw new AppError(400, 'invalid_request', 'an organization needs a name');
-  const role = await requireOrganizationManager(sql, person, organizationId);
-  if (role !== 'owner') throw forbidden('Only an owner can rename the organization.');
-  await sql`update organizations set name = ${trimmed} where id = ${organizationId}`;
+  await asOrganizationManager(sql, person, organizationId, async (tx, role) => {
+    if (role !== 'owner') throw forbidden('Only an owner can rename the organization.');
+    await tx`update organizations set name = ${trimmed} where id = ${organizationId}`;
+  });
 }
 
 /** Deletes an organization once it has no workspaces (4.5). */
@@ -501,9 +517,7 @@ export async function deleteOrganization(
   person: Person,
   organizationId: string,
 ): Promise<void> {
-  await sql.begin(async (tx) => {
-    await lockOrganization(tx, organizationId);
-    const role = await requireOrganizationManager(tx, person, organizationId);
+  await asOrganizationManager(sql, person, organizationId, async (tx, role) => {
     if (role !== 'owner') throw forbidden('Only an owner can delete the organization.');
     const [{ count } = { count: 0 }] = await tx<{ count: number }[]>`
       select count(*)::int as count from workspaces where organization_id = ${organizationId}`;
@@ -528,11 +542,7 @@ export async function setOrganizationRole(
   if (!isOrganizationRole(role)) {
     throw new AppError(400, 'invalid_request', 'role must be owner, admin or member');
   }
-  await sql.begin(async (tx) => {
-    // The lock comes first, so the person's own role is read after any
-    // concurrent change to it.
-    await lockOrganization(tx, organizationId);
-    const mine = await requireOrganizationManager(tx, person, organizationId);
+  await asOrganizationManager(sql, person, organizationId, async (tx, mine) => {
     const current = await organizationRole(tx, organizationId, userId);
     if (!current) throw notFound('member');
     if ((current === 'owner' || role === 'owner') && mine !== 'owner') {
@@ -553,11 +563,7 @@ export async function removeFromOrganization(
   organizationId: string,
   userId: string,
 ): Promise<void> {
-  await sql.begin(async (tx) => {
-    // The lock comes first, so the person's own role is read after any
-    // concurrent change to it.
-    await lockOrganization(tx, organizationId);
-    const mine = await requireOrganizationManager(tx, person, organizationId);
+  await asOrganizationManager(sql, person, organizationId, async (tx, mine) => {
     const current = await organizationRole(tx, organizationId, userId);
     if (!current) throw notFound('member');
     if (current === 'owner' && mine !== 'owner') {
@@ -623,10 +629,7 @@ export async function createInvitation(
   if (!isOrganizationRole(input.role)) {
     throw new AppError(400, 'invalid_request', 'role must be owner, admin or member');
   }
-  const mine = await requireOrganizationManager(sql, person, organizationId);
-  if (input.role === 'owner' && mine !== 'owner') {
-    throw forbidden('Only an owner can invite an owner.');
-  }
+  const role = input.role;
   const workspaces: InvitedWorkspace[] = input.workspaces.map((w) => {
     if (!isWorkspaceRole(w.role)) {
       throw new AppError(400, 'invalid_request', 'workspace role must be viewer, editor or admin');
@@ -637,19 +640,24 @@ export async function createInvitation(
   if (ids.length !== workspaces.length) {
     throw new AppError(400, 'invalid_request', 'list each workspace once');
   }
-  if (ids.length) {
-    const found = await sql`
-      select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}`;
-    if (found.length !== ids.length) throw notFound('workspace');
-  }
-  const token = randomBytes(32).toString('base64url');
-  const [row] = await sql<{ id: string; expires_at: Date }[]>`
-    insert into invitations (organization_id, email, role, workspaces, token_hash, invited_by, expires_at)
-    values (${organizationId}, ${email}, ${input.role}, ${sql.json(workspaces)},
-      ${hashToken(token)}, ${person.id}, now() + make_interval(days => ${INVITATION_DAYS}))
-    returning id, expires_at`;
-  if (!row) throw new Error('insert returned no row');
-  return { id: row.id, token, expiresAt: row.expires_at.toISOString() };
+  return asOrganizationManager(sql, person, organizationId, async (tx, mine) => {
+    if (role === 'owner' && mine !== 'owner') {
+      throw forbidden('Only an owner can invite an owner.');
+    }
+    if (ids.length) {
+      const found = await tx`
+        select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}`;
+      if (found.length !== ids.length) throw notFound('workspace');
+    }
+    const token = randomBytes(32).toString('base64url');
+    const [row] = await tx<{ id: string; expires_at: Date }[]>`
+      insert into invitations (organization_id, email, role, workspaces, token_hash, invited_by, expires_at)
+      values (${organizationId}, ${email}, ${role}, ${tx.json(workspaces)},
+        ${hashToken(token)}, ${person.id}, now() + make_interval(days => ${INVITATION_DAYS}))
+      returning id, expires_at`;
+    if (!row) throw new Error('insert returned no row');
+    return { id: row.id, token, expiresAt: row.expires_at.toISOString() };
+  });
 }
 
 export async function revokeInvitation(
@@ -658,13 +666,14 @@ export async function revokeInvitation(
   organizationId: string,
   invitationId: string,
 ): Promise<void> {
-  await requireOrganizationManager(sql, person, organizationId);
-  const rows = await sql`
-    update invitations set revoked_at = now()
-    where id = ${invitationId} and organization_id = ${organizationId}
-      and accepted_at is null and revoked_at is null
-    returning 1`;
-  if (rows.length === 0) throw notFound('invitation');
+  await asOrganizationManager(sql, person, organizationId, async (tx) => {
+    const rows = await tx`
+      update invitations set revoked_at = now()
+      where id = ${invitationId} and organization_id = ${organizationId}
+        and accepted_at is null and revoked_at is null
+      returning 1`;
+    if (rows.length === 0) throw notFound('invitation');
+  });
 }
 
 export type InvitationPreview = {

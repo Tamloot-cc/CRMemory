@@ -514,6 +514,34 @@ describe('invitations', () => {
     expect(await preview.json()).toMatchObject({ workspaces: [] });
   });
 
+  it('sends no invitation from an admin demoted at the same moment', async () => {
+    const t = await team();
+    let sent: Response | undefined;
+    let request: Promise<void> | undefined;
+    // Hold a demotion open, the way setOrganizationRole does it, while the admin invites.
+    await db.owner.begin(async (tx) => {
+      await tx`select 1 from organizations where id = ${t.organizationId} for update`;
+      await tx`
+        update organization_members set role = 'member'
+        where organization_id = ${t.organizationId} and user_id = ${t.orgAdmin.userId}`;
+      request = call(`/account/organizations/${t.organizationId}/invitations`, t.orgAdmin, 'POST', {
+        email: 'late@acme.test',
+        role: 'admin',
+        workspaces: [],
+      }).then((res) => {
+        sent = res;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Still waiting on the demotion: the role check has not run yet.
+      expect(sent).toBeUndefined();
+    });
+    await request;
+    expect(sent?.status).toBe(403);
+    expect(await db.owner`select 1 from invitations where email = 'late@acme.test'`).toHaveLength(
+      0,
+    );
+  });
+
   it('lets only an owner invite an owner', async () => {
     const t = await team();
     const path = `/account/organizations/${t.organizationId}/invitations`;
