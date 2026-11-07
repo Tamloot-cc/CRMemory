@@ -156,6 +156,30 @@ describe('the API checking a session', () => {
     }
   });
 
+  it('finds the workspace by ID only, even when another slug is that ID', async () => {
+    const dana = await member('viewer');
+    const target = (await createWorkspace(db.owner, { name: 'Not Dana’s' })).id;
+    // A workspace Dana is in whose slug is the ID of one she isn't in.
+    const decoy = (
+      await createWorkspace(db.owner, {
+        name: 'Decoy',
+        slug: target,
+        organization: organizationId,
+      })
+    ).id;
+    await setWorkspaceMember(db.owner, { workspace: decoy, email: dana.email, role: 'admin' });
+    const token = verifySessionCookie(
+      decodeURIComponent(dana.cookie.split('=').slice(1).join('=')),
+      AUTH_SECRET,
+    );
+    // Exactly one row, for the named workspace, and Dana has no role in it.
+    expect(
+      await db.owner`select workspace_id, role from retainer_session_access(${token}, ${target})`,
+    ).toEqual([{ workspace_id: target, role: null }]);
+    const res = await app.v1('/v1/me', { cookie: dana.cookie, workspace: target });
+    expect(res.status).toBe(404);
+  });
+
   it('needs the workspace header, as an ID', async () => {
     const dana = await member('viewer');
     expect((await app.v1('/v1/me', { cookie: dana.cookie })).status).toBe(400);
