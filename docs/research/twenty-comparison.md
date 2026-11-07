@@ -20,9 +20,9 @@ branch as of November 2026.
 | Uniqueness          | A unique index on the column                                            | A unique index on `record_identifiers`, with no per-field DDL              |
 | Source of truth     | The row: a write overwrites the value                                   | `field_assertions`; `records.data` is a cache derived from them            |
 | History             | `timelineActivity` rows with a JSON payload of what changed             | Every assertion keeps its actor, source, confidence and status             |
-| Unstructured memory | Notes and tasks as ordinary objects                                     | `interactions`, `facts` and `fact_sources` as built-in tables              |
+| Unstructured memory | Notes and tasks as ordinary objects                                     | Events as records; `facts` and `comments` as built-in tables               |
 | Tenant isolation    | Separate schemas                                                        | A `workspace_id` on every row, enforced by row-level security              |
-| Search              | A `searchVector` tsvector column in each object's table                 | A `search` tsvector column on `records`, `facts` and `interactions` (§5.1) |
+| Search              | A `searchVector` tsvector column in each object's table                 | A `search` tsvector column on `records` and `facts` (§5.1)                 |
 
 ## Tables versus one JSONB table
 
@@ -67,7 +67,7 @@ it, and what changed is recorded separately as a timeline activity.
 
 In Retainer, nobody writes a value directly. Agents, people and integrations
 write **assertions**: a claimed value for one field of one record, with the
-actor (taken from the API key), the interaction it came from, a confidence
+actor (taken from the API key), the event it came from, a confidence
 and the time it was observed. `records.data` is computed from the winning
 assertions:
 
@@ -82,17 +82,19 @@ So every value can answer "who said this, when, and based on what", and
 ## Memory beyond fields
 
 Twenty models notes and tasks as ordinary objects with their own tables.
-Retainer has two built-in kinds of memory next to records:
+Retainer has three kinds of memory:
 
-- **Interactions** (`interactions`, `interaction_participants`): meetings,
-  calls, emails, messages and notes that agents log, with the records that
-  took part or that they concern.
+- **Events** (`event_records`, `event_links`): conversations and any type a
+  workspace adds, logged with the records that took part or that they concern.
+  Events are records of event types, so they have fields, assertions and search
+  like any other record.
 - **Facts** (`facts`, `fact_sources`): plain-language statements about a
-  record, each citing the interaction it came from, with `valid_from` and
+  record, each citing the event it came from, with `valid_from` and
   supersession.
+- **Comments** (`comments`): remarks people write on a record.
 
-They are first-class tables, not objects in the schema, because the write
-rules depend on them: every derived value has to cite a source.
+Events are in the schema so a workspace can add its own types. The write rules
+still depend on them: a derived value cites the event it came from.
 
 ## Where they are alike
 
@@ -102,5 +104,5 @@ rules depend on them: every derived value has to cite a source.
 - Both search with Postgres full-text search on a stored tsvector column
   with the `simple` configuration. Neither uses embeddings.
 
-See [ARCHITECTURE.md](../ARCHITECTURE.md) §1 for Retainer's full data model
+See [ARCHITECTURE.md](../../ARCHITECTURE.md) §1 for Retainer's full data model
 and §5.1 for search.

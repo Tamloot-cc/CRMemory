@@ -7,7 +7,7 @@ design is summarized in `ARCHITECTURE.md` 7.3.
 This spec turns Retainer from a server an operator runs into a service people
 sign up for: they log in, create workspaces, invite colleagues and connect
 agents. It amends `ARCHITECTURE.md` section 7 and `FRONTEND.md` section 4 and
-adds deployment pieces to [Deploying to AWS](aws.md).
+adds deployment pieces to [Deploying to AWS](../aws.md).
 
 ## 1. Why
 

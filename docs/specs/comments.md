@@ -4,9 +4,9 @@ Status: **implemented** November 6, 2026. Open questions (7) remain open.
 What was decided beyond or differently from the text below, and why, is in
 section 10.
 
-This spec amends the [conversations and Activity spec](conversations-and-activity-spec.md)
-(D1, D7, 4.1, 5.4), the [merged schema, events and history spec](schema-events-and-history-spec.md)
-(event links) and [FRONTEND.md](../FRONTEND.md) (record page). It adds one
+This spec amends the [conversations and Activity spec](conversations-and-activity.md)
+(D1, D7, 4.1, 5.4), the [merged schema, events and history spec](schema-events-and-history.md)
+(event links) and [FRONTEND.md](../../FRONTEND.md) (record page). It adds one
 concept, comments. It also:
 
 - removes the `note` event type from the base template;

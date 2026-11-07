@@ -5,8 +5,8 @@ record creation, deletion, merges and suggested merges, `forget` and global
 search, plus saved views with table, board and calendar layouts (5.3b), and
 the Records and Activity split: event type lists, the activity feed,
 comments and developer view
-([conversations and activity spec](docs/conversations-and-activity-spec.md),
-[comments spec](docs/comments-spec.md)).
+([conversations and activity spec](docs/specs/conversations-and-activity.md),
+[comments spec](docs/specs/comments.md)).
 Read `ARCHITECTURE.md` first; this document uses its section numbers.
 
 Retainer is used by agents through REST and MCP. The web app is for the

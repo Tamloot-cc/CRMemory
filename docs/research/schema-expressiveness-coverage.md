@@ -3,6 +3,13 @@
 Assessment date: **2026-11-04**. Implementation baseline:
 `a25f3e0c56e62276ba8426a218cc6463e60806f2`.
 
+**Out of date in places.** This assessment predates PR #26 (November 5, 2026),
+which added event records, multi-record relations and polymorphic relations.
+Where it says those are missing, or describes fixed interactions, it describes
+the baseline above. Section 10 of the
+[merged spec](../specs/schema-events-and-history.md) records the decision on
+each gap. The CRM research itself still stands as of the assessment date.
+
 ## Question and conclusion
 
 **Can an agent define another CRM's objects, fields and relationships in
@@ -112,15 +119,15 @@ not arbitrary attributes per address. Separate text fields can preserve a
 source's first/last name columns without forcing them into `full_name`.
 
 Implementation evidence:
-[field types and shapes](../packages/shared/src/field-types.ts),
-[field/object metadata](../packages/shared/src/schema.ts),
-[accepted schema operations](../packages/server/src/schema-engine/operations.ts),
-[schema application](../packages/server/src/schema-engine/apply.ts),
-[schema validation](../packages/server/src/schema-engine/validate.ts),
-[value normalization](../packages/shared/src/values.ts),
-[base objects](../packages/server/src/templates/base.ts),
-[blank template](../packages/server/src/templates/blank.ts), and
-[fixed built-ins](../packages/server/src/schema-engine/built-ins.ts).
+[field types and shapes](../../packages/shared/src/field-types.ts),
+[field/object metadata](../../packages/shared/src/schema.ts),
+[accepted schema operations](../../packages/server/src/schema-engine/operations.ts),
+[schema application](../../packages/server/src/schema-engine/apply.ts),
+[schema validation](../../packages/server/src/schema-engine/validate.ts),
+[value normalization](../../packages/shared/src/values.ts),
+[base objects](../../packages/server/src/templates/base.ts),
+[blank template](../../packages/server/src/templates/blank.ts), and
+[fixed built-ins](../../packages/server/src/schema-engine/built-ins.ts).
 
 ## Coverage across the ten researched CRMs
 

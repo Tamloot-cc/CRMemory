@@ -1,14 +1,15 @@
 # Schema expressiveness, event types and record history: merged spec
 
-Status: **proposed; not implemented**. Written November 4, 2026.
+Status: **implemented** in PR #26, November 5, 2026. Written November 4, 2026.
+**Amended** by the [conversations and Activity spec](conversations-and-activity.md)
+and the [comments spec](comments.md). Section 10 lists what stays deferred.
 
-This is the consolidated implementation proposal for
-[event types and history](event-types-and-history-spec.md) and the priorities
-identified by the [schema coverage assessment](schema-expressiveness-coverage.md).
-It supersedes the earlier event proposal as a plan. The coverage assessment
-remains the research record; its candidate additions are not all commitments.
-[ARCHITECTURE.md](../ARCHITECTURE.md) describes implemented behavior until each
-phase updates it. This document makes no new claims about vendor coverage.
+This is the consolidated spec for event types, record history and the
+priorities identified by the
+[schema coverage assessment](../research/schema-expressiveness-coverage.md).
+The coverage assessment remains the research record; its candidate additions
+are not all commitments. [ARCHITECTURE.md](../../ARCHITECTURE.md) describes
+current behavior. This document makes no new claims about vendor coverage.
 
 ## 1. Goal and scope
 
@@ -53,11 +54,11 @@ The source documents assessed the implementation on November 4, 2026:
 - The consolidator deduplicates facts and suggests record merges. It does not
   infer facts or repair links through a model.
 
-Implementation anchors: [relation metadata](../packages/shared/src/schema.ts),
-[database tables](../packages/server/src/db/schema.ts),
-[schema engine](../packages/server/src/schema-engine/apply.ts),
-[assertion ranking](../packages/server/src/records/winner.ts) and
-[context retrieval](../packages/server/src/retrieval/context.ts).
+Implementation anchors: [relation metadata](../../packages/shared/src/schema.ts),
+[database tables](../../packages/server/src/db/schema.ts),
+[schema engine](../../packages/server/src/schema-engine/apply.ts),
+[assertion ranking](../../packages/server/src/records/winner.ts) and
+[context retrieval](../../packages/server/src/retrieval/context.ts).
 
 ## 3. Design decisions
 
@@ -555,6 +556,9 @@ records. The earlier `assertion_premises` / `premise_assertion_id` proposal is
 a direction, not a shipped write path. Do not remove reserved premise storage
 as if an implemented replacement already existed. Superseded and retracted
 premises need explicit downstream behavior before this work starts.
+
+A record's timeline shows the field changes of that record only. Showing field
+changes on related records is deferred too.
 
 Background link repair, schema evolution and enrichment remain agent work
 through public APIs. The consolidator stays deterministic. No language model,

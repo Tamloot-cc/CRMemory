@@ -878,7 +878,7 @@ conflict; everything else still applies. Each upgrade is one schema change by
 fully upgraded to, so a run skips current workspaces without loading their
 schema and retries conflicted or failed ones. A workspace that fails is
 reported and keeps its schema; the others still run
-(`docs/workspace-upgrade-spec.md`).
+(`docs/specs/workspace-upgrade.md`).
 
 ### 3.1 Base objects and templates
 
@@ -1636,7 +1636,7 @@ enforcement. Until then, new code keeps that path open:
 
 People log in, create workspaces, invite colleagues and connect agents, with no
 operator. The reasons and the test results are in
-[docs/accounts-and-access-spec.md](docs/accounts-and-access-spec.md). The workspace
+[docs/specs/accounts-and-access.md](docs/specs/accounts-and-access.md). The workspace
 stays the security boundary: RLS stays keyed on `workspace_id`, records get no
 organization column, and a `Caller` still has exactly one workspace.
 
@@ -1727,7 +1727,7 @@ unlimited, as on a self-hosted install), and a statement timeout on the runtime 
 | `packages/mcp`    | MIT      | stdio bridge to the hosted MCP endpoint                 |
 | `docker/`         | AGPL-3.0 | Dockerfile and Compose file                             |
 | `deploy/aws/`     | AGPL-3.0 | Terraform and scripts for Lambda, API Gateway, RDS      |
-| `docs/`           | AGPL-3.0 | Guides: self-hosting, AWS, agents, SDK, REST, releasing |
+| `docs/`           | AGPL-3.0 | Guides, plus design records in `specs/` and `research/` |
 
 ## 9. Stack
 
@@ -1739,11 +1739,22 @@ The optional web package uses Vite, React 19, TanStack Router/Query, Tailwind
 CSS 4 and shadcn-style UI primitives. Static files are served by Hono at
 `/app` when `RETAINER_WEB_DIR` is set; the Docker image includes the build.
 
+PostgreSQL was tested against an alternative. In November 2026 a complete
+SurrealDB backend was built on the `codex/surrealdb-v1` branch and parked without
+merging. Its graph went unused on hot reads, which use stored rollups. Writes
+were serialized per workspace: about 24 to 35 per second locally and a few per
+second on SurrealDB Earth. Earth accepted duplicates through a unique index
+defined inside a transaction. Whether SurrealDB's license allows a hosted service
+is still unanswered. The branch holds the evaluation, the results and the
+migration spec. If this is reopened, the deciding test is removing the shared
+workspace revision record from the write path and relying on unique indexes and
+per-record conflicts.
+
 ## 10. Build order
 
 The order the first release was built in, kept as a record. Interactions
 were later replaced by events (1.3,
-[docs/schema-events-and-history-spec.md](docs/schema-events-and-history-spec.md)).
+[docs/specs/schema-events-and-history.md](docs/specs/schema-events-and-history.md)).
 
 1. Schema engine with base objects and templates, assertion-backed records
    CRUD, REST, API keys and the workspace/key CLI (including direct-write
