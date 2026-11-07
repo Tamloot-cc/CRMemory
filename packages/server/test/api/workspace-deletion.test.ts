@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createApiKey } from '../../src/auth/keys.js';
 import { CONTROL_ROLE, loadConfig } from '../../src/config.js';
-import { RUNTIME_ROLE } from '../../src/db/client.js';
+import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { createControlHandler } from '../../src/lambda/control.js';
 import { runCli } from '../../src/operator/commands.js';
 import { PURGE_TASK } from '../../src/worker/purge.js';
@@ -256,6 +256,7 @@ describe('removing deleted workspaces for good', () => {
     const t = await setup();
     expect((await remove(t.owner, t.workspace.id, 'Doomed')).status).toBe(200);
     await backdate(t.workspace.id, 8);
+    let purgeSql: Sql | undefined;
     const handler = createControlHandler(
       loadConfig({
         DATABASE_URL: db.url,
@@ -267,10 +268,15 @@ describe('removing deleted workspaces for good', () => {
       }),
       control(),
       control(),
-      db.connect({ role: CONTROL_ROLE, max: 1, keepConnections: true }),
+      () => (purgeSql = db.connect({ role: CONTROL_ROLE, max: 1, keepConnections: true })),
     );
     expect(await handler({ task: PURGE_TASK })).toMatchObject({ failed: 0 });
     expect(await exists(t.workspace.id)).toBe(false);
+    // The run's own connection is closed, so a warm instance keeps only its
+    // /account pools within the connection budget.
+    if (!purgeSql) throw new Error('the purge opened no connection');
+    const closed = purgeSql;
+    await expect(Promise.resolve(closed`select 1`)).rejects.toThrow();
   });
 });
 
