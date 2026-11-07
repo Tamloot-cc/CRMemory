@@ -38,8 +38,11 @@ let workspaceB: string;
 
 beforeAll(async () => {
   app = db.connect({ role: RUNTIME_ROLE });
+  const [organization] = await db.owner<{ id: string }[]>`
+    insert into organizations (name) values ('Security') returning id`;
   const rows = await db.owner<{ id: string }[]>`
-    insert into workspaces (slug, name) values ('a', 'A'), ('b', 'B') returning id`;
+    insert into workspaces (organization_id, slug, name)
+    values (${organization?.id ?? ''}, 'a', 'A'), (${organization?.id ?? ''}, 'b', 'B') returning id`;
   [workspaceA, workspaceB] = rows.map((r) => r.id) as [string, string];
 });
 
@@ -71,7 +74,8 @@ describe('row-level security', () => {
     const rows = await db.owner<{ tablename: string; rowsecurity: boolean; policies: number }[]>`
       select t.tablename, t.rowsecurity,
         (select count(*)::int from pg_policies p
-          where p.schemaname = 'public' and p.tablename = t.tablename) as policies
+          where p.schemaname = 'public' and p.tablename = t.tablename
+            and p.roles = '{public}') as policies
       from pg_tables t where t.schemaname = 'public'`;
     const byTable = new Map(rows.map((r) => [r.tablename, r]));
     for (const table of [...TENANT_TABLES, 'workspaces']) {

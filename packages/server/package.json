@@ -20,9 +20,11 @@
     "test:web": "playwright test"
   },
   "dependencies": {
+    "@better-auth/passkey": "1.7.18",
     "@hono/node-server": "^2.1.6",
     "@modelcontextprotocol/server": "^2.4.0",
     "@retainer/shared": "workspace:*",
+    "better-auth": "1.7.18",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.16",
     "libphonenumber-js": "^1.13.15",

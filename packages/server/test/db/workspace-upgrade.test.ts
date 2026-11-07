@@ -14,9 +14,10 @@ const db = useTestDatabase();
 let api: TestApp;
 let owner: Sql;
 
-beforeAll(() => {
+beforeAll(async () => {
   api = startTestApp(db);
   owner = db.owner;
+  await owner`insert into organizations (name) values ('Default')`;
 });
 
 /**
@@ -26,7 +27,9 @@ beforeAll(() => {
  */
 async function legacyWorkspace(slug: string, extra: SchemaOperation[] = []) {
   const [row] = await owner<{ id: string }[]>`
-    insert into workspaces (slug, name) values (${slug}, ${slug}) returning id`;
+    insert into workspaces (organization_id, slug, name)
+    values ((select id from organizations order by created_at limit 1), ${slug}, ${slug})
+    returning id`;
   const workspaceId = row?.id as string;
   await inWorkspace(owner, workspaceId, async (tx) => {
     await runSchemaChange(tx, {
