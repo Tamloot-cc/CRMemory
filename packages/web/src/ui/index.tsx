@@ -753,7 +753,13 @@ export {
 export { Property, PropertyEditor, PropertyList, Section } from './property.js';
 export { Sheet } from './sheet.js';
 export { activityIcon, objectIcon, Shell } from './shell.js';
-export function SignInFrame({ children }: { children: ReactNode }) {
+export function SignInFrame({
+  subtitle = 'Sign in with your personal API key.',
+  children,
+}: {
+  subtitle?: string;
+  children: ReactNode;
+}) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/30 p-6">
       <section className="w-full max-w-sm rounded-lg border border-border bg-card p-8 shadow-xs">
@@ -766,7 +772,7 @@ export function SignInFrame({ children }: { children: ReactNode }) {
           <br />
           You stay in control.
         </h1>
-        <p className="mb-6 text-sm text-muted-foreground">Sign in with your personal API key.</p>
+        <p className="mb-6 text-sm text-muted-foreground">{subtitle}</p>
         {children}
       </section>
     </main>

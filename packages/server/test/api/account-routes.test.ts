@@ -227,6 +227,11 @@ describe('members', () => {
       members: { userId: string; role: string }[];
     };
     expect(body.role).toBe('viewer');
+    expect((body as unknown as { candidates: unknown[] }).candidates).toEqual([]);
+    const asAdmin = (await (
+      await call(`/account/workspaces/${t.workspaceId}/members`, t.admin)
+    ).json()) as { candidates: { userId: string }[] };
+    expect(asAdmin.candidates.map((c) => c.userId)).toEqual([t.member.userId]);
     const byId = Object.fromEntries(body.members.map((m) => [m.userId, m.role]));
     expect(byId).toEqual({
       [t.owner.userId]: 'admin',
@@ -282,7 +287,10 @@ describe('members', () => {
       call(`${org}/${t.owner.userId}`, t.orgAdmin, 'PATCH', { role: 'admin' }),
       call(`${org}/${t.orgAdmin.userId}`, t.owner, 'PATCH', { role: 'admin' }),
     ]);
-    expect(results.map((r) => r.status).sort()).toEqual([204, 409]);
+    // The second finds it is no longer an owner (403), or would leave none (409).
+    const statuses = results.map((r) => r.status).sort();
+    expect(statuses[0]).toBe(204);
+    expect([403, 409]).toContain(statuses[1]);
     const owners = await db.owner`
       select 1 from organization_members where organization_id = ${t.organizationId} and role = 'owner'`;
     expect(owners).toHaveLength(1);

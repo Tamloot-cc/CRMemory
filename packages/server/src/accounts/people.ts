@@ -29,6 +29,7 @@ const isManager = (role: OrganizationRole | null) => role === 'owner' || role ==
 
 /** Locks the organization's row, so membership changes see each other (4.5). */
 async function lockOrganization(tx: Tx, organizationId: string): Promise<void> {
+  if (!/^[0-9a-f-]{36}$/i.test(organizationId)) throw notFound('organization');
   await tx`select 1 from organizations where id = ${organizationId} for update`;
 }
 
@@ -162,7 +163,7 @@ async function organizationForPerson(tx: Tx, person: Person): Promise<string> {
     throw forbidden('Ask an owner or admin of your organization to create workspaces.');
   }
   const [organization] = await tx<{ id: string }[]>`
-    insert into organizations (name) values (${person.name || person.email}) returning id`;
+    insert into organizations (name) values (${`${person.name || person.email}'s organization`}) returning id`;
   if (!organization) throw new Error('insert returned no row');
   await tx`
     insert into organization_members (organization_id, user_id, role)
@@ -212,7 +213,13 @@ export async function listWorkspaceMembers(
   sql: Sql,
   person: Person,
   workspaceId: string,
-): Promise<{ role: WorkspaceRole; members: WorkspaceMember[]; invitations: PendingInvitation[] }> {
+): Promise<{
+  role: WorkspaceRole;
+  members: WorkspaceMember[];
+  invitations: PendingInvitation[];
+  /** For a workspace admin: people in the organization who can be added here. */
+  candidates: { userId: string; name: string; email: string }[];
+}> {
   const access = await workspaceAccess(sql, person, workspaceId);
   const rows = await sql<
     {
@@ -250,7 +257,17 @@ export async function listWorkspaceMembers(
   const invitations = (await pendingInvitations(sql, access.workspace.organizationId)).filter(
     (invitation) => invitation.workspaces.some((w) => w.workspaceId === access.workspace.id),
   );
-  return { role: access.role, members, invitations };
+  const candidates =
+    access.role === 'admin'
+      ? await sql<{ userId: string; name: string; email: string }[]>`
+          select u.id as "userId", u.name, u.email
+          from organization_members om join users u on u.id = om.user_id
+          where om.organization_id = ${access.workspace.organizationId} and om.role = 'member'
+            and not exists (select 1 from workspace_members wm
+              where wm.workspace_id = ${access.workspace.id} and wm.user_id = om.user_id)
+          order by u.name, u.email`
+      : [];
+  return { role: access.role, members, invitations, candidates: [...candidates] };
 }
 
 /** Gives someone in the organization a role in the workspace. */
@@ -268,6 +285,8 @@ export async function setWorkspaceRole(
     const tx = transaction as unknown as Tx;
     const { workspace } = await requireWorkspaceAdmin(tx, person, workspaceId);
     await lockOrganization(tx, workspace.organizationId);
+    // Checked again under the lock: their own role may have just changed.
+    await requireWorkspaceAdmin(tx, person, workspaceId);
     const target = await organizationRole(tx, workspace.organizationId, userId);
     if (!target) {
       throw new AppError(409, 'not_a_member', 'invite them to the organization first');
@@ -470,9 +489,9 @@ export async function deleteOrganization(
 ): Promise<void> {
   await sql.begin(async (transaction) => {
     const tx = transaction as unknown as Tx;
+    await lockOrganization(tx, organizationId);
     const role = await requireOrganizationManager(tx, person, organizationId);
     if (role !== 'owner') throw forbidden('Only an owner can delete the organization.');
-    await lockOrganization(tx, organizationId);
     const [{ count } = { count: 0 }] = await tx<{ count: number }[]>`
       select count(*)::int as count from workspaces where organization_id = ${organizationId}`;
     if (count > 0) {
@@ -498,8 +517,10 @@ export async function setOrganizationRole(
   }
   await sql.begin(async (transaction) => {
     const tx = transaction as unknown as Tx;
-    const mine = await requireOrganizationManager(tx, person, organizationId);
+    // The lock comes first, so the person's own role is read after any
+    // concurrent change to it.
     await lockOrganization(tx, organizationId);
+    const mine = await requireOrganizationManager(tx, person, organizationId);
     const current = await organizationRole(tx, organizationId, userId);
     if (!current) throw notFound('member');
     if ((current === 'owner' || role === 'owner') && mine !== 'owner') {
@@ -522,8 +543,10 @@ export async function removeFromOrganization(
 ): Promise<void> {
   await sql.begin(async (transaction) => {
     const tx = transaction as unknown as Tx;
-    const mine = await requireOrganizationManager(tx, person, organizationId);
+    // The lock comes first, so the person's own role is read after any
+    // concurrent change to it.
     await lockOrganization(tx, organizationId);
+    const mine = await requireOrganizationManager(tx, person, organizationId);
     const current = await organizationRole(tx, organizationId, userId);
     if (!current) throw notFound('member');
     if (current === 'owner' && mine !== 'owner') {

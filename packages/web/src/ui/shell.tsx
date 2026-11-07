@@ -6,6 +6,7 @@ import {
   BriefcaseBusiness,
   Building2,
   CalendarDays,
+  ChevronsUpDown,
   CircleCheck,
   Eye,
   FileSignature,
@@ -23,15 +24,18 @@ import {
   MessagesSquare,
   PanelLeftClose,
   PanelLeftOpen,
+  Plus,
   Search,
+  Settings,
   Shapes,
   SquarePen,
+  UserCog,
   UserRound,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { BrandMark } from './brand.js';
 import { cn, Kbd, NavigationContext } from './core.js';
-import { Menu, MenuAction, MenuCheck, MenuSeparator } from './menu.js';
+import { Menu, MenuAction, MenuCheck, MenuChoice, MenuChoices, MenuSeparator } from './menu.js';
 
 const COLLAPSED_KEY = 'retainer:sidebar:collapsed';
 
@@ -88,7 +92,18 @@ function readCollapsed() {
 type ShellObject = { name: string; label: string; class: 'entity' | 'event' };
 type ShellProps = {
   workspace: string;
-  user: { name: string; type: string };
+  /** Under the name: the role or key type. */
+  user: { name: string; detail: string };
+  /**
+   * Accounts mode: the workspaces to switch between (each a full page load),
+   * creating one, Settings and Your account.
+   */
+  accounts?: {
+    workspaces: { id: string; name: string; href: string; current: boolean }[];
+    onNewWorkspace?: () => void;
+    onSettings: () => void;
+    accountHref: string;
+  };
   /** Entities are listed under Records, event types under Activity. */
   objects: ShellObject[];
   inboxCount?: number;
@@ -161,6 +176,7 @@ export function Shell({ children, ...props }: ShellProps) {
 function Sidebar({
   workspace,
   user,
+  accounts,
   objects,
   inboxCount,
   developer,
@@ -199,7 +215,46 @@ function Sidebar({
           collapsed ? 'justify-center' : 'px-3',
         )}
       >
-        {collapsed ? null : (
+        {collapsed ? null : accounts &&
+          (accounts.workspaces.length > 1 || accounts.onNewWorkspace) ? (
+          <Menu
+            label="Workspaces"
+            trigger={
+              <button
+                type="button"
+                aria-label={`Workspace: ${workspace}`}
+                className="-ml-1 flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <BrandMark className="h-6 w-6" />
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold">{workspace}</span>
+                <ChevronsUpDown size={14} className="shrink-0 text-muted-foreground" />
+              </button>
+            }
+          >
+            <MenuChoices
+              value={accounts.workspaces.find((w) => w.current)?.id ?? ''}
+              onChange={(id) => {
+                const next = accounts.workspaces.find((w) => w.id === id);
+                if (next && !next.current) window.location.assign(next.href);
+              }}
+            >
+              {accounts.workspaces.map((w) => (
+                <MenuChoice key={w.id} value={w.id}>
+                  {w.name}
+                </MenuChoice>
+              ))}
+            </MenuChoices>
+            {accounts.onNewWorkspace ? (
+              <>
+                <MenuSeparator />
+                <MenuAction onSelect={accounts.onNewWorkspace}>
+                  <Plus size={14} />
+                  New workspace
+                </MenuAction>
+              </>
+            ) : null}
+          </Menu>
+        ) : (
           <>
             <BrandMark className="h-6 w-6" />
             <span className="min-w-0 flex-1 truncate text-sm font-semibold">{workspace}</span>
@@ -303,7 +358,7 @@ function Sidebar({
                 <span className="min-w-0 flex-1 leading-tight">
                   <span className="block truncate text-sm font-medium">{user.name}</span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {user.type.charAt(0).toUpperCase() + user.type.slice(1)}
+                    {user.detail}
                     {developer ? ' · Developer view' : ''}
                   </span>
                 </span>
@@ -311,6 +366,19 @@ function Sidebar({
             </button>
           }
         >
+          {accounts ? (
+            <>
+              <MenuAction onSelect={accounts.onSettings}>
+                <Settings size={14} />
+                Settings
+              </MenuAction>
+              <MenuAction onSelect={() => window.location.assign(accounts.accountHref)}>
+                <UserCog size={14} />
+                Your account
+              </MenuAction>
+              <MenuSeparator />
+            </>
+          ) : null}
           <MenuCheck checked={developer} onChange={onDeveloperChange}>
             Developer view
           </MenuCheck>
