@@ -18,17 +18,17 @@ no dashboards, email sync or agent chat.
 
 ## 1. Decisions
 
-| Decision      | Choice                                                                                                                            |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Package       | `packages/web`, the private (unpublished) `@retainer/web`, **MIT**                                                                |
-| Data source   | `@retainer/sdk` over the REST API only. Never imports `packages/server`                                                           |
-| Data model    | Every list, form and filter is built at runtime from `GET /v1/schema`; nothing is written per object                              |
-| UI kit        | Own components on Radix primitives and Tailwind CSS 4 (Button adapted from shadcn/ui), React 19                                   |
-| App shape     | Single-page app built with Vite; TanStack Router for routes, TanStack Query for server state                                      |
-| Hosting       | Static files served by the Retainer server at `/app`, same origin as the API, so the image stays one process and there is no CORS |
-| Auth          | A person signs in with their own `user`-actor API key; the server turns it into an httpOnly cookie (4)                            |
-| Twenty        | A behaviour reference only. No Twenty code is copied or translated (2)                                                            |
-| First screens | Retainer's own: the review inbox, then records with provenance, facts and events                                                  |
+| Decision      | Choice                                                                                                                                  |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Package       | `packages/web`, the private (unpublished) `@retainer/web`, **MIT**                                                                      |
+| Data source   | `@retainer/sdk` over the REST API only. Never imports `packages/server`                                                                 |
+| Data model    | Every list, form and filter is built at runtime from `GET /v1/schema`; nothing is written per object                                    |
+| UI kit        | Own components on Radix primitives and Tailwind CSS 4 (Button adapted from shadcn/ui), React 19                                         |
+| App shape     | Single-page app built with Vite; TanStack Router for routes, TanStack Query for server state                                            |
+| Hosting       | Static files served by the Retainer server at `/app`, same origin as the API, so the image stays one process and there is no CORS       |
+| Auth          | Key mode: a person signs in with their own `user`-actor API key, turned into an httpOnly cookie. Accounts mode: Google or a passkey (4) |
+| Twenty        | A behaviour reference only. No Twenty code is copied or translated (2)                                                                  |
+| First screens | Retainer's own: the review inbox, then records with provenance, facts and events                                                        |
 
 ### Why a single-page app and not Next.js
 
@@ -74,16 +74,18 @@ packages/web/
   src/
     main.tsx            router, query client, session, schema query, ⌘K, theme
     style.css           Tailwind theme tokens, light and dark
-    api/                SDK client, session transport, workspace context, scope checks
-    auth/               sign-in screen
+    api/                SDK client, session transport, workspace context, scope checks,
+                        the /account client and Better Auth's browser client
+    accounts/           accounts mode: sign-in, first run, invitations, settings, your account
+    auth/               key-mode sign-in screen
     fields/             one folder per field type (6), shared code in common.tsx
     provenance/         actor badges, sourced values, pending markers
     routes/             the screens (5), grouped: records/, views/, events/, schema/, review/
     ui/                 the only source of UI (8): shell, data grid, sheet, popovers
 ```
 
-The Vite dev server proxies `/v1`, `/auth` and `/health` to `pnpm dev`, so
-development is same-origin too.
+The Vite dev server proxies `/v1`, `/auth`, `/account` and `/health` to
+`pnpm dev`, so development is same-origin too.
 
 ---
 
@@ -123,9 +125,7 @@ assertions and approvals must name the person who made them (rule 2.3).
 - The key is typed once on the sign-in screen and sent to `POST /auth/session`.
   The app never stores it in `localStorage`, `sessionStorage` or memory after
   that call.
-- Signing in with an account instead of a key is designed but not built. It
-  lives in this repository
-  ([accounts spec](docs/specs/accounts-and-access.md)).
+- In accounts mode people sign in with an account instead of a key (4.4).
 
 For TLS termination at a reverse proxy, set `RETAINER_PUBLIC_ORIGIN` to the
 external origin (for example `https://retainer.example`). CSRF checks compare
@@ -150,6 +150,30 @@ which actors the REST and MCP APIs allow to edit or retract data.
 
 A key with a non-`user` actor can sign in read-only, with a banner saying
 why actions are missing.
+
+### 4.4 Accounts mode
+
+When the server runs in accounts mode
+([accounts spec](docs/specs/accounts-and-access.md)), people sign in with Google
+or a passkey and have a role in each workspace. The app finds out at startup:
+`GET /account` answers `404` in key mode, `401` to someone signed out, and the
+person otherwise.
+
+- **Addresses.** A workspace's pages live under `/app/w/<slug>/`; the router's
+  base path is read from the address once. Switching workspaces is a full page
+  load, so nothing cached crosses over and a tab stays on its workspace.
+  `/app/` opens the last workspace used, or the first-run screen ("Name your
+  workspace") for someone with none. `/app/account` and `/app/invite/<token>`
+  are outside any workspace.
+- **Requests.** The SDK client sends `X-Retainer-Workspace` with the
+  workspace's ID. Inside a workspace the `Session` is the same as in key mode,
+  with the person's role as scopes, so `canMutate` and the table above apply
+  unchanged.
+- **Settings** (`/app/w/<slug>/settings`) and **Your account** (`/app/account`)
+  follow the accounts spec 5.1. Screens show only what the person can do; the
+  server checks every action again.
+- Better Auth's browser client and the passkey plugin load only in accounts
+  mode.
 
 ---
 

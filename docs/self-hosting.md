@@ -73,7 +73,7 @@ when running from source.
 | --------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                          | —                | Postgres connection string for the role that owns the tables. Required. Migrations and the CLI use it, and so do the API and workers unless the next variable is set.                                                                                                                                                                                       |
 | `RETAINER_RUNTIME_DATABASE_URL`         | —                | Optional. A login as `retainer_app` for the API's and workers' connections, with a password you choose (printable ASCII, no spaces), so a query bug can't act as the table owner. The server sets the password on start; change it here and restart to rotate it.                                                                                           |
-| `RETAINER_ROLE`                         | `all`            | `api` (REST, MCP, web app), `worker` (scheduled consolidator) or `all`. Split them to run the API and the workers in separate containers.                                                                                                                                                                                                                   |
+| `RETAINER_ROLE`                         | `all`            | `api` (REST, MCP, web app), `worker` (scheduled consolidator), `control` (`/account`, in accounts mode) or `all`. Split them to run each in its own container.                                                                                                                                                                                              |
 | `PORT`                                  | `8787`           | HTTP port.                                                                                                                                                                                                                                                                                                                                                  |
 | `LOG_LEVEL`                             | `info`           | `debug`, `info`, `warn` or `error`.                                                                                                                                                                                                                                                                                                                         |
 | `RETAINER_PUBLIC_ORIGIN`                | —                | The browser-facing origin when TLS ends at a reverse proxy, e.g. `https://retainer.example`. Used for CSRF checks and the session cookie. Forwarded headers are never trusted.                                                                                                                                                                              |
@@ -82,6 +82,10 @@ when running from source.
 | `RETAINER_CONSOLIDATE_INTERVAL_MINUTES` | `60`             | How often the consolidator dedupes facts and suggests merges in each workspace.                                                                                                                                                                                                                                                                             |
 | `RETAINER_WEB_DIR`                      | set in the image | Directory of the built web app, served at `/app`. Leave unset to serve no web app.                                                                                                                                                                                                                                                                          |
 | `RETAINER_DB_POOL_MAX`                  | `10`             | Database connections the API process opens. Lower it when many processes share one database.                                                                                                                                                                                                                                                                |
+| `RETAINER_AUTH_SECRET`                  | —                | Turns on [accounts mode](#accounts-mode). At least 32 characters (`openssl rand -hex 32`). Signs people's session cookies, so changing it signs everyone out.                                                                                                                                                                                               |
+| `RETAINER_GOOGLE_CLIENT_ID`             | —                | Accounts mode: the Google OAuth client people sign in with. Set it with the next one wherever `/account` is served.                                                                                                                                                                                                                                         |
+| `RETAINER_GOOGLE_CLIENT_SECRET`         | —                | Accounts mode: that client's secret.                                                                                                                                                                                                                                                                                                                        |
+| `RETAINER_CONTROL_DATABASE_URL`         | —                | Optional, accounts mode. A login as `retainer_control` for `/account`, with a password you choose, set by the server on start like the runtime login. Without it, `/account` uses the owner's login and switches to `retainer_control`.                                                                                                                     |
 
 ## The web app
 
@@ -96,6 +100,61 @@ retainer key create --workspace acme-clinic \
 The key is entered once on the sign-in screen and kept in an HTTP-only,
 same-site cookie, never in browser storage. Outside localhost, serve Retainer
 over HTTPS; Secure cookies require it. Revoking the key ends access at once.
+
+In [accounts mode](#accounts-mode) people sign in with Google or a passkey
+instead, and each workspace has its own address, `/app/w/<slug>/`.
+
+## Accounts mode
+
+By default Retainer runs in key mode: everyone, people included, uses an API
+key. In accounts mode people sign in to the web app with Google or a passkey,
+and get a role in each workspace instead of a key. Agents keep using API keys,
+which workspace admins now create in the web app.
+
+Accounts mode is on when `RETAINER_AUTH_SECRET` is set, together with a Google
+OAuth client:
+
+1. In the Google Cloud console, create an OAuth client of type "Web
+   application". Add `https://<your origin>/account/auth/callback/google` as an
+   authorized redirect URI. While the consent screen is in "Testing", only the
+   test users you list there can sign in; publish it to let anyone in.
+2. Set `RETAINER_AUTH_SECRET`, `RETAINER_GOOGLE_CLIENT_ID`,
+   `RETAINER_GOOGLE_CLIENT_SECRET` and `RETAINER_PUBLIC_ORIGIN`, then restart.
+
+Sign-up is open: anyone with a Google account can sign in and create a
+workspace of their own, in an organization of their own. They see only what
+they create or are invited to.
+
+Workspaces that existed before go into one organization named `Default`, with
+no owner. Give it one once that person has signed in:
+
+```sh
+retainer org list
+retainer member add --org Default --email dana@example.com --role owner
+```
+
+Owners and admins of an organization are admins in every workspace in it.
+Everyone else gets a role in each workspace they are added to:
+
+| Role   | Can                                                                                      |
+| ------ | ---------------------------------------------------------------------------------------- |
+| Viewer | See everything in the workspace                                                          |
+| Editor | Also add and change records, comment and review                                          |
+| Admin  | Also change the workspace's structure, erase personal data, and manage people and agents |
+
+People invite others from **Settings** in the web app, which gives a link to
+send; Retainer sends no email. The CLI can do the same for people who have
+signed in once:
+
+```sh
+retainer org create --name "Acme"
+retainer workspace create --name "Acme Clinic" --org Acme
+retainer workspace move acme-clinic --org Acme
+retainer member add --workspace acme-clinic --email ben@example.com --role editor
+```
+
+Removing someone, or lowering their role, applies at their next request. Keys
+they created keep working until an admin revokes them.
 
 ## Upgrading
 

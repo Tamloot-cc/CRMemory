@@ -22,6 +22,28 @@ The web app authenticates with a session cookie instead (`POST` and
 `X-Retainer-Client: web` and come from the configured origin. A bearer header
 always wins over a cookie.
 
+### Accounts mode
+
+In [accounts mode](self-hosting.md#accounts-mode) people sign in with Google
+or a passkey, and one session reaches every workspace they have a role in. A
+request with the session cookie names its workspace by ID:
+
+```http
+X-Retainer-Workspace: 0b9a3c52-1f4e-4d2a-9a43-7f3c2e8d1a10
+```
+
+Without it the API answers `400`, and for a workspace the person has no role
+in, `404`, the same as one that does not exist. The person's role sets the
+scopes, and their writes are attributed to them as a `user` actor. A bearer
+request needs no header; one that names another workspace than its key's gets
+`400`. `/auth/session` does not exist in accounts mode.
+
+`/account` holds the routes the web app uses for people: signing in
+(`/account/auth/…`), the person and where they have access (`GET /account`),
+workspaces, members, invitations and API keys. They take only a session
+cookie and refuse an API key, so no agent credential can create a key, add a
+member or create a workspace.
+
 ## Errors
 
 Errors are JSON with a stable `code`, a readable `message`, and sometimes

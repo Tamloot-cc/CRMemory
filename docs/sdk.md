@@ -22,13 +22,14 @@ const retainer = new RetainerClient({
 });
 ```
 
-| Option           | Purpose                                                                                      |
-| ---------------- | -------------------------------------------------------------------------------------------- |
-| `baseUrl`        | The server's origin. Required.                                                               |
-| `apiKey`         | Sent as `Authorization: Bearer <key>`.                                                       |
-| `fetch`          | A custom `fetch`, e.g. for proxies, retries or tests.                                        |
-| `credentials`    | Browser only: `'include'` to authenticate with the web session cookie instead of an API key. |
-| `onUnauthorized` | Called on any 401, e.g. to send a browser back to sign-in.                                   |
+| Option           | Purpose                                                                                                         |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| `baseUrl`        | The server's origin. Required.                                                                                  |
+| `apiKey`         | Sent as `Authorization: Bearer <key>`.                                                                          |
+| `fetch`          | A custom `fetch`, e.g. for proxies, retries or tests.                                                           |
+| `credentials`    | Browser only: `'include'` to authenticate with the web session cookie instead of an API key.                    |
+| `workspace`      | Accounts mode, with a session cookie: the workspace ID sent as `X-Retainer-Workspace`. Ignored with an API key. |
+| `onUnauthorized` | Called on any 401, e.g. to send a browser back to sign-in.                                                      |
 
 Like MCP, the key decides the workspace and the actor its writes are
 attributed to.

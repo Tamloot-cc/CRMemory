@@ -11,24 +11,29 @@ managed database with point-in-time recovery, and a bill that follows use.
 
 ## What it creates
 
-| Piece                                        | AWS service                                                               |
-| -------------------------------------------- | ------------------------------------------------------------------------- |
-| REST (`/v1`), MCP (`/mcp`), web app (`/app`) | `<name>-api` Lambda function behind an API Gateway HTTP API               |
-| Consolidator                                 | `<name>-consolidate` function, run by EventBridge every 15 minutes        |
-| Migrations and the operator CLI              | `<name>-ops` function, invoked by `deploy.sh` and `ops.sh`                |
-| Database                                     | RDS PostgreSQL 17, encrypted, private, 14 days of point-in-time backups   |
-| Network                                      | A VPC of its own with two private subnets, no internet gateway or NAT     |
-| Monitoring                                   | Log groups (30 days), alarms on 5xx, consolidator errors and the database |
-| Custom domain (optional)                     | ACM certificate and an API Gateway domain                                 |
-| CI deploy role (optional)                    | IAM role a GitHub Environment assumes to ship code                        |
+| Piece                                        | AWS service                                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| REST (`/v1`), MCP (`/mcp`), web app (`/app`) | `<name>-api` Lambda function behind an API Gateway HTTP API                                                  |
+| Consolidator                                 | `<name>-consolidate` function, run by EventBridge every 15 minutes                                           |
+| Migrations and the operator CLI              | `<name>-ops` function, invoked by `deploy.sh` and `ops.sh`                                                   |
+| Sign-in and `/account` (accounts mode only)  | `<name>-control` function, with a NAT gateway for Google sign-in                                             |
+| Database                                     | RDS PostgreSQL 17, encrypted, private, 14 days of point-in-time backups                                      |
+| Network                                      | A VPC of its own with two private subnets, no internet gateway or NAT, except for `control` in accounts mode |
+| Monitoring                                   | Log groups (30 days), alarms on 5xx, consolidator errors and the database                                    |
+| Custom domain (optional)                     | ACM certificate and an API Gateway domain                                                                    |
+| CI deploy role (optional)                    | IAM role a GitHub Environment assumes to ship code                                                           |
 
-The functions reach only the database, and the database only accepts the
-functions. Retainer makes no outbound calls, so there is no route to the
-internet to pay for or secure.
+The api, consolidate and ops functions reach only the database, and the
+database only accepts the functions. They make no outbound calls, so they
+have no route to the internet. In [accounts mode](#accounts) the control
+function signs people in with Google, which needs one: it runs in subnets of
+its own whose only way out is a NAT gateway, and the other functions keep
+none.
 
 With the defaults, a small deployment costs about $17–20 a month in
 eu-central-1: the `db.t4g.micro` instance (about $14), 20 GB of storage, and
-cents for Lambda, API Gateway and logs at personal volume.
+cents for Lambda, API Gateway and logs at personal volume. Accounts mode adds
+a NAT gateway and its public address, about $40 a month more.
 
 ## Before you start
 
@@ -119,8 +124,8 @@ Cloudflare's orange cloud) would see every request.
 ## Shipping new versions
 
 `deploy.sh` ships the package `build.sh` made. Because one version runs at
-a time (see [Upgrading](self-hosting.md#upgrading)), it stops the API and
-the consolidator, migrates, upgrades existing workspaces to the release's
+a time (see [Upgrading](self-hosting.md#upgrading)), it stops the API,
+the consolidator and, in accounts mode, the control function, migrates, upgrades existing workspaces to the release's
 built-in definitions (printed under `workspaceUpgrade` in the migration
 result), updates them and starts them again. Requests in
 that window, usually under a minute, get `503`. If the migration fails, the
@@ -198,27 +203,70 @@ instance by hand, replace the suffix with it, so the new instance's final
 snapshot gets a new name:
 `terraform apply -replace=aws_db_instance.this -replace=random_id.final_snapshot`.
 
-**Secrets.** Terraform generates two database passwords and
-`RETAINER_SUPPRESSION_KEY` and keeps them in its state, so treat the state
-bucket as secret. Only the ops function gets the password of the role that
-owns the tables. The api and consolidate functions log in as `retainer_app`
-with a password of their own, which the ops function sets on that role each
-time it migrates, so neither can change the schema or become the owner. Never let Terraform replace `random_id.suppression_key`:
+**Secrets.** Terraform generates the database passwords and
+`RETAINER_SUPPRESSION_KEY`, and in accounts mode `RETAINER_AUTH_SECRET`, and
+keeps them in its state, so treat the state bucket as secret. The Google
+client secret is in it too. Only the ops function gets the password of the
+role that owns the tables. The api and consolidate functions log in as
+`retainer_app`, and the control function as `retainer_control`, each with a
+password of its own, which the ops function sets each time it migrates, so
+none can change the schema or become the owner. Never let Terraform replace `random_id.suppression_key`:
 erased emails and phones are stored only as an HMAC under that key, so a new
 key lets them back in.
 
 **Connections.** Each API function instance holds up to `api_db_pool_max`
 connections (2), and at most `api_reserved_concurrency` instances (10) run
-at once. Keep their product, plus a few for the consolidator and ops
+at once. In accounts mode each control instance holds up to twice
+`control_db_pool_max` (1), for at most `control_reserved_concurrency` (5)
+instances. Keep the total, plus a few for the consolidator and ops
 functions, under the instance's limit: about 80 on a `db.t4g.micro`. The
 `database-connections` alarm warns at 60. `deploy.sh` owns the functions'
 concurrency (it stops and starts them), so a new `api_reserved_concurrency`
 takes effect at the next deploy, and `terraform apply` never restarts
 functions that a failed deploy left stopped.
 
-**Rate limiting.** Retainer has none of its own; API Gateway throttles at
-`api_throttle_rate` requests per second (25) with bursts of
-`api_throttle_burst` (50).
+**Rate limiting.** API Gateway throttles at `api_throttle_rate` requests per
+second (25) with bursts of `api_throttle_burst` (50). In accounts mode
+sign-in also limits each address, counting in the database so the limit
+holds across Lambda instances.
+
+## Accounts
+
+In accounts mode people sign in to the web app with Google or a passkey,
+and agents keep their API keys ([Self-hosting](self-hosting.md#accounts-mode)
+explains the roles). It is off until you give Terraform a Google OAuth
+client:
+
+1. Deploy once without it, so the public origin exists (`terraform output
+   public_origin`); with a custom domain, attach it first.
+2. In the Google Cloud console, create an OAuth client of type "Web
+   application" and add the redirect URI that
+   `terraform output google_redirect_uri` will print:
+   `<public origin>/account/auth/callback/google`.
+3. Add the client to `terraform.tfvars`, which is gitignored, or pass the
+   secret as `TF_VAR_google_client_secret`:
+
+   ```hcl
+   google_client_id     = "1234-abc.apps.googleusercontent.com"
+   google_client_secret = "..."
+   ```
+
+4. `terraform apply`, then `deploy/aws/deploy.sh`. The apply creates the
+   control function, its subnets and NAT gateway, and routes `/account` to
+   it; the deploy migrates and sets the control function's login.
+5. Publish the OAuth consent screen. While it is in "Testing", only the test
+   users listed there can sign in.
+
+Existing workspaces go into an organization named `Default` with no owner.
+Once you have signed in, make yourself its owner:
+
+```sh
+deploy/aws/ops.sh org list
+deploy/aws/ops.sh member add --org Default --email you@example.com --role owner
+```
+
+Removing the two variables and applying again turns accounts mode off and
+removes the NAT gateway. People's accounts stay in the database.
 
 ## Limits of this deployment
 
@@ -232,6 +280,8 @@ functions that a failed deploy left stopped.
 - MCP clients authenticate with an API key as a bearer token. Clients that
   only support OAuth, such as connectors added in Claude's web app, cannot
   connect yet.
+- Accounts mode has one NAT gateway, in one availability zone. If that zone
+  fails, signing in stops; everything else keeps working.
 
 ## Removing it
 
