@@ -318,18 +318,21 @@ Account routes live under `/account`, take a session cookie only, and are never
 reachable with an API key. An agent's key can therefore never create a key,
 add a member or create a workspace, as `ARCHITECTURE.md` 7.1 requires.
 
-| Route                                                           | Who                         |
-| --------------------------------------------------------------- | --------------------------- |
-| `/account/auth/*`: Better Auth's own routes                     | As Better Auth defines them |
-| `GET /account`: the user, organizations, workspaces, roles      | Signed in                   |
-| `POST /account/workspaces`                                      | Organization owner or admin |
-| `DELETE /account/workspaces/:id`                                | Organization owner or admin |
-| `PATCH`, `DELETE /account/organizations/:id`                    | Owner                       |
-| `GET`, `PATCH`, `DELETE /account/organizations/:id/members/...` | Organization owner or admin |
-| `POST`, `GET`, `DELETE /account/organizations/:id/invitations`  | Organization owner or admin |
-| `POST /account/invitations/:token/accept`                       | Signed in, verified email   |
-| `PUT`, `DELETE /account/workspaces/:id/members/:userId`         | Workspace admin             |
-| `GET`, `POST`, `DELETE /account/workspaces/:id/keys`            | Workspace admin             |
+| Route                                                           | Who                                          |
+| --------------------------------------------------------------- | -------------------------------------------- |
+| `/account/auth/*`: Better Auth's own routes                     | As Better Auth defines them                  |
+| `GET /account`: the user, organizations, workspaces, roles      | Signed in                                    |
+| `POST /account/workspaces`                                      | Organization owner or admin                  |
+| `DELETE /account/workspaces/:id`                                | Organization owner or admin                  |
+| `PATCH /account/workspaces/:id`: rename                         | Workspace admin                              |
+| `PATCH`, `DELETE /account/organizations/:id`                    | Owner                                        |
+| `GET`, `PATCH`, `DELETE /account/organizations/:id/members/...` | Organization owner or admin                  |
+| `POST`, `GET`, `DELETE /account/organizations/:id/invitations`  | Organization owner or admin                  |
+| `POST /account/invitations/:token/accept`                       | Signed in, verified email                    |
+| `GET /account/workspaces/:id/members`                           | Anyone with a role in it                     |
+| `PUT`, `DELETE /account/workspaces/:id/members/:userId`         | Workspace admin                              |
+| `GET`, `POST`, `DELETE /account/workspaces/:id/keys`            | Workspace admin                              |
+| `GET`, `DELETE /account/workspaces/:id/connections`             | Workspace admin, or the person who connected |
 
 **First workspace.** A person with no memberships and no pending invitation
 sees "Name your workspace". `POST /account/workspaces` then creates the
@@ -605,29 +608,84 @@ for someone signed in with Google as well as for an agent.
 - **Requests.** The SDK gains a workspace option and sends `X-Retainer-Workspace`
   with cookie requests, next to the `X-Retainer-Client` header it already sets. The
   Vite dev server also proxies `/account`.
-- **Your account.** "Add a passkey", and a list of passkeys to rename or remove. After
-  a first sign-in, offer it once. Explain plainly that Google sign-in still works.
-- **Members** (workspace settings). Everyone with access and their role, each
-  explained with the plain words in 4.3. While an organization has one workspace,
-  inviting happens here too.
-- **Organization** appears in settings only once there is a second member or a
-  second workspace.
-- **Agents** (workspace settings). Create and revoke keys, shown once with
-  copyable connection instructions, and see who created each. OAuth connections appear
-  here too, and can be revoked.
+- **Settings** for people, agents and the account (5.1).
 
 The Better Auth browser client with the passkey plugin adds about 16 KB gzipped.
+
+### 5.1 Settings
+
+Settings exist only in accounts mode. Key mode keeps today's app, where keys are
+managed with the CLI. Two places hold them: **Settings**, for the workspace you are
+in, and **Your account**, for you. Both open from the account menu at the bottom of
+the sidebar, next to Developer view and Sign out.
+
+Screens show only what the person can do. A button they could not use is hidden,
+not disabled, and the server checks every action again (4.3).
+
+**Settings: `/app/w/<slug>/settings`.** Tabs (`?tab=`), in this order:
+
+| Tab          | Who sees it                                       | What it holds                                         |
+| ------------ | ------------------------------------------------- | ----------------------------------------------------- |
+| Members      | Everyone in the workspace                         | Who has access, and their roles                       |
+| Agents       | Workspace admins                                  | API keys and connected apps                           |
+| Workspace    | Workspace admins                                  | Its name, and deleting it                             |
+| Organization | Organization owners and admins, once it is needed | The organization's people, invitations and workspaces |
+
+- **Members.** A row per person: name and email from Google, their role in plain
+  words, and when they joined. The role is explained with the words in 4.3, such as
+  "Editor: can add and change records, comment and review". Organization owners and
+  admins show as "Admin in every workspace", set on the Organization tab, not here.
+  Pending invitations follow, with who sent each and when it expires.
+  - A workspace admin can change a role or remove someone from the workspace, and
+    add someone already in the organization.
+  - Inviting someone new needs an organization owner or admin: **Invite** asks for an
+    email and a role and gives a link to copy (4.5). Others see who to ask.
+  - Removing someone says what follows: they lose access at their next request,
+    agent keys they created keep working, and their past changes keep their name.
+- **Agents.** Two lists, each with a sentence on what it is.
+  - **API keys**: name, what it can do ("Read only", "Read and write", "Read, write
+    and change structure"), who created it and when. **Create key** asks for a name
+    and what it can do, then shows the key once with copyable connection instructions
+    for MCP and REST. **Revoke** asks first, and the key stops working at once.
+  - **Connected apps**: apps people connected through sign-in, such as "Claude for
+    Dana", with the person and the date. **Disconnect** ends the app's access at its
+    next request. Arrives with MCP OAuth (PR 3).
+- **Workspace.** Rename it. The address keeps its slug, so links and agents keep
+  working. **Delete workspace**, for organization owners and admins, asks the person
+  to type the workspace's name and explains the 7 days in which an operator can
+  undo it (4.5).
+- **Organization.** Hidden while the organization has one member and one workspace
+  (A5), so most people never see the word.
+  - Its name, which owners can change.
+  - **People**: everyone in the organization, their organization role (owner, admin
+    or member, explained in plain words) and the workspaces each can reach. Owners
+    manage owners; owners and admins manage everyone else, and can remove someone
+    from the organization, which ends all their workspace roles. The last owner
+    cannot be removed or demoted (4.5).
+  - **Invitations**: pending ones, to copy again or revoke.
+  - **Workspaces**: each with its member count. **New workspace** asks for a name.
+  - **Delete organization**, for owners, only once it has no workspaces.
+
+**Your account: `/app/account`.** Outside any workspace, so it works from every one.
+
+- Your name and email, from Google, which you change there.
+- **Passkeys**: a list to rename or remove, and **Add a passkey**. After a first
+  sign-in, offer it once. Say plainly that Google sign-in still works.
+- **Where you have access**: each organization and workspace with your role in it,
+  in plain words, so a person can see their own permissions.
+- **Connected apps**: the apps you connected, in every workspace, to disconnect.
+- **Sign out everywhere**, which ends every session, on every device.
 
 ## 6. Implementation order
 
 Three pull requests. Accounts mode stays off until its settings are present, so PR 2
 changes nothing for existing installs when it merges.
 
-| PR                   | Contains                                                                                                                                                              |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Credentials       | Separate database logins for each function (4.9)                                                                                                                      |
-| 2. Accounts          | Tables and roles, Better Auth with Google, AWS and NAT, sign-in and workspace URLs, self-serve workspaces, members and invitations, API keys in the web app, passkeys |
-| 3. Agents and launch | MCP OAuth with the workspace picker, rate and quota limits, the statement timeout, scheduled deletion                                                                 |
+| PR                   | Contains                                                                                                                                                                                        |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Credentials       | Separate database logins for each function (4.9)                                                                                                                                                |
+| 2. Accounts          | Tables and roles, Better Auth with Google, AWS and NAT, sign-in and workspace URLs, self-serve workspaces, members and invitations, API keys in the web app, passkeys, the settings pages (5.1) |
+| 3. Agents and launch | MCP OAuth with the workspace picker, rate and quota limits, the statement timeout, scheduled deletion                                                                                           |
 
 **Why these stay apart.** PR 1 is the only one that changes the live deployment in
 every mode, so a problem there should be easy to trace and roll back, and it should
@@ -691,16 +749,16 @@ Grouped by what they prove. In the layers of `ARCHITECTURE.md` section 11, Unit 
 layer 1; Database, Concurrent and Credentials are layer 2; API and Contract are layer
 3; and Agent is layer 4. Browser tests run as that section describes.
 
-| Layer       | Proves                                                                                                                                                                                                                                                                      |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Unit        | Effective role, the role-to-scope tables, slug suffixes, OAuth scope capping, cookie signature checks                                                                                                                                                                       |
-| Database    | The runtime role cannot read account or Better Auth tables; `retainer_session_access` answers only for its own token; expired and revoked sessions; the composite foreign keys; deleting an organization with workspaces fails                                              |
-| Concurrent  | Two owners removing each other leave one; two first sign-ins make one user; two accepts of one invitation make one membership; two first workspaces make one organization                                                                                                   |
-| API         | Every role against every route; an API key on `/account` is refused; a session with a workspace it cannot access gets 404; a forged cookie and a raw token without its signature get 401; header mismatch on a bearer request gets 400; removal applies at the next request |
-| Contract    | Real Better Auth cookies pass the api function's check, so an upgrade that changes the format fails here; no unlisted `SECURITY DEFINER` function exists                                                                                                                    |
-| Credentials | The runtime login cannot `SET ROLE` to the owner, and `retainer_control` holds no DDL rights                                                                                                                                                                                |
-| Agent       | An OAuth client registers both ways, is consented, connects and calls tools; its token ends when the person is removed or the consent is revoked                                                                                                                            |
-| Browser     | Sign up, name a workspace, invite someone who accepts, each role sees the right buttons, two tabs on two workspaces write to the right ones; passkeys through Chrome's virtual authenticator: add, sign in, replay fails, another site fails, another user cannot remove it |
+| Layer       | Proves                                                                                                                                                                                                                                                                                                                                                        |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unit        | Effective role, the role-to-scope tables, slug suffixes, OAuth scope capping, cookie signature checks                                                                                                                                                                                                                                                         |
+| Database    | The runtime role cannot read account or Better Auth tables; `retainer_session_access` answers only for its own token; expired and revoked sessions; the composite foreign keys; deleting an organization with workspaces fails                                                                                                                                |
+| Concurrent  | Two owners removing each other leave one; two first sign-ins make one user; two accepts of one invitation make one membership; two first workspaces make one organization                                                                                                                                                                                     |
+| API         | Every role against every route; an API key on `/account` is refused; a session with a workspace it cannot access gets 404; a forged cookie and a raw token without its signature get 401; header mismatch on a bearer request gets 400; removal applies at the next request                                                                                   |
+| Contract    | Real Better Auth cookies pass the api function's check, so an upgrade that changes the format fails here; no unlisted `SECURITY DEFINER` function exists                                                                                                                                                                                                      |
+| Credentials | The runtime login cannot `SET ROLE` to the owner, and `retainer_control` holds no DDL rights                                                                                                                                                                                                                                                                  |
+| Agent       | An OAuth client registers both ways, is consented, connects and calls tools; its token ends when the person is removed or the consent is revoked                                                                                                                                                                                                              |
+| Browser     | Sign up, name a workspace, invite someone who accepts, each role sees the right buttons and settings tabs, someone removed in settings loses access at their next request, two tabs on two workspaces write to the right ones; passkeys through Chrome's virtual authenticator: add, sign in, replay fails, another site fails, another user cannot remove it |
 
 `pnpm lint` proves that the api function imports no Better Auth (4.13).
 
