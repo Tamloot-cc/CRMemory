@@ -4,8 +4,9 @@ import { useWorkspace } from '../../api/client.js';
 import { Button, Page, Tabs } from '../../ui/index.js';
 import { useView } from '../state.js';
 import { DiagramTab } from './diagram-tab.js';
-import { HistoryTab, useSchemaChanges } from './history-tab.js';
+import { HistoryTab } from './history-tab.js';
 import { ObjectsTab } from './objects-tab.js';
+import { useSchemaChanges } from './schema-model.js';
 
 export function SchemaPage() {
   const { schema } = useWorkspace(),

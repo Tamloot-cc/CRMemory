@@ -30,6 +30,19 @@ const MAY_SHARE_A_CYCLE = 'core';
 const layerOf = new Map(LAYERS.flatMap(([, modules], i) => modules.map((m) => [m, i])));
 const layerName = (module) => LAYERS[layerOf.get(module)][0];
 
+/** Where ARCHITECTURE.md's table of layers disagrees with LAYERS. */
+function documentationProblems() {
+  const doc = readFileSync(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+  const table = doc.slice(doc.indexOf('### Server layers'));
+  return LAYERS.flatMap(([name, modules]) => {
+    const row = new RegExp(`^\\| ${name} +\\| (.+?) +\\|`, 'im').exec(table);
+    const listed = [...(row?.[1] ?? '').matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+    return listed.toSorted().join() === modules.toSorted().join()
+      ? []
+      : [`ARCHITECTURE.md lists ${name} as [${listed}], but this script has [${modules}]`];
+  });
+}
+
 function sourceFiles(dir) {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -81,7 +94,7 @@ function cycles(graph) {
   return found;
 }
 
-const problems = [];
+const problems = documentationProblems();
 const fileGraph = new Map();
 const moduleGraph = new Map();
 const edge = (graph, from, to) => {

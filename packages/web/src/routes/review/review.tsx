@@ -22,7 +22,7 @@ import {
 } from '../../ui/index.js';
 import { MergeSuggestionCard } from '../records/merge.js';
 import { CandidateRecord } from '../records/record-actions.js';
-import { describeOperation } from '../schema/schema-model.js';
+import { describeOperation, useSchemaChanges } from '../schema/schema-model.js';
 import { eventTitle, objectByName, QueryError, recordTitle, useView } from '../state.js';
 
 const reasonText = {
@@ -102,16 +102,7 @@ export function ReviewPage() {
     queryFn: ({ signal }) =>
       api.review({ limit: 50, ...(tab !== 'schema' ? { [`${tab}Cursor`]: cursor } : {}), signal }),
   });
-  const changes = useQuery({
-    queryKey: [wid, 'schemaChanges', 'proposed', tab === 'schema' ? cursor : undefined],
-    queryFn: ({ signal }) =>
-      api.schemaChanges({
-        status: 'proposed',
-        limit: 50,
-        cursor: tab === 'schema' ? cursor : undefined,
-        signal,
-      }),
-  });
+  const changes = useSchemaChanges('proposed', tab === 'schema' ? cursor : undefined);
   const deep = useQuery({
     queryKey: [wid, 'assertion', search.assertion],
     queryFn: ({ signal }) => api.assertion(search.assertion ?? '', signal),

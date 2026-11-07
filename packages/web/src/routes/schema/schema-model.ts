@@ -7,12 +7,24 @@ import {
   type SchemaChangeStatus,
   type SchemaOperation,
 } from '@retainer/shared';
+import { useQuery } from '@tanstack/react-query';
+import { api, useWorkspace } from '../../api/client.js';
 import { joinOr } from '../../fields/common.js';
 import { fields } from '../../fields/index.js';
 import type { DiagramEdge } from '../../ui/index.js';
+import { objectByName } from '../state.js';
 
-export function findObject(objects: ObjectView[], name: string | undefined) {
-  return objects.find((o) => o.nameSingular === name) ?? null;
+/**
+ * A page of schema changes. The counts in the tab and top bar read `total`
+ * from the first page, so opening the history reuses them; the proposed
+ * first page is the review inbox's query too.
+ */
+export function useSchemaChanges(status?: SchemaChangeStatus, cursor?: string) {
+  const { session } = useWorkspace();
+  return useQuery({
+    queryKey: [session.workspace.id, 'schemaChanges', status ?? 'all', cursor],
+    queryFn: ({ signal }) => api.schemaChanges({ status, cursor, limit: 50, signal }),
+  });
 }
 
 /** A second line under the type: what the settings add to it. */
@@ -50,7 +62,7 @@ export function matchesField(field: FieldView, query: string) {
 export function relationEnds(field: FieldView, objects: ObjectView[]) {
   const targets = relationTargets(field).map((name) => ({
     name,
-    object: findObject(objects, name),
+    object: objectByName({ objects }, name),
   }));
   const target = targets.length === 1 ? (targets[0]?.object ?? null) : null;
   const inverse = target?.fields.find((f) => f.name === field.settings.inverseField);
@@ -185,9 +197,9 @@ const FLAG_WORDS: Record<string, [string, string]> = {
  * Relationship"). Unknown shapes fall back to the operation name.
  */
 export function describeOperation(op: SchemaOperation, objects: ObjectView[]) {
-  const obj = (name: string) => findObject(objects, name)?.labelSingular ?? name;
+  const obj = (name: string) => objectByName({ objects }, name)?.labelSingular ?? name;
   const fld = (object: string, field: string) =>
-    `${obj(object)} → ${findObject(objects, object)?.fields.find((f) => f.name === field)?.label ?? field}`;
+    `${obj(object)} → ${objectByName({ objects }, object)?.fields.find((f) => f.name === field)?.label ?? field}`;
   const quote = (v: unknown) => `“${String(v)}”`;
   switch (op.op) {
     case 'create_object': {

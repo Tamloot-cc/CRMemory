@@ -2,6 +2,7 @@ import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Caller } from '../caller.js';
 import { AppError } from '../errors.js';
+import { log } from '../log.js';
 import { SchemaValidationError } from '../schema/types.js';
 
 /** Hono environment: every authenticated request carries its caller. */
@@ -15,15 +16,16 @@ export type ErrorBody = {
   error: { code: string; message: string; details?: Record<string, unknown> };
 };
 
-/** Maps a thrown error to the AppError the API reports, if it is a known one. */
-export function toAppError(error: unknown): AppError | undefined {
+/** Maps a thrown error to the AppError the API reports. An unknown one is logged and hidden. */
+export function toAppError(error: unknown): AppError {
   if (error instanceof AppError) return error;
   if (error instanceof SchemaValidationError) {
     return new AppError(422, 'schema_invalid', 'the schema change is invalid', {
       issues: error.issues,
     });
   }
-  return undefined;
+  log.error(error);
+  return new AppError(500, 'internal', 'internal server error');
 }
 
 /** `{ error: { code, message, details } }`, shared by REST responses and MCP tool errors. */

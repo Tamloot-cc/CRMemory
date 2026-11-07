@@ -3,9 +3,8 @@ import { z } from 'zod';
 import { missingScope } from '../auth/middleware.js';
 import type { Caller } from '../caller.js';
 import type { ApiKeyScope } from '../db/schema.js';
-import { AppError } from '../errors.js';
+import type { AppError } from '../errors.js';
 import { errorBody, toAppError } from '../http/response.js';
-import { log } from '../log.js';
 
 /** What every MCP tool file uses: running a call, its result and shared inputs. */
 
@@ -41,10 +40,7 @@ export async function run(
     const result = await fn();
     return isFailure(result) ? { ...ok(result), isError: true } : ok(result);
   } catch (error) {
-    const known = toAppError(error);
-    if (known) return failure(known);
-    log.error(error);
-    return failure(new AppError(500, 'internal', 'internal server error'));
+    return failure(toAppError(error));
   }
 }
 

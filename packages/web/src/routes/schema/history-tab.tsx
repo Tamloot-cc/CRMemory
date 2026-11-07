@@ -3,10 +3,9 @@ import {
   type SchemaChange,
   type SchemaChangeStatus,
 } from '@retainer/shared';
-import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { CircleCheck, CircleX, Clock, type LucideIcon, TriangleAlert } from 'lucide-react';
-import { api, canMutate, useWorkspace } from '../../api/client.js';
+import { canMutate, useWorkspace } from '../../api/client.js';
 import { ActorBadge } from '../../provenance/index.js';
 import {
   Badge,
@@ -24,7 +23,7 @@ import {
   type Tone,
 } from '../../ui/index.js';
 import { QueryError, useView } from '../state.js';
-import { describeOperation, parseStatus, relativeTime } from './schema-model.js';
+import { describeOperation, parseStatus, relativeTime, useSchemaChanges } from './schema-model.js';
 
 const STATUS: Record<SchemaChangeStatus, { label: string; icon: LucideIcon; tone: Tone }> = {
   applied: { label: 'Applied', icon: CircleCheck, tone: 'success' },
@@ -32,19 +31,6 @@ const STATUS: Record<SchemaChangeStatus, { label: string; icon: LucideIcon; tone
   rejected: { label: 'Rejected', icon: CircleX, tone: 'neutral' },
   failed: { label: 'Failed', icon: TriangleAlert, tone: 'error' },
 };
-
-/**
- * A page of schema changes. The counts in the tab and top bar read `total`
- * from the first page, so opening the history reuses them; the proposed
- * first page is the review inbox's query too.
- */
-export function useSchemaChanges(status?: SchemaChangeStatus, cursor?: string) {
-  const { session } = useWorkspace();
-  return useQuery({
-    queryKey: [session.workspace.id, 'schemaChanges', status ?? 'all', cursor],
-    queryFn: ({ signal }) => api.schemaChanges({ status, cursor, limit: 50, signal }),
-  });
-}
 
 export function HistoryTab() {
   const { session } = useWorkspace(),

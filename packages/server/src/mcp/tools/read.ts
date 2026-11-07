@@ -11,14 +11,16 @@ import { contextFor, searchFor, timelineFor } from '../../retrieval/service.js';
 import { timelineInputSchema } from '../../retrieval/timeline.js';
 import { objectName, run } from '../shared.js';
 
+const recordId = z
+  .uuid()
+  .describe('The record ID. An ID merged into another record returns the survivor.');
+
 const getRecordInput = z.strictObject({
-  id: z.uuid().describe('The record ID. An ID merged into another record returns the survivor.'),
+  id: recordId,
 });
 
 const listCommentsInput = z.strictObject({
-  record: z
-    .uuid()
-    .describe('The record ID. An ID merged into another record returns the survivor.'),
+  record: recordId,
   limit: z.number().int().min(1).max(200).default(50).describe('Comments per page (at most 200).'),
   cursor: z.string().optional().describe('nextCursor from the previous page.'),
 });
@@ -50,9 +52,7 @@ const searchInput = z.strictObject({
 });
 
 const getContextInput = z.strictObject({
-  record: z
-    .uuid()
-    .describe('The record ID. An ID merged into another record returns the survivor.'),
+  record: recordId,
   tokenBudget: contextInputSchema.shape.tokenBudget.describe(
     "Approximate size of the pack in tokens, 2000 by default (at most 16000). The record's " +
       'values are always included; tasks, facts and events fill the rest.',
@@ -60,9 +60,7 @@ const getContextInput = z.strictObject({
 });
 
 const getTimelineInput = z.strictObject({
-  record: z
-    .uuid()
-    .describe('The record ID. An ID merged into another record returns the survivor.'),
+  record: recordId,
   types: timelineInputSchema.shape.types.describe(
     'Kinds of item: "event", "field_change", "fact". All by default; fields or eventTypes ' +
       'alone narrow it to their kind.',
