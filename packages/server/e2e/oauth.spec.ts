@@ -56,6 +56,8 @@ test('a person connects Claude to the workspace they pick, then disconnects it',
   await page.getByRole('radio', { name: /Dana Support/ }).check();
   await expect(page.getByText('See everything in the workspace')).toBeVisible();
   await expect(page.getByText('Add and change records, events and notes')).toBeVisible();
+  // Any app can call itself Claude; the page names where Allow really goes.
+  await expect(page.getByText(/sends you back to claude\.ai/)).toBeVisible();
   await page.getByRole('button', { name: 'Allow' }).click();
 
   await expect(page).toHaveURL(/^https:\/\/claude\.ai\/api\/mcp\/auth_callback\?/);

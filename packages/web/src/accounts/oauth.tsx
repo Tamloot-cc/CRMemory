@@ -39,11 +39,22 @@ export function OAuthContinue() {
   );
 }
 
+const hostOf = (url: string | null): string | null => {
+  try {
+    return url ? new URL(url).host : null;
+  } catch {
+    return null;
+  }
+};
+
 /** /app/oauth/consent: which workspace the app may use, and allow or cancel. */
 export function OAuthConsent({ account }: { account: Account }) {
   const query = new URLSearchParams(window.location.search);
   const clientId = query.get('client_id') ?? '';
   const asked = query.get('scope')?.split(' ') ?? [...OAUTH_SCOPES];
+  // Any app can register under any name, so say where allowing it sends you.
+  // Better Auth signed this query, so the address is the one it checked.
+  const returnsTo = hostOf(query.get('redirect_uri'));
   const client = useQuery({
     queryKey: ['oauth-client', clientId],
     queryFn: () => accountApi.oauthClient(clientId),
@@ -138,6 +149,12 @@ export function OAuthConsent({ account }: { account: Account }) {
             do more than you can in this workspace, and it never manages people or keys. You can
             disconnect it at any time in Your account.
           </Muted>
+          {returnsTo ? (
+            <Muted small>
+              Allowing sends you back to <strong>{returnsTo}</strong>. Only allow it if that is the
+              app you meant to connect.
+            </Muted>
+          ) : null}
           {error ? <Notice error>{error}</Notice> : null}
           <div className="flex gap-2">
             <Button

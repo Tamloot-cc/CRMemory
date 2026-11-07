@@ -181,7 +181,9 @@ person otherwise.
   continues the authorization, then to `/app/oauth/consent`. That page names
   the app, lists the person's workspaces with their role in each, and shows
   what the app could do in the one picked, which is the app's scopes capped by
-  that role. Allow posts the choice to `POST /account/oauth/consent`. No other
+  that role. Any app can register under any name, so the page also names the
+  site Allow sends the person back to (the signed `redirect_uri`'s host).
+  Allow posts the choice to `POST /account/oauth/consent`. No other
   site may frame `/app` (`frame-ancestors 'none'`), so the consent page cannot
   be clickjacked.
 - Better Auth's browser client and the passkey plugin load only in accounts
