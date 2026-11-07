@@ -703,7 +703,11 @@ export async function createInvitation(
       throw forbidden('Only an owner can invite an owner.');
     }
     // Accepting checks again; this only spares sending a link that cannot work.
-    await assertWithinLimit(tx, organizationId, 'members');
+    // Someone already in the organization takes no new place.
+    const [member] = await tx`
+      select 1 from organization_members m join users u on u.id = m.user_id
+      where m.organization_id = ${organizationId} and u.email = ${email}`;
+    if (!member) await assertWithinLimit(tx, organizationId, 'members');
     if (ids.length) {
       const found = await tx`
         select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}

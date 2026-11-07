@@ -101,10 +101,18 @@ describe('member quota', () => {
   it('refuses an invitation once the organization is full', async () => {
     const owner = await person('Full');
     const organizationId = await organizationOwnedBy(owner);
-    await setOrganizationLimits(db.owner, { organization: organizationId, limits: { members: 1 } });
+    const kept = await person('Kept');
+    await setOrganizationMember(db.owner, {
+      organization: organizationId,
+      email: kept.email,
+      role: 'member',
+    });
+    await setOrganizationLimits(db.owner, { organization: organizationId, limits: { members: 2 } });
     const { res } = await invite(owner, organizationId, 'someone@quota.test');
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: { code: 'limit_reached' } });
+    // Someone already in it takes no new place, so they can still be invited.
+    expect((await invite(owner, organizationId, kept.email)).res.status).toBe(201);
   });
 
   it('lets one of two people accept when they race for the last place, leaving the other invitation open', async () => {
