@@ -115,6 +115,12 @@ export const account = {
     call<Workspace>('/account/workspaces', { method: 'POST', body: input }),
   renameWorkspace: (id: string, name: string) =>
     call<Workspace>(ws(id), { method: 'PATCH', body: { name } }),
+  /** Gone at once; removed for good after 7 days, during which an operator can undo it. */
+  deleteWorkspace: (id: string, name: string) =>
+    call<{ id: string; deletionScheduledAt: string; purgeAfter: string }>(ws(id), {
+      method: 'DELETE',
+      body: { name },
+    }),
   members: (id: string) =>
     call<{
       role: WorkspaceRole;

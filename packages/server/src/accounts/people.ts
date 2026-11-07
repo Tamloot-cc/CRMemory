@@ -19,6 +19,7 @@ import { getWorkspace, type Workspace } from '../db/workspaces.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { SYSTEM_ACTOR } from '../schema-engine/engine.js';
 import { applyTemplate, seedBaseObjects } from '../templates/apply.js';
+import { DELETION_GRACE_DAYS, purgeAfter } from '../workspaces/deletion.js';
 import {
   assertKeepsAnOwner,
   assertWithinLimit,
@@ -233,6 +234,46 @@ export async function renameWorkspace(
     await tx`update workspaces set name = ${trimmed}, updated_at = now() where id = ${workspace.id}`;
     return getWorkspace(tx, workspace.id);
   });
+}
+
+/**
+ * Deletes a workspace (4.5): an organization owner's or admin's decision,
+ * confirmed by typing its name. It is gone at once for every lookup and
+ * removed for good after the grace period. The organization's lock comes
+ * first, then the role check, then the write, so a demotion or a move
+ * running at the same time lands before the check.
+ */
+export async function deleteWorkspace(
+  sql: Sql,
+  person: Person,
+  workspaceId: string,
+  confirmName: string,
+): Promise<{ id: string; deletionScheduledAt: string; purgeAfter: string }> {
+  return (await sql.begin(async (tx) => {
+    const organizationId = await lockWorkspaceOrganization(tx, workspaceId);
+    // Someone who cannot see the workspace learns nothing about it.
+    const { workspace } = await workspaceAccess(tx, person, workspaceId);
+    if (!organizationId || organizationId !== workspace.organizationId) throw notFound('workspace');
+    const role = await organizationRole(tx, organizationId, person.id);
+    if (!role || !isOrganizationManager(role)) {
+      throw forbidden('Only an owner or admin of the organization can delete a workspace.');
+    }
+    const [current] = await tx<{ name: string }[]>`
+      select name from workspaces where id = ${workspaceId}`;
+    if (confirmName.trim() !== current?.name.trim()) {
+      throw new AppError(400, 'invalid_request', "type the workspace's name to delete it");
+    }
+    const [row] = await tx<{ deletion_scheduled_at: Date }[]>`
+      update workspaces set deletion_scheduled_at = now(), updated_at = now()
+      where id = ${workspaceId} and deletion_scheduled_at is null
+      returning deletion_scheduled_at`;
+    if (!row) throw notFound('workspace');
+    return {
+      id: workspaceId,
+      deletionScheduledAt: row.deletion_scheduled_at.toISOString(),
+      purgeAfter: purgeAfter(row.deletion_scheduled_at).toISOString(),
+    };
+  })) as { id: string; deletionScheduledAt: string; purgeAfter: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +563,11 @@ export async function deleteOrganization(
     const [{ count } = { count: 0 }] = await tx<{ count: number }[]>`
       select count(*)::int as count from workspaces where organization_id = ${organizationId}`;
     if (count > 0) {
-      throw new AppError(409, 'has_workspaces', 'Delete its workspaces first.');
+      throw new AppError(
+        409,
+        'has_workspaces',
+        `Delete its workspaces first. A deleted workspace is removed for good ${DELETION_GRACE_DAYS} days later.`,
+      );
     }
     await tx`delete from organizations where id = ${organizationId}`;
   });
@@ -648,7 +693,8 @@ export async function createInvitation(
     await assertWithinLimit(tx, organizationId, 'members');
     if (ids.length) {
       const found = await tx`
-        select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}`;
+        select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}
+          and deletion_scheduled_at is null`;
       if (found.length !== ids.length) throw notFound('workspace');
     }
     const token = randomBytes(32).toString('base64url');
@@ -729,7 +775,7 @@ export async function previewInvitation(
   const names = await sql<{ id: string; name: string }[]>`
     select id, name from workspaces
     where id = any(${row.workspaces.map((w) => w.workspaceId)}::uuid[])
-      and organization_id = ${row.organization_id}`;
+      and organization_id = ${row.organization_id} and deletion_scheduled_at is null`;
   return {
     id: row.id,
     organization: { id: row.organization_id, name: row.organization_name },
@@ -796,6 +842,7 @@ export async function acceptInvitation(
       select w.organization_id, w.id, ${person.id}, invited.role
       from jsonb_to_recordset(${tx.json(row.workspaces)}) as invited("workspaceId" uuid, role text)
       join workspaces w on w.id = invited."workspaceId" and w.organization_id = ${row.organization_id}
+        and w.deletion_scheduled_at is null
       on conflict (workspace_id, user_id) do nothing`;
     return { organizationId: row.organization_id };
   });

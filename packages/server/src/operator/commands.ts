@@ -5,6 +5,7 @@ import { listOrganizations } from '../db/organizations.js';
 import { listWorkspaces } from '../db/workspaces.js';
 import { AppError } from '../errors.js';
 import { TEMPLATE_NAMES } from '../templates/index.js';
+import { purgeAfter, purgeDeletedWorkspaces, restoreWorkspace } from '../workspaces/deletion.js';
 import {
   createOrganization,
   moveWorkspace,
@@ -20,6 +21,8 @@ Workspaces
   retainer workspace create --name <name> [--slug <slug>] [--template <template>] [--org <id|name>]
   retainer workspace list
   retainer workspace move <slug|id> --org <id|name>
+  retainer workspace restore <slug|id>     Undo a deletion within its 7 days
+  retainer workspace purge                 Remove workspaces deleted over 7 days ago now
 
 Organizations and people (accounts mode)
   retainer org create --name <name>
@@ -101,7 +104,10 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
             : workspaces
                 .map(
                   (w) =>
-                    `${w.slug}\t${w.id}\t${w.name}\t${w.templates.map((t) => t.name).join(',') || '-'}`,
+                    `${w.slug}\t${w.id}\t${w.name}\t${w.templates.map((t) => t.name).join(',') || '-'}` +
+                    (w.deletionScheduledAt
+                      ? `\tdeleted, removed for good after ${purgeAfter(new Date(w.deletionScheduledAt)).toISOString()}`
+                      : ''),
                 )
                 .join('\n'),
           workspaces,
@@ -121,6 +127,23 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
           moved,
         );
         return 0;
+      }
+      case 'workspace restore': {
+        const workspace = await restoreWorkspace(
+          io.sql,
+          required(rest[0] ?? values.workspace, 'workspace'),
+        );
+        print(`Restored workspace "${workspace.name}" (${workspace.slug}).`, workspace);
+        return 0;
+      }
+      case 'workspace purge': {
+        const report = await purgeDeletedWorkspaces(io.sql);
+        print(
+          `Removed ${report.purged} deleted workspace(s) for good.` +
+            (report.failed > 0 ? ` ${report.failed} could not be removed; see the log.` : ''),
+          report,
+        );
+        return report.failed > 0 ? 1 : 0;
       }
       case 'org create': {
         const organization = await createOrganization(io.sql, {

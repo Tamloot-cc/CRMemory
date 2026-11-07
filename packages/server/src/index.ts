@@ -14,6 +14,7 @@ import { log, setLogLevel } from './log.js';
 import { bootstrap, firstBootBanner } from './operator/bootstrap.js';
 import { rebuildSearchText } from './records/rebuild-search.js';
 import { startWorker } from './worker/index.js';
+import { startPurger } from './worker/purge.js';
 import { upgradeWorkspaces } from './workspaces/upgrade.js';
 
 const config = loadConfig();
@@ -70,6 +71,8 @@ if (accountsMode(config) && (role === 'all' || role === 'control')) {
     authSql: authControl,
     clientIp: (c) => getConnInfo(c).remote.address,
   });
+  // Removes deleted workspaces for good once their grace period ends (4.5).
+  stops.push(startPurger({ sql: control }).stop);
 }
 
 if (role === 'api' || role === 'all' || role === 'control') {

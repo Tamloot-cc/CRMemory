@@ -239,6 +239,13 @@
       "when": 1794076021828,
       "tag": "0033_rate_limits_security",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794076235398,
+      "tag": "0034_workspace_deletion",
+      "breakpoints": true
     }
   ]
 }
