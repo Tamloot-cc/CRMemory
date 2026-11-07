@@ -2,7 +2,6 @@
 
 Status: implemented, including record creation, deletion, merges and suggested
 merges, `forget` and global
-
 search, plus saved views with table, board and calendar layouts (5.3b), and
 the Records and Activity split: event type lists, the activity feed,
 comments and developer view
