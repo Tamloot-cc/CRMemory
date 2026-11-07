@@ -88,6 +88,7 @@ export function AccountFrame({
   account?: Account;
   children: ReactNode;
 }) {
+  const [signOutError, setSignOutError] = useState('');
   return (
     <main className="min-h-dvh bg-muted/30">
       <header className="flex h-12 items-center gap-2 border-b border-border bg-background px-4">
@@ -103,7 +104,9 @@ export function AccountFrame({
             <button
               type="button"
               className="hover:text-foreground"
-              onClick={() => void signOutOfAccount()}
+              onClick={() =>
+                void signOutOfAccount().catch((e: Error) => setSignOutError(e.message))
+              }
             >
               Sign out
             </button>
@@ -115,6 +118,7 @@ export function AccountFrame({
           <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
           {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
         </div>
+        {signOutError ? <Notice error>{signOutError}</Notice> : null}
         {children}
       </section>
     </main>

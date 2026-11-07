@@ -214,3 +214,22 @@ test('a person adds a passkey and signs in with it', async ({
   await expect(page).toHaveURL(workspaceUrl);
   await expect(page.getByRole('button', { name: 'Account: Pat' })).toBeVisible();
 });
+
+test('a sign-out the server refuses says so, and the person stays where they are', async ({
+  page,
+  context,
+  accounts: a,
+}) => {
+  await a.signIn(context, { email: 'sam@example.test', name: 'Sam' });
+  await page.goto(`${a.url}/app/account`);
+  await page.route('**/account/auth/sign-out', (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"down"}' }),
+  );
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page.getByText('You are still signed in: signing out failed.')).toBeVisible();
+  await expect(page).toHaveURL(`${a.url}/app/account`);
+
+  await page.unroute('**/account/auth/sign-out');
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Use a passkey' })).toBeVisible();
+});

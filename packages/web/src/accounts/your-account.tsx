@@ -131,7 +131,9 @@ function Passkeys() {
             <button
               type="button"
               className="underline"
-              onClick={() => void signOutOfAccount('/app/account')}
+              onClick={() =>
+                void signOutOfAccount('/app/account').catch((e: Error) => setError(e.message))
+              }
             >
               Sign in again
             </button>{' '}

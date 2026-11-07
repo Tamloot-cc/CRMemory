@@ -178,10 +178,12 @@ export const authClient = () => import('./auth-client.js').then((m) => m.authCli
 
 /**
  * Ends this session, then starts the app again at the sign-in screen, which
- * comes back to `then` after signing in.
+ * comes back to `then` after signing in. Throws when the server did not end
+ * it: the session still works, so going on would land the person back inside.
  */
 export async function signOutOfAccount(then = '/app/'): Promise<void> {
-  await (await authClient()).signOut();
+  const { error } = await (await authClient()).signOut();
+  if (error) throw new Error('You are still signed in: signing out failed. Try again.');
   window.location.assign(then);
 }
 

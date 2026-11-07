@@ -415,7 +415,13 @@ function AccountWorkspaceApp({ state }: { state: AccountState }) {
   return (
     <QueryClientProvider client={client}>
       <AccountContext.Provider value={state}>
-        <AuthContext.Provider value={{ session, signOut: () => void signOutOfAccount() }}>
+        {error ? <Notice error>{error}</Notice> : null}
+        <AuthContext.Provider
+          value={{
+            session,
+            signOut: () => void signOutOfAccount().catch((e: Error) => setError(e.message)),
+          }}
+        >
           <RouterProvider router={router} />
         </AuthContext.Provider>
       </AccountContext.Provider>
