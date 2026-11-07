@@ -54,14 +54,14 @@ const BUILT_IN_SORTS = [
 ];
 
 /** What a filter's value starts as when its operator is chosen. */
-export const initialFilterValue = (operator: string): unknown =>
+const initialFilterValue = (operator: string): unknown =>
   operator === 'isNull' || operator === 'isEmpty'
     ? true
     : operator === 'containsAny' || operator === 'containsAll'
       ? []
       : '';
 
-export const fieldOption = (f: FieldView, apiName?: string) => ({
+const fieldOption = (f: FieldView, apiName?: string) => ({
   value: f.name,
   label: f.label,
   // Search finds a field by its API name too, where it is shown.
@@ -110,7 +110,7 @@ export function FooterCell({
 }
 
 /** A field's name with its type's icon, and its API name in developer view. */
-export function FieldLabel({ field }: { field: FieldView }) {
+function FieldLabel({ field }: { field: FieldView }) {
   const apiName = useApiName()(field.name);
   return (
     <IconLabel icon={fields[field.type].icon}>

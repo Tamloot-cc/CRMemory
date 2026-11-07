@@ -4,7 +4,7 @@ import {
   INTERNAL_NOTE_TYPE_ID,
   TASK_DONE_OPTION,
 } from '@retainer/shared';
-import type { SchemaState } from './types.js';
+import type { SchemaState } from '../schema/types.js';
 
 /**
  * Schema elements server code depends on (ARCHITECTURE.md 1.1). Protection

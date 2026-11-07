@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { jsonValue, type Tx } from './db/tx.js';
 import { AppError } from './errors.js';
-import { stableJson } from './records/winner.js';
+import { stableJson } from './stable-json.js';
 
 /** How long a key protects against a retry. */
 const TTL = '24 hours';

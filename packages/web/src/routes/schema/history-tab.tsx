@@ -26,7 +26,7 @@ import {
 import { QueryError, useView } from '../state.js';
 import { describeOperation, parseStatus, relativeTime } from './schema-model.js';
 
-export const STATUS: Record<SchemaChangeStatus, { label: string; icon: LucideIcon; tone: Tone }> = {
+const STATUS: Record<SchemaChangeStatus, { label: string; icon: LucideIcon; tone: Tone }> = {
   applied: { label: 'Applied', icon: CircleCheck, tone: 'success' },
   proposed: { label: 'Proposed', icon: Clock, tone: 'pending' },
   rejected: { label: 'Rejected', icon: CircleX, tone: 'neutral' },

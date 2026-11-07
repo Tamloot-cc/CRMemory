@@ -13,9 +13,9 @@ import { registerWriteTools } from './tools/write.js';
  * write rules and error messages; get_guide is the exception, serving static
  * text that only agents need. The workspace and actor come from the API
  * key, so no tool takes either.
+ *
+ * Builds the MCP server for one authenticated caller.
  */
-
-/** Builds the MCP server for one authenticated caller. */
 export function createMcpServer(sql: Sql, caller: Caller): McpServer {
   const server = new McpServer(
     { name: 'retainer', title: 'Retainer', version: VERSION },

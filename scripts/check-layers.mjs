@@ -7,16 +7,22 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER = join(ROOT, 'packages/server/src');
-const MIT_PACKAGES = ['shared', 'sdk', 'mcp', 'web'];
+const MIT_PACKAGES = readdirSync(join(ROOT, 'packages')).filter(
+  (dir) =>
+    JSON.parse(readFileSync(join(ROOT, 'packages', dir, 'package.json'), 'utf8')).license === 'MIT',
+);
 
 // Lowest first. A module may import its own layer and the layers before it.
 const LAYERS = [
-  ['foundation', ['caller', 'config', 'errors', 'log', 'version', 'db', 'http', 'auth', 'schema']],
-  ['core', ['idempotency', 'records', 'memory', 'privacy']],
+  [
+    'foundation',
+    ['caller', 'config', 'errors', 'log', 'version', 'stable-json', 'idempotency', 'db', 'schema'],
+  ],
+  ['core', ['records', 'memory', 'privacy']],
   ['features', ['views', 'comments', 'retrieval', 'reads']],
   ['admin', ['schema-engine', 'templates', 'workspaces']],
-  ['interfaces', ['api', 'mcp', 'worker', 'lambda', 'operator']],
-  ['entry', ['index', 'cli']],
+  ['interfaces', ['http', 'auth', 'api', 'mcp', 'worker', 'operator']],
+  ['entry', ['index', 'cli', 'lambda']],
 ];
 // Events are records, so these modules depend on each other by design.
 const MAY_SHARE_A_CYCLE = 'core';
@@ -27,7 +33,7 @@ const layerName = (module) => LAYERS[layerOf.get(module)][0];
 function sourceFiles(dir) {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
-    if (statSync(path).isDirectory()) return name === 'node_modules' ? [] : sourceFiles(path);
+    if (statSync(path).isDirectory()) return sourceFiles(path);
     return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) ? [path] : [];
   });
 }
@@ -90,22 +96,23 @@ for (const file of sourceFiles(SERVER)) {
     problems.push(`${name}: module "${from}" has no layer in scripts/check-layers.mjs`);
     continue;
   }
-  fileGraph.set(file, fileGraph.get(file) ?? new Set());
+  fileGraph.set(file, new Set());
   for (const specifier of importsOf(file)) {
     if (!specifier.startsWith('.')) continue;
     const target = resolve(file, specifier);
     if (!target?.startsWith(SERVER)) continue;
     edge(fileGraph, file, target);
     const to = moduleOf(target);
-    if (to === from || !layerOf.has(to)) continue;
+    if (to === from) continue;
     if (layerOf.get(to) > layerOf.get(from)) {
       problems.push(
         `${name}: ${from} (${layerName(from)}) must not import ${to} (${layerName(to)})`,
       );
     }
-    const group = (module) =>
-      layerName(module) === MAY_SHARE_A_CYCLE ? MAY_SHARE_A_CYCLE : module;
-    if (group(from) !== group(to)) edge(moduleGraph, group(from), group(to));
+    // A cycle across layers needs an upward import, which is reported above.
+    if (layerOf.get(from) === layerOf.get(to) && layerName(from) !== MAY_SHARE_A_CYCLE) {
+      edge(moduleGraph, from, to);
+    }
   }
 }
 
@@ -117,7 +124,7 @@ for (const cycle of cycles(fileGraph)) {
 for (const pkg of MIT_PACKAGES) {
   for (const file of sourceFiles(join(ROOT, 'packages', pkg, 'src'))) {
     for (const specifier of importsOf(file)) {
-      const absolute = specifier.startsWith('.') ? normalize(join(dirname(file), specifier)) : '';
+      const absolute = normalize(join(dirname(file), specifier));
       if (
         specifier.startsWith('@retainer/server') ||
         absolute.startsWith(join(ROOT, 'packages/server'))

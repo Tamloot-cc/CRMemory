@@ -60,7 +60,7 @@ by API name, and the engine protects each of them. Today these are the base
 objects `person`, `company` and `task`, the fields `task.status` and
 `task.dueDate` (open tasks in context packs, 6.2), and the hidden
 internal-note event type (1.3). The list lives in
-`schema/protection.ts`; any new server dependency on a schema
+`schema-engine/protection.ts`; any new server dependency on a schema
 element protects it in the same change. The core `title` and `summary`
 fields of every event type are protected the same way. The base event type
 itself is not: an unused one can be deleted like any object.
@@ -1733,14 +1733,14 @@ unlimited, as on a self-hosted install), and a statement timeout on the runtime 
 Each server module in `packages/server/src` belongs to a layer and imports only
 from its own layer and the ones below it:
 
-| Layer      | Modules                                                                        | Holds                                     |
-| ---------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
-| Entry      | `index`, `cli`                                                                 | Starting the server and the CLI           |
-| Interfaces | `api`, `mcp`, `worker`, `lambda`, `operator`                                   | The ways in: REST, MCP, jobs, operators   |
-| Admin      | `schema-engine`, `templates`, `workspaces`                                     | Changing a schema and creating workspaces |
-| Features   | `views`, `comments`, `retrieval`, `reads`                                      | Built on records and memory               |
-| Core       | `records`, `memory`, `privacy`, `idempotency`                                  | The write rules                           |
-| Foundation | `db`, `schema`, `auth`, `http`, `caller`, `config`, `errors`, `log`, `version` | The database, reading a schema, requests  |
+| Layer      | Modules                                                                                      | Holds                                                          |
+| ---------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Entry      | `index`, `cli`, `lambda`                                                                     | Starting the server, the CLI and the Lambda functions          |
+| Interfaces | `api`, `mcp`, `worker`, `operator`, `auth`, `http`                                           | The ways in: REST, MCP, jobs, operators, and handling requests |
+| Admin      | `schema-engine`, `templates`, `workspaces`                                                   | Changing a schema and creating workspaces                      |
+| Features   | `views`, `comments`, `retrieval`, `reads`                                                    | Built on records and memory                                    |
+| Core       | `records`, `memory`, `privacy`                                                               | The write rules                                                |
+| Foundation | `db`, `schema`, `caller`, `idempotency`, `stable-json`, `config`, `errors`, `log`, `version` | The database and reading a schema                              |
 
 The schema engine sits above the records because a schema change rewrites
 records and views, while records only need to read a schema: `schema` holds the
@@ -1795,7 +1795,7 @@ model inside it, so every layer except 5 is deterministic.
 | 1. Unit                 | Pure logic: the field-winner rules (2), schema validate/diff/classify (3), identifier normalization (emails, E.164 phones), value validation                                 | Vitest, no database                                                                                 | Every PR               |
 | 2. Database integration | Rules only Postgres can prove: concurrent creates with one email make one record, per-record locking, unique claims, row-level security between workspaces, merges, `forget` | Vitest against real Postgres; each test file gets a fresh database                                  | Every PR               |
 | 3. API                  | Every REST route: auth, scopes, validation errors, response shapes                                                                                                           | The Hono app called in-process against a real database                                              | Every PR               |
-| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an event and cite it, review a conflict, search, get context               | The MCP client, directly and through the stdio bridge, and REST, against the app and real Postgres  | Every PR (from step 2) |
+| 4. Agent scenarios      | End-to-end flows as an agent sees them: apply a template, create a person, update by `match`, log an event and cite it, review a conflict, search, get context               | The MCP client, directly and through the stdio bridge, and REST, against the app and real Postgres  | Every PR               |
 | 5. Live agent           | Whether a real agent understands the tools and follows the workflow in 4.1: names, descriptions, error messages, what it chooses to write from a sample conversation         | A separate Claude Code or Codex session connected to Retainer's MCP endpoint, given realistic tasks | By hand, per milestone |
 
 Browser tests use Playwright against the built app and real Postgres, with a

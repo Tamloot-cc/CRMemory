@@ -7,12 +7,6 @@ import {
   type SchemaOwner,
 } from '@retainer/shared';
 import {
-  PROTECTED_FIELD_FLAGS,
-  PROTECTED_FIELD_IDS,
-  PROTECTED_OBJECT_IDS,
-  PROTECTED_OPTIONS,
-} from '../schema/protection.js';
-import {
   type FieldState,
   type ObjectState,
   relationTargetIds,
@@ -20,6 +14,12 @@ import {
   type SchemaState,
 } from '../schema/types.js';
 import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
+import {
+  PROTECTED_FIELD_FLAGS,
+  PROTECTED_FIELD_IDS,
+  PROTECTED_OBJECT_IDS,
+  PROTECTED_OPTIONS,
+} from './protection.js';
 
 /**
  * The universal ID a new event type named `note` takes (C5), so notes are

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import type { ViewSearch } from '../state.js';
 
 /** Remembers the view last shown for an object; `''` for all records. */
-export const lastViewKey = (workspace: string, object: string) =>
+const lastViewKey = (workspace: string, object: string) =>
   `retainer:view:v1:${workspace}:${object}`;
 
 export function rememberView(workspace: string, object: string, id: string | undefined) {

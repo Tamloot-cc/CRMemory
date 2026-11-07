@@ -45,7 +45,7 @@ import { CORE_ROLE_TEXT, FieldTypeLabel, OwnerBadge } from './schema-labels.js';
 import { findObject, matchesField, typeDetail } from './schema-model.js';
 
 /** The built-in columns every event record has beside its fields. */
-export const EVENT_COLUMN_INFO: Record<EventColumn, { label: string; description: string }> = {
+const EVENT_COLUMN_INFO: Record<EventColumn, { label: string; description: string }> = {
   occurredAt: { label: 'Occurred at', description: 'When it happened' },
   channel: {
     label: 'Source',
@@ -57,7 +57,7 @@ export const EVENT_COLUMN_INFO: Record<EventColumn, { label: string; description
   },
 };
 
-export const BUILT_IN_ICONS: Record<BuiltInView['name'], LucideIcon> = {
+const BUILT_IN_ICONS: Record<BuiltInView['name'], LucideIcon> = {
   fact: Lightbulb,
   comment: MessageSquare,
 };

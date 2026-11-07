@@ -792,7 +792,7 @@ The v1 read contracts are:
   full-text matching over the existing record search vector, under the same
   workspace/object restrictions. This supports relation pickers and the
   current-object command palette even when the label field is not filterable.
-  Global search, ranking and context packs remain in architecture step 4.
+  Global search, ranking and context packs are separate routes.
 - **Relation labels.** Record reads and queries support
   `include=relationReferences` (an `include` array on query requests), returning
   one separate response-level map keyed by target ID
@@ -816,16 +816,15 @@ Merge suggestions in `GET /v1/review` carry `records`: the object and label
 of each live record in the pair, resolved through `references()`, so the
 inbox needs no read per record.
 
-The one shipped route the app does not use is `GET /v1/records/:id/context`
-(step 4), which serves agents.
+The one shipped route the app does not use is `GET /v1/records/:id/context`,
+which serves agents.
 
 ### 9.2 SDK (MIT)
 
 `@retainer/sdk` exposes a typed method per REST route, with public response
 and schema-operation types in `@retainer/shared`. It supports abort signals
 and typed API errors. The app uses it with `credentials: 'include'` and the
-CSRF header instead of a bearer key. This part of architecture step 6 moved
-earlier; step 6 completed it with the step 4 and 5 routes.
+CSRF header instead of a bearer key.
 
 ### 9.3 Shared value validation (MIT)
 
@@ -874,7 +873,7 @@ End-to-end tests run in CI after layers 1–4.
    page, schema page.
 4. **Editing.** Every field type's `Input`, inline editing, retracting facts
    and events.
-5. **After server steps 4 and 5.** Search, record creation and deletion,
+5. **After search and merges on the server.** Search, record creation and deletion,
    merges and suggested merges, `forget`.
 
 Each step lands with its tests (10).

@@ -1,5 +1,31 @@
+import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures.js';
-import { moveByKeyboard, signIn, signOut, usd } from './helpers.js';
+import { signIn, signOut } from './helpers.js';
+
+const usd = (dollars: number) => ({ currency: 'USD', amountMicros: dollars * 1_000_000 });
+
+/** What a drag announces to screen readers. */
+const announced = (page: Page, text: string) => page.getByRole('status').filter({ hasText: text });
+
+/** Space picks an item up, an arrow carries it to the next target that way, Space drops it. */
+async function moveByKeyboard(
+  page: Page,
+  item: Locator,
+  arrow: 'ArrowLeft' | 'ArrowRight',
+  from: string,
+  to: string,
+) {
+  const name = await item.getAttribute('aria-label');
+  await item.focus();
+  await page.keyboard.press('Space');
+  await expect(announced(page, `${name} is over ${from}.`)).toHaveCount(1);
+  // The drag listens for keys from the task after the pick-up; a person
+  // can't press that fast, but a test can.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve)));
+  await page.keyboard.press(arrow);
+  await expect(announced(page, `${name} is over ${to}.`)).toHaveCount(1);
+  await page.keyboard.press('Space');
+}
 
 test('searches the workspace with the command palette and keeps list filters in the URL', async ({
   page,

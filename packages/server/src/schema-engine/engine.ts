@@ -4,7 +4,6 @@ import type { ApiKeyScope, SchemaChangeStatus } from '../db/schema.js';
 import { jsonValue, lockSchemaExclusive, type Tx } from '../db/tx.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { loadSchemaState } from '../schema/load.js';
-import { applyProtection } from '../schema/protection.js';
 import {
   type DiffOp,
   type SchemaIssue,
@@ -15,6 +14,7 @@ import { applyOperations } from './apply.js';
 import { diffSchemas, isDestructive } from './diff.js';
 import type { SchemaOperation } from './operations.js';
 import { checkExistingRecords, persistSchema, SchemaCheckError } from './persist.js';
+import { applyProtection } from './protection.js';
 import { issueKey, validateSchema } from './validate.js';
 
 /** The server's own actor, for seeding and upgrades. */

@@ -4,13 +4,13 @@ import type { AppliedTemplate } from '../db/schema.js';
 import { inWorkspace, lockSchemaExclusive } from '../db/tx.js';
 import { log } from '../log.js';
 import { loadSchemaState } from '../schema/load.js';
+import { runSchemaChange, SYSTEM_ACTOR } from '../schema-engine/engine.js';
+import type { SchemaOperation } from '../schema-engine/operations.js';
 import {
   PROTECTED_FIELD_IDS,
   PROTECTED_OBJECT_IDS,
   PROTECTED_OPTIONS,
-} from '../schema/protection.js';
-import { runSchemaChange, SYSTEM_ACTOR } from '../schema-engine/engine.js';
-import type { SchemaOperation } from '../schema-engine/operations.js';
+} from '../schema-engine/protection.js';
 import { planUpgrade, type UpgradeConflict } from '../schema-engine/upgrade.js';
 import { SEED_OPERATIONS } from '../templates/base.js';
 import { getTemplate, type Template } from '../templates/index.js';
