@@ -842,7 +842,9 @@ deployed install after each Better Auth upgrade that touches OAuth.
    runs once more and signs in as the person the other made. A Google redirect
    cannot run again, because its code works once, so its tab returns to the sign-in
    page, which says the account was just made in another tab and to sign in again.
-   An unverified address has its own `email_not_verified` code.
+   An unverified address has its own `email_not_verified` code. Better Auth's
+   adapter runs its multi-step writes in a transaction, so a person and their
+   Google link commit together and no sign-in sees one without the other.
 3. **Agent write formats.** In the test Claude called `upsert_record` twice, then
    warned that names are `{first, last}` and emails `{primary, additional[]}`. The
    failed call's error was not logged, but the tool descriptions may need to state

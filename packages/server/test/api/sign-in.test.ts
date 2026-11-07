@@ -81,8 +81,17 @@ describe('signing in with Google', () => {
 
   it('signs every simultaneous first sign-in in as the one person they make', async () => {
     const profile = { sub: 'google-race', email: 'race@example.test' };
-    // Three at once: without the retry, all but one are refused (9.2).
-    const results = await Promise.all([1, 2, 3].map(() => app.signIn(profile)));
+    // Six at once. Without the retry all but one are refused (9.2). Linking
+    // the Google account is slowed down here, so any sign-in that could see
+    // the new person before their link would be refused as unlinked.
+    await db.owner.unsafe(`
+      create function slow_link() returns trigger language plpgsql
+        as $$ begin perform pg_sleep(0.3); return new; end $$;
+      create trigger slow_link before insert on auth_accounts
+        for each row execute function slow_link();`);
+    const results = await Promise.all([1, 2, 3, 4, 5, 6].map(() => app.signIn(profile))).finally(
+      () => db.owner.unsafe('drop trigger slow_link on auth_accounts; drop function slow_link();'),
+    );
     expect(new Set(results.map((r) => r.userId)).size).toBe(1);
     expect(await db.owner`select 1 from users where email = 'race@example.test'`).toHaveLength(1);
     expect(

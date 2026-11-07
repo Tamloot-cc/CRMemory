@@ -194,7 +194,10 @@ function betterAuthFor(options: AuthOptions) {
     basePath: AUTH_BASE_PATH,
     secret: config.secret,
     trustedOrigins: [origin.origin],
-    database: drizzleAdapter(drizzle(sql), { provider: 'pg', schema: MODELS }),
+    // Better Auth's multi-step writes, such as a new person and their Google
+    // link, commit together: a sign-in in between would otherwise find the
+    // person without the link and be refused.
+    database: drizzleAdapter(drizzle(sql), { provider: 'pg', schema: MODELS, transaction: true }),
     user: {
       modelName: 'users',
       additionalFields: {
