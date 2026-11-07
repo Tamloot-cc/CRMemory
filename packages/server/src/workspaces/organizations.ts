@@ -70,6 +70,29 @@ export async function lockOrganization(tx: Tx, organizationId: string): Promise<
 }
 
 /**
+ * Locks the organization a workspace is in and returns its ID, or null when
+ * there is no such workspace. Each read is a new statement, so a move that
+ * commits while this waits is seen, and the lock follows the workspace to
+ * where it went. Every move takes this lock on the organization it leaves,
+ * so once the read and the lock agree, the workspace stays put until the
+ * transaction ends.
+ */
+export async function lockWorkspaceOrganization(
+  tx: Tx,
+  workspaceId: string,
+): Promise<string | null> {
+  let locked: string | null = null;
+  for (;;) {
+    const [row] = await tx<{ organization_id: string }[]>`
+      select organization_id from workspaces where id = ${workspaceId}`;
+    if (!row) return null;
+    if (row.organization_id === locked) return locked;
+    await lockOrganization(tx, row.organization_id);
+    locked = row.organization_id;
+  }
+}
+
+/**
  * Refuses a change that would leave an organization that has an owner with
  * none. `Default` may start without one (4.2); once it has one, it keeps one.
  */
@@ -156,8 +179,9 @@ export async function moveWorkspace(
   return sql.begin(async (tx) => {
     const workspace = await getWorkspace(tx, input.workspace);
     const organization = await getOrganization(tx, input.organization);
-    if (organization.id === workspace.organizationId) return { organization, removedMembers: 0 };
-    await lockOrganization(tx, workspace.organizationId);
+    const from = await lockWorkspaceOrganization(tx, workspace.id);
+    if (!from) throw new AppError(404, 'not_found', `workspace "${input.workspace}" not found`);
+    if (organization.id === from) return { organization, removedMembers: 0 };
     const removed = await tx`
       delete from workspace_members where workspace_id = ${workspace.id} returning 1`;
     await tx`

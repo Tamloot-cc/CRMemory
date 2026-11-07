@@ -5,6 +5,7 @@ import { getWorkspace } from '../../src/db/workspaces.js';
 import { runCli } from '../../src/operator/commands.js';
 import {
   createOrganization,
+  lockWorkspaceOrganization,
   moveWorkspace,
   setOrganizationMember,
   setWorkspaceMember,
@@ -191,6 +192,48 @@ describe('organizations and members', () => {
     const owners = await db.owner`
       select 1 from organization_members where organization_id = ${org.id} and role = 'owner'`;
     expect(owners).toHaveLength(1);
+  });
+
+  it('locks the organization a workspace moved to while the lock was awaited', async () => {
+    const from = await createOrganization(db.owner, { name: 'Left' });
+    const to = await createOrganization(db.owner, { name: 'Joined' });
+    const workspace = await createWorkspace(db.owner, { name: 'Wandering', organization: from.id });
+    // True when another transaction holds the organization's lock.
+    const isLocked = async (organizationId: string) => {
+      try {
+        await db.owner.begin(
+          (tx) => tx`select 1 from organizations where id = ${organizationId} for update nowait`,
+        );
+        return false;
+      } catch (error) {
+        if ((error as { code?: string }).code === '55P03') return true;
+        throw error;
+      }
+    };
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let waiter: Promise<string | null> | undefined;
+    // A move held open, the way moveWorkspace does it, while the lock is asked for.
+    await db.owner.begin(async (move) => {
+      await move`select 1 from organizations where id = ${from.id} for update`;
+      await move`update workspaces set organization_id = ${to.id} where id = ${workspace.id}`;
+      waiter = db.owner.begin(async (tx) => {
+        const locked = await lockWorkspaceOrganization(tx, workspace.id);
+        await held;
+        return locked;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    let followed = false;
+    for (let i = 0; i < 40 && !followed; i++) {
+      followed = await isLocked(to.id);
+      if (!followed) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    release();
+    expect(await waiter).toBe(to.id);
+    expect(followed).toBe(true);
   });
 
   it('removes member roles when a workspace moves to another organization', async () => {

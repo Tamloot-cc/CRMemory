@@ -23,6 +23,7 @@ import {
   assertKeepsAnOwner,
   createOrganization,
   lockOrganization,
+  lockWorkspaceOrganization,
 } from '../workspaces/organizations.js';
 import { slugify } from '../workspaces/workspaces.js';
 
@@ -101,10 +102,7 @@ async function asWorkspaceAdmin<T>(
   write: (tx: Tx, workspace: WorkspaceAccess['workspace']) => Promise<T>,
 ): Promise<T> {
   return (await sql.begin(async (tx) => {
-    await tx`
-      select 1 from organizations
-      where id = (select organization_id from workspaces where id = ${workspaceId})
-      for update`;
+    await lockWorkspaceOrganization(tx, workspaceId);
     const { workspace } = await requireWorkspaceAdmin(tx, person, workspaceId);
     return write(tx, workspace);
   })) as T;
