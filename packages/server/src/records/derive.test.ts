@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FieldState } from '../schema-engine/types.js';
+import type { FieldState } from '../schema/types.js';
 import {
   canonicalUniqueValue,
   identifiersFor,

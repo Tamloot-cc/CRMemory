@@ -127,7 +127,7 @@ Implementation evidence:
 [value normalization](../../packages/shared/src/values.ts),
 [base objects](../../packages/server/src/templates/base.ts),
 [blank template](../../packages/server/src/templates/blank.ts), and
-[fixed built-ins](../../packages/server/src/schema-engine/built-ins.ts).
+[fixed built-ins](../../packages/server/src/schema/built-ins.ts).
 
 ## Coverage across the ten researched CRMs
 

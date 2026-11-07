@@ -12,8 +12,8 @@ import {
   type WriteContext,
   writeFields,
 } from '../records/write.js';
-import type { CompiledObject } from '../schema-engine/compiled.js';
-import { type FieldState, relationTargetIds } from '../schema-engine/types.js';
+import type { CompiledObject } from '../schema/compiled.js';
+import { type FieldState, relationTargetIds } from '../schema/types.js';
 import { requireEventType } from './events.js';
 
 /**

@@ -16,43 +16,10 @@ import { notFound } from '../errors.js';
 import { liveFactSource, presentSource } from '../memory/events.js';
 import { identifiersFor } from '../records/derive.js';
 import { getRecord, type PresentedRecord } from '../records/read.js';
-import { references } from '../records/references.js';
+import { references, relationReferences } from '../records/references.js';
 import { normalizeFieldValue } from '../records/values.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import type { CompiledSchema } from '../schema/compiled.js';
 
-/**
- * Labels for every record a page names: relation values and, for events,
- * participants, their candidates and `about` records.
- */
-export async function relationReferences(
-  tx: Tx,
-  schema: CompiledSchema,
-  records: PresentedRecord[],
-) {
-  const ids = records.flatMap((r) => {
-    const object = schema.objectsByName.get(r.object);
-    const related = (object?.activeFields.filter((f) => f.type === 'relation') ?? []).flatMap(
-      (f) => {
-        const value = r.fields[f.name];
-        return typeof value === 'string'
-          ? [value]
-          : Array.isArray(value)
-            ? (value as string[])
-            : [];
-      },
-    );
-    const event = r.event;
-    return event
-      ? [
-          ...related,
-          ...event.participants.matched.map((p) => p.recordId),
-          ...event.participants.unmatched.flatMap((p) => p.candidates ?? []),
-          ...event.about,
-        ]
-      : related;
-  });
-  return references(tx, schema, [...new Set(ids)]);
-}
 type AssertionRow = {
   id: string;
   record_id: string;

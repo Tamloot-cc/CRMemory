@@ -5,8 +5,8 @@ import type { Tx } from '../db/tx.js';
 import { liveFactSource } from '../memory/events.js';
 import { factSources } from '../memory/facts.js';
 import { references } from '../records/references.js';
-import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
-import { assertions } from './reads.js';
+import { type CompiledSchema, eventText } from '../schema/compiled.js';
+import { assertions } from './records.js';
 
 export async function reviewPage(
   tx: Tx,

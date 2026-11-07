@@ -10,7 +10,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @retainer/shared build && pnpm --filter @retainer/sdk build && pnpm -r typecheck",
     "test": "pnpm -r test",
-    "lint": "biome check .",
+    "lint": "biome check . && node scripts/check-layers.mjs",
     "format": "biome format --write .",
     "dev": "pnpm --filter @retainer/server dev",
     "db:generate": "pnpm --filter @retainer/server db:generate",

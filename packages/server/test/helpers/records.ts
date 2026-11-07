@@ -2,7 +2,7 @@ import { expect } from 'vitest';
 import type { Sql } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
 import { computeDataFromAssertions } from '../../src/records/write.js';
-import { getSchema } from '../../src/schema-engine/compiled.js';
+import { getSchema } from '../../src/schema/compiled.js';
 
 /** records.data must always equal what the assertions say (rule 2.4). */
 export async function expectDataMatchesAssertions(

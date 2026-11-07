@@ -3,10 +3,10 @@ import type { Tx } from '../db/tx.js';
 import { identifiersFor } from '../records/derive.js';
 import { rewriteSearchText } from '../records/rebuild-search.js';
 import { deleteEventsOfType } from '../records/service.js';
+import { compileSchema } from '../schema/compiled.js';
+import { loadSchemaState } from '../schema/load.js';
+import type { DiffOp, FieldState, ObjectState, SchemaIssue, SchemaState } from '../schema/types.js';
 import { repairViews } from '../views/service.js';
-import { compileSchema } from './compiled.js';
-import { loadSchemaState } from './load.js';
-import type { DiffOp, FieldState, ObjectState, SchemaIssue, SchemaState } from './types.js';
 
 /** A change that validates but conflicts with existing records. */
 export class SchemaCheckError extends Error {

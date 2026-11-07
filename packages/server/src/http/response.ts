@@ -1,8 +1,8 @@
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import type { Caller } from '../caller.js';
 import { AppError } from '../errors.js';
-import type { Caller } from '../records/service.js';
-import { SchemaValidationError } from '../schema-engine/types.js';
+import { SchemaValidationError } from '../schema/types.js';
 
 /** Hono environment: every authenticated request carries its caller. */
 export type AppEnv = {

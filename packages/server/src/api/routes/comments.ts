@@ -8,8 +8,8 @@ import {
   listComments,
 } from '../../comments/service.js';
 import type { Sql } from '../../db/client.js';
-import type { AppEnv } from '../http.js';
-import { idParam, limitParam, readBody } from '../request.js';
+import { idParam, limitParam, readBody } from '../../http/request.js';
+import type { AppEnv } from '../../http/response.js';
 
 /** Comments (6.1), on the same services as `get_record` and `list_comments`. */
 export function commentRoutes(app: Hono<AppEnv>, sql: Sql) {

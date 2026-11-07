@@ -2,8 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { type Actor, actorSchema } from '@retainer/shared';
 import type { Sql } from '../db/client.js';
 import { API_KEY_SCOPES, type ApiKeyScope } from '../db/schema.js';
+import { getWorkspace } from '../db/workspaces.js';
 import { AppError, notFound } from '../errors.js';
-import { getWorkspace } from '../workspaces/workspaces.js';
 
 const KEY_PREFIX = 'rtn_';
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';

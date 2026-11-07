@@ -61,7 +61,7 @@ by API name, and the engine protects each of them. Today these are the base
 objects `person`, `company` and `task`, the fields `task.status` and
 `task.dueDate` (open tasks in context packs, 6.2), and the hidden
 internal-note event type (1.3). The list lives in
-`schema-engine/protection.ts`; any new server dependency on a schema
+`schema/protection.ts`; any new server dependency on a schema
 element protects it in the same change. The core `title` and `summary`
 fields of every event type are protected the same way. The base event type
 itself is not: an unused one can be deleted like any object.
@@ -1728,6 +1728,28 @@ unlimited, as on a self-hosted install), and a statement timeout on the runtime 
 | `docker/`         | AGPL-3.0 | Dockerfile and Compose file                             |
 | `deploy/aws/`     | AGPL-3.0 | Terraform and scripts for Lambda, API Gateway, RDS      |
 | `docs/`           | AGPL-3.0 | Guides, plus design records in `specs/` and `research/` |
+
+### Server layers
+
+Each server module in `packages/server/src` belongs to a layer and imports only
+from its own layer and the ones below it:
+
+| Layer      | Modules                                                                        | Holds                                     |
+| ---------- | ------------------------------------------------------------------------------ | ----------------------------------------- |
+| Entry      | `index`, `cli`                                                                 | Starting the server and the CLI           |
+| Interfaces | `api`, `mcp`, `worker`, `lambda`, `operator`                                   | The ways in: REST, MCP, jobs, operators   |
+| Admin      | `schema-engine`, `templates`, `workspaces`                                     | Changing a schema and creating workspaces |
+| Features   | `views`, `comments`, `retrieval`, `reads`                                      | Built on records and memory               |
+| Core       | `records`, `memory`, `privacy`, `idempotency`                                  | The write rules                           |
+| Foundation | `db`, `schema`, `auth`, `http`, `caller`, `config`, `errors`, `log`, `version` | The database, reading a schema, requests  |
+
+The schema engine sits above the records because a schema change rewrites
+records and views, while records only need to read a schema: `schema` holds the
+read side and `schema-engine` the write side. Events are records, so the core
+modules may import each other. No other modules may form a cycle, and no files
+may. `scripts/check-layers.mjs` enforces this as part of `pnpm lint`, and fails
+when a new module has no layer. It also refuses MIT packages importing server
+code.
 
 ## 9. Stack
 

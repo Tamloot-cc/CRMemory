@@ -5,7 +5,7 @@ import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
 import { isSuppressed, suppressedOf } from '../privacy/suppression.js';
 import { lockTargets, MAX_MERGE_HOPS } from '../records/write.js';
-import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema/compiled.js';
 import { type Handle, parseHandle } from './handles.js';
 
 /**

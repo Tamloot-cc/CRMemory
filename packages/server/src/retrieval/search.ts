@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { liveFactSource } from '../memory/events.js';
 import { exactQuery, prefixQuery } from '../records/search-sql.js';
-import { type CompiledSchema, eventText } from '../schema-engine/compiled.js';
+import { type CompiledSchema, eventText } from '../schema/compiled.js';
 
 /**
  * Keyword search across records, events and facts (5.1). Postgres

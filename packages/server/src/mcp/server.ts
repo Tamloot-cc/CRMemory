@@ -1,11 +1,12 @@
 import { type CallToolResult, McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { errorBody, toAppError } from '../api/http.js';
 import { missingScope } from '../auth/middleware.js';
+import type { Caller } from '../caller.js';
 import { listComments, readRecordWithComments } from '../comments/service.js';
 import type { Sql } from '../db/client.js';
 import type { ApiKeyScope } from '../db/schema.js';
 import { AppError } from '../errors.js';
+import { errorBody, toAppError } from '../http/response.js';
 import { log } from '../log.js';
 import { MAX_PARTICIPANTS, participantInputSchema } from '../memory/event-links.js';
 import { logEventInputSchema } from '../memory/events.js';
@@ -14,7 +15,6 @@ import { moveEventsInputSchema } from '../memory/move.js';
 import { logEventFor, moveEventsFor, remember } from '../memory/service.js';
 import { queryInputSchema } from '../records/query.js';
 import {
-  type Caller,
   createRecord,
   findRecords,
   upsertInputSchema,

@@ -1,9 +1,10 @@
 import { parseArgs } from 'node:util';
 import { createApiKey, listApiKeys, parseActor, parseScopes, revokeApiKey } from '../auth/keys.js';
 import type { Sql } from '../db/client.js';
+import { listWorkspaces } from '../db/workspaces.js';
 import { AppError } from '../errors.js';
 import { TEMPLATE_NAMES } from '../templates/index.js';
-import { createWorkspace, listWorkspaces } from '../workspaces/workspaces.js';
+import { createWorkspace } from '../workspaces/workspaces.js';
 
 export const USAGE = `Usage: retainer <command>
 

@@ -10,8 +10,8 @@ import type { Fragment } from 'postgres';
 import { z } from 'zod';
 import type { Tx } from '../db/tx.js';
 import { AppError } from '../errors.js';
-import type { CompiledObject, CompiledSchema } from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+import type { CompiledObject, CompiledSchema } from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 import { emptyValue, liveLinks, matchingRecords, queryInputSchema, typed } from './query.js';
 
 export const aggregateInputSchema = queryInputSchema.pick({ search: true, filter: true }).extend({

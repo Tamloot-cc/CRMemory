@@ -1,5 +1,6 @@
 import { type Actor, INTERNAL_NOTE_TYPE_ID } from '@retainer/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { Caller } from '../../src/caller.js';
 import { RUNTIME_ROLE, type Sql } from '../../src/db/client.js';
 import { inWorkspace } from '../../src/db/tx.js';
 import type { AppError } from '../../src/errors.js';
@@ -13,7 +14,6 @@ import {
   remember,
 } from '../../src/memory/service.js';
 import {
-  type Caller,
   createRecord,
   deleteRecord,
   findRecords,

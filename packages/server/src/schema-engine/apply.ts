@@ -6,20 +6,20 @@ import {
   INTERNAL_NOTE_TYPE_ID,
   type SchemaOwner,
 } from '@retainer/shared';
-import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
 import {
   PROTECTED_FIELD_FLAGS,
   PROTECTED_FIELD_IDS,
   PROTECTED_OBJECT_IDS,
   PROTECTED_OPTIONS,
-} from './protection.js';
+} from '../schema/protection.js';
 import {
   type FieldState,
   type ObjectState,
   relationTargetIds,
   type SchemaIssue,
   type SchemaState,
-} from './types.js';
+} from '../schema/types.js';
+import type { FieldDefinitionInput, SchemaOperation } from './operations.js';
 
 /**
  * The universal ID a new event type named `note` takes (C5), so notes are

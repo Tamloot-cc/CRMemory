@@ -1,5 +1,4 @@
 import type {
-  Actor,
   AggregateResult,
   BulkDeleteImpact,
   DeleteImpact,
@@ -12,8 +11,9 @@ import type {
 } from '@retainer/shared';
 import { isoDateTimeSchema } from '@retainer/shared';
 import { z } from 'zod';
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
-import type { ApiKeyScope, WorkspaceSettings } from '../db/schema.js';
+import type { WorkspaceSettings } from '../db/schema.js';
 import { inWorkspace, lockForWrite, type Tx, type WriteLocks } from '../db/tx.js';
 import { AppError, notFound } from '../errors.js';
 import { claimIdempotencyKey, requestHash, storeIdempotentResult } from '../idempotency.js';
@@ -24,8 +24,8 @@ import {
   type CompiledSchema,
   getSchema,
   objectNamed,
-} from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+} from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 import { type AggregateInput, aggregateRecords } from './aggregate.js';
 import { identifiersFor, lookupValue } from './derive.js';
 import { dismissMergeSuggestion, type MergeInput, MergeRaceError, mergeRecords } from './merge.js';
@@ -50,12 +50,6 @@ import {
 } from './write.js';
 
 /** Who is calling, from their API key. */
-export type Caller = {
-  workspaceId: string;
-  actor: Actor;
-  scopes: readonly ApiKeyScope[];
-};
-
 export type WriteResponse = {
   id: string;
   created: boolean;

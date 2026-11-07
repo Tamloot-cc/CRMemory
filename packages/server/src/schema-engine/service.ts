@@ -1,14 +1,14 @@
 import type { SchemaDescription } from '@retainer/shared';
 import { z } from 'zod';
+import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import { inWorkspace } from '../db/tx.js';
-import type { Caller } from '../records/service.js';
-import { readWorkspace } from '../workspaces/workspaces.js';
-import { BUILT_INS } from './built-ins.js';
-import { getSchema } from './compiled.js';
+import { readWorkspace } from '../db/workspaces.js';
+import { BUILT_INS } from '../schema/built-ins.js';
+import { getSchema } from '../schema/compiled.js';
+import { presentSchema } from '../schema/present.js';
 import { runSchemaChange, type SchemaChangeResult } from './engine.js';
 import { schemaOperationSchema, stripUniversalIds } from './operations.js';
-import { presentSchema } from './present.js';
 
 export type { SchemaDescription } from '@retainer/shared';
 

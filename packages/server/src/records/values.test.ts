@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AppError } from '../errors.js';
-import type { CompiledObject } from '../schema-engine/compiled.js';
-import type { FieldState } from '../schema-engine/types.js';
+import type { CompiledObject } from '../schema/compiled.js';
+import type { FieldState } from '../schema/types.js';
 import { normalizeFieldValue, prepareValues } from './values.js';
 
 const field = (overrides: Partial<FieldState>): FieldState => ({

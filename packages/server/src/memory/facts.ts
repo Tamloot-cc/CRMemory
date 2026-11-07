@@ -12,7 +12,7 @@ import {
   type WriteContext,
   writeFields,
 } from '../records/write.js';
-import type { CompiledSchema } from '../schema-engine/compiled.js';
+import type { CompiledSchema } from '../schema/compiled.js';
 import { type CitedSource, liveFactSource, lockSource, NOTE_CHANNEL } from './events.js';
 
 /**

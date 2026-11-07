@@ -5,6 +5,8 @@ import { after, page } from '../../db/pagination.js';
 import { SCHEMA_CHANGE_STATUSES } from '../../db/schema.js';
 import { inWorkspace } from '../../db/tx.js';
 import { AppError } from '../../errors.js';
+import { idParam, limitParam, readBody } from '../../http/request.js';
+import type { AppEnv } from '../../http/response.js';
 import {
   decideSchemaChange,
   getSchemaChange,
@@ -15,8 +17,6 @@ import {
   requestSchemaChange,
   schemaChangeRequestSchema,
 } from '../../schema-engine/service.js';
-import type { AppEnv } from '../http.js';
-import { idParam, limitParam, readBody } from '../request.js';
 
 /** 200 applied or unchanged, 202 waiting for approval, 409 conflicting records. */
 function statusFor(result: SchemaChangeResult): 200 | 202 | 409 {

@@ -1,8 +1,8 @@
 import type { Hono } from 'hono';
 import { requireScope } from '../../auth/middleware.js';
 import type { Sql } from '../../db/client.js';
+import type { AppEnv } from '../../http/response.js';
 import { applyTemplateFor, templatesFor } from '../../templates/service.js';
-import type { AppEnv } from '../http.js';
 
 export function templateRoutes(app: Hono<AppEnv>, sql: Sql) {
   app.get('/templates', requireScope('read'), async (c) =>

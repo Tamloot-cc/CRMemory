@@ -7,7 +7,7 @@ import type {
 } from '@retainer/shared';
 import { type CountryCode, parsePhoneNumberFromString } from 'libphonenumber-js';
 import type { IdentifierKind } from '../db/schema.js';
-import type { FieldState } from '../schema-engine/types.js';
+import type { FieldState } from '../schema/types.js';
 
 /**
  * Values derived from a record's field values in the same transaction that
