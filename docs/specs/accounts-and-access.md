@@ -52,8 +52,9 @@ no language model.
 
 **What is open source.** If one team running Retainer on its own server would
 need something, it is open. If only someone selling Retainer as a service needs
-it, it is not. Everything in this spec is open. Publishing cannot be undone, so
-when unsure, decide first.
+it, it is not. Every feature in this spec is open. Plans for running the hosted
+service, such as costs, support and launch steps, are kept privately. Publishing
+cannot be undone, so when unsure, decide first.
 
 ## 3. Decisions
 
@@ -70,7 +71,7 @@ when unsure, decide first.
 | A9  | Only the control function has internet, through a NAT gateway. The api, consolidate and ops functions stay without it (4.6).     |
 | A10 | MCP OAuth uses Better Auth's `mcp()` and `cimd()` plugins. Each request rechecks the person's role and consent (4.7).            |
 | A11 | No third-party permission service for now, managed or self-hosted (3.3).                                                         |
-| A12 | Whole workspaces are the finest thing to hide at launch, because first customers are small teams (3.2).                          |
+| A12 | Whole workspaces are the finest thing to hide at launch (3.2).                                                                   |
 | A13 | Passkeys ship in the first version. Multi-factor authentication does not (4.11).                                                 |
 | A14 | Accounts live in the open repo (AGPL), so self-hosters get login. Billing stays private (4.10).                                  |
 | A15 | Signup is open on every install in accounts mode, including self-hosted ones (4.8).                                              |
@@ -146,25 +147,14 @@ first.
 ### 3.4 Why Better Auth rather than WorkOS
 
 Better Auth is an MIT library that runs in our process and keeps its data in our
-Postgres. First customers are small teams, self-hosters keep all their account data
-themselves, and it includes the OAuth server MCP needs. WorkOS would handle security fixes,
-enforced MFA and enterprise SSO for us, and is the better fit if companies start
-requiring those.
+Postgres. Self-hosters keep all their account data themselves, and it includes the
+OAuth server MCP needs. WorkOS would handle security fixes, enforced MFA and
+enterprise SSO, but every install would depend on an outside service.
 
 The cost we accept is upkeep: its project lists 49 security advisories, 4 of them
 critical, including several in plugins we use (4.12). The choice can be reversed:
 with no passwords there are no hashes to migrate, and everything past the
 `Caller` stays the same.
-
-### 3.5 Why stay on Lambda rather than Lightsail
-
-A single Lightsail server would remove the separate functions and the NAT gateway,
-and also the 29-second limit and cold starts. It costs about the same, though,
-because the $15 database has no encryption. It also adds OS patching, a reverse
-proxy and a single point of failure, and it puts Better Auth, internet access and
-all customer data in one process. Its docs do not confirm Postgres 17 or the
-extensions Retainer needs. It suits one team running Retainer for itself. If the
-hosted service outgrows Lambda, look at ECS Fargate first.
 
 ## 4. System design
 
@@ -372,7 +362,7 @@ the organization row, so two owners removing each other cannot leave none.
 
 **Deleting.** Deleting a workspace sets `deletion_scheduled_at`. Every lookup
 then refuses it, the consolidator skips it, and after 7 days a scheduled control
-run hard-deletes it, cascading as today. Support can undo it within those days.
+run hard-deletes it, cascading as today. An operator can undo it within those days.
 A large delete can outlast the 30 seconds `deploy.sh` waits for stopped functions,
 so this run holds the deploy lock (`withPassLock`) as a consolidator pass does, and
 the function's timeout allows for it, as consolidate's 300 seconds does.
@@ -654,10 +644,6 @@ security code, so:
 - Run a security review of the whole diff before merging.
 - Try passkeys on real devices by hand.
 
-**Not pull requests.** A staging deployment (a second `name`), a larger instance with
-`db_multi_az` on, a practised restore and the legal items in section 9 come before the
-private beta. Billing follows when people want to pay.
-
 ## 7. What can come later
 
 ### 7.1 Groups: small
@@ -722,8 +708,8 @@ Every test except the unit tests uses real Postgres with a fresh cloned database
 per file, or one per test in the browser. No test needs the internet, so they use a local fake of Google's OAuth endpoints, or create sessions
 directly through Better Auth. Choose between those when building.
 
-Real Google sign-in and Claude's web app cannot run in CI. Repeat both by hand on
-staging before launch and after each Better Auth upgrade that touches OAuth.
+Real Google sign-in and Claude's web app cannot run in CI. Repeat both by hand on a
+deployed install after each Better Auth upgrade that touches OAuth.
 
 ## 9. Open questions
 
@@ -747,12 +733,7 @@ staging before launch and after each Better Auth upgrade that touches OAuth.
 6. **Viewers and private views.** Creating a view needs `write`, so a viewer cannot
    save a private view. That is acceptable at first.
 7. **Zero-downtime deploys.** Each deploy gives up to a minute of `503`s because one
-   version runs at a time. Acceptable for a beta, not once customers rely on it.
-8. **Legal.** Retainer becomes a data processor for customers' contacts: terms, a
-   DPA and a sub-processor list are needed. Erased data stays in backups for up to
-   14 days, and that must be stated. Private code that imports the AGPL server
-   needs the rights to any outside contributions checked, so add a contributor
-   agreement before the first outside pull request.
+   version runs at a time.
 
 ## 10. Acceptance
 
@@ -763,7 +744,7 @@ staging before launch and after each Better Auth upgrade that touches OAuth.
 - Removing that colleague ends their web access and OAuth tokens at the next
   request, and agent keys keep working.
 - No agent credential can create a key, a member or a workspace.
-- Claude's web app connects to `/mcp` over OAuth on the real deployment.
+- Claude's web app connects to `/mcp` over OAuth on a deployed AWS install.
 - One tenant's traffic spike gets `429`s while others keep working.
 - The api function's database login cannot become the owner.
 - A self-hosted install that sets nothing behaves exactly as before.
