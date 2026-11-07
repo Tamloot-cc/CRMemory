@@ -4,7 +4,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, WorkspaceContext } from '../../api/client.js';
-import { RollUpEventsSwitch } from './schema.js';
+import { RollUpEventsSwitch } from './field-sheet.js';
 
 const employer: FieldView = {
   type: 'relation',
