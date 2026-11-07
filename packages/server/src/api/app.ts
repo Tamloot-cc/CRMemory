@@ -23,6 +23,11 @@ export type AppDeps = {
   sql: Sql;
   webDir?: string;
   publicOrigin?: string;
+  /**
+   * RETAINER_AUTH_SECRET, in accounts mode: people's signed session cookies
+   * reach /v1, and the key-mode sign-in at /auth/session is gone (4.1).
+   */
+  accountsSecret?: string;
 };
 
 export function createApp(deps: AppDeps) {
@@ -44,9 +49,9 @@ export function createApp(deps: AppDeps) {
     }
   });
 
-  sessionRoutes(app, deps.sql, publicOrigin);
+  if (!deps.accountsSecret) sessionRoutes(app, deps.sql, publicOrigin);
   const v1 = new Hono<AppEnv>();
-  v1.use('*', authenticate(deps.sql, publicOrigin));
+  v1.use('*', authenticate(deps.sql, { publicOrigin, accountsSecret: deps.accountsSecret }));
   meRoute(v1, deps.sql);
   webReadRoutes(v1, deps.sql);
   schemaRoutes(v1, deps.sql);

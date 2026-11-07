@@ -23,6 +23,8 @@ export function createApiHandler(
     sql,
     webDir: config.RETAINER_WEB_DIR,
     publicOrigin: config.RETAINER_PUBLIC_ORIGIN,
+    // Checks people's session cookies; never loads Better Auth (4.4).
+    accountsSecret: config.RETAINER_AUTH_SECRET,
   });
   return handle(app);
 }

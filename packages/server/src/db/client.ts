@@ -1,6 +1,6 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { type Config, ownerDatabaseUrl, RUNTIME_ROLE } from '../config.js';
+import { CONTROL_ROLE, type Config, ownerDatabaseUrl, RUNTIME_ROLE } from '../config.js';
 import * as schema from './schema.js';
 
 export { RUNTIME_ROLE };
@@ -45,6 +45,18 @@ export function createDb(databaseUrl: string, options: SqlOptions = {}) {
 export function runtimeConnection(config: Config): { url: string; role?: string } {
   const url = config.RETAINER_RUNTIME_DATABASE_URL;
   return url ? { url } : { url: ownerDatabaseUrl(config), role: RUNTIME_ROLE };
+}
+
+/**
+ * A pool for account work: as the control role itself when
+ * RETAINER_CONTROL_DATABASE_URL is set, otherwise with the migration role's
+ * credentials, switching to the control role at connection startup.
+ */
+export function createControlSql(config: Config, options: Omit<SqlOptions, 'role'> = {}) {
+  const url = config.RETAINER_CONTROL_DATABASE_URL;
+  return url
+    ? createSql(url, options)
+    : createSql(ownerDatabaseUrl(config), { ...options, role: CONTROL_ROLE });
 }
 
 /** A pool for the API or workers (see `runtimeConnection`). */

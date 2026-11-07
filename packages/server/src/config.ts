@@ -23,11 +23,33 @@ export const publicOriginSchema = z
  */
 export const RUNTIME_ROLE = 'retainer_app';
 
+/**
+ * The role account work runs as (drizzle/0027_accounts_security.sql): the
+ * account tables, workspaces and API keys, and seeding by switching to the
+ * runtime role. No BYPASSRLS and no DDL.
+ */
+export const CONTROL_ROLE = 'retainer_control';
+
 const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
 
 /** The decoded password of a database URL. */
 export const passwordOf = (url: string) => decodeURIComponent(new URL(url).password);
 const userOf = (url: string) => decodeURIComponent(new URL(url).username);
+
+/** A database URL that logs in as `role` with a password SCRAM can take as is. */
+const loginUrl = (role: string) =>
+  z.preprocess(
+    emptyToUndefined,
+    z
+      .url()
+      .refine((value) => URL.canParse(value) && userOf(value) === role, {
+        message: `log in as ${role}`,
+      })
+      .refine((value) => URL.canParse(value) && /^[\x21-\x7e]+$/.test(passwordOf(value)), {
+        message: 'include a password of printable ASCII without spaces',
+      })
+      .optional(),
+  );
 
 const configSchema = z
   .object({
@@ -45,19 +67,31 @@ const configSchema = z
      * sets this password on boot or migration, so the database needs no
      * separate setup. Printable ASCII only: SCRAM would otherwise normalize it.
      */
-    RETAINER_RUNTIME_DATABASE_URL: z.preprocess(
+    RETAINER_RUNTIME_DATABASE_URL: loginUrl(RUNTIME_ROLE),
+    /**
+     * A login as the control role, for account work (accounts spec 4.9). Like
+     * the runtime login, the owner sets its password on boot or migration.
+     * Without it, account work connects as the owner and switches role.
+     */
+    RETAINER_CONTROL_DATABASE_URL: loginUrl(CONTROL_ROLE),
+    /**
+     * `control` serves only /account: sign-in and account management. `all`
+     * serves everything, including /account in accounts mode.
+     */
+    RETAINER_ROLE: z.enum(['api', 'worker', 'control', 'all']).default('all'),
+    /**
+     * Turns on accounts mode (accounts spec 4.1): people sign in with Google
+     * or a passkey. Signs session cookies, so changing it signs everyone out.
+     * The API checks cookies with it; the code that signs people in also
+     * needs the Google client below.
+     */
+    RETAINER_AUTH_SECRET: z.preprocess(
       emptyToUndefined,
-      z
-        .url()
-        .refine((value) => URL.canParse(value) && userOf(value) === RUNTIME_ROLE, {
-          message: `log in as ${RUNTIME_ROLE}`,
-        })
-        .refine((value) => URL.canParse(value) && /^[\x21-\x7e]+$/.test(passwordOf(value)), {
-          message: 'include a password of printable ASCII without spaces',
-        })
-        .optional(),
+      z.string().min(32, 'use at least 32 characters').optional(),
     ),
-    RETAINER_ROLE: z.enum(['api', 'worker', 'all']).default('all'),
+    /** The Google OAuth client people sign in with in accounts mode. */
+    RETAINER_GOOGLE_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+    RETAINER_GOOGLE_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
     PORT: z.coerce.number().int().positive().default(8787),
     LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
     /** How often the consolidator runs per workspace (4.2). */
@@ -85,6 +119,14 @@ const configSchema = z
   .refine((config) => config.DATABASE_URL || config.RETAINER_RUNTIME_DATABASE_URL, {
     path: ['DATABASE_URL'],
     message: 'set DATABASE_URL, RETAINER_RUNTIME_DATABASE_URL or both',
+  })
+  .refine((config) => !config.RETAINER_GOOGLE_CLIENT_ID === !config.RETAINER_GOOGLE_CLIENT_SECRET, {
+    path: ['RETAINER_GOOGLE_CLIENT_ID'],
+    message: 'set RETAINER_GOOGLE_CLIENT_ID and RETAINER_GOOGLE_CLIENT_SECRET together',
+  })
+  .refine((config) => !config.RETAINER_GOOGLE_CLIENT_ID || config.RETAINER_AUTH_SECRET, {
+    path: ['RETAINER_AUTH_SECRET'],
+    message: 'a Google client needs RETAINER_AUTH_SECRET too (accounts mode)',
   });
 
 export type Config = z.infer<typeof configSchema>;
@@ -110,4 +152,32 @@ export function ownerDatabaseUrl(config: Config): string {
     throw new Error('DATABASE_URL is required here: migrations and operator commands need it.');
   }
   return config.DATABASE_URL;
+}
+
+/** Accounts mode: people sign in with Google or a passkey (accounts spec 4.1). */
+export function accountsMode(config: Config): boolean {
+  return config.RETAINER_AUTH_SECRET !== undefined;
+}
+
+export type AccountsConfig = {
+  secret: string;
+  google: { clientId: string; clientSecret: string };
+};
+
+/**
+ * What signing people in needs. Code that serves /account calls this at
+ * startup, so a half-configured install refuses to start instead of quietly
+ * running without sign-in.
+ */
+export function accountsConfig(config: Config): AccountsConfig {
+  const secret = config.RETAINER_AUTH_SECRET;
+  const clientId = config.RETAINER_GOOGLE_CLIENT_ID;
+  const clientSecret = config.RETAINER_GOOGLE_CLIENT_SECRET;
+  if (!secret || !clientId || !clientSecret) {
+    throw new Error(
+      'Accounts mode needs RETAINER_AUTH_SECRET, RETAINER_GOOGLE_CLIENT_ID and ' +
+        'RETAINER_GOOGLE_CLIENT_SECRET. Set all three, or none to stay in key mode.',
+    );
+  }
+  return { secret, google: { clientId, clientSecret } };
 }

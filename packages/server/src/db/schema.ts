@@ -93,7 +93,7 @@ const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
  * its generated camelCase and naive timestamps.
  */
 export const users = pgTable('users', {
-  id: uuid('id').primaryKey(),
+  id: id(),
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
   emailVerified: boolean('email_verified').notNull().default(false),
@@ -108,7 +108,7 @@ export const users = pgTable('users', {
 export const sessions = pgTable(
   'sessions',
   {
-    id: uuid('id').primaryKey(),
+    id: id(),
     token: text('token').notNull().unique(),
     userId: uuid('user_id')
       .notNull()
@@ -126,7 +126,7 @@ export const sessions = pgTable(
 export const authAccounts = pgTable(
   'auth_accounts',
   {
-    id: uuid('id').primaryKey(),
+    id: id(),
     /** The provider's stable ID for the person (Google's subject). */
     accountId: text('account_id').notNull(),
     providerId: text('provider_id').notNull(),
@@ -154,7 +154,7 @@ export const authAccounts = pgTable(
 export const authVerifications = pgTable(
   'auth_verifications',
   {
-    id: uuid('id').primaryKey(),
+    id: id(),
     identifier: text('identifier').notNull(),
     value: text('value').notNull(),
     expiresAt: timestamptz('expires_at').notNull(),
@@ -167,7 +167,7 @@ export const authVerifications = pgTable(
 export const passkeys = pgTable(
   'passkeys',
   {
-    id: uuid('id').primaryKey(),
+    id: id(),
     name: text('name'),
     publicKey: text('public_key').notNull(),
     userId: uuid('user_id')
@@ -186,7 +186,7 @@ export const passkeys = pgTable(
 
 /** Sign-in rate limits, shared by every function instance (4.6). */
 export const authRateLimits = pgTable('auth_rate_limits', {
-  id: uuid('id').primaryKey(),
+  id: id(),
   key: text('key').notNull().unique(),
   count: integer('count').notNull(),
   lastRequest: bigint('last_request', { mode: 'number' }).notNull(),

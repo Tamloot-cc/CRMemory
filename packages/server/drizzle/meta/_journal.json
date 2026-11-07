@@ -197,6 +197,20 @@
       "when": 1794057076264,
       "tag": "0027_accounts_security",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1794058484662,
+      "tag": "0028_session_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794058822536,
+      "tag": "0029_auth_ids",
+      "breakpoints": true
     }
   ]
 }

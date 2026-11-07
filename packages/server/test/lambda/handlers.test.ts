@@ -180,13 +180,13 @@ describe('ops function', () => {
       const ops = createOpsHandler(loadConfig({ DATABASE_URL: url, LOG_LEVEL: 'error' }));
       expect(await ops({ command: 'migrate' })).toEqual({
         command: 'migrate',
-        runtimeLogin: false,
+        logins: { runtime: false, control: false },
         rebuiltSearchText: 0,
         workspaceUpgrade: NOTHING_UPGRADED,
       });
       expect(await ops({ command: 'migrate' })).toEqual({
         command: 'migrate',
-        runtimeLogin: false,
+        logins: { runtime: false, control: false },
         rebuiltSearchText: 0,
         workspaceUpgrade: NOTHING_UPGRADED,
       });
@@ -232,7 +232,7 @@ describe('deploy lock: one version at a time', () => {
     await pass`select pg_advisory_unlock_shared(${DEPLOY_LOCK})`;
     await expect(migration).resolves.toEqual({
       command: 'migrate',
-      runtimeLogin: false,
+      logins: { runtime: false, control: false },
       rebuiltSearchText: 0,
       workspaceUpgrade: NOTHING_UPGRADED,
     });

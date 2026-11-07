@@ -24,7 +24,7 @@ export function mcpRoute(app: Hono<AppEnv>, sql: Sql, publicOrigin?: string) {
     { onerror: (error) => log.error(error) },
   );
 
-  app.use('/mcp', authenticate(sql, publicOrigin));
+  app.use('/mcp', authenticate(sql, { publicOrigin }));
   app.all('/mcp', (c) => {
     const caller = c.get('caller');
     const authInfo: AuthInfo = {

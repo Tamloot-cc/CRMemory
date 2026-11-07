@@ -1,53 +1,71 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
-import { type Config, passwordOf } from '../config.js';
+import { CONTROL_ROLE, type Config, passwordOf } from '../config.js';
 import { RUNTIME_ROLE, type Sql } from './client.js';
 
+/** The roles a function may log in as, and the role each may switch to. */
+const LOGIN_ROLES = {
+  [RUNTIME_ROLE]: null,
+  // Seeds a new workspace by switching to the runtime role, without
+  // inheriting its privileges (drizzle/0027_accounts_security.sql).
+  [CONTROL_ROLE]: RUNTIME_ROLE,
+} as const;
+type LoginRole = keyof typeof LOGIN_ROLES;
+
 /**
- * Gives the runtime role a login (accounts spec 4.9), so the API and workers
- * connect as `retainer_app` and their connections can never act as the owner.
+ * Gives one of Retainer's roles a login (accounts spec 4.9), so each function
+ * connects as its own role and its connections can never act as the owner.
  *
- * The password comes from RETAINER_RUNTIME_DATABASE_URL, and the migration
- * role sets it on every boot or migration, so rotating it means changing the
- * URL and redeploying. Roles are cluster-wide: the password is shared by
- * every database on the server.
+ * The password comes from the role's URL, and the migration role sets it on
+ * every boot or migration, so rotating it means changing the URL and
+ * redeploying. Roles are cluster-wide: the password is shared by every
+ * database on the server.
  */
-export async function setRuntimeLogin(owner: Sql, password: string): Promise<void> {
+export async function setRoleLogin(owner: Sql, role: LoginRole, password: string): Promise<void> {
   if (!/^[\x21-\x7e]+$/.test(password)) {
     // SCRAM normalizes non-ASCII passwords (SASLprep); keeping to printable
     // ASCII means the verifier below needs no normalization.
-    throw new Error('The runtime role password must be printable ASCII without spaces.');
+    throw new Error(`The ${role} password must be printable ASCII without spaces.`);
   }
   const verifier = scramVerifier(password);
   await owner.begin(async (tx) => {
     // Two containers booting at once would otherwise update the role row
     // concurrently, which Postgres refuses ("tuple concurrently updated").
-    await tx`select pg_advisory_xact_lock(${RUNTIME_LOGIN_LOCK})`;
+    await tx`select pg_advisory_xact_lock(${LOGIN_LOCK})`;
     // A login for a role that is privileged, owns objects or can become
-    // another role would defeat the point. The migration only creates the
-    // role when it is missing, so one made or altered by hand gets here too.
-    const problems = await runtimeRoleProblems(tx);
+    // another role would defeat the point. The migrations only create the
+    // roles when they are missing, so one made or altered by hand gets here.
+    const problems = await roleProblems(tx, role);
     if (problems.length > 0) {
-      throw new Error(`${RUNTIME_ROLE} ${problems.join('; ')}. Fix that before giving it a login.`);
+      throw new Error(`${role} ${problems.join('; ')}. Fix that before giving it a login.`);
     }
     // The verifier holds only base64, digits, `$` and `:`.
-    await tx.unsafe(`alter role ${RUNTIME_ROLE} login password '${verifier}'`);
+    await tx.unsafe(`alter role ${role} login password '${verifier}'`);
   });
 }
 
+/** `setRoleLogin` for the runtime role. */
+export const setRuntimeLogin = (owner: Sql, password: string) =>
+  setRoleLogin(owner, RUNTIME_ROLE, password);
+
 /**
- * Sets the runtime login when the config asks for one (`setRuntimeLogin`).
- * `owner` connects as the migration role. Returns whether it did.
+ * Sets the logins the config asks for (`setRoleLogin`). `owner` connects as
+ * the migration role. Returns which it set.
  */
-export async function applyRuntimeLogin(config: Config, owner: Sql): Promise<boolean> {
-  const url = config.RETAINER_RUNTIME_DATABASE_URL;
-  if (!url) return false;
-  await setRuntimeLogin(owner, passwordOf(url));
-  return true;
+export async function applyLogins(
+  config: Config,
+  owner: Sql,
+): Promise<{ runtime: boolean; control: boolean }> {
+  const runtime = config.RETAINER_RUNTIME_DATABASE_URL;
+  const control = config.RETAINER_CONTROL_DATABASE_URL;
+  if (runtime) await setRoleLogin(owner, RUNTIME_ROLE, passwordOf(runtime));
+  if (control) await setRoleLogin(owner, CONTROL_ROLE, passwordOf(control));
+  return { runtime: runtime !== undefined, control: control !== undefined };
 }
 
-/** What makes the runtime role unsafe to log in as, in plain words. */
-async function runtimeRoleProblems(tx: TransactionSql): Promise<string[]> {
+/** What makes a role unsafe to log in as, in plain words. */
+async function roleProblems(tx: TransactionSql, name: LoginRole): Promise<string[]> {
+  const mayBecome = LOGIN_ROLES[name];
   const [role] = await tx<
     {
       attributes: string[];
@@ -64,13 +82,16 @@ async function runtimeRoleProblems(tx: TransactionSql): Promise<string[]> {
         case when r.rolreplication then 'REPLICATION' end
       ], null) as attributes,
       array(
-        select m.roleid::regrole::text from pg_auth_members m where m.member = r.oid
+        select m.roleid::regrole::text from pg_auth_members m
+        where m.member = r.oid
+          -- The one role it may switch to, as long as it does not inherit it.
+          and not (m.roleid::regrole::text = ${mayBecome ?? ''} and not m.inherit_option)
       ) as "memberOf",
       (select count(*) from pg_class c where c.relowner = r.oid)::int
         + (select count(*) from pg_namespace n where n.nspowner = r.oid)::int
         + (select count(*) from pg_proc p where p.proowner = r.oid)::int as owns
     from pg_roles r
-    where r.rolname = ${RUNTIME_ROLE}`;
+    where r.rolname = ${name}`;
   if (!role) return ['does not exist; run the migrations first'];
   const problems: string[] = [];
   if (role.attributes.length > 0) problems.push(`has ${role.attributes.join(', ')}`);
@@ -80,7 +101,7 @@ async function runtimeRoleProblems(tx: TransactionSql): Promise<string[]> {
 }
 
 /** "RTN" and a number, like the other advisory lock keys. */
-const RUNTIME_LOGIN_LOCK = 0x52544e04;
+const LOGIN_LOCK = 0x52544e04;
 
 /** Postgres's default for SCRAM-SHA-256 (`scram_iterations`). */
 const SCRAM_ITERATIONS = 4096;
