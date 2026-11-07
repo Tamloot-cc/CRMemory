@@ -440,6 +440,32 @@ describe('invitations', () => {
     ).toBe(404);
   });
 
+  it('either accepts or withdraws an invitation when both happen at once, never both', async () => {
+    const t = await team();
+    for (let round = 0; round < 8; round++) {
+      const email = `race${round}@acme.test`;
+      const { token, id } = await invite(t, email);
+      const invitee = await app.signIn({ email });
+      const [accepted, withdrawn] = await Promise.all([
+        app.account(`/account/invitations/${token}/accept`, {
+          cookie: invitee.cookie,
+          method: 'POST',
+        }),
+        call(`/account/organizations/${t.organizationId}/invitations/${id}`, t.owner, 'DELETE'),
+      ]);
+      expect([accepted.status, withdrawn.status].sort()).toEqual(
+        accepted.status === 200 ? [200, 404] : [204, 404],
+      );
+      const [row] = await db.owner<{ accepted: boolean; revoked: boolean }[]>`
+        select accepted_at is not null as accepted, revoked_at is not null as revoked
+        from invitations where id = ${id}`;
+      const members = await db.owner`
+        select 1 from organization_members where user_id = ${invitee.userId}`;
+      expect(row?.accepted).not.toBe(row?.revoked);
+      expect(members).toHaveLength(row?.accepted ? 1 : 0);
+    }
+  });
+
   it('refuses a workspace listed twice, and leaves a moved workspace out of the preview', async () => {
     const t = await team();
     const path = `/account/organizations/${t.organizationId}/invitations`;

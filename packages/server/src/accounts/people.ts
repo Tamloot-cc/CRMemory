@@ -739,6 +739,17 @@ export async function acceptInvitation(
       );
     }
     if (row.accepted_at) return { organizationId: row.organization_id };
+    // Claim the invitation before granting anything. A withdrawal running at
+    // the same time either wins (nothing claimed) or waits and finds it accepted.
+    const claimed = await tx`
+      update invitations set accepted_at = now()
+      where id = ${row.id} and accepted_at is null and revoked_at is null and expires_at > now()
+      returning 1`;
+    if (claimed.length === 0) {
+      // Withdrawn or expired since the read: this throws 404. Otherwise it was just accepted.
+      await findInvitation(tx, person, tokenOrId);
+      return { organizationId: row.organization_id };
+    }
     await tx`
       insert into organization_members (organization_id, user_id, role)
       values (${row.organization_id}, ${person.id}, ${row.role})
@@ -750,7 +761,6 @@ export async function acceptInvitation(
       from jsonb_to_recordset(${tx.json(row.workspaces)}) as invited("workspaceId" uuid, role text)
       join workspaces w on w.id = invited."workspaceId" and w.organization_id = ${row.organization_id}
       on conflict (workspace_id, user_id) do nothing`;
-    await tx`update invitations set accepted_at = now() where id = ${row.id}`;
     return { organizationId: row.organization_id };
   });
 }
