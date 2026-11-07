@@ -18,6 +18,7 @@ import {
 import { BrandMark } from './brand.js';
 import { cn, isPlainClick, NavigationContext, ROW_STATE, type Tone } from './core.js';
 import { ApiName } from './layout.js';
+import { LogoMark } from './logo-mark.js';
 import { Tooltip } from './tooltip.js';
 
 // Adapted from shadcn/ui Button (MIT); see THIRD_PARTY.md.
@@ -209,6 +210,15 @@ export function Notice({
           <X size={14} />
         </button>
       ) : null}
+    </div>
+  );
+}
+/** A wait the whole page is in, such as the first load: the mark turning, and what is happening in words. */
+export function Loading({ children }: { children: ReactNode }) {
+  return (
+    <div role="status" className="flex items-center gap-3 text-sm text-muted-foreground">
+      <LogoMark mood="thinking" size={32} />
+      <span>{children}</span>
     </div>
   );
 }
@@ -731,6 +741,7 @@ export {
   Timeline,
   TimelineItem,
 } from './layout.js';
+export { LogoMark, type LogoMood } from './logo-mark.js';
 export { Menu, MenuAction, MenuCheck, MenuChoice, MenuChoices, MenuSeparator } from './menu.js';
 export {
   IconLabel,

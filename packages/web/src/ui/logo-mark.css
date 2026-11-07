@@ -1,0 +1,257 @@
+/*
+ * The Retainer mark, animated: the loading indicator and the assistant's avatar.
+ * See docs/specs/assistant-avatar.md. Coordinates are in the logo's 800 viewBox:
+ * the ring is centered on (400,400) and the square on (613,177).
+ *
+ * Layers, outermost first, so each mood animates its own transform:
+ *   .mark-breathe  scale around the ring's center (whole mark)
+ *   .mark-turn     rotation around the ring's center (whole mark)
+ *   .mark-move     translation of the square
+ *   .mark-pop      scale around the square's center
+ *   .mark-upright  the same rotation as .mark-turn, reversed (--dir: -1), so the
+ *                  square travels the circle without turning
+ *
+ * LogoMark sets --mark-cycle, the length of the shown mood's cycle.
+ */
+.retainer-mark {
+  --dir: 1;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+.retainer-mark svg {
+  display: block;
+  overflow: visible;
+}
+.retainer-mark g,
+.retainer-mark rect {
+  transform-box: view-box;
+}
+.mark-breathe,
+.mark-turn {
+  transform-origin: 400px 400px;
+}
+.mark-pop,
+.mark-upright {
+  transform-origin: 613px 177px;
+}
+.mark-upright {
+  --dir: -1;
+}
+
+/* Color. Light pages: the ring fades from lime to forest green, fixed to the page
+   while the ring turns through it (.mark-fixed). Dark pages and the tile: lime. */
+.mark-ring {
+  fill: transparent;
+}
+.mark-square {
+  fill: #ff603f;
+}
+@media (prefers-color-scheme: dark) {
+  .mark-ring {
+    fill: #d4fa38;
+  }
+  .mark-fixed {
+    display: none;
+  }
+}
+.retainer-mark[data-tile] {
+  border-radius: 22%;
+  background: #111b21;
+}
+.retainer-mark[data-tile] .mark-ring {
+  fill: #d4fa38;
+}
+
+/* Moods. Animations exist only when motion is welcome; otherwise each mood is a still pose. */
+@media (prefers-reduced-motion: no-preference) {
+  /* idle: nearly still; the square drifts out of the gap and back. */
+  .retainer-mark[data-mood="idle"] .mark-move {
+    animation: retainer-mark-drift var(--mark-cycle) ease-in-out infinite;
+  }
+
+  /* listening: the whole mark breathes in. */
+  .retainer-mark[data-mood="listening"] .mark-breathe {
+    animation: retainer-mark-breathe var(--mark-cycle) ease-in-out infinite;
+  }
+
+  /* thinking: a steady spin with the square upright. Also the loading indicator. */
+  .retainer-mark[data-mood="thinking"] :is(.mark-turn, .mark-upright) {
+    animation: retainer-mark-spin var(--mark-cycle) linear infinite;
+  }
+
+  /* reading: the gap scans back and forth, pausing at each end. */
+  .retainer-mark[data-mood="reading"] :is(.mark-turn, .mark-upright) {
+    animation: retainer-mark-scan var(--mark-cycle) ease-in-out infinite;
+  }
+
+  /* saving: the square goes into the ring, the ring takes it in, a new one comes out. */
+  .retainer-mark[data-mood="saving"] .mark-move {
+    animation: retainer-mark-stash var(--mark-cycle) cubic-bezier(0.5, 0, 0.3, 1) infinite;
+  }
+  .retainer-mark[data-mood="saving"] .mark-pop {
+    animation: retainer-mark-stash-size var(--mark-cycle) ease-in-out infinite;
+  }
+  .retainer-mark[data-mood="saving"] .mark-breathe {
+    animation: retainer-mark-gulp var(--mark-cycle) ease-out infinite;
+  }
+
+  /* working: one eased turn, then a beat at rest. */
+  .retainer-mark[data-mood="working"] :is(.mark-turn, .mark-upright) {
+    animation: retainer-mark-step var(--mark-cycle) cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  }
+
+  /* done (once): a quick turn and a pop of the square. Its own keyframes name, so
+     that coming from thinking restarts the turn instead of continuing the spin's clock. */
+  .retainer-mark[data-mood="done"] :is(.mark-turn, .mark-upright) {
+    animation: retainer-mark-whirl var(--mark-cycle) cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .retainer-mark[data-mood="done"] .mark-pop {
+    animation: retainer-mark-pop var(--mark-cycle) ease-out;
+  }
+
+  /* error (once): the square shakes in the gap. */
+  .retainer-mark[data-mood="error"] .mark-move {
+    animation: retainer-mark-shake var(--mark-cycle) ease-in-out;
+  }
+}
+
+@keyframes retainer-mark-drift {
+  50% {
+    transform: translate(14px, -14px);
+  }
+}
+@keyframes retainer-mark-breathe {
+  50% {
+    transform: scale(1.06);
+  }
+}
+@keyframes retainer-mark-spin {
+  to {
+    transform: rotate(calc(360deg * var(--dir)));
+  }
+}
+@keyframes retainer-mark-whirl {
+  to {
+    transform: rotate(calc(360deg * var(--dir)));
+  }
+}
+@keyframes retainer-mark-scan {
+  0%,
+  8%,
+  100% {
+    transform: none;
+  }
+  30%,
+  42% {
+    transform: rotate(calc(-35deg * var(--dir)));
+  }
+  70%,
+  82% {
+    transform: rotate(calc(25deg * var(--dir)));
+  }
+}
+@keyframes retainer-mark-step {
+  0% {
+    transform: none;
+  }
+  70%,
+  100% {
+    transform: rotate(calc(360deg * var(--dir)));
+  }
+}
+@keyframes retainer-mark-stash {
+  0%,
+  12% {
+    transform: none;
+  }
+  45%,
+  63% {
+    transform: translate(-213px, 223px);
+  }
+  64%,
+  100% {
+    transform: none;
+  }
+}
+@keyframes retainer-mark-stash-size {
+  0% {
+    transform: none;
+  }
+  12% {
+    transform: scale(1.12);
+  }
+  45%,
+  55% {
+    transform: scale(0.75);
+  }
+  62%,
+  66% {
+    transform: scale(0);
+  }
+  84% {
+    transform: scale(1.1);
+  }
+  92%,
+  100% {
+    transform: none;
+  }
+}
+@keyframes retainer-mark-gulp {
+  0%,
+  52% {
+    transform: none;
+  }
+  58% {
+    transform: scale(1.06);
+  }
+  70%,
+  100% {
+    transform: none;
+  }
+}
+@keyframes retainer-mark-pop {
+  0%,
+  55%,
+  100% {
+    transform: none;
+  }
+  75% {
+    transform: scale(1.3);
+  }
+}
+@keyframes retainer-mark-shake {
+  0%,
+  100% {
+    transform: none;
+  }
+  15% {
+    transform: translateX(-28px);
+  }
+  35% {
+    transform: translateX(24px);
+  }
+  55% {
+    transform: translateX(-16px);
+  }
+  75% {
+    transform: translateX(10px);
+  }
+}
+
+/* Reduced motion: a still pose per mood. Callers show the mood in words. */
+@media (prefers-reduced-motion: reduce) {
+  .retainer-mark:is([data-mood="thinking"], [data-mood="working"]) :is(.mark-turn, .mark-upright) {
+    transform: rotate(calc(-90deg * var(--dir)));
+  }
+  .retainer-mark[data-mood="reading"] :is(.mark-turn, .mark-upright) {
+    transform: rotate(calc(-35deg * var(--dir)));
+  }
+  .retainer-mark[data-mood="saving"] .mark-move {
+    transform: translate(-213px, 223px);
+  }
+  .retainer-mark[data-mood="saving"] .mark-pop {
+    transform: scale(0.75);
+  }
+}

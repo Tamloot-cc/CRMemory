@@ -32,6 +32,7 @@ hold the design, the data model, the write rules and the web app's design.
 | [Comments](specs/comments.md)                                     | Implemented: comments on any record, entity-only event links, the object-or-event rule     |
 | [Workspace upgrades](specs/workspace-upgrade.md)                  | Implemented: bringing existing workspaces up to new built-in definitions                   |
 | [Accounts and access](specs/accounts-and-access.md)               | Proposed: login with Better Auth, passkeys, organizations, roles, MCP OAuth                |
+| [Animated mark](specs/assistant-avatar.md)                        | Implemented: the loading indicator and the assistant avatar's moods                        |
 
 ## Research
 
