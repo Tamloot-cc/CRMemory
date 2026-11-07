@@ -30,6 +30,22 @@ const MAY_SHARE_A_CYCLE = 'core';
 const layerOf = new Map(LAYERS.flatMap(([, modules], i) => modules.map((m) => [m, i])));
 const layerName = (module) => LAYERS[layerOf.get(module)][0];
 
+/** ARCHITECTURE.md lists the layers highest first; they must match LAYERS, in order. */
+function documentationProblems() {
+  const doc = readFileSync(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+  const blocks = doc.slice(doc.indexOf('### Server layers')).split('\n\n');
+  const rows = (blocks.find((block) => block.startsWith('|')) ?? '').split('\n').slice(2);
+  const documented = rows.map((row) => {
+    const [, layer, modules] = row.split('|');
+    const names = [...modules.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+    return [layer.trim().toLowerCase(), names.toSorted()];
+  });
+  const expected = LAYERS.map(([name, modules]) => [name, modules.toSorted()]).reverse();
+  return JSON.stringify(documented) === JSON.stringify(expected)
+    ? []
+    : [`ARCHITECTURE.md's layer table doesn't match LAYERS in scripts/check-layers.mjs`];
+}
+
 function sourceFiles(dir) {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -81,7 +97,7 @@ function cycles(graph) {
   return found;
 }
 
-const problems = [];
+const problems = documentationProblems();
 const fileGraph = new Map();
 const moduleGraph = new Map();
 const edge = (graph, from, to) => {

@@ -7,7 +7,6 @@ import { publicOriginSchema } from '../config.js';
 import type { Sql } from '../db/client.js';
 import { AppError } from '../errors.js';
 import { type AppEnv, errorResponse, toAppError } from '../http/response.js';
-import { log } from '../log.js';
 import { mcpRoute } from '../mcp/route.js';
 import { VERSION } from '../version.js';
 import { commentRoutes } from './routes/comments.js';
@@ -30,12 +29,7 @@ export function createApp(deps: AppDeps) {
   const app = new Hono<AppEnv>();
   const publicOrigin = deps.publicOrigin ? publicOriginSchema.parse(deps.publicOrigin) : undefined;
 
-  app.onError((error, c) => {
-    const known = toAppError(error);
-    if (known) return errorResponse(c, known);
-    log.error(error);
-    return errorResponse(c, new AppError(500, 'internal', 'internal server error'));
-  });
+  app.onError((error, c) => errorResponse(c, toAppError(error)));
 
   app.notFound((c) =>
     errorResponse(c, new AppError(404, 'not_found', `no route for ${c.req.method} ${c.req.path}`)),

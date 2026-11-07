@@ -39,10 +39,10 @@ import {
   Tooltip,
   Tr,
 } from '../../ui/index.js';
-import { QueryError, sortObjects, useView } from '../state.js';
+import { objectByName, QueryError, sortObjects, useView } from '../state.js';
 import { FieldSheet, FLAGS } from './field-sheet.js';
 import { CORE_ROLE_TEXT, FieldTypeLabel, OwnerBadge } from './schema-labels.js';
-import { findObject, matchesField, typeDetail } from './schema-model.js';
+import { matchesField, typeDetail } from './schema-model.js';
 
 /** The built-in columns every event record has beside its fields. */
 const EVENT_COLUMN_INFO: Record<EventColumn, { label: string; description: string }> = {
@@ -68,7 +68,7 @@ export function ObjectsTab() {
   const objects = sortObjects(schema.objects);
   const { builtIns } = schema;
   const named = builtIns.find((b) => b.name === search.object);
-  const object = named ? undefined : (findObject(objects, search.object) ?? objects[0]);
+  const object = named ? undefined : (objectByName({ objects }, search.object) ?? objects[0]);
   // With no objects yet, the built-ins are still there to look at.
   const builtIn = named ?? (object ? undefined : builtIns[0]);
   const field = object?.fields.find((f) => f.name === search.field);

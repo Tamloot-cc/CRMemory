@@ -20,8 +20,13 @@ import {
   Td,
   Tr,
 } from '../../ui/index.js';
-import { findObject } from '../schema/schema-model.js';
-import { QueryError, recordTitle as title, useDebounced, useReport } from '../state.js';
+import {
+  objectByName,
+  QueryError,
+  recordTitle as title,
+  useDebounced,
+  useReport,
+} from '../state.js';
 import { useRecord } from './record-view.js';
 import { defaultSurvivor, type MergeChoice, mergeRows, mergeValues } from './write-model.js';
 
@@ -63,7 +68,7 @@ export function MergeDialog({
       ? ([a, b].find((r) => r.id === (picked ?? preferred)) ?? defaultSurvivor(a, b))
       : undefined;
   const away = keep && (keep === a ? b : a);
-  const object = findObject(schema.objects, keep?.object);
+  const object = objectByName(schema, keep?.object);
   const rows = object && keep && away ? mergeRows(object, keep, away) : [];
 
   async function finish(message: ReactNode) {
@@ -248,7 +253,7 @@ export function MergeSuggestionCard({ suggestion }: { suggestion: MergeSuggestio
   const { session, schema } = useWorkspace();
   const [open, setOpen] = useState(false);
   const records = suggestion.recordIds.map((id) => suggestion.records.find((r) => r.id === id));
-  const object = findObject(schema.objects, records[0]?.object);
+  const object = objectByName(schema, records[0]?.object);
   return (
     <Panel>
       <Stack>
@@ -294,7 +299,7 @@ export function MergeSuggestionCard({ suggestion }: { suggestion: MergeSuggestio
 /** Finds another record of the same object to merge into `record`. */
 export function MergePicker({ record, onClose }: { record: PresentedRecord; onClose: () => void }) {
   const { session, schema } = useWorkspace();
-  const object = findObject(schema.objects, record.object);
+  const object = objectByName(schema, record.object);
   const [search, setSearch] = useState(record.label ?? ''),
     [other, setOther] = useState<string>();
   const query = useDebounced(search.trim());

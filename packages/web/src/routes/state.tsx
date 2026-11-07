@@ -52,7 +52,7 @@ export const eventTitle = (e: { title: string | null }) => e.title || 'Untitled 
 /** The object (or event type) by its singular API name. */
 export const objectByName = (
   schema: Pick<SchemaDescription, 'objects'>,
-  name: string,
+  name: string | undefined,
 ): ObjectView | undefined => schema.objects.find((o) => o.nameSingular === name);
 /** An object's (or event type's) singular name for people, falling back to its API name. */
 export const objectLabel = (schema: Pick<SchemaDescription, 'objects'>, name: string) =>

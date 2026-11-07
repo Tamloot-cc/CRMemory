@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures.js';
-import { signIn, signOut } from './helpers.js';
+import { signIn, signOut, submitKey } from './helpers.js';
 
 test('hides mutations from agent and read-only keys and isolates a replacement session', async ({
   page,
@@ -18,8 +18,7 @@ test('hides mutations from agent and read-only keys and isolates a replacement s
   await expect(page.getByRole('button', { name: 'New person' })).not.toBeVisible();
   await signOut(page);
   await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
-  await page.getByLabel('Personal API key').fill(r.keys.other);
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await submitKey(page, r.keys.other);
   await page.getByRole('link', { name: 'People', exact: true }).click();
   await expect(page.getByText('No records found')).toBeVisible();
   await expect(page.getByText('Private Acme person')).not.toBeVisible();
@@ -58,8 +57,7 @@ test('discards a previous session response that arrives after a replacement logi
   await page.getByRole('link', { name: 'People', exact: true }).click();
   await started;
   await signOut(page);
-  await page.getByLabel('Personal API key').fill(r.keys.other);
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await submitKey(page, r.keys.other);
   await page.getByRole('link', { name: 'People', exact: true }).click();
   await expect(page.getByText('No records found')).toBeVisible();
   release();

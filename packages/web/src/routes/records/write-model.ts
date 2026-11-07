@@ -12,7 +12,7 @@ import {
   validateFieldValue,
 } from '@retainer/shared';
 import { isEmptyFor } from '../../fields/common.js';
-import { findObject } from '../schema/schema-model.js';
+import { objectByName } from '../state.js';
 
 /** A field a person can set: not an inverse relation, not read-only, not `json` (read-only in the app). */
 export const isWritable = (f: FieldView) =>
@@ -86,7 +86,7 @@ export function serverFieldErrors(details: unknown): Record<string, string> {
  */
 export function describeImpact(impact: DeleteImpact['records'], objects: ObjectView[]): string {
   const parts = impact.map(({ object, count }) => {
-    const o = findObject(objects, object);
+    const o = objectByName({ objects }, object);
     const name = o ? (count === 1 ? o.labelSingular : o.labelPlural).toLowerCase() : object;
     return `${count} ${name}`;
   });
@@ -167,7 +167,7 @@ export function groupRecordHits(
   for (const hit of hits) groups.set(hit.object, [...(groups.get(hit.object) ?? []), hit]);
   return [...groups].map(([object, list]) => ({
     object,
-    label: findObject(objects, object)?.labelPlural ?? object,
+    label: objectByName({ objects }, object)?.labelPlural ?? object,
     hits: list,
   }));
 }
