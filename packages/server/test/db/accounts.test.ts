@@ -236,6 +236,36 @@ describe('organizations and members', () => {
     expect(followed).toBe(true);
   });
 
+  it('checks membership in the organization a workspace moved to at the same moment', async () => {
+    const from = await createOrganization(db.owner, { name: 'Before' });
+    const to = await createOrganization(db.owner, { name: 'After' });
+    const workspace = await createWorkspace(db.owner, { name: 'Shifting', organization: from.id });
+    await addUser('fay@before.test');
+    await setOrganizationMember(db.owner, {
+      organization: from.id,
+      email: 'fay@before.test',
+      role: 'member',
+    });
+    let adding: Promise<unknown> | undefined;
+    // A move held open, the way moveWorkspace does it, while the role is given.
+    await db.owner.begin(async (move) => {
+      await move`select 1 from organizations where id = ${from.id} for update`;
+      await move`update workspaces set organization_id = ${to.id} where id = ${workspace.id}`;
+      adding = setWorkspaceMember(db.owner, {
+        workspace: workspace.id,
+        email: 'fay@before.test',
+        role: 'editor',
+      }).catch((error: unknown) => error);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+    // Fay is in the organization the workspace left, not the one it joined.
+    expect(await adding).toMatchObject({ status: 409, code: 'not_a_member' });
+    expect(
+      await db.owner`select 1 from workspace_members where user_id in
+      (select id from users where email = 'fay@before.test')`,
+    ).toHaveLength(0);
+  });
+
   it('removes member roles when a workspace moves to another organization', async () => {
     const from = await createOrganization(db.owner, { name: 'From' });
     const to = await createOrganization(db.owner, { name: 'To' });

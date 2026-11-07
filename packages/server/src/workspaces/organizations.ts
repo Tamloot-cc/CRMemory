@@ -146,12 +146,16 @@ export async function setWorkspaceMember(
     throw new AppError(400, 'invalid_request', 'workspace role must be viewer, editor or admin');
   }
   return sql.begin(async (tx) => {
-    const workspace = await getWorkspace(tx, input.workspace);
-    await lockOrganization(tx, workspace.organizationId);
+    const { id } = await getWorkspace(tx, input.workspace);
+    // The organization is read under its lock, so a move that lands first is seen.
+    const organizationId = await lockWorkspaceOrganization(tx, id);
+    if (!organizationId) {
+      throw new AppError(404, 'not_found', `workspace "${input.workspace}" not found`);
+    }
     const user = await userByEmail(tx, input.email);
     const [member] = await tx`
       select 1 from organization_members
-      where organization_id = ${workspace.organizationId} and user_id = ${user.id}`;
+      where organization_id = ${organizationId} and user_id = ${user.id}`;
     if (!member) {
       throw new AppError(
         409,
@@ -161,9 +165,9 @@ export async function setWorkspaceMember(
     }
     await tx`
       insert into workspace_members (organization_id, workspace_id, user_id, role)
-      values (${workspace.organizationId}, ${workspace.id}, ${user.id}, ${role})
+      values (${organizationId}, ${id}, ${user.id}, ${role})
       on conflict (workspace_id, user_id) do update set role = excluded.role`;
-    return { workspaceId: workspace.id, userId: user.id, role };
+    return { workspaceId: id, userId: user.id, role };
   });
 }
 
