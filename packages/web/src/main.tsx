@@ -23,7 +23,7 @@ import { CommandPalette } from './routes/command.js';
 import { DeveloperContext, readDeveloperView, writeDeveloperView } from './routes/developer.js';
 import type { ViewSearch } from './routes/state.js';
 import { QueryError, ReportContext, sortObjects } from './routes/state.js';
-import { Button, Notice, Page, Shell } from './ui/index.js';
+import { Button, Loading, Notice, Page, Shell } from './ui/index.js';
 import './style.css';
 
 function Layout() {
@@ -87,7 +87,7 @@ function Layout() {
         {schema.error ? (
           <QueryError error={schema.error} retry={() => void schema.refetch()} />
         ) : (
-          <Notice>Loading workspace…</Notice>
+          <Loading>Loading workspace…</Loading>
         )}
         <Button onClick={signOut}>Sign out</Button>
       </Page>
@@ -287,7 +287,7 @@ function App() {
   if (loading)
     return (
       <Page title="Retainer">
-        <Notice>Checking session…</Notice>
+        <Loading>Checking session…</Loading>
       </Page>
     );
   return (
