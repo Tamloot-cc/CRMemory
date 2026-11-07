@@ -283,6 +283,7 @@ describe('/account', () => {
           workspaces: [{ id: workspaceId, slug: 'acme-crm', name: 'Acme CRM', role: 'viewer' }],
         },
       ],
+      invitations: [],
     });
   });
 });

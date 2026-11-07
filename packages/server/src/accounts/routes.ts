@@ -1,11 +1,15 @@
 import type { OrganizationRole, WorkspaceRole } from '@retainer/shared';
 import { type Context, Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
+import { z } from 'zod';
 import { requireWebHeader } from '../auth/session.js';
 import type { Sql } from '../db/client.js';
 import { AppError } from '../errors.js';
+import { readBody } from '../http/request.js';
 import { errorResponse, toAppError } from '../http/response.js';
 import { type Auth, CLIENT_IP_HEADER } from './auth.js';
+import type { Person } from './people.js';
+import * as people from './people.js';
 
 /**
  * /account (accounts spec 4.5): Better Auth's routes, and the routes people
@@ -15,8 +19,10 @@ import { type Auth, CLIENT_IP_HEADER } from './auth.js';
  * workspace (ARCHITECTURE.md 7.1).
  */
 
-export type Person = { id: string; name: string; email: string };
+export type { Person };
 
+const named = z.object({ name: z.string().max(200) });
+const role = z.object({ role: z.string() });
 export type AccountsEnv = {
   Bindings: Record<string, unknown>;
   Variables: { person: Person };
@@ -50,7 +56,105 @@ export function createAccountsApp(deps: AccountsDeps) {
 
   const account = new Hono<AccountsEnv>();
   account.use('*', signedIn(deps));
-  account.get('/', async (c) => c.json(await describeAccount(deps.sql, c.get('person'))));
+  const { sql } = deps;
+  account.get('/', async (c) => c.json(await describeAccount(sql, c.get('person'))));
+
+  // Workspaces
+  account.post('/workspaces', async (c) => {
+    const body = await readBody(
+      c,
+      named.extend({ template: z.string().optional(), organizationId: z.string().optional() }),
+    );
+    return c.json(await people.createWorkspaceFor(sql, c.get('person'), body), 201);
+  });
+  account.patch('/workspaces/:id', async (c) => {
+    const { name } = await readBody(c, named);
+    return c.json(await people.renameWorkspace(sql, c.get('person'), c.req.param('id'), name));
+  });
+  account.get('/workspaces/:id/members', async (c) =>
+    c.json(await people.listWorkspaceMembers(sql, c.get('person'), c.req.param('id'))),
+  );
+  account.put('/workspaces/:id/members/:userId', async (c) => {
+    const body = await readBody(c, role);
+    const { id, userId } = c.req.param();
+    await people.setWorkspaceRole(sql, c.get('person'), id, userId, body.role);
+    return c.body(null, 204);
+  });
+  account.delete('/workspaces/:id/members/:userId', async (c) => {
+    const { id, userId } = c.req.param();
+    await people.removeFromWorkspace(sql, c.get('person'), id, userId);
+    return c.body(null, 204);
+  });
+  account.get('/workspaces/:id/keys', async (c) =>
+    c.json({ keys: await people.listWorkspaceKeys(sql, c.get('person'), c.req.param('id')) }),
+  );
+  account.post('/workspaces/:id/keys', async (c) => {
+    const body = await readBody(c, named.extend({ access: z.string() }));
+    return c.json(
+      await people.createWorkspaceKey(sql, c.get('person'), c.req.param('id'), body),
+      201,
+    );
+  });
+  account.delete('/workspaces/:id/keys/:keyId', async (c) => {
+    const { id, keyId } = c.req.param();
+    await people.revokeWorkspaceKey(sql, c.get('person'), id, keyId);
+    return c.body(null, 204);
+  });
+
+  // Organizations
+  account.get('/organizations/:id', async (c) =>
+    c.json(await people.describeOrganization(sql, c.get('person'), c.req.param('id'))),
+  );
+  account.patch('/organizations/:id', async (c) => {
+    const { name } = await readBody(c, named);
+    await people.renameOrganization(sql, c.get('person'), c.req.param('id'), name);
+    return c.body(null, 204);
+  });
+  account.delete('/organizations/:id', async (c) => {
+    await people.deleteOrganization(sql, c.get('person'), c.req.param('id'));
+    return c.body(null, 204);
+  });
+  account.patch('/organizations/:id/members/:userId', async (c) => {
+    const body = await readBody(c, role);
+    const { id, userId } = c.req.param();
+    await people.setOrganizationRole(sql, c.get('person'), id, userId, body.role);
+    return c.body(null, 204);
+  });
+  account.delete('/organizations/:id/members/:userId', async (c) => {
+    const { id, userId } = c.req.param();
+    await people.removeFromOrganization(sql, c.get('person'), id, userId);
+    return c.body(null, 204);
+  });
+
+  // Invitations: the link is built here, so the web app only shows it.
+  account.post('/organizations/:id/invitations', async (c) => {
+    const body = await readBody(
+      c,
+      z.object({
+        email: z.string().max(320),
+        role: z.string(),
+        workspaces: z
+          .array(z.object({ workspaceId: z.string(), role: z.string() }))
+          .max(100)
+          .default([]),
+      }),
+    );
+    const created = await people.createInvitation(sql, c.get('person'), c.req.param('id'), body);
+    const link = `${deps.publicOrigin}/app/invite/${created.token}`;
+    return c.json({ id: created.id, link, expiresAt: created.expiresAt }, 201);
+  });
+  account.delete('/organizations/:id/invitations/:invitationId', async (c) => {
+    const { id, invitationId } = c.req.param();
+    await people.revokeInvitation(sql, c.get('person'), id, invitationId);
+    return c.body(null, 204);
+  });
+  account.get('/invitations/:token', async (c) =>
+    c.json(await people.previewInvitation(sql, c.get('person'), c.req.param('token'))),
+  );
+  account.post('/invitations/:token/accept', async (c) =>
+    c.json(await people.acceptInvitation(sql, c.get('person'), c.req.param('token'))),
+  );
+
   app.route('/account', account);
   return app;
 }
@@ -97,6 +201,8 @@ export type AccountOrganization = {
 export type AccountDescription = {
   user: Person;
   organizations: AccountOrganization[];
+  /** Invitations sent to the person's address that they have not accepted. */
+  invitations: Awaited<ReturnType<typeof people.invitationsFor>>;
 };
 
 /**
@@ -147,5 +253,9 @@ export async function describeAccount(sql: Sql, person: Person): Promise<Account
       });
     }
   }
-  return { user: person, organizations: [...organizations.values()] };
+  return {
+    user: person,
+    organizations: [...organizations.values()],
+    invitations: await people.invitationsFor(sql, person),
+  };
 }

@@ -46,10 +46,15 @@ let accounts:
 if (accountsMode(config) && (role === 'all' || role === 'control')) {
   const { createAccountsServer } = await import('./accounts/index.js');
   const control = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX });
-  stops.push(() => control.end({ timeout: 5 }));
+  const authControl = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX });
+  stops.push(
+    () => control.end({ timeout: 5 }),
+    () => authControl.end({ timeout: 5 }),
+  );
   accounts = createAccountsServer({
     config,
     sql: control,
+    authSql: authControl,
     clientIp: (c) => getConnInfo(c).remote.address,
   });
 }

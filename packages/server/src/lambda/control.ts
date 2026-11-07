@@ -15,11 +15,13 @@ export function createControlHandler(
   config: Config,
   // One request at a time per instance, like the api function.
   sql: Sql = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX }),
+  authSql: Sql = createControlSql(config, { max: config.RETAINER_DB_POOL_MAX }),
 ) {
   setLogLevel(config.LOG_LEVEL);
   const app = createAccountsServer({
     config,
     sql,
+    authSql,
     // API Gateway's view of the caller; a header the client sent is ignored.
     clientIp: (c) =>
       (c.env as { event?: { requestContext?: { http?: { sourceIp?: string } } } }).event

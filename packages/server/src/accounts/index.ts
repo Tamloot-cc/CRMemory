@@ -15,6 +15,11 @@ export function createAccountsServer(input: {
   config: Config;
   /** A connection as the control role. */
   sql: Sql;
+  /**
+   * Another, for Better Auth alone: its drizzle adapter replaces the pool's
+   * date and JSON parsers, which would break every raw query sharing it.
+   */
+  authSql: Sql;
   clientIp: (c: Context) => string | undefined;
   google?: GoogleOverrides;
   rateLimit?: boolean;
@@ -22,7 +27,7 @@ export function createAccountsServer(input: {
   const { config } = input;
   const publicOrigin = config.RETAINER_PUBLIC_ORIGIN ?? `http://localhost:${config.PORT}`;
   const auth = createAuth({
-    sql: input.sql,
+    sql: input.authSql,
     config: accountsConfig(config),
     publicOrigin,
     ...(input.google ? { google: input.google } : {}),

@@ -53,6 +53,7 @@ export function startAccountsApp(db: TestDatabase): AccountsTestApp {
   const accounts = createAccountsServer({
     config,
     sql: db.connect({ role: CONTROL_ROLE, max: 4 }),
+    authSql: db.connect({ role: CONTROL_ROLE, max: 4 }),
     clientIp: () => '192.0.2.1',
     rateLimit: false,
     google: {
