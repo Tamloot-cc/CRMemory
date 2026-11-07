@@ -29,6 +29,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
+import { BrandMark } from './brand.js';
 import { cn, Kbd, NavigationContext } from './core.js';
 import { Menu, MenuAction, MenuCheck, MenuSeparator } from './menu.js';
 
@@ -200,12 +201,7 @@ function Sidebar({
       >
         {collapsed ? null : (
           <>
-            <span
-              aria-hidden
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary text-xs font-semibold text-primary-foreground"
-            >
-              {workspace.trim()[0]?.toUpperCase() ?? 'R'}
-            </span>
+            <BrandMark className="h-6 w-6" />
             <span className="min-w-0 flex-1 truncate text-sm font-semibold">{workspace}</span>
           </>
         )}

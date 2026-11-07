@@ -1,3 +1,5 @@
+<p><img src="https://raw.githubusercontent.com/Tamloot-cc/Retainer/main/packages/web/public/favicon.svg" alt="Retainer logo" width="80" height="80" /></p>
+
 # @retainer/shared
 
 Public types and pure helpers shared by the

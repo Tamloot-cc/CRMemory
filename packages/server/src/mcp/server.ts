@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
 import { VERSION } from '../version.js';
+import { SERVER_ICON } from './icon.js';
 import { INSTRUCTIONS } from './instructions.js';
 import { registerReadTools } from './tools/read.js';
 import { registerSetupTools } from './tools/setup.js';
@@ -18,7 +19,7 @@ import { registerWriteTools } from './tools/write.js';
  */
 export function createMcpServer(sql: Sql, caller: Caller): McpServer {
   const server = new McpServer(
-    { name: 'retainer', title: 'Retainer', version: VERSION },
+    { name: 'retainer', title: 'Retainer', version: VERSION, icons: [SERVER_ICON] },
     { instructions: INSTRUCTIONS },
   );
 

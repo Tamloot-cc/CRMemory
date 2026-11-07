@@ -141,7 +141,19 @@ describe('stdio bridge', () => {
     expect(JSON.parse(line as string)).toMatchObject({
       jsonrpc: '2.0',
       id: 1,
-      result: { serverInfo: expect.objectContaining({ name: expect.any(String) }) },
+      result: {
+        serverInfo: expect.objectContaining({
+          name: 'retainer',
+          title: 'Retainer',
+          icons: [
+            expect.objectContaining({
+              src: expect.stringMatching(/^data:image\/svg\+xml;base64,/),
+              mimeType: 'image/svg+xml',
+              sizes: ['any'],
+            }),
+          ],
+        }),
+      },
     });
   });
 

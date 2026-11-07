@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { GetPromptResult } from '@modelcontextprotocol/client';
 import { FIELD_TYPES } from '@retainer/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -99,6 +100,20 @@ const createPerson = async (values: Record<string, unknown> = {}) => {
 };
 
 describe('connecting', () => {
+  it('includes a self-contained brand icon without requiring the web app', () => {
+    const info = agent.getServerVersion();
+    expect(info).toMatchObject({ name: 'retainer', title: 'Retainer' });
+    const [icon] = info?.icons ?? [];
+    expect(icon).toMatchObject({ mimeType: 'image/svg+xml', sizes: ['any'] });
+    expect(icon?.src).toMatch(/^data:image\/svg\+xml;base64,/);
+    const svg = Buffer.from(icon?.src.split(',')[1] ?? '', 'base64').toString('utf8');
+    const favicon = readFileSync(
+      new URL('../../../web/public/favicon.svg', import.meta.url),
+      'utf8',
+    );
+    expect(svg).toBe(favicon.trim());
+  });
+
   it('rejects a request without an API key', async () => {
     const res = await t.request('/mcp', {
       body: { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
