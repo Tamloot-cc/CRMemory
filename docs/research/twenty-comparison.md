@@ -10,19 +10,19 @@ branch as of November 2026.
 
 ## In one table
 
-|                     | Twenty                                                                  | Retainer                                                                   |
-| ------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Where records live  | A Postgres schema per workspace (`workspace_<id>`), a table per object  | One `records` table for every object in every workspace                    |
-| Fields              | A column per field; composite fields (name, emails, links) span several | Keys in `records.data` (JSONB), keyed by the field's stable `key`          |
-| Adding a field      | DDL (`ALTER TABLE … ADD COLUMN`) through a workspace migration runner   | One row in `fields`; no DDL                                                |
-| Schema metadata     | `objectMetadata` and `fieldMetadata` in the shared `core` schema        | `object_types` and `fields`, changed only through the schema engine        |
-| Relations           | A foreign key column on the source table (`companyId`)                  | Rows in `record_links`, with real foreign keys                             |
-| Uniqueness          | A unique index on the column                                            | A unique index on `record_identifiers`, with no per-field DDL              |
-| Source of truth     | The row: a write overwrites the value                                   | `field_assertions`; `records.data` is a cache derived from them            |
-| History             | `timelineActivity` rows with a JSON payload of what changed             | Every assertion keeps its actor, source, confidence and status             |
-| Unstructured memory | Notes and tasks as ordinary objects                                     | Events as records; `facts` and `comments` as built-in tables               |
-| Tenant isolation    | Separate schemas                                                        | A `workspace_id` on every row, enforced by row-level security              |
-| Search              | A `searchVector` tsvector column in each object's table                 | A `search` tsvector column on `records` and `facts` (§5.1)                 |
+|                     | Twenty                                                                  | Retainer                                                            |
+| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Where records live  | A Postgres schema per workspace (`workspace_<id>`), a table per object  | One `records` table for every object in every workspace             |
+| Fields              | A column per field; composite fields (name, emails, links) span several | Keys in `records.data` (JSONB), keyed by the field's stable `key`   |
+| Adding a field      | DDL (`ALTER TABLE … ADD COLUMN`) through a workspace migration runner   | One row in `fields`; no DDL                                         |
+| Schema metadata     | `objectMetadata` and `fieldMetadata` in the shared `core` schema        | `object_types` and `fields`, changed only through the schema engine |
+| Relations           | A foreign key column on the source table (`companyId`)                  | Rows in `record_links`, with real foreign keys                      |
+| Uniqueness          | A unique index on the column                                            | A unique index on `record_identifiers`, with no per-field DDL       |
+| Source of truth     | The row: a write overwrites the value                                   | `field_assertions`; `records.data` is a cache derived from them     |
+| History             | `timelineActivity` rows with a JSON payload of what changed             | Every assertion keeps its actor, source, confidence and status      |
+| Unstructured memory | Notes and tasks as ordinary objects                                     | Events as records; `facts` and `comments` as built-in tables        |
+| Tenant isolation    | Separate schemas                                                        | A `workspace_id` on every row, enforced by row-level security       |
+| Search              | A `searchVector` tsvector column in each object's table                 | A `search` tsvector column on `records` and `facts` (§5.1)          |
 
 ## Tables versus one JSONB table
 
