@@ -11,7 +11,8 @@ region = "eu-central-1"
 
 # alarm_email = "ops@example.com"
 
-# Lets this repository's "production" GitHub Environment ship code.
+# Lets this repository's "production" GitHub Environment apply this stack
+# and ship code (docs/aws.md, From GitHub Actions).
 # github_repository = "your-org/Retainer"
 # Needs the account's OIDC provider for GitHub Actions; see docs/aws.md.
 # When GitHub's sub_claim_prefix differs from repo:<github_repository>

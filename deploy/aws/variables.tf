@@ -4,7 +4,7 @@ variable "region" {
 }
 
 variable "name" {
-  description = "Prefix for every resource name. Function names start with it, and the GitHub deploy role may only touch functions named <name>-*. Unique per AWS account: IAM role names are account-wide, so a deployment in a second region needs a name of its own."
+  description = "Prefix for every resource name. Function names start with it, and the GitHub deploy role is limited to resources named with it where AWS names them in ARNs. Unique per AWS account: IAM role names are account-wide, so a deployment in a second region needs a name of its own."
   type        = string
   default     = "retainer"
 
@@ -186,7 +186,7 @@ variable "alarm_email" {
 }
 
 variable "github_repository" {
-  description = "owner/repo whose deploy workflow may ship code (assume the deploy role). Null creates no role."
+  description = "owner/repo whose Deploy to AWS workflow may apply this stack and ship code (assume the deploy role). Null creates no role."
   type        = string
   default     = null
 }

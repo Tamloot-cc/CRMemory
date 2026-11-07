@@ -21,7 +21,7 @@ managed database with point-in-time recovery, and a bill that follows use.
 | Network                                      | A VPC of its own with two private subnets, no internet gateway or NAT, except for `control` in accounts mode |
 | Monitoring                                   | Log groups (30 days), alarms on 5xx, consolidator errors and the database                                    |
 | Custom domain (optional)                     | ACM certificate and an API Gateway domain                                                                    |
-| CI deploy role (optional)                    | IAM role a GitHub Environment assumes to ship code                                                           |
+| CI deploy role (optional)                    | IAM role a GitHub Environment assumes to apply the infrastructure and ship code                              |
 
 The api, consolidate and ops functions reach only the database, and the
 database only accepts the functions. They make no outbound calls, so they
@@ -139,6 +139,9 @@ is migrated and the deploy fails, to be run again.
 deploy/aws/build.sh && deploy/aws/deploy.sh
 ```
 
+The [Deploy to AWS workflow](#from-github-actions) can do this from GitHub
+instead, together with `terraform apply`.
+
 **Upgrading to separate database logins.** A deployment created before the
 functions had their own logins needs `terraform apply` once, then
 `deploy.sh` right away. Until `deploy.sh` has migrated, the API and the
@@ -150,15 +153,21 @@ alone, so `terraform apply` never rolls a deployment back to an old package.
 
 ### From GitHub Actions
 
-The **Deploy to AWS** workflow runs CI, builds and runs `deploy.sh`, by hand
-only. To use it:
+Applying and deploying from your machine works on its own; this route is
+optional. The **Deploy to AWS** workflow runs CI, then `terraform apply`
+and `deploy.sh`, by hand and from the default branch only. Set it up after
+the [first deployment](#first-deployment):
 
 1. Set `github_repository = "<owner>/<repo>"` in `terraform.tfvars` and
-   apply. This creates a role that can update, stop, start and invoke this
-   deployment's functions and nothing else. It trusts the account's OIDC
-   provider for GitHub Actions. An account holds one, shared by every
-   repository's roles, so this deployment uses it but never creates or
-   deletes it. If `aws iam list-open-id-connect-providers` shows none for
+   apply. This creates a role the workflow assumes. It can manage the
+   resources this deployment creates, read and write its Terraform state
+   at the bucket and key `state-bucket.sh` printed, and ship code to its
+   functions. It cannot change its own permissions: when an update changes
+   `deploy/aws/github.tf`, run `terraform apply` yourself before the next
+   workflow run. The role trusts the account's OIDC provider for GitHub
+   Actions. An account holds one, shared by every repository's roles, so
+   this deployment uses it but never creates or deletes it. If
+   `aws iam list-open-id-connect-providers` shows none for
    `token.actions.githubusercontent.com`, create it once:
 
    ```sh
@@ -180,12 +189,44 @@ only. To use it:
 2. In the repository's settings, create the `production` environment.
    Under deployment branches, allow only the default branch: the role trusts
    every job in that environment.
-3. Add the environment variables `AWS_ROLE_ARN` (the
-   `github_deploy_role_arn` output) and `AWS_REGION`, and `RETAINER_NAME` if
-   you changed `name`.
+3. Give the environment Terraform's inputs, from `backend.hcl` and
+   `terraform.tfvars`. Leave out the optional ones you have not set.
 
-Infrastructure changes are not deployed from CI; run `terraform apply`
-yourself.
+   | Name                           | Set as             | Value                                    |
+   | ------------------------------ | ------------------ | ---------------------------------------- |
+   | `AWS_ROLE_ARN`                 | variable           | the `github_deploy_role_arn` output      |
+   | `AWS_REGION`                   | variable           | `region`                                 |
+   | `TF_STATE_BUCKET`              | variable           | `bucket` in `backend.hcl`                |
+   | `TF_STATE_KEY`                 | variable           | `key` in `backend.hcl`                   |
+   | `TF_STATE_REGION`              | variable, optional | `region` in `backend.hcl`, if it differs |
+   | `RETAINER_NAME`                | variable, optional | `name`                                   |
+   | `DOMAIN_NAME`                  | variable, optional | `domain_name`                            |
+   | `DOMAIN_CERTIFICATE_VALIDATED` | variable, optional | `domain_certificate_validated`           |
+   | `ALARM_EMAIL`                  | variable, optional | `alarm_email`                            |
+   | `OIDC_SUBJECT_PREFIX`          | variable, optional | `github_subject_prefix`                  |
+   | `GOOGLE_CLIENT_ID`             | variable, optional | `google_client_id`                       |
+   | `GOOGLE_CLIENT_SECRET`         | secret, optional   | `google_client_secret`                   |
+
+   For example:
+
+   ```sh
+   gh variable set TF_STATE_BUCKET --env production --body "<bucket>"
+   gh secret set GOOGLE_CLIENT_SECRET --env production   # reads the value from stdin
+   ```
+
+   `github_repository` is the repository the workflow runs in. Every other
+   setting keeps its default; if your `terraform.tfvars` changes one, add
+   it to the plan step in `.github/workflows/deploy-aws.yml` as well, or
+   the workflow's plan would set it back.
+
+Run it from the Actions tab or with `gh workflow run deploy-aws.yml`. Each
+run plans, applies the plan if it changes anything, then runs `deploy.sh`.
+The log shows the plan's summary line, such as
+`Plan: 1 to add, 0 to change, 0 to destroy.`, not the plan itself; run
+`terraform plan` locally to see what changes. A plan that destroys or
+replaces a resource stops the run before applying; to apply it, run the
+workflow again with **allow_destroy** set
+(`gh workflow run deploy-aws.yml -f allow_destroy=true`).
 
 ## Operating it
 
