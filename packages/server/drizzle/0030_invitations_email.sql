@@ -1,0 +1,1 @@
+CREATE INDEX "invitations_email_idx" ON "invitations" USING btree ("email");

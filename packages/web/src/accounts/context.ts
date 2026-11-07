@@ -1,3 +1,4 @@
+import { isOrganizationManager } from '@retainer/shared';
 import { createContext, useContext } from 'react';
 import type { Account, AccountOrganization, AccountWorkspace } from '../api/account.js';
 
@@ -41,4 +42,4 @@ export function lastWorkspace(): string | null {
 
 /** Organizations where the person may create workspaces and invite people. */
 export const managed = (account: Account) =>
-  account.organizations.filter((o) => o.role === 'owner' || o.role === 'admin');
+  account.organizations.filter((o) => isOrganizationManager(o.role));

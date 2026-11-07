@@ -1,19 +1,12 @@
-import { ORGANIZATION_ROLE_DESCRIPTIONS } from '@retainer/shared';
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { type Account, authClient, workspaceHref } from '../api/account.js';
 import { Button, Dialog, Input, Label, Muted, Notice, Panel, Stack } from '../ui/index.js';
-import { AccountFrame, roleWords } from './screens.js';
+import { shortDate as date, roleWords } from './format.js';
+import { AccountFrame } from './screens.js';
 
 /** `/app/account`: you, your passkeys and where you have access (accounts spec 5.1). */
 
 type Passkey = { id: string; name?: string | null; createdAt: string | Date };
-
-const date = (value: string | Date) =>
-  new Date(value).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
 
 export function YourAccount({ account }: { account: Account }) {
   return (
@@ -36,10 +29,7 @@ export function YourAccount({ account }: { account: Account }) {
                     <strong>{organization.name}</strong>
                     <span className="text-muted-foreground">
                       {' '}
-                      · {organization.role.charAt(0).toUpperCase()}
-                      {organization.role.slice(1)}:{' '}
-                      {ORGANIZATION_ROLE_DESCRIPTIONS[organization.role].charAt(0).toLowerCase()}
-                      {ORGANIZATION_ROLE_DESCRIPTIONS[organization.role].slice(1)}
+                      · {roleWords(organization.role, 'organization')}
                     </span>
                   </p>
                 ) : null}

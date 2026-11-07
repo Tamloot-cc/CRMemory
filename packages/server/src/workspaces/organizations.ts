@@ -65,7 +65,7 @@ async function userByEmail(tx: Tx, email: string): Promise<{ id: string; email: 
  * Locks the organization's row, so concurrent membership changes see each
  * other: two owners demoting each other cannot leave none (4.5).
  */
-async function lockOrganization(tx: Tx, organizationId: string): Promise<void> {
+export async function lockOrganization(tx: Tx, organizationId: string): Promise<void> {
   await tx`select 1 from organizations where id = ${organizationId} for update`;
 }
 
@@ -73,7 +73,7 @@ async function lockOrganization(tx: Tx, organizationId: string): Promise<void> {
  * Refuses a change that would leave an organization that has an owner with
  * none. `Default` may start without one (4.2); once it has one, it keeps one.
  */
-async function assertKeepsAnOwner(tx: Tx, organizationId: string, userId: string) {
+export async function assertKeepsAnOwner(tx: Tx, organizationId: string, userId: string) {
   const [{ others } = { others: 0 }] = await tx<{ others: number }[]>`
     select count(*)::int as others from organization_members
     where organization_id = ${organizationId} and role = 'owner' and user_id <> ${userId}`;
@@ -81,7 +81,7 @@ async function assertKeepsAnOwner(tx: Tx, organizationId: string, userId: string
     throw new AppError(
       409,
       'last_owner',
-      'an organization always keeps an owner; make someone else an owner first',
+      'An organization always keeps an owner; make someone else an owner first.',
     );
   }
 }

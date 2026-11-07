@@ -1,37 +1,47 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
   effectiveWorkspaceRole,
+  isKeyAccess,
+  isOrganizationManager,
   isOrganizationRole,
   isWorkspaceRole,
+  KEY_ACCESS,
   type OrganizationRole,
   type WorkspaceRole,
 } from '@retainer/shared';
 import { type ApiKeyListing, type CreatedApiKey, createApiKey } from '../auth/keys.js';
 import type { Sql } from '../db/client.js';
 import { RUNTIME_ROLE } from '../db/client.js';
-import type { ApiKeyScope, InvitedWorkspace } from '../db/schema.js';
+import { isUuid } from '../db/ids.js';
+import type { InvitedWorkspace } from '../db/schema.js';
 import type { Tx } from '../db/tx.js';
 import { getWorkspace, type Workspace } from '../db/workspaces.js';
 import { AppError, forbidden, notFound } from '../errors.js';
 import { SYSTEM_ACTOR } from '../schema-engine/engine.js';
 import { applyTemplate, seedBaseObjects } from '../templates/apply.js';
+import {
+  assertKeepsAnOwner,
+  createOrganization,
+  lockOrganization,
+} from '../workspaces/organizations.js';
 import { slugify } from '../workspaces/workspaces.js';
 
 /**
  * What people do to their own organizations and workspaces from the web app
  * (accounts spec 4.5): every function takes the signed-in person and checks
- * what they may do. `sql` connects as the control role.
+ * what they may do. `sql` connects as the control role. Routes check that
+ * IDs are UUIDs before calling these.
  */
 
 export type Person = { id: string; name: string; email: string };
 
-const isManager = (role: OrganizationRole | null) => role === 'owner' || role === 'admin';
-
-/** Locks the organization's row, so membership changes see each other (4.5). */
-async function lockOrganization(tx: Tx, organizationId: string): Promise<void> {
-  if (!/^[0-9a-f-]{36}$/i.test(organizationId)) throw notFound('organization');
-  await tx`select 1 from organizations where id = ${organizationId} for update`;
-}
+/** Organization owners and admins are admin there already; it is changed on the organization. */
+const organizationAdminConflict = () =>
+  new AppError(
+    409,
+    'organization_admin',
+    "They're admin in every workspace through the organization; change it there.",
+  );
 
 async function organizationRole(
   tx: Tx | Sql,
@@ -45,27 +55,31 @@ async function organizationRole(
 }
 
 type WorkspaceAccess = {
-  workspace: Workspace;
-  organizationRole: OrganizationRole | null;
+  workspace: { id: string; organizationId: string };
   role: WorkspaceRole;
 };
 
 /**
- * The person's access to a workspace. No role is a 404, the same answer as
- * a workspace that does not exist (4.4).
+ * The person's access to a workspace, in one query. No role is a 404, the
+ * same answer as a workspace that does not exist (4.4).
  */
 async function workspaceAccess(tx: Tx | Sql, person: Person, id: string): Promise<WorkspaceAccess> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound('workspace');
-  const [scheduled] = await tx<{ id: string }[]>`
-    select id from workspaces where id = ${id} and deletion_scheduled_at is null`;
-  if (!scheduled) throw notFound('workspace');
-  const workspace = await getWorkspace(tx, id);
-  const orgRole = await organizationRole(tx, workspace.organizationId, person.id);
-  const [direct] = await tx<{ role: WorkspaceRole }[]>`
-    select role from workspace_members where workspace_id = ${workspace.id} and user_id = ${person.id}`;
-  const role = effectiveWorkspaceRole(orgRole, direct?.role ?? null);
-  if (!role) throw notFound('workspace');
-  return { workspace, organizationRole: orgRole, role };
+  const [row] = await tx<
+    {
+      organization_id: string;
+      organization_role: OrganizationRole | null;
+      workspace_role: WorkspaceRole | null;
+    }[]
+  >`
+    select w.organization_id, om.role as organization_role, wm.role as workspace_role
+    from workspaces w
+    left join organization_members om
+      on om.organization_id = w.organization_id and om.user_id = ${person.id}
+    left join workspace_members wm on wm.workspace_id = w.id and wm.user_id = ${person.id}
+    where w.id = ${id} and w.deletion_scheduled_at is null`;
+  const role = row ? effectiveWorkspaceRole(row.organization_role, row.workspace_role) : null;
+  if (!row || !role) throw notFound('workspace');
+  return { workspace: { id, organizationId: row.organization_id }, role };
 }
 
 async function requireWorkspaceAdmin(tx: Tx | Sql, person: Person, id: string) {
@@ -79,10 +93,9 @@ async function requireOrganizationManager(
   person: Person,
   organizationId: string,
 ): Promise<OrganizationRole> {
-  if (!/^[0-9a-f-]{36}$/i.test(organizationId)) throw notFound('organization');
   const role = await organizationRole(tx, organizationId, person.id);
   if (!role) throw notFound('organization');
-  if (!isManager(role)) {
+  if (!isOrganizationManager(role)) {
     throw forbidden('Only an owner or admin of the organization can do this.');
   }
   return role;
@@ -116,8 +129,7 @@ export async function createWorkspaceFor(
 ): Promise<Workspace> {
   const name = input.name.trim();
   if (!name) throw new AppError(400, 'invalid_request', 'a workspace needs a name');
-  const id = await sql.begin(async (transaction) => {
-    const tx = transaction as unknown as Tx;
+  const id = await sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(${FIRST_WORKSPACE_LOCK}, hashtext(${person.id}))`;
     let organizationId: string;
     if (input.organizationId) {
@@ -157,14 +169,14 @@ async function organizationForPerson(tx: Tx, person: Person): Promise<string> {
   const memberships = await tx<{ organization_id: string; role: OrganizationRole }[]>`
     select organization_id, role from organization_members
     where user_id = ${person.id} order by created_at`;
-  const managed = memberships.find((m) => isManager(m.role));
+  const managed = memberships.find((m) => isOrganizationManager(m.role));
   if (managed) return managed.organization_id;
   if (memberships.length > 0) {
     throw forbidden('Ask an owner or admin of your organization to create workspaces.');
   }
-  const [organization] = await tx<{ id: string }[]>`
-    insert into organizations (name) values (${`${person.name || person.email}'s organization`}) returning id`;
-  if (!organization) throw new Error('insert returned no row');
+  const organization = await createOrganization(tx, {
+    name: `${person.name || person.email}'s organization`,
+  });
   await tx`
     insert into organization_members (organization_id, user_id, role)
     values (${organization.id}, ${person.id}, 'owner')`;
@@ -221,24 +233,37 @@ export async function listWorkspaceMembers(
   candidates: { userId: string; name: string; email: string }[];
 }> {
   const access = await workspaceAccess(sql, person, workspaceId);
-  const rows = await sql<
-    {
-      user_id: string;
-      name: string;
-      email: string;
-      organization_role: OrganizationRole;
-      workspace_role: WorkspaceRole | null;
-      joined_at: Date;
-    }[]
-  >`
+  const { id, organizationId } = access.workspace;
+  const [rows, invitations, candidates] = await Promise.all([
+    sql<
+      {
+        user_id: string;
+        name: string;
+        email: string;
+        organization_role: OrganizationRole;
+        workspace_role: WorkspaceRole | null;
+        joined_at: Date;
+      }[]
+    >`
     select u.id as user_id, u.name, u.email, om.role as organization_role,
       wm.role as workspace_role, coalesce(wm.created_at, om.created_at) as joined_at
     from organization_members om
     join users u on u.id = om.user_id
-    left join workspace_members wm on wm.workspace_id = ${access.workspace.id} and wm.user_id = u.id
-    where om.organization_id = ${access.workspace.organizationId}
+    left join workspace_members wm on wm.workspace_id = ${id} and wm.user_id = u.id
+    where om.organization_id = ${organizationId}
       and (om.role in ('owner', 'admin') or wm.role is not null)
-    order by u.name, u.email`;
+    order by u.name, u.email`,
+    pendingInvitations(sql, organizationId, id),
+    access.role === 'admin'
+      ? sql<{ userId: string; name: string; email: string }[]>`
+          select u.id as "userId", u.name, u.email
+          from organization_members om join users u on u.id = om.user_id
+          where om.organization_id = ${organizationId} and om.role = 'member'
+            and not exists (select 1 from workspace_members wm
+              where wm.workspace_id = ${id} and wm.user_id = om.user_id)
+          order by u.name, u.email`
+      : [],
+  ]);
   const members = rows.flatMap((row) => {
     const role = effectiveWorkspaceRole(row.organization_role, row.workspace_role);
     return role
@@ -254,19 +279,6 @@ export async function listWorkspaceMembers(
         ]
       : [];
   });
-  const invitations = (await pendingInvitations(sql, access.workspace.organizationId)).filter(
-    (invitation) => invitation.workspaces.some((w) => w.workspaceId === access.workspace.id),
-  );
-  const candidates =
-    access.role === 'admin'
-      ? await sql<{ userId: string; name: string; email: string }[]>`
-          select u.id as "userId", u.name, u.email
-          from organization_members om join users u on u.id = om.user_id
-          where om.organization_id = ${access.workspace.organizationId} and om.role = 'member'
-            and not exists (select 1 from workspace_members wm
-              where wm.workspace_id = ${access.workspace.id} and wm.user_id = om.user_id)
-          order by u.name, u.email`
-      : [];
   return { role: access.role, members, invitations, candidates: [...candidates] };
 }
 
@@ -281,23 +293,19 @@ export async function setWorkspaceRole(
   if (!isWorkspaceRole(role)) {
     throw new AppError(400, 'invalid_request', 'role must be viewer, editor or admin');
   }
-  await sql.begin(async (transaction) => {
-    const tx = transaction as unknown as Tx;
+  await sql.begin(async (tx) => {
+    // The lock comes first, so the person's own role is read after any
+    // concurrent change to it.
+    await tx`
+      select 1 from organizations
+      where id = (select organization_id from workspaces where id = ${workspaceId})
+      for update`;
     const { workspace } = await requireWorkspaceAdmin(tx, person, workspaceId);
-    await lockOrganization(tx, workspace.organizationId);
-    // Checked again under the lock: their own role may have just changed.
-    await requireWorkspaceAdmin(tx, person, workspaceId);
     const target = await organizationRole(tx, workspace.organizationId, userId);
     if (!target) {
       throw new AppError(409, 'not_a_member', 'invite them to the organization first');
     }
-    if (isManager(target)) {
-      throw new AppError(
-        409,
-        'organization_admin',
-        "They're admin in every workspace through the organization; change it there.",
-      );
-    }
+    if (isOrganizationManager(target)) throw organizationAdminConflict();
     await tx`
       insert into workspace_members (organization_id, workspace_id, user_id, role)
       values (${workspace.organizationId}, ${workspace.id}, ${userId}, ${role})
@@ -317,26 +325,13 @@ export async function removeFromWorkspace(
 ): Promise<void> {
   const { workspace } = await requireWorkspaceAdmin(sql, person, workspaceId);
   const target = await organizationRole(sql, workspace.organizationId, userId);
-  if (isManager(target)) {
-    throw new AppError(
-      409,
-      'organization_admin',
-      "They're admin in every workspace through the organization; change it there.",
-    );
-  }
+  if (target && isOrganizationManager(target)) throw organizationAdminConflict();
   await sql`delete from workspace_members where workspace_id = ${workspace.id} and user_id = ${userId}`;
 }
 
 // ---------------------------------------------------------------------------
 // API keys in the web app (4.5): for agents and integrations only
 // ---------------------------------------------------------------------------
-
-export const KEY_ACCESS = {
-  read: ['read'],
-  write: ['read', 'write'],
-  schema: ['read', 'write', 'schema:write'],
-} as const satisfies Record<string, readonly ApiKeyScope[]>;
-export type KeyAccess = keyof typeof KEY_ACCESS;
 
 export type WorkspaceKey = ApiKeyListing & { createdBy: { id: string; name: string } | null };
 
@@ -348,7 +343,7 @@ export async function createWorkspaceKey(
 ): Promise<CreatedApiKey> {
   const name = input.name.trim();
   if (!name) throw new AppError(400, 'invalid_request', 'a key needs a name');
-  if (!(input.access in KEY_ACCESS)) {
+  if (!isKeyAccess(input.access)) {
     throw new AppError(400, 'invalid_request', 'access must be read, write or schema');
   }
   const { workspace } = await requireWorkspaceAdmin(sql, person, workspaceId);
@@ -357,7 +352,7 @@ export async function createWorkspaceKey(
     name,
     // Always an agent: a key from the web app never speaks for a person.
     actor: { type: 'agent', id: slugify(name) || 'agent', name },
-    scopes: [...KEY_ACCESS[input.access as KeyAccess]],
+    scopes: [...KEY_ACCESS[input.access]],
     createdByUser: person.id,
   });
 }
@@ -397,7 +392,6 @@ export async function revokeWorkspaceKey(
   keyId: string,
 ): Promise<void> {
   const { workspace } = await requireWorkspaceAdmin(sql, person, workspaceId);
-  if (!/^[0-9a-f-]{36}$/i.test(keyId)) throw notFound('key');
   const rows = await sql`
     update api_keys set revoked_at = coalesce(revoked_at, now())
     where id = ${keyId} and workspace_id = ${workspace.id} returning 1`;
@@ -429,32 +423,32 @@ export async function describeOrganization(
   invitations: PendingInvitation[];
 }> {
   const role = await requireOrganizationManager(sql, person, organizationId);
-  const [organization] = await sql<{ name: string }[]>`
-    select name from organizations where id = ${organizationId}`;
-  const workspaces = await sql<{ id: string; slug: string; name: string; members: number }[]>`
+  const [[organization], workspaces, people, roles, invitations] = await Promise.all([
+    sql<{ name: string }[]>`select name from organizations where id = ${organizationId}`,
+    sql<{ id: string; slug: string; name: string; members: number }[]>`
     select w.id, w.slug, w.name,
       (select count(*)::int from workspace_members wm where wm.workspace_id = w.id) as members
     from workspaces w
     where w.organization_id = ${organizationId} and w.deletion_scheduled_at is null
-    order by w.name, w.id`;
-  const people = await sql<
-    { user_id: string; name: string; email: string; role: OrganizationRole }[]
-  >`
+    order by w.name, w.id`,
+    sql<{ user_id: string; name: string; email: string; role: OrganizationRole }[]>`
     select u.id as user_id, u.name, u.email, om.role
     from organization_members om join users u on u.id = om.user_id
     where om.organization_id = ${organizationId}
-    order by case om.role when 'owner' then 0 when 'admin' then 1 else 2 end, u.name`;
-  const roles = await sql<{ user_id: string; workspace_id: string; role: WorkspaceRole }[]>`
-    select user_id, workspace_id, role from workspace_members
-    where organization_id = ${organizationId}`;
+    order by case om.role when 'owner' then 0 when 'admin' then 1 else 2 end, u.name`,
+    sql<{ user_id: string; workspace_id: string; role: WorkspaceRole }[]>`
+      select user_id, workspace_id, role from workspace_members
+      where workspace_id in (select id from workspaces where organization_id = ${organizationId})`,
+    pendingInvitations(sql, organizationId),
+  ]);
+  const direct = new Map(roles.map((r) => [`${r.user_id}:${r.workspace_id}`, r.role]));
   const members = people.map((p) => ({
     userId: p.user_id,
     name: p.name,
     email: p.email,
     role: p.role,
     workspaces: workspaces.flatMap((w) => {
-      const direct = roles.find((r) => r.user_id === p.user_id && r.workspace_id === w.id);
-      const effective = effectiveWorkspaceRole(p.role, direct?.role ?? null);
+      const effective = effectiveWorkspaceRole(p.role, direct.get(`${p.user_id}:${w.id}`) ?? null);
       return effective ? [{ id: w.id, name: w.name, role: effective }] : [];
     }),
   }));
@@ -464,7 +458,7 @@ export async function describeOrganization(
     role,
     members,
     workspaces,
-    invitations: await pendingInvitations(sql, organizationId),
+    invitations,
   };
 }
 
@@ -487,8 +481,7 @@ export async function deleteOrganization(
   person: Person,
   organizationId: string,
 ): Promise<void> {
-  await sql.begin(async (transaction) => {
-    const tx = transaction as unknown as Tx;
+  await sql.begin(async (tx) => {
     await lockOrganization(tx, organizationId);
     const role = await requireOrganizationManager(tx, person, organizationId);
     if (role !== 'owner') throw forbidden('Only an owner can delete the organization.');
@@ -515,8 +508,7 @@ export async function setOrganizationRole(
   if (!isOrganizationRole(role)) {
     throw new AppError(400, 'invalid_request', 'role must be owner, admin or member');
   }
-  await sql.begin(async (transaction) => {
-    const tx = transaction as unknown as Tx;
+  await sql.begin(async (tx) => {
     // The lock comes first, so the person's own role is read after any
     // concurrent change to it.
     await lockOrganization(tx, organizationId);
@@ -541,8 +533,7 @@ export async function removeFromOrganization(
   organizationId: string,
   userId: string,
 ): Promise<void> {
-  await sql.begin(async (transaction) => {
-    const tx = transaction as unknown as Tx;
+  await sql.begin(async (tx) => {
     // The lock comes first, so the person's own role is read after any
     // concurrent change to it.
     await lockOrganization(tx, organizationId);
@@ -559,19 +550,6 @@ export async function removeFromOrganization(
   });
 }
 
-async function assertKeepsAnOwner(tx: Tx, organizationId: string, userId: string) {
-  const [{ others } = { others: 0 }] = await tx<{ others: number }[]>`
-    select count(*)::int as others from organization_members
-    where organization_id = ${organizationId} and role = 'owner' and user_id <> ${userId}`;
-  if (others === 0) {
-    throw new AppError(
-      409,
-      'last_owner',
-      'An organization always keeps an owner; make someone else an owner first.',
-    );
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Invitations (4.5): a link to copy; Retainer sends no email
 // ---------------------------------------------------------------------------
@@ -579,9 +557,11 @@ async function assertKeepsAnOwner(tx: Tx, organizationId: string, userId: string
 const INVITATION_DAYS = 7;
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
+/** Pending invitations to an organization, or only those that include one workspace. */
 async function pendingInvitations(
-  sql: Sql | Tx,
+  sql: Sql,
   organizationId: string,
+  workspaceId?: string,
 ): Promise<PendingInvitation[]> {
   const rows = await sql<
     {
@@ -597,6 +577,7 @@ async function pendingInvitations(
     from invitations i left join users u on u.id = i.invited_by
     where i.organization_id = ${organizationId} and i.accepted_at is null
       and i.revoked_at is null and i.expires_at > now()
+      ${workspaceId ? sql`and i.workspaces @> ${sql.json([{ workspaceId }])}` : sql``}
     order by i.created_at desc`;
   return rows.map((row) => ({
     id: row.id,
@@ -626,14 +607,17 @@ export async function createInvitation(
   if (input.role === 'owner' && mine !== 'owner') {
     throw forbidden('Only an owner can invite an owner.');
   }
-  const workspaces: InvitedWorkspace[] = [];
-  for (const w of input.workspaces) {
+  const workspaces: InvitedWorkspace[] = input.workspaces.map((w) => {
     if (!isWorkspaceRole(w.role)) {
       throw new AppError(400, 'invalid_request', 'workspace role must be viewer, editor or admin');
     }
-    const workspace = await getWorkspace(sql, w.workspaceId).catch(() => null);
-    if (!workspace || workspace.organizationId !== organizationId) throw notFound('workspace');
-    workspaces.push({ workspaceId: workspace.id, role: w.role });
+    return { workspaceId: w.workspaceId, role: w.role };
+  });
+  const ids = [...new Set(workspaces.map((w) => w.workspaceId))];
+  if (ids.length) {
+    const found = await sql`
+      select 1 from workspaces where id = any(${ids}::uuid[]) and organization_id = ${organizationId}`;
+    if (found.length !== ids.length) throw notFound('workspace');
   }
   const token = randomBytes(32).toString('base64url');
   const [row] = await sql<{ id: string; expires_at: Date }[]>`
@@ -652,7 +636,6 @@ export async function revokeInvitation(
   invitationId: string,
 ): Promise<void> {
   await requireOrganizationManager(sql, person, organizationId);
-  if (!/^[0-9a-f-]{36}$/i.test(invitationId)) throw notFound('invitation');
   const rows = await sql`
     update invitations set revoked_at = now()
     where id = ${invitationId} and organization_id = ${organizationId}
@@ -674,7 +657,7 @@ export type InvitationPreview = {
 
 /** An invitation by its link token, or by its ID for the person it was sent to. */
 async function findInvitation(sql: Sql | Tx, person: Person, tokenOrId: string) {
-  const byId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tokenOrId);
+  const byId = isUuid(tokenOrId);
   const [row] = await sql<
     {
       id: string;
@@ -740,8 +723,7 @@ export async function acceptInvitation(
   person: Person,
   tokenOrId: string,
 ): Promise<{ organizationId: string }> {
-  return sql.begin(async (transaction) => {
-    const tx = transaction as unknown as Tx;
+  return sql.begin(async (tx) => {
     const found = await findInvitation(tx, person, tokenOrId);
     await lockOrganization(tx, found.organization_id);
     const row = await findInvitation(tx, person, tokenOrId);
@@ -755,16 +737,13 @@ export async function acceptInvitation(
       insert into organization_members (organization_id, user_id, role)
       values (${row.organization_id}, ${person.id}, ${row.role})
       on conflict (organization_id, user_id) do nothing`;
-    for (const w of row.workspaces) {
-      const [workspace] = await tx`
-        select 1 from workspaces
-        where id = ${w.workspaceId} and organization_id = ${row.organization_id}`;
-      if (!workspace) continue;
-      await tx`
-        insert into workspace_members (organization_id, workspace_id, user_id, role)
-        values (${row.organization_id}, ${w.workspaceId}, ${person.id}, ${w.role})
-        on conflict (workspace_id, user_id) do nothing`;
-    }
+    // Workspaces moved or deleted since the invitation are skipped.
+    await tx`
+      insert into workspace_members (organization_id, workspace_id, user_id, role)
+      select w.organization_id, w.id, ${person.id}, invited.role
+      from jsonb_to_recordset(${tx.json(row.workspaces)}) as invited("workspaceId" uuid, role text)
+      join workspaces w on w.id = invited."workspaceId" and w.organization_id = ${row.organization_id}
+      on conflict (workspace_id, user_id) do nothing`;
     await tx`update invitations set accepted_at = now() where id = ${row.id}`;
     return { organizationId: row.organization_id };
   });

@@ -4,6 +4,7 @@ import type { Context } from 'hono';
 import { getCookie } from 'hono/cookie';
 import type { Caller } from '../caller.js';
 import type { Sql } from '../db/client.js';
+import { isUuid } from '../db/ids.js';
 import { AppError } from '../errors.js';
 
 /**
@@ -29,8 +30,6 @@ const SESSION_COOKIE_NAMES = [
 
 /** The header that names the workspace on a cookie request (A7). */
 export const WORKSPACE_HEADER = 'X-Retainer-Workspace';
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The signed session cookie's value, if the request has one. */
 export function accountSessionCookie(c: Context): string | undefined {
@@ -58,7 +57,7 @@ export function requestedWorkspace(c: Context): string {
   if (!workspace) {
     throw new AppError(400, 'invalid_request', `send ${WORKSPACE_HEADER} with the workspace ID`);
   }
-  if (!UUID.test(workspace)) {
+  if (!isUuid(workspace)) {
     throw new AppError(400, 'invalid_request', `${WORKSPACE_HEADER} must be a workspace ID`);
   }
   return workspace;

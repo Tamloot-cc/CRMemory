@@ -1,5 +1,6 @@
 import { AppError } from '../errors.js';
 import type { Sql } from './client.js';
+import { isUuid } from './ids.js';
 import type { Tx } from './tx.js';
 
 export type Workspace = {
@@ -38,9 +39,8 @@ function toWorkspace(row: WorkspaceRow): Workspace {
 }
 
 export async function getWorkspace(sql: Sql | Tx, idOrSlug: string): Promise<Workspace> {
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug);
   const [row] = await sql<WorkspaceRow[]>`
-    select * from workspaces where ${isUuid ? sql`id = ${idOrSlug}` : sql`slug = ${idOrSlug}`}`;
+    select * from workspaces where ${isUuid(idOrSlug) ? sql`id = ${idOrSlug}` : sql`slug = ${idOrSlug}`}`;
   if (!row) throw new AppError(404, 'not_found', `workspace "${idOrSlug}" not found`);
   return toWorkspace(row);
 }

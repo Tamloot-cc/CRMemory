@@ -1,4 +1,5 @@
-import type { OrganizationRole, Scope, WorkspaceRole } from '@retainer/shared';
+import { RetainerApiError } from '@retainer/sdk';
+import type { KeyAccess, OrganizationRole, Scope, WorkspaceRole } from '@retainer/shared';
 
 /**
  * /account (accounts spec 4.5): the signed-in person, their organizations,
@@ -46,7 +47,6 @@ export type WorkspaceMember = {
   joinedAt: string;
 };
 
-export type KeyAccess = 'read' | 'write' | 'schema';
 export type WorkspaceKey = {
   id: string;
   name: string;
@@ -82,15 +82,6 @@ export type InvitationPreview = {
   forYou: boolean;
 };
 
-export class AccountError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 async function call<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const response = await fetch(path, {
     method: init.method ?? 'GET',
@@ -104,8 +95,12 @@ async function call<T>(path: string, init: { method?: string; body?: unknown } =
   if (response.status === 204) return undefined as T;
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const message = (body as { error?: { message?: string } } | null)?.error?.message;
-    throw new AccountError(response.status, message ?? `The request failed (${response.status}).`);
+    const error = (body as { error?: { code?: string; message?: string } } | null)?.error;
+    throw new RetainerApiError(
+      response.status,
+      error?.code ?? 'request_failed',
+      error?.message ?? `The request failed (${response.status}).`,
+    );
   }
   return body as T;
 }

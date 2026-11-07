@@ -16,8 +16,9 @@ export function createAccountsServer(input: {
   /** A connection as the control role. */
   sql: Sql;
   /**
-   * Another, for Better Auth alone: its drizzle adapter replaces the pool's
-   * date and JSON parsers, which would break every raw query sharing it.
+   * Another, for Better Auth alone. Its adapter runs on drizzle-orm, whose
+   * postgres-js driver replaces the pool's date and JSON parsers; every raw
+   * query sharing that pool would read strings instead of dates.
    */
   authSql: Sql;
   clientIp: (c: Context) => string | undefined;

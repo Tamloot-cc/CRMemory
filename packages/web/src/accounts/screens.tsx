@@ -1,4 +1,3 @@
-import { WORKSPACE_ROLE_DESCRIPTIONS } from '@retainer/shared';
 import { type FormEvent, type ReactNode, useEffect, useState } from 'react';
 import {
   type Account,
@@ -11,13 +10,9 @@ import {
 import { BrandMark } from '../ui/brand.js';
 import { Button, Input, Label, Muted, Notice, SignInFrame, Stack } from '../ui/index.js';
 import { allWorkspaces, managed } from './context.js';
+import { roleWords } from './format.js';
 
 /** Screens outside any workspace in accounts mode (accounts spec 5). */
-
-const roleWords = (role: keyof typeof WORKSPACE_ROLE_DESCRIPTIONS) =>
-  `${role.charAt(0).toUpperCase()}${role.slice(1)}: ${WORKSPACE_ROLE_DESCRIPTIONS[role].charAt(0).toLowerCase()}${WORKSPACE_ROLE_DESCRIPTIONS[role].slice(1)}`;
-
-export { roleWords };
 
 /** Plain words for what went wrong when Google or a passkey sign-in fails. */
 function signInError(code: string | null): string {
@@ -134,7 +129,8 @@ export function FirstRun({ account }: { account: Account }) {
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false);
   // A plain member of an organization cannot create one; their admins can.
-  const canCreate = account.organizations.length === 0 || managed(account).length > 0;
+  const managedHere = managed(account)[0];
+  const canCreate = account.organizations.length === 0 || managedHere !== undefined;
   async function create(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const name = (e.currentTarget.elements.namedItem('name') as HTMLInputElement).value.trim();
@@ -144,7 +140,7 @@ export function FirstRun({ account }: { account: Account }) {
     try {
       const workspace = await accountApi.createWorkspace({
         name,
-        ...(managed(account)[0] ? { organizationId: managed(account)[0]?.id } : {}),
+        ...(managedHere ? { organizationId: managedHere.id } : {}),
       });
       window.location.assign(workspaceHref(workspace.slug));
     } catch (e) {

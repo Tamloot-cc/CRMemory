@@ -1,6 +1,7 @@
 import type { OrganizationRole } from '@retainer/shared';
 import { AppError } from '../errors.js';
 import type { Sql } from './client.js';
+import { isUuid } from './ids.js';
 import type { Tx } from './tx.js';
 
 /** The organization existing workspaces move into, and the CLI's default (4.2). */
@@ -22,8 +23,6 @@ const toOrganization = (row: OrganizationRow): Organization => ({
   createdAt: row.created_at.toISOString(),
 });
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
  * An organization by ID or by its exact name. Names are not unique, so a
  * name two organizations share is refused; use the ID.
@@ -31,7 +30,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function getOrganization(sql: Sql | Tx, idOrName: string): Promise<Organization> {
   const rows = await sql<OrganizationRow[]>`
     select id, name, created_at from organizations
-    where ${UUID.test(idOrName) ? sql`id = ${idOrName}` : sql`name = ${idOrName}`}
+    where ${isUuid(idOrName) ? sql`id = ${idOrName}` : sql`name = ${idOrName}`}
     order by created_at limit 2`;
   const [row] = rows;
   if (!row) throw new AppError(404, 'not_found', `organization "${idOrName}" not found`);

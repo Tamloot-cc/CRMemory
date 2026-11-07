@@ -1,11 +1,15 @@
-import type { OrganizationRole, WorkspaceRole } from '@retainer/shared';
+import {
+  effectiveWorkspaceRole,
+  type OrganizationRole,
+  type WorkspaceRole,
+} from '@retainer/shared';
 import { type Context, Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { z } from 'zod';
 import { requireWebHeader } from '../auth/session.js';
 import type { Sql } from '../db/client.js';
 import { AppError } from '../errors.js';
-import { readBody } from '../http/request.js';
+import { idParam, readBody } from '../http/request.js';
 import { errorResponse, toAppError } from '../http/response.js';
 import { type Auth, CLIENT_IP_HEADER } from './auth.js';
 import type { Person } from './people.js';
@@ -63,65 +67,62 @@ export function createAccountsApp(deps: AccountsDeps) {
   account.post('/workspaces', async (c) => {
     const body = await readBody(
       c,
-      named.extend({ template: z.string().optional(), organizationId: z.string().optional() }),
+      named.extend({ template: z.string().optional(), organizationId: z.uuid().optional() }),
     );
     return c.json(await people.createWorkspaceFor(sql, c.get('person'), body), 201);
   });
   account.patch('/workspaces/:id', async (c) => {
     const { name } = await readBody(c, named);
-    return c.json(await people.renameWorkspace(sql, c.get('person'), c.req.param('id'), name));
+    return c.json(await people.renameWorkspace(sql, c.get('person'), idParam(c), name));
   });
   account.get('/workspaces/:id/members', async (c) =>
-    c.json(await people.listWorkspaceMembers(sql, c.get('person'), c.req.param('id'))),
+    c.json(await people.listWorkspaceMembers(sql, c.get('person'), idParam(c))),
   );
   account.put('/workspaces/:id/members/:userId', async (c) => {
     const body = await readBody(c, role);
-    const { id, userId } = c.req.param();
+    const [id, userId] = [idParam(c), idParam(c, 'userId')];
     await people.setWorkspaceRole(sql, c.get('person'), id, userId, body.role);
     return c.body(null, 204);
   });
   account.delete('/workspaces/:id/members/:userId', async (c) => {
-    const { id, userId } = c.req.param();
+    const [id, userId] = [idParam(c), idParam(c, 'userId')];
     await people.removeFromWorkspace(sql, c.get('person'), id, userId);
     return c.body(null, 204);
   });
   account.get('/workspaces/:id/keys', async (c) =>
-    c.json({ keys: await people.listWorkspaceKeys(sql, c.get('person'), c.req.param('id')) }),
+    c.json({ keys: await people.listWorkspaceKeys(sql, c.get('person'), idParam(c)) }),
   );
   account.post('/workspaces/:id/keys', async (c) => {
     const body = await readBody(c, named.extend({ access: z.string() }));
-    return c.json(
-      await people.createWorkspaceKey(sql, c.get('person'), c.req.param('id'), body),
-      201,
-    );
+    return c.json(await people.createWorkspaceKey(sql, c.get('person'), idParam(c), body), 201);
   });
   account.delete('/workspaces/:id/keys/:keyId', async (c) => {
-    const { id, keyId } = c.req.param();
+    const [id, keyId] = [idParam(c), idParam(c, 'keyId')];
     await people.revokeWorkspaceKey(sql, c.get('person'), id, keyId);
     return c.body(null, 204);
   });
 
   // Organizations
   account.get('/organizations/:id', async (c) =>
-    c.json(await people.describeOrganization(sql, c.get('person'), c.req.param('id'))),
+    c.json(await people.describeOrganization(sql, c.get('person'), idParam(c))),
   );
   account.patch('/organizations/:id', async (c) => {
     const { name } = await readBody(c, named);
-    await people.renameOrganization(sql, c.get('person'), c.req.param('id'), name);
+    await people.renameOrganization(sql, c.get('person'), idParam(c), name);
     return c.body(null, 204);
   });
   account.delete('/organizations/:id', async (c) => {
-    await people.deleteOrganization(sql, c.get('person'), c.req.param('id'));
+    await people.deleteOrganization(sql, c.get('person'), idParam(c));
     return c.body(null, 204);
   });
   account.patch('/organizations/:id/members/:userId', async (c) => {
     const body = await readBody(c, role);
-    const { id, userId } = c.req.param();
+    const [id, userId] = [idParam(c), idParam(c, 'userId')];
     await people.setOrganizationRole(sql, c.get('person'), id, userId, body.role);
     return c.body(null, 204);
   });
   account.delete('/organizations/:id/members/:userId', async (c) => {
-    const { id, userId } = c.req.param();
+    const [id, userId] = [idParam(c), idParam(c, 'userId')];
     await people.removeFromOrganization(sql, c.get('person'), id, userId);
     return c.body(null, 204);
   });
@@ -134,17 +135,17 @@ export function createAccountsApp(deps: AccountsDeps) {
         email: z.string().max(320),
         role: z.string(),
         workspaces: z
-          .array(z.object({ workspaceId: z.string(), role: z.string() }))
+          .array(z.object({ workspaceId: z.uuid(), role: z.string() }))
           .max(100)
           .default([]),
       }),
     );
-    const created = await people.createInvitation(sql, c.get('person'), c.req.param('id'), body);
+    const created = await people.createInvitation(sql, c.get('person'), idParam(c), body);
     const link = `${deps.publicOrigin}/app/invite/${created.token}`;
     return c.json({ id: created.id, link, expiresAt: created.expiresAt }, 201);
   });
   account.delete('/organizations/:id/invitations/:invitationId', async (c) => {
-    const { id, invitationId } = c.req.param();
+    const [id, invitationId] = [idParam(c), idParam(c, 'invitationId')];
     await people.revokeInvitation(sql, c.get('person'), id, invitationId);
     return c.body(null, 204);
   });
@@ -174,10 +175,7 @@ function signedIn(deps: AccountsDeps) {
     }
     if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) requireWebHeader(c, deps.publicOrigin);
     const found = await deps.auth.getSession(c.req.raw.headers);
-    if (!found) throw new AppError(401, 'unauthorized', 'sign in first');
-    const [user] = await deps.sql<{ disabled: boolean }[]>`
-      select disabled_at is not null as disabled from users where id = ${found.user.id}`;
-    if (!user || user.disabled) throw new AppError(401, 'unauthorized', 'sign in first');
+    if (!found || found.user.disabledAt) throw new AppError(401, 'unauthorized', 'sign in first');
     c.set('person', { id: found.user.id, name: found.user.name, email: found.user.email });
     c.header('Cache-Control', 'no-store');
     await next();
@@ -210,28 +208,31 @@ export type AccountDescription = {
  * with their effective role (4.3). A workspace being deleted is left out.
  */
 export async function describeAccount(sql: Sql, person: Person): Promise<AccountDescription> {
-  const rows = await sql<
-    {
-      organization_id: string;
-      organization_name: string;
-      organization_role: OrganizationRole;
-      workspace_id: string | null;
-      slug: string | null;
-      workspace_name: string | null;
-      workspace_role: WorkspaceRole | null;
-    }[]
-  >`
+  const [rows, invitations] = await Promise.all([
+    sql<
+      {
+        organization_id: string;
+        organization_name: string;
+        organization_role: OrganizationRole;
+        workspace_id: string | null;
+        slug: string | null;
+        workspace_name: string | null;
+        workspace_role: WorkspaceRole | null;
+      }[]
+    >`
     select o.id as organization_id, o.name as organization_name,
       om.role as organization_role,
       w.id as workspace_id, w.slug, w.name as workspace_name,
-      case when om.role in ('owner', 'admin') then 'admin' else wm.role end as workspace_role
+      wm.role as workspace_role
     from organization_members om
     join organizations o on o.id = om.organization_id
     left join workspaces w
       on w.organization_id = o.id and w.deletion_scheduled_at is null
     left join workspace_members wm on wm.workspace_id = w.id and wm.user_id = om.user_id
     where om.user_id = ${person.id}
-    order by o.created_at, o.id, w.name, w.id`;
+    order by o.created_at, o.id, w.name, w.id`,
+    people.invitationsFor(sql, person),
+  ]);
   const organizations = new Map<string, AccountOrganization>();
   for (const row of rows) {
     let organization = organizations.get(row.organization_id);
@@ -244,18 +245,19 @@ export async function describeAccount(sql: Sql, person: Person): Promise<Account
       };
       organizations.set(row.organization_id, organization);
     }
-    if (row.workspace_id && row.slug && row.workspace_name && row.workspace_role) {
+    const role = effectiveWorkspaceRole(row.organization_role, row.workspace_role);
+    if (row.workspace_id && row.slug && row.workspace_name && role) {
       organization.workspaces.push({
         id: row.workspace_id,
         slug: row.slug,
         name: row.workspace_name,
-        role: row.workspace_role,
+        role,
       });
     }
   }
   return {
     user: person,
     organizations: [...organizations.values()],
-    invitations: await people.invitationsFor(sql, person),
+    invitations,
   };
 }

@@ -1,4 +1,6 @@
 import {
+  isOrganizationManager,
+  type KeyAccess,
   ORGANIZATION_ROLE_DESCRIPTIONS,
   type OrganizationRole,
   WORKSPACE_ROLE_DESCRIPTIONS,
@@ -8,7 +10,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, type ReactNode, useState } from 'react';
 import {
   account as accountApi,
-  type KeyAccess,
   type PendingInvitation,
   type WorkspaceKey,
   workspaceHref,
@@ -35,35 +36,17 @@ import {
   Tr,
 } from '../ui/index.js';
 import { type AccountState, useAccount } from './context.js';
+import {
+  capital,
+  shortDate as date,
+  KEY_ACCESS_OPTIONS,
+  keyAccessWords,
+  organizationRoleOptions,
+  roleLegend,
+  WORKSPACE_ROLE_OPTIONS,
+} from './format.js';
 
 /** `/app/w/<slug>/settings`: people, agents and the workspace (accounts spec 5.1). */
-
-const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
-const date = (value: string) =>
-  new Date(value).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-
-const WORKSPACE_ROLE_OPTIONS = (['viewer', 'editor', 'admin'] as const).map((role) => ({
-  value: role,
-  label: capital(role),
-  hint: WORKSPACE_ROLE_DESCRIPTIONS[role],
-}));
-
-const ACCESS: { value: KeyAccess; label: string }[] = [
-  { value: 'read', label: 'Read only' },
-  { value: 'write', label: 'Read and write' },
-  { value: 'schema', label: 'Read, write and change structure' },
-];
-const accessWords = (key: WorkspaceKey) =>
-  key.scopes.includes('schema:write')
-    ? 'Read, write and change structure'
-    : key.scopes.includes('write')
-      ? 'Read and write'
-      : 'Read only';
 
 type Tab = 'members' | 'agents' | 'workspace' | 'organization';
 
@@ -73,7 +56,7 @@ export function SettingsPage() {
   const organization = useQuery({
     queryKey: ['account', 'organization', state?.organization.id],
     queryFn: () => accountApi.organization(state?.organization.id ?? ''),
-    enabled: !!state && state.organization.role !== 'member',
+    enabled: !!state && isOrganizationManager(state.organization.role),
   });
   if (!state)
     return (
@@ -157,8 +140,8 @@ function MembersTab({ state }: { state: AccountState }) {
       <Notice>Loading members…</Notice>
     );
   const admin = members.data.role === 'admin';
-  const manager = state.organization.role !== 'member';
-  const askable = members.data.members.filter((m) => m.organizationRole !== 'member');
+  const manager = isOrganizationManager(state.organization.role);
+  const askable = members.data.members.filter((m) => isOrganizationManager(m.organizationRole));
   return (
     <Stack>
       <div className="flex flex-wrap items-center gap-2">
@@ -184,7 +167,7 @@ function MembersTab({ state }: { state: AccountState }) {
       ) : null}
       <Table headers={[{ label: 'Person' }, { label: 'Role' }, { label: 'Joined' }, { label: '' }]}>
         {members.data.members.map((m) => {
-          const throughOrganization = m.organizationRole !== 'member';
+          const throughOrganization = isOrganizationManager(m.organizationRole);
           const you = m.userId === state.account.user.id;
           return (
             <Tr key={m.userId}>
@@ -236,9 +219,7 @@ function MembersTab({ state }: { state: AccountState }) {
           {askable.map((m) => m.name).join(' or ') || 'an organization admin'}.
         </Muted>
       ) : null}
-      <Muted small>
-        {WORKSPACE_ROLE_OPTIONS.map((o) => `${o.label}: ${lower(o.hint)}.`).join(' ')}
-      </Muted>
+      <Muted small>{roleLegend('workspace')}</Muted>
       {members.data.invitations.length ? (
         <Invitations
           invitations={members.data.invitations}
@@ -366,11 +347,7 @@ function InviteDialog({
       setError((e as Error).message);
     }
   }
-  const roleOptions = workspace
-    ? WORKSPACE_ROLE_OPTIONS
-    : (['member', 'admin', ...(canInviteOwner ? ['owner'] : [])] as OrganizationRole[]).map(
-        (r) => ({ value: r, label: capital(r), hint: ORGANIZATION_ROLE_DESCRIPTIONS[r] }),
-      );
+  const roleOptions = workspace ? WORKSPACE_ROLE_OPTIONS : organizationRoleOptions(canInviteOwner);
   return (
     <Dialog
       open={open}
@@ -496,7 +473,7 @@ function AgentsTab({ state }: { state: AccountState }) {
                   {k.prefix}…
                 </span>
               </Td>
-              <Td>{accessWords(k)}</Td>
+              <Td>{keyAccessWords(k.scopes)}</Td>
               <Td>
                 {date(k.createdAt)}
                 {k.createdBy ? (
@@ -614,7 +591,7 @@ function CreateKey({
             <Segmented
               label="What it can do"
               value={access}
-              options={ACCESS}
+              options={KEY_ACCESS_OPTIONS}
               onChange={setAccess}
             />
             {error ? <Notice error>{error}</Notice> : null}
@@ -645,8 +622,7 @@ function Instructions({ title, children }: { title: string; children: string }) 
 // ---------------------------------------------------------------------------
 
 function WorkspaceTab({ state }: { state: AccountState }) {
-  const [error, setError] = useState(''),
-    [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
   async function rename(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const name = (e.currentTarget.elements.namedItem('name') as HTMLInputElement).value.trim();
@@ -655,7 +631,6 @@ function WorkspaceTab({ state }: { state: AccountState }) {
       await accountApi.renameWorkspace(state.workspace.id, name);
       // The name is in the sidebar and the switcher; a reload shows it everywhere.
       window.location.reload();
-      setSaved(true);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -679,7 +654,6 @@ function WorkspaceTab({ state }: { state: AccountState }) {
             {workspaceHref(state.workspace.slug)}, so links and agents keep working.
           </Muted>
           {error ? <Notice error>{error}</Notice> : null}
-          {saved ? <Notice>Saved.</Notice> : null}
           <div>
             <Button type="submit" variant="primary">
               Save
@@ -771,13 +745,7 @@ function OrganizationTab({ state }: { state: AccountState }) {
                   <SelectMenu
                     label={`Organization role for ${m.name}`}
                     size="small"
-                    options={(
-                      ['member', 'admin', ...(owner ? ['owner'] : [])] as OrganizationRole[]
-                    ).map((r) => ({
-                      value: r,
-                      label: capital(r),
-                      hint: ORGANIZATION_ROLE_DESCRIPTIONS[r],
-                    }))}
+                    options={organizationRoleOptions(owner)}
                     value={m.role}
                     onChange={(role) =>
                       run(
@@ -809,11 +777,7 @@ function OrganizationTab({ state }: { state: AccountState }) {
           );
         })}
       </Table>
-      <Muted small>
-        {(['owner', 'admin', 'member'] as const)
-          .map((r) => `${capital(r)}: ${lower(ORGANIZATION_ROLE_DESCRIPTIONS[r])}.`)
-          .join(' ')}
-      </Muted>
+      <Muted small>{roleLegend('organization')}</Muted>
       {org.invitations.length ? (
         <Invitations
           invitations={org.invitations}

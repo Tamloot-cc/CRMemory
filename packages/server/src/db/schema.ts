@@ -276,6 +276,8 @@ export const invitations = pgTable(
   },
   (t) => [
     index('invitations_organization_idx').on(t.organizationId),
+    // GET /account looks up the invitations sent to the person's address.
+    index('invitations_email_idx').on(t.email),
     check('invitations_role', sql`${t.role} in ('owner', 'admin', 'member')`),
     check('invitations_email_lower', sql`${t.email} = lower(${t.email})`),
   ],

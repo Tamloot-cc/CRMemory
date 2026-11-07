@@ -211,6 +211,13 @@
       "when": 1794058822536,
       "tag": "0029_auth_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1794060912898,
+      "tag": "0030_invitations_email",
+      "breakpoints": true
     }
   ]
 }

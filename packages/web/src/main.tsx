@@ -1,4 +1,5 @@
-import type { Session } from '@retainer/shared';
+import { RetainerApiError } from '@retainer/sdk';
+import { isOrganizationManager, type Session } from '@retainer/shared';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createRootRoute,
@@ -15,16 +16,17 @@ import { createRoot } from 'react-dom/client';
 import {
   AccountContext,
   type AccountState,
+  allWorkspaces,
   lastWorkspace,
-  managed,
   rememberWorkspace,
   useAccount,
 } from './accounts/context.js';
+import { capital } from './accounts/format.js';
 import {
   type Account,
-  AccountError,
   account as accountApi,
   signOutOfAccount,
+  workspaceHref,
 } from './api/account.js';
 import {
   AuthContext,
@@ -125,26 +127,24 @@ function Layout() {
             user={{
               name: session.actor.name || session.actor.id,
               detail: accountState
-                ? capitalize(accountState.workspace.role)
-                : capitalize(session.actor.type),
+                ? capital(accountState.workspace.role)
+                : capital(session.actor.type),
             }}
             {...(accountState
               ? {
                   accounts: {
-                    workspaces: accountState.account.organizations.flatMap((o) =>
-                      o.workspaces.map((w) => ({
+                    workspaces: allWorkspaces(accountState.account).map(
+                      ({ workspace: w, organization: o }) => ({
                         id: w.id,
                         name:
                           accountState.account.organizations.length > 1
                             ? `${w.name} · ${o.name}`
                             : w.name,
-                        href: `/app/w/${w.slug}/`,
+                        href: workspaceHref(w.slug),
                         current: w.id === accountState.workspace.id,
-                      })),
+                      }),
                     ),
-                    ...(managed(accountState.account).some(
-                      (o) => o.id === accountState.organization.id,
-                    )
+                    ...(isOrganizationManager(accountState.organization.role)
                       ? { onNewWorkspace: () => setCreating(true) }
                       : {}),
                     onSettings: () => void navigate({ to: '/settings' }),
@@ -187,7 +187,6 @@ function Layout() {
     </WorkspaceContext.Provider>
   );
 }
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 function validateSearch(raw: Record<string, unknown>): ViewSearch {
   const result: ViewSearch = {};
   for (const key of [
@@ -439,20 +438,18 @@ function AccountsApp({ account }: { account: Account }) {
   if (invite) return <LazyInvite token={invite} account={account} />;
   if (path === '/app/account' || path === '/app/account/')
     return <LazyYourAccount account={account} />;
+  const reachable = allWorkspaces(account);
   if (workspaceSlug) {
-    for (const organization of account.organizations)
-      for (const workspace of organization.workspaces)
-        if (workspace.slug === workspaceSlug) {
-          rememberWorkspace(workspace.slug);
-          openWorkspace(workspace.id);
-          return <AccountWorkspaceApp state={{ account, workspace, organization }} />;
-        }
-    return <LazyNoAccess account={account} />;
+    const here = reachable.find(({ workspace }) => workspace.slug === workspaceSlug);
+    if (!here) return <LazyNoAccess account={account} />;
+    rememberWorkspace(here.workspace.slug);
+    openWorkspace(here.workspace.id);
+    return <AccountWorkspaceApp state={{ account, ...here }} />;
   }
-  const reachable = account.organizations.flatMap((o) => o.workspaces);
-  const next = reachable.find((w) => w.slug === lastWorkspace()) ?? reachable[0];
+  const last = lastWorkspace();
+  const next = reachable.find(({ workspace }) => workspace.slug === last) ?? reachable[0];
   if (next) {
-    window.location.replace(`/app/w/${next.slug}/`);
+    window.location.replace(workspaceHref(next.workspace.slug));
     return null;
   }
   return <LazyFirstRun account={account} />;
@@ -483,9 +480,9 @@ function App() {
       (account) => setBoot({ mode: 'account', account }),
       (e: Error) =>
         setBoot(
-          e instanceof AccountError && e.status === 404
+          e instanceof RetainerApiError && e.status === 404
             ? { mode: 'key' }
-            : e instanceof AccountError && e.status === 401
+            : e instanceof RetainerApiError && e.status === 401
               ? { mode: 'signed-out' }
               : { mode: 'error', message: e.message },
         ),

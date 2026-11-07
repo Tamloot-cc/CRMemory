@@ -51,8 +51,11 @@ start() {
 
 # Accounts mode adds the control function (functions.tf).
 services=("$name-api" "$name-consolidate")
-if aws lambda get-function --function-name "$name-control" >/dev/null 2>&1; then
+if found="$(aws lambda get-function --function-name "$name-control" 2>&1)"; then
   services+=("$name-control")
+elif ! grep -q ResourceNotFoundException <<<"$found"; then
+  echo "$found" >&2
+  exit 1
 fi
 
 update "$name-ops"

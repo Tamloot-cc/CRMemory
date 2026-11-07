@@ -70,9 +70,11 @@ if (role === 'api' || role === 'all' || role === 'control') {
           accountsSecret: config.RETAINER_AUTH_SECRET,
         });
   const fetch = (request: Request, env: Record<string, unknown>) => {
-    const { pathname } = new URL(request.url);
-    if (accounts && (pathname === '/account' || pathname.startsWith('/account/'))) {
-      return accounts.fetch(request, env);
+    if (accounts) {
+      const { pathname } = new URL(request.url);
+      if (pathname === '/account' || pathname.startsWith('/account/')) {
+        return accounts.fetch(request, env);
+      }
     }
     if (app) return app.fetch(request, env);
     return Response.json({ error: { code: 'not_found', message: 'not found' } }, { status: 404 });

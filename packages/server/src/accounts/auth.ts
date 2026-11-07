@@ -59,7 +59,13 @@ export type AuthOptions = {
 
 /** A signed-in person, as Better Auth reads their session. */
 export type AccountSession = {
-  user: { id: string; name: string; email: string; image?: string | null | undefined };
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    image?: string | null | undefined;
+    disabledAt?: Date | null | undefined;
+  };
   session: { id: string; expiresAt: Date };
 };
 

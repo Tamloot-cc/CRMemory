@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   effectiveWorkspaceRole,
+  isKeyAccess,
+  isOrganizationManager,
+  KEY_ACCESS,
+  keyAccessOf,
   ORGANIZATION_ROLES,
   WORKSPACE_ROLE_DESCRIPTIONS,
   WORKSPACE_ROLE_SCOPES,
@@ -46,5 +50,21 @@ describe('effectiveWorkspaceRole', () => {
       expect(effectiveWorkspaceRole(null, role)).toBeNull();
     }
     expect(ORGANIZATION_ROLES).toEqual(['owner', 'admin', 'member']);
+  });
+});
+
+describe('organization managers and key access', () => {
+  it('treats owners and admins as managers', () => {
+    expect(ORGANIZATION_ROLES.filter(isOrganizationManager)).toEqual(['owner', 'admin']);
+  });
+
+  it('gives web-app keys every access but admin, and reads it back from scopes', () => {
+    for (const access of Object.keys(KEY_ACCESS) as (keyof typeof KEY_ACCESS)[]) {
+      expect(isKeyAccess(access)).toBe(true);
+      expect(KEY_ACCESS[access]).not.toContain('admin');
+      expect(keyAccessOf(KEY_ACCESS[access])).toBe(access);
+    }
+    expect(isKeyAccess('admin')).toBe(false);
+    expect(isKeyAccess('toString')).toBe(false);
   });
 });
