@@ -835,8 +835,9 @@ deployed install after each Better Auth upgrade that touches OAuth.
 
 A throwaway test on November 6, 2026 ran Better Auth 1.7.18 against real Postgres 17,
 real Retainer routes and MCP tools. It was deleted afterwards. It signed in by magic
-link, which was dropped after the test, so **Google sign-in, now the only first
-sign-in, is untested**. Everything after a session exists carries over.
+link, which was dropped after the test, so it did not cover Google sign-in, now the
+only first sign-in; the live deployment did (below). Everything after a session
+exists carries over.
 
 | Question                                | Result                                                                                                                                                                                      |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -853,7 +854,13 @@ sign-in, is untested**. Everything after a session exists carries over.
 The server code loads in about 130 ms on a laptop and bundles to 3.3 MB (565 KB
 gzipped), so cold starts should not be a concern, though Lambda will be slower.
 
-**Not tested:** Google sign-in, including its OAuth state cookie; real Lambda and API Gateway; passkeys on real devices
-and synced passkeys; the rate-limit plugin; a workspace picker at consent;
+**On the live deployment**, November 7, 2026, after PR 2 shipped to AWS
+(`retainer.tamloot.cc`, real Lambda and API Gateway): Google sign-in worked, so its
+OAuth state cookie survives Google's callback. A passkey added on the site signed in
+on a laptop and on a phone. The `Default` organization's first owner was set with
+`ops.sh member add`.
+
+**Not tested:** whether the phone used a synced passkey or a cross-device sign-in;
+the rate-limit plugin; a workspace picker at consent;
 `SET LOCAL ROLE` seeding by `retainer_control`; whether Claude falls back to dynamic
 registration.
