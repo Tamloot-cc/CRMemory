@@ -186,17 +186,24 @@ git pull && docker compose -f docker/compose.yml up --build -d
 The compose file used Postgres 17 before it moved to 18, and Postgres 18
 cannot open a 17 data directory. Postgres 18 also keeps its data under
 `/var/lib/postgresql/18/docker`, so the volume now mounts at
-`/var/lib/postgresql`. To move, dump with the old file (the `pg_dump` line
-above), then remove the old volume, start Postgres 18 and restore:
+`/var/lib/postgresql`. Move with `pg_dumpall`, not `pg_dump`: the server
+connects through the `retainer_app` and `retainer_control` roles, and only
+`pg_dumpall` carries roles. Dump before pulling, while Postgres 17 runs:
 
 ```sh
+docker compose -f docker/compose.yml exec -T postgres \
+  pg_dumpall -U retainer > retainer-pg17.sql
 docker compose -f docker/compose.yml down
 docker volume rm docker_pgdata
-git pull && docker compose -f docker/compose.yml up -d postgres
+git pull && docker compose -f docker/compose.yml up -d --wait postgres
 docker compose -f docker/compose.yml exec -T postgres \
-  psql -U retainer retainer < retainer-YYYY-MM-DD.sql
+  psql -U retainer -d postgres < retainer-pg17.sql
 docker compose -f docker/compose.yml up --build -d
 ```
+
+The restore reports that role `retainer` and database `retainer` already
+exist; those two errors are expected. Any other error means the move did not
+finish: keep `retainer-pg17.sql` and do not start the `retainer` container.
 
 ## Privacy requests
 
