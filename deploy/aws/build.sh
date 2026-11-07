@@ -21,6 +21,7 @@ cp -R packages/web/dist "$out/package/web"
 
 # Lambda runs dist/lambda/*.js as ES modules: package.json has "type": "module".
 test -f "$out/package/dist/lambda/api.js"
+test -f "$out/package/dist/lambda/control.js"
 test -d "$out/package/drizzle"
 
 # Only what runs: no sources, tests or tool configs.

@@ -1,5 +1,6 @@
-# API Gateway HTTP API in front of the api function. Every path goes to it:
-# /v1 (REST), /mcp, /health and /app (the web app).
+# API Gateway HTTP API in front of the api function. Every path goes to it,
+# /v1 (REST), /mcp, /health and /app (the web app), except /account, which
+# goes to the control function in accounts mode.
 
 resource "aws_apigatewayv2_api" "this" {
   name          = var.name
@@ -91,4 +92,31 @@ resource "aws_apigatewayv2_api_mapping" "this" {
   api_id      = aws_apigatewayv2_api.this.id
   domain_name = aws_apigatewayv2_domain_name.this[0].id
   stage       = aws_apigatewayv2_stage.default.id
+}
+
+# ─── Accounts mode: /account goes to the control function ────────────────────
+
+resource "aws_apigatewayv2_integration" "control" {
+  count                  = local.accounts ? 1 : 0
+  api_id                 = aws_apigatewayv2_api.this.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.this["control"].invoke_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 30000
+}
+
+resource "aws_apigatewayv2_route" "control" {
+  for_each  = local.accounts ? toset(["ANY /account", "ANY /account/{proxy+}"]) : toset([])
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = each.value
+  target    = "integrations/${aws_apigatewayv2_integration.control[0].id}"
+}
+
+resource "aws_lambda_permission" "control" {
+  count         = local.accounts ? 1 : 0
+  statement_id  = "AllowApiGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.this["control"].function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
 }

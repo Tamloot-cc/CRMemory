@@ -145,6 +145,38 @@ variable "log_retention_days" {
   default     = 30
 }
 
+# ─── Accounts (docs/aws.md, Accounts) ────────────────────────────────────────
+
+variable "google_client_id" {
+  description = "Google OAuth client ID people sign in with. Setting it, with google_client_secret, turns on accounts mode: the control function, /account, and a NAT gateway for it (about $40 a month). Null keeps key mode."
+  type        = string
+  default     = null
+}
+
+variable "google_client_secret" {
+  description = "The Google OAuth client's secret. Set it in terraform.tfvars (gitignored) or TF_VAR_google_client_secret, never in a committed file."
+  type        = string
+  default     = null
+  sensitive   = true
+
+  validation {
+    condition     = (var.google_client_secret == null) == (var.google_client_id == null)
+    error_message = "Set google_client_id and google_client_secret together, or neither."
+  }
+}
+
+variable "control_reserved_concurrency" {
+  description = "Most control function instances at once. Each holds up to twice control_db_pool_max database connections."
+  type        = number
+  default     = 5
+}
+
+variable "control_db_pool_max" {
+  description = "Database connections per control function instance, for each of its two pools (account routes, and Better Auth)."
+  type        = number
+  default     = 1
+}
+
 # ─── Operations ──────────────────────────────────────────────────────────────
 
 variable "alarm_email" {

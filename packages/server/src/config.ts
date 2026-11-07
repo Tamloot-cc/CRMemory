@@ -116,10 +116,18 @@ const configSchema = z
      */
     RETAINER_SUPPRESSION_PREVIOUS_KEYS: z.preprocess(emptyToUndefined, z.string().optional()),
   })
-  .refine((config) => config.DATABASE_URL || config.RETAINER_RUNTIME_DATABASE_URL, {
-    path: ['DATABASE_URL'],
-    message: 'set DATABASE_URL, RETAINER_RUNTIME_DATABASE_URL or both',
-  })
+  // Each function holds only its own login: the control function on AWS has
+  // the control URL alone (accounts spec 4.6).
+  .refine(
+    (config) =>
+      config.DATABASE_URL ||
+      config.RETAINER_RUNTIME_DATABASE_URL ||
+      config.RETAINER_CONTROL_DATABASE_URL,
+    {
+      path: ['DATABASE_URL'],
+      message: 'set DATABASE_URL, RETAINER_RUNTIME_DATABASE_URL or RETAINER_CONTROL_DATABASE_URL',
+    },
+  )
   .refine((config) => !config.RETAINER_GOOGLE_CLIENT_ID === !config.RETAINER_GOOGLE_CLIENT_SECRET, {
     path: ['RETAINER_GOOGLE_CLIENT_ID'],
     message: 'set RETAINER_GOOGLE_CLIENT_ID and RETAINER_GOOGLE_CLIENT_SECRET together',

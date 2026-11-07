@@ -37,7 +37,9 @@ describe('database URLs', () => {
   const runtime = 'postgres://retainer_app:s3cret@localhost/test';
 
   it('needs at least one of the two URLs', () => {
-    expect(() => loadConfig({})).toThrow('set DATABASE_URL, RETAINER_RUNTIME_DATABASE_URL or both');
+    expect(() => loadConfig({})).toThrow(
+      'set DATABASE_URL, RETAINER_RUNTIME_DATABASE_URL or RETAINER_CONTROL_DATABASE_URL',
+    );
     expect(() => loadConfig({ DATABASE_URL: '' })).toThrow('DATABASE_URL');
   });
 
@@ -103,6 +105,18 @@ describe('accounts mode', () => {
       secret,
       google: { clientId: 'id', clientSecret: 'shh' },
     });
+  });
+
+  it('runs the control function on the control login alone', () => {
+    const control = `postgres://${CONTROL_ROLE}:s3cret@localhost/test`;
+    const config = loadConfig({
+      RETAINER_CONTROL_DATABASE_URL: control,
+      RETAINER_AUTH_SECRET: secret,
+      RETAINER_GOOGLE_CLIENT_ID: 'id',
+      RETAINER_GOOGLE_CLIENT_SECRET: 'shh',
+    });
+    expect(config.RETAINER_CONTROL_DATABASE_URL).toBe(control);
+    expect(() => ownerDatabaseUrl(config)).toThrow('DATABASE_URL is required');
   });
 
   it('takes a control login only for the control role', () => {
