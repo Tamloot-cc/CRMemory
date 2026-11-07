@@ -858,7 +858,8 @@ gzipped), so cold starts should not be a concern, though Lambda will be slower.
 (`retainer.tamloot.cc`, real Lambda and API Gateway): Google sign-in worked, so its
 OAuth state cookie survives Google's callback. A passkey added on the site signed in
 on a laptop and on a phone. The `Default` organization's first owner was set with
-`ops.sh member add`.
+`ops.sh member add`. An invited second account accepted, saw only the workspaces it
+was given, and lost access once removed.
 
 **Not tested:** whether the phone used a synced passkey or a cross-device sign-in;
 the rate-limit plugin; a workspace picker at consent;
