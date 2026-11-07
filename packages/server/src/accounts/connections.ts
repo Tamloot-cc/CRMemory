@@ -79,6 +79,27 @@ export async function listMyConnections(sql: Sql, person: Person): Promise<Conne
 }
 
 /**
+ * Records a person's consent to an app for one workspace (4.7), like every
+ * account write: the workspace's organization lock first, then the access
+ * check, then the write. `record` is Better Auth writing the consent, on its
+ * own pool, while this transaction holds the lock, so a removal or a move
+ * either commits first and the check refuses, or waits and then finds the
+ * consent and ends it. A workspace the person cannot reach is a 404.
+ */
+export async function recordConsent(
+  sql: Sql,
+  person: Person,
+  workspaceId: string,
+  record: () => Promise<Response>,
+): Promise<Response> {
+  return (await sql.begin(async (tx) => {
+    await lockWorkspaceOrganization(tx, workspaceId);
+    await workspaceAccess(tx, person, workspaceId);
+    return record();
+  })) as Response;
+}
+
+/**
  * Disconnects an app: the person who connected it, or an admin of its
  * workspace. Takes the workspace's organization lock first, then checks the
  * role, then deletes, like every account write.

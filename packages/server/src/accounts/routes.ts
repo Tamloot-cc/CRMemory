@@ -198,10 +198,8 @@ export function createAccountsApp(deps: AccountsDeps) {
       }),
     );
     const { accept, workspaceId } = body;
-    if (accept) {
-      if (!workspaceId) throw new AppError(400, 'invalid_request', 'pick the workspace to connect');
-      // A workspace the person cannot reach is a 404, as everywhere (4.4).
-      await people.workspaceAccess(sql, c.get('person'), workspaceId);
+    if (accept && !workspaceId) {
+      throw new AppError(400, 'invalid_request', 'pick the workspace to connect');
     }
     const headers = forwarded(c);
     headers.set('content-type', 'application/json');
@@ -211,10 +209,10 @@ export function createAccountsApp(deps: AccountsDeps) {
       headers,
       body: JSON.stringify({ accept, oauth_query: body.oauth_query }),
     });
-    // Accepting without a workspace was refused above.
-    return accept && workspaceId
-      ? deps.auth.consent(request, workspaceId)
-      : deps.auth.handler(request);
+    if (!accept || !workspaceId) return deps.auth.handler(request);
+    return connections.recordConsent(sql, c.get('person'), workspaceId, () =>
+      deps.auth.consent(request, workspaceId),
+    );
   });
 
   // Connected apps (5.1)

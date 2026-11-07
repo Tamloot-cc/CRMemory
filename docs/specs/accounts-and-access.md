@@ -492,6 +492,12 @@ _As built,_ where it differs:
   it, and the access token carries the workspace in a `workspace_id` claim.
 - **OAuth tokens work on `/mcp` only**, the resource they are issued for; `/v1`
   and `/account` refuse them.
+- **Scopes are capped by the current consent too.** `retainer_token_access` returns
+  the consent's scopes, so a token from an earlier connection to the same app and
+  workspace never gets more than the person allowed last time.
+- **Consenting takes the organization lock**, then checks access, while Better Auth
+  writes the consent on its own pool, so a removal or move running at the same
+  time either refuses it or finds it and ends it.
 - **Removing a member ends their grants:** removing someone from a workspace or an
   organization deletes their consents there and revokes the refresh tokens.
   Re-adding them does not bring the connection back.

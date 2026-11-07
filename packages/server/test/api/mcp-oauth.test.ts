@@ -296,6 +296,51 @@ describe('access ends at the next request', () => {
     expect(await status(tokens.access_token)).toBe(401);
   });
 
+  it('when the person is removed while consenting: the consent waits for the removal, then is refused', async () => {
+    const t = await setup();
+    const flow = await authorize(app.accounts, { cookie: t.dana.cookie });
+    let consented: Promise<Response> | undefined;
+    // A removal holds the organization's lock, as every membership change does.
+    await db.owner.begin(async (tx) => {
+      await tx`select 1 from organizations where id = ${t.organizationId} for update`;
+      consented = consent(app.accounts, flow, { cookie: t.dana.cookie, workspaceId: t.sales.id });
+      const first = await Promise.race([
+        consented.then(() => 'recorded'),
+        new Promise((resolve) => setTimeout(() => resolve('waiting'), 300)),
+      ]);
+      expect(first).toBe('waiting');
+      await tx`
+        delete from workspace_members
+        where workspace_id = ${t.sales.id} and user_id = ${t.dana.userId}`;
+    });
+    if (!consented) throw new Error('the consent never started');
+    expect((await consented).status).toBe(404);
+    expect(
+      await db.owner`select 1 from oauth_consents where reference_id = ${t.sales.id}`,
+    ).toHaveLength(0);
+  });
+
+  it('when the app is connected again with fewer scopes: an earlier token gets only those', async () => {
+    const t = await setup();
+    const wide = await connect(app.accounts, {
+      cookie: t.dana.cookie,
+      workspaceId: t.sales.id,
+      scope: 'read write offline_access',
+    });
+    expect((await createPerson(wide.access_token, 'Wide')).isError).toBe(false);
+    const listed = (await (
+      await app.account('/account/connections', { cookie: t.dana.cookie })
+    ).json()) as { connections: { id: string }[] };
+    const removed = await app.account(`/account/connections/${listed.connections[0]?.id}`, {
+      cookie: t.dana.cookie,
+      method: 'DELETE',
+    });
+    expect(removed.status).toBe(204);
+    await connect(app.accounts, { cookie: t.dana.cookie, workspaceId: t.sales.id, scope: 'read' });
+    expect((await createPerson(wide.access_token, 'Narrow')).isError).toBe(true);
+    expect((await callTool(wide.access_token, 'describe_schema', {})).isError).toBe(false);
+  });
+
   it("when their role is lowered: a viewer's app can read but not write", async () => {
     const t = await setup();
     const tokens = await connect(app.accounts, { cookie: t.dana.cookie, workspaceId: t.sales.id });

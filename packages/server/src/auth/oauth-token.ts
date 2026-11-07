@@ -90,13 +90,18 @@ export async function lookupOAuthToken(
       client_name: string;
       workspace_id: string;
       role: WorkspaceRole | null;
+      scopes: string[];
     }[]
   >`select * from retainer_token_access(${subject}, ${workspace}, ${client})`;
   // No consent, a disabled person or app, a deleted workspace, or no role left.
   if (!access?.role) {
     throw refused('this connection was removed or no longer has access; connect again');
   }
-  const tokenScopes = typeof claims.scope === 'string' ? claims.scope.split(' ') : [];
+  // A token from an earlier consent to the same app gets no more than the
+  // person agreed to this time.
+  const tokenScopes = (typeof claims.scope === 'string' ? claims.scope.split(' ') : []).filter(
+    (scope) => access.scopes.includes(scope),
+  );
   return {
     workspaceId: access.workspace_id,
     // Always an agent, so the human-only rules apply; named for both (4.7).

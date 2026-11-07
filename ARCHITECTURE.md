@@ -1737,8 +1737,8 @@ records the consent with that workspace as its reference. Access tokens are
 one-hour EdDSA JWTs that name the workspace, and work on `/mcp` only. Without internet, `api` reads the
 public signing keys through `retainer_token_keys`, verifies the token, then calls
 `retainer_token_access` for the person's current role and consent. The request's
-scopes are the token's scopes intersected with that role's, so a downgrade, removal or
-revoked consent applies at the next request. The actor is always an `agent`, with an
+scopes are the token's scopes intersected with that role's and the consent's, so a
+downgrade, removal or revoked consent applies at the next request. The actor is always an `agent`, with an
 ID made from the client and the person, so the human-only rules still apply.
 Removing a person from a workspace or organization deletes their consents there,
 and a consent is the connection people see and disconnect in Settings.
