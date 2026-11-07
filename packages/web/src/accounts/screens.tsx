@@ -22,13 +22,14 @@ function signInError(code: string | null): string {
   return 'Signing in did not work. Try again.';
 }
 
-export function AccountSignIn() {
+export function AccountSignIn({ returnTo }: { returnTo?: string } = {}) {
   const [error, setError] = useState(() =>
     signInError(new URLSearchParams(window.location.search).get('error')),
   );
   const [busy, setBusy] = useState<'google' | 'passkey' | null>(null);
   // After signing in, come back to the page that asked for it.
-  const here = window.location.pathname.startsWith('/app/') ? window.location.pathname : '/app/';
+  const here =
+    returnTo ?? (window.location.pathname.startsWith('/app/') ? window.location.pathname : '/app/');
   async function google() {
     setBusy('google');
     setError('');

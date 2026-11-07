@@ -7,6 +7,7 @@ import {
   type OrganizationRole,
   type Scope,
   WORKSPACE_ROLE_DESCRIPTIONS,
+  WORKSPACE_ROLE_SCOPES,
   WORKSPACE_ROLES,
   type WorkspaceRole,
 } from '@retainer/shared';
@@ -69,3 +70,16 @@ export const KEY_ACCESS_OPTIONS = (Object.keys(KEY_ACCESS) as KeyAccess[]).map((
 }));
 
 export const keyAccessWords = (scopes: readonly Scope[]) => KEY_ACCESS_WORDS[keyAccessOf(scopes)];
+
+/** What an app connected over sign-in may do, in plain words (accounts spec 5). */
+export const APP_SCOPE_WORDS: Partial<Record<Scope, string>> = {
+  read: 'See everything in the workspace',
+  write: 'Add and change records, events and notes',
+  'schema:write': "Add objects and fields to the workspace's structure",
+};
+
+/** The scopes an app gets in a workspace: what it asked for, capped by the person's role. */
+export const appScopes = (asked: readonly string[], role: WorkspaceRole): Scope[] =>
+  (['read', 'write', 'schema:write'] as const).filter(
+    (scope) => asked.includes(scope) && WORKSPACE_ROLE_SCOPES[role].includes(scope),
+  );

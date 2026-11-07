@@ -72,6 +72,16 @@ export type OrganizationDetails = {
   invitations: PendingInvitation[];
 };
 
+/** An app connected over sign-in, such as Claude (accounts spec 4.7, 5.1). */
+export type Connection = {
+  id: string;
+  app: { name: string; uri: string | null };
+  workspace: { id: string; slug: string; name: string };
+  person: { id: string; name: string; email: string };
+  scopes: Scope[];
+  connectedAt: string;
+};
+
 export type InvitationPreview = {
   id: string;
   organization: { id: string; name: string };
@@ -155,6 +165,26 @@ export const account = {
     }),
   revokeInvitation: (id: string, invitationId: string) =>
     call<void>(`${org(id)}/invitations/${invitationId}`, { method: 'DELETE' }),
+  connections: () => call<{ connections: Connection[] }>('/account/connections'),
+  workspaceConnections: (id: string) =>
+    call<{ role: WorkspaceRole; connections: Connection[] }>(`${ws(id)}/connections`),
+  disconnect: (connectionId: string) =>
+    call<void>(`/account/connections/${encodeURIComponent(connectionId)}`, { method: 'DELETE' }),
+  /** The app asking to connect, for the consent page. */
+  oauthClient: (clientId: string) =>
+    call<{ clientId: string; name: string; uri: string | null }>(
+      `/account/oauth/client?client_id=${encodeURIComponent(clientId)}`,
+    ),
+  /** Allows or refuses an app; returns where to send the browser next. */
+  oauthConsent: (input: { oauthQuery: string; accept: boolean; workspaceId?: string }) =>
+    call<{ url: string }>('/account/oauth/consent', {
+      method: 'POST',
+      body: {
+        oauth_query: input.oauthQuery,
+        accept: input.accept,
+        ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      },
+    }),
   invitation: (tokenOrId: string) =>
     call<InvitationPreview>(`/account/invitations/${encodeURIComponent(tokenOrId)}`),
   acceptInvitation: (tokenOrId: string) =>

@@ -35,6 +35,7 @@ import {
   Td,
   Tr,
 } from '../ui/index.js';
+import { ConnectedApps } from './connections.js';
 import { type AccountState, useAccount } from './context.js';
 import {
   capital,
@@ -80,7 +81,11 @@ export function SettingsPage() {
     },
     ...(admin
       ? ([
-          { value: 'agents', label: 'Agents', hint: 'API keys your agents and apps connect with' },
+          {
+            value: 'agents',
+            label: 'Agents',
+            hint: 'API keys and apps people connected, such as Claude',
+          },
           {
             value: 'workspace',
             label: 'Workspace',
@@ -522,6 +527,15 @@ function AgentsTab({ state }: { state: AccountState }) {
           Revoke
         </Button>
       </Dialog>
+      <Panel title="Connected apps">
+        <Stack>
+          <Muted small>
+            Apps people connected by signing in, such as Claude. Each works as the person who
+            connected it, and never does more than they can here.
+          </Muted>
+          <ConnectedApps workspaceId={state.workspace.id} />
+        </Stack>
+      </Panel>
     </Stack>
   );
 }

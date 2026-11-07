@@ -434,6 +434,9 @@ const LazySignIn = lazy(() => screens().then((m) => ({ default: m.AccountSignIn 
 const LazyFirstRun = lazy(() => screens().then((m) => ({ default: m.FirstRun })));
 const LazyInvite = lazy(() => screens().then((m) => ({ default: m.InvitePage })));
 const LazyNoAccess = lazy(() => screens().then((m) => ({ default: m.NoAccess })));
+const oauth = () => import('./accounts/oauth.js');
+const LazyOAuthContinue = lazy(() => oauth().then((m) => ({ default: m.OAuthContinue })));
+const LazyOAuthConsent = lazy(() => oauth().then((m) => ({ default: m.OAuthConsent })));
 const LazyYourAccount = lazy(() =>
   import('./accounts/your-account.js').then((m) => ({ default: m.YourAccount })),
 );
@@ -443,6 +446,9 @@ function AccountsApp({ account }: { account: Account }) {
   const path = window.location.pathname;
   const invite = /^\/app\/invite\/([^/]+)/.exec(path)?.[1];
   if (invite) return <LazyInvite token={invite} account={account} />;
+  // Connecting an app over OAuth (accounts spec 4.7).
+  if (path === '/app/oauth/sign-in') return <LazyOAuthContinue />;
+  if (path === '/app/oauth/consent') return <LazyOAuthConsent account={account} />;
   if (path === '/app/account' || path === '/app/account/')
     return <LazyYourAccount account={account} />;
   const reachable = allWorkspaces(account);
@@ -475,6 +481,8 @@ type Boot =
  */
 function App() {
   const [boot, setBoot] = useState<Boot>({ mode: 'loading' });
+  // For the account screens outside a workspace; a workspace brings its own.
+  const [accountClient] = useState(newQueryClient);
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const update = () => document.documentElement.classList.toggle('dark', media.matches);
@@ -513,9 +521,20 @@ function App() {
       </Page>
     );
   return (
-    <Suspense fallback={loading}>
-      {boot.mode === 'signed-out' ? <LazySignIn /> : <AccountsApp account={boot.account} />}
-    </Suspense>
+    <QueryClientProvider client={accountClient}>
+      <Suspense fallback={loading}>
+        {boot.mode === 'signed-out' ? (
+          // Connecting an app keeps its whole address, signed parameters and all.
+          <LazySignIn
+            {...(window.location.pathname.startsWith('/app/oauth/')
+              ? { returnTo: window.location.pathname + window.location.search }
+              : {})}
+          />
+        ) : (
+          <AccountsApp account={boot.account} />
+        )}
+      </Suspense>
+    </QueryClientProvider>
   );
 }
 
