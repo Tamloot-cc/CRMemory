@@ -85,7 +85,10 @@ if (role === 'api' || role === 'all' || role === 'control') {
       : createApp({
           sql: pool(createApiSql(config, { max: config.RETAINER_DB_POOL_MAX })),
           webDir: config.RETAINER_WEB_DIR,
-          publicOrigin: accounts ? accountsOrigin(config) : config.RETAINER_PUBLIC_ORIGIN,
+          // The same origin /account issues OAuth tokens for, even in its own container.
+          publicOrigin: accountsMode(config)
+            ? accountsOrigin(config)
+            : config.RETAINER_PUBLIC_ORIGIN,
           accountsSecret: config.RETAINER_AUTH_SECRET,
           rateLimit: { limit: rateLimitPerMinute(config) },
         });
